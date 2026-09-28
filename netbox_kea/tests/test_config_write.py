@@ -6,6 +6,7 @@ Only ``requests.Session.post`` is stubbed. Each test asserts the commands that r
 outcome alone cannot show a command that was sent when it must not be.
 """
 
+import copy
 import ipaddress
 import json
 import threading
@@ -21,6 +22,8 @@ from urllib3.exceptions import ProtocolError
 from netbox_kea import config_write
 from netbox_kea.config_write import ConfigChangeOutcome, ConfigChangeRejected
 from netbox_kea.constants import Family
+from netbox_kea.dhcp_options import DHCPOptionConflict, DHCPOptionNameChange
+from netbox_kea.kea import SharedNetworkEdit
 from netbox_kea.server_configuration import parse_pool
 
 from .kea_stub import (
@@ -29,6 +32,7 @@ from .kea_stub import (
     _network_absent,
     _network_present,
     _refused_connection,
+    _subnet_list,
     queued,
     stub_kea,
 )
@@ -914,3 +918,484 @@ class LockTests(TransactionTestCase):
         self.assertEqual(outcome, ConfigChangeOutcome("applied", "persisted"))
         self.assertEqual(kea.commands(), ["network4-get", "network4-add", *_PERSIST])
         self.assertIsNotNone(logs.records[-1].exc_info)
+
+
+def _new_row(name: str, data: str) -> dict:
+    """One options form row that adds a DHCP Option."""
+    return {"name": name, "data": data, "always_send": False, "DELETE": False, "original_option": None}
+
+
+_DNS = {4: ("domain-name-servers", "192.0.2.53"), 6: ("dns-servers", "2001:db8::53")}
+_IN_NET_A = {"shared-network-name": "net-a"}
+_NEW_DEF = {"name": "new-opt", "code": 201, "type": "string"}
+_EDIT = {
+    4: SharedNetworkEdit("Office", "eth1", ("192.0.2.1",), ("192.0.2.53",), ()),
+    6: SharedNetworkEdit("Office", "eth1", ("2001:db8::1",), ("2001:db8::53",), ()),
+}
+
+
+def _running(version: int, **daemon) -> dict:
+    """A config-get reply with a Subnet, a Shared Network with a member, and fields that NetBox does not model."""
+    subnet_key = f"subnet{version}"
+    member = {"id": 2, "subnet": _MOVED[version], "option-data": [], "valid-lifetime": 900}
+    configuration = {
+        subnet_key: [{**_subnet(version), "option-data": [], "valid-lifetime": 600, "reservations": []}],
+        "shared-networks": [
+            {"name": "net-a", subnet_key: [member], "option-data": [], "valid-lifetime": 7200, "client-class": "lab"}
+        ],
+        "option-data": [],
+        "option-def": [{"name": "my-opt", "code": 200, "type": "string", "space": f"dhcp{version}"}],
+        "interfaces-config": {"interfaces": ["eth0"]},
+        "valid-lifetime": 4000,
+    }
+    configuration.update(daemon)
+    return {"result": 0, "arguments": {f"Dhcp{version}": configuration, "hash": "running"}}
+
+
+def _rmw_responses(version: int, *, config_get=None, **overrides) -> dict:
+    """Answer the Subnet scope, the config-get of the change, config-test, config-set, and the persist step."""
+    responses = {
+        f"subnet{version}-list": _subnet_list(
+            version, [{"id": 1, "subnet": _SEEN[version]}, {"id": 2, "subnet": _MOVED[version], **_IN_NET_A}]
+        ),
+        "config-get": _running(version) if config_get is None else config_get,
+        "config-test": _OK,
+        "config-set": _OK,
+        "config-write": _OK,
+    }
+    responses.update(overrides)
+    return responses
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class ReadModifyWriteTests(TestCase):
+    """The read-modify-write changes: config-get, an edit in place, config-test and config-set, all under the lock."""
+
+    def setUp(self):
+        self.server = _make_db_server()
+
+    def _operations(self, version: Family) -> dict:
+        """Each operation, and the edit that it must make to the running configuration."""
+        subnet_key = f"subnet{version}"
+        name, data = _DNS[version]
+        definition = {**_NEW_DEF, "space": f"dhcp{version}"}
+
+        def subnet_options(daemon):
+            daemon[subnet_key][0]["option-data"] = [{"name": name, "data": data}]
+
+        def server_options(daemon):
+            daemon["option-data"] = [{"name": name, "data": data}]
+
+        def add_definition(daemon):
+            daemon["option-def"].append(definition)
+
+        def delete_definition(daemon):
+            daemon["option-def"] = []
+
+        def shared_network(daemon):
+            network = daemon["shared-networks"][0]
+            relay = list(_EDIT[version].relay_addresses)
+            network.update(
+                {"user-context": {"comment": "Office"}, "interface": "eth1", "relay": {"ip-addresses": relay}}
+            )
+            network["option-data"] = [{"name": name, "data": data}]
+
+        return {
+            "set_subnet_options": (
+                lambda: config_write.set_subnet_options(
+                    self.server, version, 1, _SEEN[version], [_new_row(name, data)]
+                ),
+                subnet_options,
+            ),
+            "set_server_options": (
+                lambda: config_write.set_server_options(self.server, version, [_new_row(name, data)]),
+                server_options,
+            ),
+            "add_option_definition": (
+                lambda: config_write.add_option_definition(self.server, version, definition),
+                add_definition,
+            ),
+            "delete_option_definition": (
+                lambda: config_write.delete_option_definition(self.server, version, 200, f"dhcp{version}"),
+                delete_definition,
+            ),
+            "edit_shared_network": (
+                lambda: config_write.edit_shared_network(self.server, version, "net-a", _EDIT[version]),
+                shared_network,
+            ),
+        }
+
+    @staticmethod
+    def _reads(version: int, name: str) -> list[str]:
+        """The reads before the change: the Subnet scope for a Subnet change, then the config-get of the change."""
+        return [f"subnet{version}-list", "config-get", "config-get"] if name == "set_subnet_options" else ["config-get"]
+
+    def _rejection(self, change) -> ConfigChangeRejected:
+        with self.assertRaises(ConfigChangeRejected) as raised:
+            change()
+        return raised.exception
+
+    def test_each_change_sends_the_running_configuration_with_only_its_edit(self):
+        for version in (4, 6):
+            for name, (operation, edit) in self._operations(version).items():
+                with self.subTest(version=version, operation=name):
+                    with stub_kea(_rmw_responses(version)) as kea:
+                        outcome = operation()
+                    self.assertEqual(outcome, ConfigChangeOutcome("applied", "persisted"))
+                    self.assertEqual(
+                        kea.commands(), [*self._reads(version, name), "config-test", "config-set", *_PERSIST]
+                    )
+                    expected = copy.deepcopy(_running(version)["arguments"])
+                    del expected["hash"]
+                    edit(expected[f"Dhcp{version}"])
+                    # Every field that NetBox does not model reaches Kea unchanged.
+                    self.assertEqual(kea.bodies("config-set")[0]["arguments"], expected)
+                    self.assertEqual(kea.bodies("config-test")[0]["arguments"], expected)
+                    self.assertEqual(kea.bodies("config-set")[0]["service"], [f"dhcp{version}"])
+
+    def test_subnet_options_reach_a_member_of_a_shared_network(self):
+        with stub_kea(_rmw_responses(4)) as kea:
+            outcome = config_write.set_subnet_options(self.server, 4, 2, _MOVED[4], [_new_row("routers", "10.0.1.1")])
+        self.assertEqual(outcome, ConfigChangeOutcome("applied", "persisted"))
+        written = kea.bodies("config-set")[0]["arguments"]["Dhcp4"]
+        self.assertEqual(
+            written["shared-networks"][0]["subnet4"][0]["option-data"], [{"name": "routers", "data": "10.0.1.1"}]
+        )
+        self.assertEqual(written["subnet4"][0]["option-data"], [])
+
+    def test_empty_shared_network_fields_remove_the_interface_and_the_relay(self):
+        running = _running(4)
+        network = running["arguments"]["Dhcp4"]["shared-networks"][0]
+        network.update({"interface": "eth0", "relay": {"ip-addresses": ["192.0.2.1"]}})
+        with stub_kea(_rmw_responses(4, config_get=running)) as kea:
+            config_write.edit_shared_network(self.server, 4, "net-a", SharedNetworkEdit("", "", (), (), ()))
+        written = kea.bodies("config-set")[0]["arguments"]["Dhcp4"]["shared-networks"][0]
+        self.assertNotIn("interface", written)
+        self.assertNotIn("relay", written)
+
+    def test_a_config_test_rejection_sends_no_config_set(self):
+        rejected = {"result": 1, "text": "subnet overlaps"}
+        for version in (4, 6):
+            for name, (operation, _edit) in self._operations(version).items():
+                with self.subTest(version=version, operation=name):
+                    with stub_kea(_rmw_responses(version, **{"config-test": rejected})) as kea:
+                        rejection = self._rejection(operation)
+                    self.assertEqual(rejection.reason, "config-test-rejected")
+                    self.assertEqual(rejection.diagnostics, ("Kea replied: subnet overlaps",))
+                    self.assertEqual(kea.commands(), [*self._reads(version, name), "config-test"])
+
+    def test_an_unsupported_config_test_is_skipped(self):
+        unsupported = {"result": 2, "text": "'config-test' command not supported."}
+        with stub_kea(_rmw_responses(4, **{"config-test": unsupported})) as kea:
+            outcome = config_write.set_server_options(self.server, 4, [_new_row(*_DNS[4])])
+        self.assertEqual(outcome, ConfigChangeOutcome("applied", "persisted"))
+        self.assertEqual(kea.commands(), ["config-get", "config-test", "config-set", *_PERSIST])
+
+    def test_a_failed_config_get_or_config_test_is_not_sent(self):
+        failures = {
+            "read timeout": requests.ReadTimeout("read timed out"),
+            "reset": _reset_during_reply(),
+            "malformed": [_OK, _OK],
+            "http error": _http_response({"error": "bad gateway"}, status=502),
+            "kea failure": {"result": 1, "text": "internal error"},
+            "forwarding failure": _CONTROL_AGENT["network4-add"],
+        }
+        for phase in ("config-get", "config-test"):
+            for label, failure in failures.items():
+                if (phase, label) == ("config-test", "kea failure"):
+                    continue  # A config-test failure result is a config-test rejection.
+                for name, (operation, _edit) in self._operations(4).items():
+                    with self.subTest(phase=phase, failure=label, operation=name):
+                        reads = self._reads(4, name)
+                        if phase == "config-get":
+                            # The Subnet scope reads first, so only the config-get of the change fails.
+                            failure_at = (
+                                queued(*[_running(4)] * (len(reads) - 2), failure) if len(reads) > 1 else failure
+                            )
+                            responses = _rmw_responses(4, config_get=failure_at)
+                            sent = reads
+                        else:
+                            responses = _rmw_responses(4, **{"config-test": failure})
+                            sent = [*reads, "config-test"]
+                        with stub_kea(responses) as kea:
+                            rejection = self._rejection(operation)
+                        self.assertEqual(rejection.reason, "not-sent")
+                        self.assertEqual(kea.commands(), sent)
+
+    def test_a_stale_subnet_id_and_cidr_pair_is_not_sent(self):
+        moved = _running(4)
+        moved["arguments"]["Dhcp4"]["subnet4"][0]["subnet"] = "10.0.9.0/24"
+        moved_list = _subnet_list(4, [{"id": 1, "subnet": "10.0.9.0/24"}, {"id": 2, "subnet": _MOVED[4], **_IN_NET_A}])
+        cases = {
+            # The Subnet scope already shows ID 1 with another network.
+            "scope": (_rmw_responses(4, config_get=moved, **{"subnet4-list": moved_list}), 2),
+            # The scope still showed the network, but the config-get of the change does not.
+            "configuration": (_rmw_responses(4, config_get=queued(_running(4), moved)), 3),
+        }
+        for label, (responses, reads) in cases.items():
+            with self.subTest(label):
+                with stub_kea(responses) as kea:
+                    rejection = self._rejection(
+                        lambda: config_write.set_subnet_options(self.server, 4, 1, _SEEN[4], [_new_row(*_DNS[4])])
+                    )
+                self.assertEqual(rejection.reason, "not-sent")
+                self.assertEqual(
+                    rejection.diagnostics, (f"Subnet 1 ({_SEEN[4]}) changed in Kea. Reload the page and try again.",)
+                )
+                self.assertEqual(kea.commands(), ["subnet4-list", "config-get", "config-get"][:reads])
+
+    def test_a_missing_target_is_not_sent(self):
+        cases = (
+            (
+                lambda: config_write.delete_option_definition(self.server, 4, 250, "dhcp4"),
+                "Option Definition 250 in space 'dhcp4' not found.",
+            ),
+            (
+                lambda: config_write.delete_option_definition(self.server, 4, 200, "vendor-4491"),
+                "Option Definition 200 in space 'vendor-4491' not found.",
+            ),
+            (
+                lambda: config_write.edit_shared_network(self.server, 4, "net-b", _EDIT[4]),
+                "Shared Network 'net-b' not found.",
+            ),
+        )
+        for operation, diagnostic in cases:
+            with self.subTest(diagnostic):
+                with stub_kea(_rmw_responses(4)) as kea:
+                    rejection = self._rejection(operation)
+                self.assertEqual((rejection.reason, rejection.diagnostics), ("not-sent", (diagnostic,)))
+                self.assertEqual(kea.commands(), ["config-get"])
+
+    def test_a_malformed_configuration_is_not_sent(self):
+        network = {"name": "net-a", "subnet4": []}
+        cases = (
+            ("set_server_options", {"Dhcp4": []}),
+            ("set_server_options", {}),
+            ("set_server_options", {"Dhcp4": {"option-data": "text"}}),
+            ("set_subnet_options", {"Dhcp4": {"subnet4": {}}}),
+            ("set_subnet_options", {"Dhcp4": {"subnet4": [_subnet(4), _subnet(4)]}}),
+            ("set_subnet_options", {"Dhcp4": {"subnet4": [], "shared-networks": [{"subnet4": "text"}]}}),
+            ("add_option_definition", {"Dhcp4": {"option-def": {}}}),
+            ("delete_option_definition", {"Dhcp4": {"option-def": ["text"]}}),
+            ("edit_shared_network", {"Dhcp4": {"shared-networks": [None]}}),
+            ("edit_shared_network", {"Dhcp4": {"shared-networks": [network, network]}}),
+            ("edit_shared_network", {"Dhcp4": {"shared-networks": [{**network, "option-data": None}]}}),
+            ("edit_shared_network", {"Dhcp4": {"shared-networks": [{**network, "user-context": "text"}]}}),
+        )
+        operations = self._operations(4)
+        for name, arguments in cases:
+            with self.subTest(operation=name, arguments=arguments):
+                reads = self._reads(4, name)
+                config_get = {"result": 0, "arguments": arguments}
+                if len(reads) > 1:
+                    config_get = queued(_running(4), config_get)
+                with stub_kea(_rmw_responses(4, config_get=config_get)) as kea:
+                    rejection = self._rejection(operations[name][0])
+                self.assertEqual(rejection.reason, "not-sent")
+                self.assertEqual(kea.commands(), reads)
+
+    def test_a_dhcp_option_form_error_propagates_before_any_change(self):
+        running = _running(4, **{"option-data": [{"code": 6, "name": "domain-name-servers", "data": "192.0.2.1"}]})
+        stale = {**_new_row("routers", "10.0.0.1"), "original_option": {"name": "routers"}}
+        renamed = {**_new_row("routers", "192.0.2.1"), "original_option": {"code": 6, "name": "domain-name-servers"}}
+        for rows, error in (([_new_row("routers", "10.0.0.1")], DHCPOptionConflict), ([stale], DHCPOptionConflict)):
+            with self.subTest(error=error.__name__, rows=rows):
+                with stub_kea(_rmw_responses(4, config_get=running)) as kea, self.assertRaises(error):
+                    config_write.set_server_options(self.server, 4, rows)
+                self.assertEqual(kea.commands(), ["config-get"])
+        with stub_kea(_rmw_responses(4, config_get=running)) as kea, self.assertRaises(DHCPOptionNameChange):
+            config_write.set_server_options(self.server, 4, [renamed])
+        self.assertEqual(kea.commands(), ["config-get"])
+
+    def test_every_failure_on_config_set_is_unknown_and_still_persisted(self):
+        replies = {
+            "read timeout": (
+                requests.ReadTimeout("read timed out"),
+                "Kea's reply to the change was lost or unreadable.",
+            ),
+            "reset": (_reset_during_reply(), "Kea's reply to the change was lost or unreadable."),
+            "malformed": ([_OK, _OK], "Kea's reply to the change was lost or unreadable."),
+            "result 1": (
+                {"result": 1, "text": "hook initialization failed"},
+                "Kea replied: hook initialization failed",
+            ),
+            "result 5": ({"result": 5, "text": "configuration could not be restored"}, None),
+            "forwarding failure": (_CONTROL_AGENT["network4-add"], None),
+        }
+        for label, (reply, diagnostic) in replies.items():
+            expected = diagnostic or f"Kea replied: {reply['text']}"
+            for name, (operation, _edit) in self._operations(4).items():
+                with self.subTest(reply=label, operation=name):
+                    with stub_kea(_rmw_responses(4, **{"config-set": reply})) as kea:
+                        outcome = operation()
+                    self.assertEqual(outcome, ConfigChangeOutcome("unknown", "persisted", (expected,)))
+                    self.assertEqual(kea.commands(), [*self._reads(4, name), "config-test", "config-set", *_PERSIST])
+
+    def test_a_forwarding_failure_on_config_set_is_unknown_in_both_families(self):
+        for version in (4, 6):
+            recorded = _CONTROL_AGENT[f"network{version}-add"]
+            with self.subTest(version=version):
+                with stub_kea(_rmw_responses(version, **{"config-set": recorded})) as kea:
+                    outcome = config_write.set_server_options(self.server, version, [_new_row(*_DNS[version])])
+                self.assertEqual(outcome.application, "unknown")
+                self.assertEqual(kea.commands()[-3:], _PERSIST)
+
+    def test_a_refused_connection_on_config_set_is_not_sent(self):
+        with stub_kea(_rmw_responses(4, **{"config-set": _refused_connection()})) as kea:
+            rejection = self._rejection(lambda: config_write.set_server_options(self.server, 4, [_new_row(*_DNS[4])]))
+        self.assertEqual((rejection.reason, rejection.diagnostics), ("not-sent", ("Kea could not be reached.",)))
+        self.assertEqual(kea.commands(), ["config-get", "config-test", "config-set"])
+
+    def test_a_config_write_failure_after_config_set_is_applied_and_failed(self):
+        failure = {"result": 1, "text": "Unable to open file for writing"}
+        with stub_kea(_rmw_responses(4, **{"config-write": failure})) as kea:
+            outcome = config_write.set_server_options(self.server, 4, [_new_row(*_DNS[4])])
+        self.assertEqual(
+            outcome, ConfigChangeOutcome("applied", "failed", ("config-write failed: Unable to open file for writing",))
+        )
+        self.assertEqual(kea.commands(), ["config-get", "config-test", "config-set", *_PERSIST])
+
+    def test_persistence_not_requested_sends_no_persist_step(self):
+        self.server.persist_config = False
+        with stub_kea(_rmw_responses(4, **{"config-set": requests.ReadTimeout()})) as kea:
+            outcome = config_write.set_server_options(self.server, 4, [_new_row(*_DNS[4])])
+        self.assertEqual(outcome.persistence, "not-requested")
+        self.assertEqual(kea.commands(), ["config-get", "config-test", "config-set"])
+
+    def test_a_missing_tls_file_on_config_test_is_an_invalid_client_configuration(self):
+        missing = OSError("Could not find the TLS certificate file, invalid path: /nonexistent/client.pem")
+        with stub_kea(_rmw_responses(4, **{"config-test": missing})):
+            rejection = self._rejection(lambda: config_write.set_server_options(self.server, 4, [_new_row(*_DNS[4])]))
+        self.assertEqual(rejection.reason, "invalid-client-configuration")
+
+
+class _StatefulKea:
+    """A Kea whose config-get returns the running configuration and whose config-set replaces it.
+
+    The first config-set waits until the test releases it, so the test can start a second operation first.
+    """
+
+    def __init__(self, family: int, daemon: dict) -> None:
+        self.family = family
+        self.running = {f"Dhcp{family}": daemon}
+        self.holding = threading.Event()
+        self.release = threading.Event()
+        self._lock = threading.Lock()
+        self._held = False
+
+    def responses(self) -> dict:
+        subnets = self.running[f"Dhcp{self.family}"].get(f"subnet{self.family}", [])
+        return {
+            f"subnet{self.family}-list": _catalogue_responses_for_subnets(self.family, subnets)[
+                f"subnet{self.family}-list"
+            ],
+            "config-get": self._config_get,
+            "config-test": _OK,
+            "config-set": self._config_set,
+            "config-write": _OK,
+        }
+
+    def _config_get(self, body) -> dict:
+        with self._lock:
+            return {"result": 0, "arguments": {**copy.deepcopy(self.running), "hash": "running"}}
+
+    def _config_set(self, body) -> dict:
+        with self._lock:
+            first, self._held = not self._held, True
+        if first:
+            self.holding.set()
+            if not self.release.wait(timeout=30):
+                raise AssertionError("The test never released the first config-set.")
+        with self._lock:
+            self.running = copy.deepcopy(body["arguments"])
+        return _OK
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class ConcurrentReadModifyWriteTests(TransactionTestCase):
+    """Two read-modify-write operations on one Kea daemon and family, started so that both could read first.
+
+    The first operation stops inside its config-set. The test then starts the second operation, and waits until
+    the second one has read the configuration or waits for the advisory lock.
+    """
+
+    def setUp(self) -> None:
+        self.server = _make_db_server()
+        self.results: dict[str, object] = {}
+
+    def _start(self, name: str, change) -> threading.Thread:
+        def run():
+            try:
+                self.results[name] = change()
+            except Exception as exc:  # noqa: BLE001 - the test asserts the exact result of each thread.
+                self.results[name] = exc
+            finally:
+                connection.close()
+
+        thread = threading.Thread(target=run, name=name, daemon=True)
+        thread.start()
+        return thread
+
+    def _second_read_or_waits(self, kea) -> bool:
+        if len(kea.bodies("config-get")) > 1:
+            return True
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted"
+                " AND database = (SELECT oid FROM pg_database WHERE datname = current_database())"
+            )
+            return bool(cursor.fetchone()[0])
+
+    def _race(self, running: _StatefulKea, first, second):
+        with stub_kea(running.responses()) as kea:
+            try:
+                threads = [self._start("first", first)]
+                self.assertTrue(running.holding.wait(timeout=30), "The first operation never reached config-set.")
+                threads.append(self._start("second", second))
+                deadline = time.monotonic() + 30
+                while not self._second_read_or_waits(kea):
+                    self.assertLess(time.monotonic(), deadline, "The second operation neither read nor waited.")
+                    time.sleep(0.01)
+            finally:
+                running.release.set()
+                for thread in threads:
+                    thread.join(timeout=30)
+        return kea
+
+    def test_two_server_option_changes_do_not_erase_each_other(self):
+        running = _StatefulKea(4, {"subnet4": [], "shared-networks": [], "option-data": []})
+        dns, ntp = _new_row("domain-name-servers", "192.0.2.53"), _new_row("ntp-servers", "192.0.2.123")
+        kea = self._race(
+            running,
+            lambda: config_write.set_server_options(self.server, 4, [dns]),
+            lambda: config_write.set_server_options(self.server, 4, [ntp]),
+        )
+        self.assertEqual(self.results["first"], ConfigChangeOutcome("applied", "persisted"))
+        # The second form did not show the first DHCP Option, so saving it would delete that option.
+        self.assertIsInstance(self.results["second"], DHCPOptionConflict)
+        self.assertEqual(
+            running.running["Dhcp4"]["option-data"], [{"name": "domain-name-servers", "data": "192.0.2.53"}]
+        )
+        self.assertEqual(kea.commands(), ["config-get", "config-test", "config-set", *_PERSIST, "config-get"])
+
+    def test_a_server_and_a_subnet_option_change_are_both_live(self):
+        running = _StatefulKea(
+            4,
+            {"subnet4": [{"id": 1, "subnet": _SEEN[4], "option-data": []}], "shared-networks": [], "option-data": []},
+        )
+        kea = self._race(
+            running,
+            lambda: config_write.set_subnet_options(self.server, 4, 1, _SEEN[4], [_new_row("routers", "10.0.0.1")]),
+            lambda: config_write.set_server_options(self.server, 4, [_new_row("domain-name-servers", "192.0.2.53")]),
+        )
+        applied = ConfigChangeOutcome("applied", "persisted")
+        self.assertEqual(self.results, {"first": applied, "second": applied})
+        self.assertEqual(
+            running.running["Dhcp4"]["subnet4"][0]["option-data"], [{"name": "routers", "data": "10.0.0.1"}]
+        )
+        self.assertEqual(
+            running.running["Dhcp4"]["option-data"], [{"name": "domain-name-servers", "data": "192.0.2.53"}]
+        )
+        # The second operation read the configuration only after the first one persisted it.
+        first = ["subnet4-list", "config-get", "config-get", "config-test", "config-set", *_PERSIST]
+        self.assertEqual(kea.commands(), [*first, "config-get", "config-test", "config-set", *_PERSIST])

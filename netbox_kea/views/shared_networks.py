@@ -1,7 +1,5 @@
-import logging
 from typing import Any
 
-import requests
 from django.contrib import messages
 from django.http import HttpResponse
 from django.http.request import HttpRequest
@@ -13,14 +11,10 @@ from utilities.views import register_model_view
 
 from .. import config_write, forms, server_configuration, tables
 from ..constants import Family
-from ..kea import AmbiguousConfigSetError, KeaException, PartialPersistError
+from ..kea import SharedNetworkEdit
 from ..models import Server
-from ..utilities import (
-    check_dhcp_enabled,
-    kea_error_hint,
-)
+from ..utilities import check_dhcp_enabled
 from ._base import (
-    _LIVE_NOT_PERSISTED,
     ConditionalLoginRequiredMixin,
     _diagnostic_messages,
     _KeaChangeMixin,
@@ -29,9 +23,6 @@ from ._base import (
     _subnet_option_fields,
 )
 from .subnets import _SUBNETS_TAB, subnets_nav_context
-
-logger = logging.getLogger(__name__)
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Shared Networks views
@@ -298,66 +289,20 @@ class BaseServerSharedNetworkEditView(_KeaChangeMixin, ConditionalLoginRequiredM
             )
 
         cd = form.cleaned_data
-        relay_addresses = (
-            [s.strip() for s in cd["relay_addresses"].split(",") if s.strip()] if cd["relay_addresses"] else []
+        edit = SharedNetworkEdit(
+            description=cd.get("description") or "",
+            interface=cd.get("interface") or "",
+            relay_addresses=tuple(
+                address.strip() for address in (cd["relay_addresses"] or "").split(",") if address.strip()
+            ),
+            dns_servers=tuple(address for address in cd["dns_servers"].split(",") if address),
+            ntp_servers=tuple(address for address in cd["ntp_servers"].split(",") if address),
         )
-        dns_servers = [address for address in cd["dns_servers"].split(",") if address]
-        ntp_servers = [address for address in cd["ntp_servers"].split(",") if address]
-
-        configuration = server_configuration.for_verification(server, self.dhcp_version)
-        _diagnostic_messages(
+        _run_config_change(
             request,
-            configuration.diagnostics,
-            messages.ERROR if not configuration.available else messages.WARNING,
+            f"Shared network '{network_name}' updated.",
+            lambda: config_write.edit_shared_network(server, self.dhcp_version, network_name, edit),
         )
-        network = next((network for network in configuration.shared_networks if network.name == network_name), None)
-        if (
-            not configuration.available
-            or not configuration.shared_networks_complete
-            or network is None
-            or not network.complete
-        ):
-            logger.warning(
-                "Failed to reload current Shared Network %r on server %s. The update was aborted.",
-                network_name,
-                server.pk,
-            )
-            messages.error(request, "Could not reload current network state; update aborted to prevent data loss.")
-            return render(
-                request,
-                "netbox_kea/server_shared_network_edit.html",
-                {
-                    "object": server,
-                    "form": form,
-                    "network_name": network_name,
-                    "dhcp_version": self.dhcp_version,
-                    "cancel_url": self._success_url(server),
-                    "tab": self.tab,
-                },
-            )
-
-        try:
-            client = server.get_client(version=self.dhcp_version)
-            client.network_update(
-                version=self.dhcp_version,
-                name=network_name,
-                description=cd.get("description") or "",
-                interface=cd.get("interface") or "",
-                relay_addresses=relay_addresses,
-                dns_servers=dns_servers,
-                ntp_servers=ntp_servers,
-            )
-            messages.success(request, f"Shared network '{network_name}' updated.")
-        except AmbiguousConfigSetError:
-            messages.warning(request, "Kea did not confirm the change. Check the server configuration before retrying.")
-        except PartialPersistError:
-            messages.warning(request, _LIVE_NOT_PERSISTED)
-        except KeaException as exc:
-            logger.warning("network_update failed for %s on server %s: %s", network_name, pk, exc)
-            messages.error(request, f"Kea error: {kea_error_hint(exc)}")
-        except (requests.RequestException, ValueError):
-            logger.exception("Transport error updating shared network '%s' on server %s", network_name, pk)
-            messages.error(request, "An internal error occurred.")
         return redirect(self._success_url(server))
 
 
