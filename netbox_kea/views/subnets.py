@@ -17,6 +17,7 @@ from .. import config_write, forms, server_configuration, tables
 from ..constants import Family
 from ..kea import KeaException, SubnetEdit, SubnetFields, subnet_network
 from ..models import Server
+from ..pools import Pool, addresses_in_pools, parse_pool
 from ..reservations import InSubnetReservationScope
 from ..subnet_catalogue import (
     CatalogueSnapshot,
@@ -173,7 +174,7 @@ def _warn_reservations_in_pool(
     server: Server,
     catalogue: CatalogueSnapshot,
     subnet: VerifiedSubnet,
-    pool: server_configuration.Pool,
+    pool: Pool,
 ) -> None:
     """Add a non-blocking warning when a Reservation of *subnet* has an address in *pool*.
 
@@ -199,7 +200,7 @@ def _warn_reservations_in_pool(
             and reservation.scope.subnet.subnet_id == subnet.subnet_id
             for address in reservation.addresses
         ]
-        overlapping = [str(address) for address, _pool in server_configuration.addresses_in_pools(addresses, (pool,))]
+        overlapping = [str(address) for address, _pool in addresses_in_pools(addresses, (pool,))]
         if overlapping:
             sample = ", ".join(overlapping[:5])
             extra = f" (+{len(overlapping) - 5} more)" if len(overlapping) > 5 else ""
@@ -271,7 +272,7 @@ class _BasePoolAddView(_KeaChangeMixin, generic.ObjectView):
         form = forms.PoolAddForm(request.POST, subnet=subnet, absence_confirmed=catalogue.confirms_absence)
         if not form.is_valid() or form.subnet is None:
             return self._render(request, server, subnet_id, form)
-        pool: server_configuration.Pool = form.cleaned_data["pool"]
+        pool: Pool = form.cleaned_data["pool"]
         cidr: str = form.cleaned_data["subnet_cidr"]
         outcome = _run_config_change(
             request,
@@ -343,7 +344,7 @@ class _BasePoolDeleteView(_KeaChangeMixin, generic.ObjectView):
             return redirect(return_url)
         cidr: str = form.cleaned_data["subnet_cidr"]
         try:
-            parsed_pool = server_configuration.parse_pool(pool, subnet_network(cidr, self.dhcp_version))
+            parsed_pool = parse_pool(pool, subnet_network(cidr, self.dhcp_version))
         except ValueError:
             messages.error(request, f"Pool {pool} is not a valid Pool of Subnet {cidr}. Nothing was sent to Kea.")
             return redirect(return_url)

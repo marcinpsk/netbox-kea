@@ -20,6 +20,7 @@ from ..constants import Family, IPAddressValue
 from ..dhcp_options import DHCPOption
 from ..kea import KeaClient, KeaException
 from ..models import Server
+from ..pools import addresses_in_pools
 from ..reservations import (
     ClearValue,
     InSubnetReservationScope,
@@ -36,7 +37,6 @@ from ..reservations import (
     reservation_fingerprint,
     reservation_identifier_types,
 )
-from ..server_configuration import addresses_in_pools
 from ..signals import reservation_created, reservation_deleted, reservation_updated
 from ..subnet_catalogue import CatalogueSnapshot, MutationScope, VerifiedSubnet
 from ..sync import sync_reservation_to_netbox
