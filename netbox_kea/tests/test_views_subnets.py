@@ -500,7 +500,7 @@ _SUBNET4_GET_FULL = [
                 {
                     "id": 42,
                     "subnet": "10.0.0.0/24",
-                    "pools": [{"subnet_cidr": "10.0.0.0/24", "pool": "10.0.0.100-10.0.0.200"}],
+                    "pools": [{"pool": "10.0.0.100-10.0.0.200"}],
                     "option-data": [
                         {"name": "routers", "data": "10.0.0.1"},
                         {"name": "domain-name-servers", "data": "8.8.8.8"},
@@ -2551,7 +2551,7 @@ class TestFetchSubnetsFromServer(_ViewTestBase):
                         {
                             "id": 1,
                             "subnet": "10.0.0.0/24",
-                            "pools": [{"subnet_cidr": "10.0.0.0/24", "pool": "10.0.0.10-10.0.0.20"}],
+                            "pools": [{"pool": "10.0.0.10-10.0.0.20"}],
                             "option-data": [
                                 {
                                     "code": 6,
