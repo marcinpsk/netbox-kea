@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, TypeVar
@@ -29,6 +29,7 @@ from .kea import (
     NewSubnetFields,
     PoolAction,
     SharedNetworkEdit,
+    SubnetEdit,
     subnet_network,
 )
 from .server_configuration import Pool
@@ -208,54 +209,207 @@ def _assign_new_subnet(
     server: Server, client: KeaClient, family: Family, identity: NewSubnetIdentity, name: str
 ) -> tuple[Application, tuple[str, ...]]:
     """Assign the new Subnet to the Shared Network *name*. Delete the Subnet again when the assignment did not apply."""
-    added = f"Step 1, add Subnet {identity.subnet_id} ({identity.cidr}): applied."
-    assign = f"Step 2, assign it to Shared Network '{name}'"
-    membership = SharedNetworkMembership(name)
-
-    def not_assigned() -> bool:
-        current = _member_now(server, family, identity.subnet_id)
-        return current is None or current.shared_network != membership
-
-    try:
-        application, diagnostics = _mutate(
-            client, family, lambda: client.network_subnet_add(family, name, identity.subnet_id), not_live=not_assigned
-        )
-    except ConfigChangeRejected as rejection:
-        undo = _delete_new_subnet(server, client, family, identity)
-        if undo is None:
-            deleted = (
-                f"NetBox added Subnet {identity.subnet_id} ({identity.cidr}), but the assignment to Shared Network "
-                f"'{name}' did not apply, so NetBox deleted the Subnet again."
-            )
-            raise ConfigChangeRejected(rejection.reason, (deleted, *rejection.diagnostics)) from rejection
-        return "unknown", (added, f"{assign}: not applied.", *rejection.diagnostics, *undo)
-    if application == "unknown":
-        return "unknown", (added, f"{assign}: unknown.", *diagnostics)
-    return "applied", ()
+    subnet_id, network = identity.subnet_id, identity.network
+    delete = _Undo(
+        text=f"delete Subnet {subnet_id} again",
+        send=lambda: client.subnet_del(family, subnet_id),
+        not_live=lambda: _still_there(server, family, subnet_id, network),
+        holds=lambda: _member_of(server, family, subnet_id, network, None),
+    )
+    assign = _Command(
+        text=f"assign it to Shared Network '{name}'",
+        send=lambda: client.network_subnet_add(family, name, subnet_id),
+        not_live=lambda: _not_joined(server, family, subnet_id, name),
+    )
+    deleted = (
+        f"NetBox added Subnet {subnet_id} ({identity.cidr}), but the assignment to Shared Network '{name}' did not "
+        "apply, so NetBox deleted the Subnet again."
+    )
+    added = (f"add Subnet {subnet_id} ({identity.cidr})", delete)
+    return _run_steps(client, family, (), assign, applied=(added,), rolled_back=deleted)
 
 
-def _delete_new_subnet(
-    server: Server, client: KeaClient, family: Family, identity: NewSubnetIdentity
-) -> tuple[str, ...] | None:
-    """Delete the new Subnet while it holds the sent identity and no Shared Network.
+def edit_subnet(
+    server: Server, family: Family, subnet_id: int, cidr: str, edit: SubnetEdit, shared_network: str | None
+) -> ConfigChangeOutcome:
+    """Set the fields of the Subnet with *subnet_id* that the edit form manages, and move it to *shared_network*.
 
-    Return None when the delete applied. Otherwise return the diagnostics of the rollback step.
+    The operation acts only while that ID names the network *cidr*. *shared_network* None means no Shared Network.
+    It removes the Subnet from its Shared Network, adds it to the new one, and then updates the fields. When a step
+    did not apply, it undoes the membership steps before it.
     """
-    step = f"Step 3, delete Subnet {identity.subnet_id} again"
+    with _client(server, family) as client, _serialized(client, family):
+        with mutation(server, family) as scope:
+            subnet = _subnet_as_seen(scope, subnet_id, cidr, membership=True)
+        current = subnet.shared_network.name if subnet.shared_network is not None else None
+        if shared_network is not None and shared_network != current:
+            _require_shared_network(client, family, shared_network)
+        definition = _read_before(lambda: client.subnet_definition(family, subnet_id))
+        if definition.network != subnet.network:
+            raise ConfigChangeRejected("not-sent", (subnet_changed(subnet_id, cidr),))
+        moves: list[_Step] = []
+        if shared_network != current:
+            if current is not None:
+                moves.append(_leave(server, client, family, subnet, current))
+            if shared_network is not None:
+                moves.append(_join(server, client, family, subnet, shared_network, len(moves) + 1))
+        update = _Command(
+            text=f"update the fields of Subnet {subnet_id}",
+            send=lambda: client.subnet_update(definition, edit),
+            # Not live while a fresh read returns the Subnet that the update started from.
+            not_live=lambda: client.subnet_definition(family, subnet_id) == definition,
+        )
+        where = f"in Shared Network '{current}'" if current is not None else "outside all Shared Networks"
+        moved_back = (
+            f"A step of the change did not apply, so NetBox undid the steps before it. Subnet {subnet_id} ({cidr}) is "
+            f"{where} again."
+        )
+        application, diagnostics = _run_steps(client, family, moves, update, rolled_back=moved_back)
+        return _persisted(client, family, application, diagnostics)
+
+
+def _leave(server: Server, client: KeaClient, family: Family, subnet: VerifiedSubnet, name: str) -> _Step:
+    """Return step 1 of a move: remove *subnet* from the Shared Network *name*."""
+    subnet_id, network = subnet.subnet_id, subnet.network
+    return _Step(
+        text=f"remove Subnet {subnet_id} from Shared Network '{name}'",
+        send=lambda: client.network_subnet_del(family, name, subnet_id),
+        not_live=lambda: _member_of(server, family, subnet_id, network, SharedNetworkMembership(name)),
+        undo=_Undo(
+            text=f"add Subnet {subnet_id} to Shared Network '{name}' to undo step 1",
+            send=lambda: client.network_subnet_add(family, name, subnet_id),
+            not_live=lambda: _not_joined(server, family, subnet_id, name),
+            holds=lambda: _member_of(server, family, subnet_id, network, None),
+        ),
+    )
+
+
+def _join(server: Server, client: KeaClient, family: Family, subnet: VerifiedSubnet, name: str, number: int) -> _Step:
+    """Return step *number* of a move: add *subnet* to the Shared Network *name*."""
+    subnet_id, network = subnet.subnet_id, subnet.network
+    joined = SharedNetworkMembership(name)
+    return _Step(
+        text=f"add Subnet {subnet_id} to Shared Network '{name}'",
+        send=lambda: client.network_subnet_add(family, name, subnet_id),
+        not_live=lambda: _not_joined(server, family, subnet_id, name),
+        undo=_Undo(
+            text=f"remove Subnet {subnet_id} from Shared Network '{name}' to undo step {number}",
+            send=lambda: client.network_subnet_del(family, name, subnet_id),
+            not_live=lambda: _member_of(server, family, subnet_id, network, joined),
+            holds=lambda: _member_of(server, family, subnet_id, network, joined),
+        ),
+    )
+
+
+@dataclass(frozen=True)
+class _Command:
+    """One command of a multi-step change, and the fresh read that shows that the command is not live."""
+
+    text: str
+    send: Callable[[], None]
+    not_live: Callable[[], bool]
+
+
+@dataclass(frozen=True)
+class _Undo(_Command):
+    """A command that undoes an applied step. *holds* reads whether the target still holds what the step wrote."""
+
+    holds: Callable[[], bool]
+
+
+@dataclass(frozen=True)
+class _Step(_Command):
+    """A step that the operation undoes when a later step did not apply."""
+
+    undo: _Undo
+
+
+# The text of a step that applied, and the command that undoes it.
+_Applied = tuple[str, _Undo]
+
+
+def _run_steps(
+    client: KeaClient,
+    family: Family,
+    steps: Sequence[_Step],
+    last: _Command,
+    *,
+    applied: Sequence[_Applied] = (),
+    rolled_back: str,
+) -> tuple[Application, tuple[str, ...]]:
+    """Send *steps* and then *last*, after the *applied* steps that already ran.
+
+    After an unknown step, send nothing more. When a step did not apply, undo the applied steps, newest first.
+
+    Raises:
+        ConfigChangeRejected: If a step did not apply and nothing that the change wrote is live. *rolled_back* comes
+            first in the diagnostics when the operation undid a step.
+
+    """
+    done = list(applied)
+    for step in steps:
+        result = _send_step(client, family, done, step, rolled_back)
+        if result is not None:
+            return result
+        done.append((step.text, step.undo))
+    return _send_step(client, family, done, last, rolled_back) or ("applied", ())
+
+
+def _send_step(
+    client: KeaClient, family: Family, done: Sequence[_Applied], command: _Command, rolled_back: str
+) -> tuple[Application, tuple[str, ...]] | None:
+    """Send the step after *done*. Return None when it applied, and the result of the change when it did not."""
+    text = f"Step {len(done) + 1}, {command.text}"
     try:
-        current = _member_now(server, family, identity.subnet_id)
+        application, diagnostics = _mutate(client, family, command.send, not_live=command.not_live)
+    except ConfigChangeRejected as rejection:
+        return _roll_back(client, family, done, text, rejection, rolled_back)
+    if application == "unknown":
+        return "unknown", (*_applied_states(done), f"{text}: unknown.", *diagnostics)
+    return None
+
+
+def _roll_back(
+    client: KeaClient,
+    family: Family,
+    done: Sequence[_Applied],
+    failed: str,
+    rejection: ConfigChangeRejected,
+    rolled_back: str,
+) -> tuple[Application, tuple[str, ...]]:
+    """Undo the *done* steps, newest first, after the step *failed* did not apply. Stop at the first undo that fails.
+
+    Raises:
+        ConfigChangeRejected: If nothing that the change wrote is live: no step applied before, or every undo applied.
+
+    """
+    if not done:
+        raise rejection
+    states = [*_applied_states(done), f"{failed}: not applied.", *rejection.diagnostics]
+    for number, (_text, undo) in enumerate(reversed(done), start=len(done) + 2):
+        step = f"Step {number}, {undo.text}"
+        problem = _undo(client, family, step, undo)
+        if problem is not None:
+            return "unknown", (*states, *problem)
+        states.append(f"{step}: applied.")
+    raise ConfigChangeRejected(rejection.reason, (rolled_back, *rejection.diagnostics)) from rejection
+
+
+def _applied_states(done: Sequence[_Applied]) -> tuple[str, ...]:
+    return tuple(f"Step {number}, {text}: applied." for number, (text, _undo) in enumerate(done, start=1))
+
+
+def _undo(client: KeaClient, family: Family, step: str, undo: _Undo) -> tuple[str, ...] | None:
+    """Send *undo* only while its target holds what the step wrote. Return None when it applied, else its diagnostics."""
+    try:
+        holds = undo.holds()
     except CatalogueUnavailable:
         logger.warning("The read before a rollback did not confirm the Subnet", exc_info=True)
         return (f"{step}: not sent, because NetBox could not read the Subnet again.",)
-    if current is None or current.network != identity.network or current.shared_network is not None:
+    if not holds:
         return (f"{step}: not sent, because the Subnet changed in Kea.",)
     try:
-        application, diagnostics = _mutate(
-            client,
-            family,
-            lambda: client.subnet_del(family, identity.subnet_id),
-            not_live=lambda: _still_there(server, family, identity.subnet_id, identity.network),
-        )
+        application, diagnostics = _mutate(client, family, undo.send, not_live=undo.not_live)
     except ConfigChangeRejected as rejection:
         return (f"{step}: not applied.", *rejection.diagnostics)
     if application == "unknown":
@@ -471,10 +625,13 @@ def _serialized(client: KeaClient, family: Family) -> Iterator[None]:
         logger.warning("The lock transaction failed to end after the Configuration Change", exc_info=True)
 
 
-def _subnet_as_seen(scope: MutationScope, subnet_id: int, cidr: str) -> VerifiedSubnet:
-    """Return the Verified Subnet with *subnet_id* and the network *cidr*: the Subnet that the operator saw."""
+def _subnet_as_seen(scope: MutationScope, subnet_id: int, cidr: str, *, membership: bool = False) -> VerifiedSubnet:
+    """Return the Verified Subnet with *subnet_id* and the network *cidr*: the Subnet that the operator saw.
+
+    *membership* True also requires a scope that confirms the Shared Network membership of the Subnet.
+    """
     try:
-        subnet = scope.find_by_id(subnet_id)
+        subnet = scope.find_with_membership(subnet_id) if membership else scope.find_by_id(subnet_id)
     except CatalogueUnavailable as exc:
         raise ConfigChangeRejected("not-sent", (SUBNET_LIST_UNCONFIRMED,)) from exc
     if subnet is None or subnet.network != subnet_network(cidr, scope.family):
@@ -514,6 +671,20 @@ def _member_now(server: Server, family: Family, subnet_id: int) -> VerifiedSubne
     """Read the Subnet with *subnet_id* in a fresh scope that confirms its Shared Network membership."""
     with mutation(server, family) as scope:
         return scope.find_with_membership(subnet_id)
+
+
+def _member_of(
+    server: Server, family: Family, subnet_id: int, network: IPNetworkValue, membership: SharedNetworkMembership | None
+) -> bool:
+    """Read in a fresh scope whether *subnet_id* still names *network* and has the Shared Network *membership*."""
+    current = _member_now(server, family, subnet_id)
+    return current is not None and current.network == network and current.shared_network == membership
+
+
+def _not_joined(server: Server, family: Family, subnet_id: int, name: str) -> bool:
+    """Read in a fresh scope whether the Subnet with *subnet_id* is outside the Shared Network *name*."""
+    current = _member_now(server, family, subnet_id)
+    return current is None or current.shared_network != SharedNetworkMembership(name)
 
 
 def _pools_now(server: Server, family: Family, subnet: VerifiedSubnet) -> tuple[Pool, ...]:

@@ -1069,12 +1069,11 @@ class SubnetAddForm(_SubnetBaseForm):
 class SubnetEditForm(_SubnetBaseForm):
     """Form for editing an existing DHCP subnet in Kea.
 
-    The subnet CIDR and ID are immutable — they are passed as a hidden field and
-    used by the view to call ``subnet{v}-update``.  All other fields are optional;
+    The subnet CIDR and ID are immutable. The CIDR is a hidden field, so the change
+    acts only on the Subnet that the page showed. All other fields are optional;
     leaving a field blank means "clear that option".
 
     ``shared_network`` choices are set dynamically by the view at render time.
-    ``current_network`` is a hidden field tracking the network before any change.
     """
 
     subnet_field = "subnet_cidr"
@@ -1116,7 +1115,6 @@ class SubnetEditForm(_SubnetBaseForm):
         choices=[],
         help_text="Assign this subnet to a shared network, or leave blank to use the global address pool.",
     )
-    current_network = forms.CharField(widget=forms.HiddenInput(), required=False)
 
     field_order = [
         "subnet_cidr",
@@ -1131,7 +1129,6 @@ class SubnetEditForm(_SubnetBaseForm):
         "renew_timer",
         "rebind_timer",
         "ddns_qualifying_suffix",
-        "current_network",
     ]
 
     def clean_subnet_cidr(self) -> str:
