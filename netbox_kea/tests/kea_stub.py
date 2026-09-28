@@ -485,12 +485,18 @@ class SubnetDaemon:
     script, each call runs. ``before`` queues a change of another writer that runs just before the next call.
     """
 
-    def __init__(self, family: Family, subnets: Sequence[dict[str, Any]] = (), networks: Sequence[str] = ()) -> None:
+    def __init__(
+        self,
+        family: Family,
+        subnets: Sequence[dict[str, Any]] = (),
+        networks: Sequence[str] = (),
+        members: Mapping[int, str] | None = None,
+    ) -> None:
         self.family = family
         self.subnets = [dict(subnet) for subnet in subnets]
         self.networks = list(networks)
         # Subnet ID to the name of its Shared Network.
-        self.members: dict[int, str] = {}
+        self.members: dict[int, str] = dict(members or {})
         self._scripts: dict[str, deque] = {}
         self._writers: dict[str, deque[Callable[[SubnetDaemon], None]]] = {}
         self._changes = 0
@@ -520,6 +526,10 @@ class SubnetDaemon:
         """Return the ID of each Subnet in order."""
         return [subnet["id"] for subnet in self.subnets]
 
+    def subnet(self, subnet_id: int) -> dict[str, Any] | None:
+        """Return the Subnet with *subnet_id*, or None."""
+        return next((subnet for subnet in self.subnets if subnet["id"] == subnet_id), None)
+
     def responses(self) -> dict[str, Any]:
         """Return the ``stub_kea`` responses of this daemon."""
         v = self.family
@@ -527,8 +537,11 @@ class SubnetDaemon:
             f"subnet{v}-list": self._list,
             "config-get": self._config_get,
             f"network{v}-get": self._network_get,
+            f"subnet{v}-get": self._subnet_get,
             f"subnet{v}-add": self._subnet_add,
+            f"subnet{v}-update": self._subnet_update,
             f"network{v}-subnet-add": self._network_subnet_add,
+            f"network{v}-subnet-del": self._network_subnet_del,
             f"subnet{v}-del": self._subnet_del,
             "config-test": lambda _body: {"result": 0, "text": "Configuration seems sane."},
             "config-write": lambda _body: {"result": 0, "text": "Configuration written."},
@@ -581,13 +594,73 @@ class SubnetDaemon:
         self.add(subnet)
         return {"result": 0, "text": f"IPv{self.family} subnet added", "arguments": {"subnets": [dict(subnet)]}}
 
+    def _subnet_get(self, body: dict[str, Any]) -> dict[str, Any]:
+        subnet_id = body["arguments"]["id"]
+        subnet = self.subnet(subnet_id)
+        if subnet is None:
+            return {"result": 3, "text": f"No subnet with id {subnet_id} found"}
+        return {
+            "result": 0,
+            "text": f"Info about IPv{self.family} subnet {subnet['subnet']} (id {subnet_id}) returned",
+            "arguments": {f"subnet{self.family}": [dict(subnet)]},
+        }
+
+    def _subnet_update(self, body: dict[str, Any]) -> dict[str, Any]:
+        # Kea replaces the Subnet and keeps its Shared Network membership.
+        (subnet,) = body["arguments"][f"subnet{self.family}"]
+        if self.subnet(subnet["id"]) is None:
+            return {"result": 1, "text": f"Can't find subnet '{subnet['id']}' to update"}
+        self.subnets = [dict(subnet) if existing["id"] == subnet["id"] else existing for existing in self.subnets]
+        self._changes += 1
+        return {
+            "result": 0,
+            "text": f"IPv{self.family} subnet updated",
+            "arguments": {"subnets": [{"id": subnet["id"], "subnet": subnet["subnet"]}]},
+        }
+
     def _network_subnet_add(self, body: dict[str, Any]) -> dict[str, Any]:
         name, subnet_id = body["arguments"]["name"], body["arguments"]["id"]
-        if name not in self.networks or subnet_id not in self.ids() or subnet_id in self.members:
-            return {"result": 1, "text": f"Unable to add subnet {subnet_id} to shared network '{name}'"}
+        subnet = self.subnet(subnet_id)
+        if name not in self.networks:
+            return {"result": 3, "text": f"no IPv{self.family} shared network with name '{name}' found"}
+        if subnet is None:
+            return {"result": 3, "text": f"no IPv{self.family} subnet with id '{subnet_id}' found"}
+        if subnet_id in self.members:
+            return {
+                "result": 1,
+                "text": f"subnet {subnet_id} being added to a shared network already belongs to a shared network",
+            }
         self.members[subnet_id] = name
         self._changes += 1
-        return {"result": 0, "text": f"IPv{self.family} subnet {subnet_id} added to shared network {name}"}
+        return {
+            "result": 0,
+            "text": (
+                f"IPv{self.family} subnet {subnet['subnet']} (id {subnet_id}) is now part of shared network '{name}'"
+            ),
+        }
+
+    def _network_subnet_del(self, body: dict[str, Any]) -> dict[str, Any]:
+        name, subnet_id = body["arguments"]["name"], body["arguments"]["id"]
+        subnet = self.subnet(subnet_id)
+        if name not in self.networks:
+            return {"result": 3, "text": f"no IPv{self.family} shared network with name '{name}' found"}
+        if subnet is None or self.members.get(subnet_id) != name:
+            return {
+                "result": 3,
+                "text": (
+                    f"The IPv{self.family} subnet with id {subnet_id} is not part of the shared network with name "
+                    f"'{name}' found"
+                ),
+            }
+        del self.members[subnet_id]
+        self._changes += 1
+        return {
+            "result": 0,
+            "text": (
+                f"IPv{self.family} subnet {subnet['subnet']} (id {subnet_id}) is now removed from shared network "
+                f"'{name}'"
+            ),
+        }
 
     def _subnet_del(self, body: dict[str, Any]) -> dict[str, Any]:
         subnet_id = body["arguments"]["id"]
