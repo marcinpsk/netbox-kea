@@ -1578,7 +1578,8 @@ def _verified_subnet(cidr="10.0.0.0/24", pools=("10.0.0.10-10.0.0.20",), *, conf
     """A Verified Subnet 1 with its declared Pools; ``configuration=False`` drops the configuration facts."""
     import ipaddress
 
-    from netbox_kea.server_configuration import SubnetConfiguration, SubnetSettings, parse_pool
+    from netbox_kea.pools import parse_pool
+    from netbox_kea.server_configuration import SubnetConfiguration, SubnetSettings
     from netbox_kea.subnet_catalogue import SubnetIdentity, VerifiedSubnet
 
     network = ipaddress.ip_network(cidr)

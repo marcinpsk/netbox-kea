@@ -18,6 +18,7 @@ from .dhcp_options import (
     merge_option_form_rows,
     parse_dhcp_options,
 )
+from .pools import parse_pool
 from .reservations import (
     RESERVATION_PAGE_FETCH_FAILED,
     RESERVATION_PAGE_LIMIT_REACHED,
@@ -535,8 +536,6 @@ class SubnetDefinition:
 
     def _pools_by_range(self, pools: list[Any]) -> dict[str, dict[str, Any]]:
         """Return each live Pool entry by its range text, so that a kept Pool keeps its Pool-level fields."""
-        from .server_configuration import parse_pool
-
         by_range: dict[str, dict[str, Any]] = {}
         for entry in pools:
             if not isinstance(entry, dict):

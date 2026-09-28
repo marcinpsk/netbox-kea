@@ -32,7 +32,7 @@ if TYPE_CHECKING:
     from ipam.models import IPAddress as NbIPAddress
 
     from .constants import IPNetworkValue
-    from .server_configuration import Pool
+    from .pools import Pool
 
 logger = logging.getLogger(__name__)
 
@@ -946,7 +946,7 @@ def sync_pool_to_netbox_ip_range(pool: Pool, subnet: IPNetworkValue, vrf=None) -
     """Create or update a NetBox IPRange from a Kea Pool.
 
     Args:
-        pool:   The parsed Pool, from :func:`netbox_kea.server_configuration.parse_pool`.
+        pool:   The parsed Pool, from :func:`netbox_kea.pools.parse_pool`.
         subnet: The parsed parent Subnet network. Its prefix length tags both endpoints.
         vrf: NetBox VRF instance to assign the IP range to.  ``None`` means the global VRF.
 
