@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import socket
 import threading
 from collections import deque
 from collections.abc import Sequence
@@ -273,6 +274,39 @@ def _res_page(hosts: Any, *, next_from: int = 0, next_source: int = 0) -> dict[s
 def _res_get(reservation: dict[str, Any]) -> dict[str, Any]:
     """A ``reservation-get`` payload: the host fields Kea returns directly inside ``arguments``."""
     return {"result": 0, "arguments": dict(reservation)}
+
+
+def _network_present(version: int, name: str) -> dict[str, Any]:
+    """A ``network{v}-get`` payload for a Shared Network that exists, in the shape Kea 3.2.0 returns."""
+    return {
+        "result": 0,
+        "text": f"Info about IPv{version} shared network '{name}' returned",
+        "arguments": {"shared-networks": [{"name": name, f"subnet{version}": []}]},
+    }
+
+
+def _network_absent(name: str) -> dict[str, Any]:
+    """A ``network{v}-get`` payload for a Shared Network that does not exist, in the shape Kea 3.2.0 returns."""
+    return {"result": 3, "text": f"No '{name}' shared network found"}
+
+
+def _refused_connection() -> requests.ConnectionError:
+    """Return the error that requests raises for a real refused connection.
+
+    Call it outside ``stub_kea``, because the stub replaces ``Session.post``.
+    """
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    session = requests.Session()
+    session.trust_env = False
+    try:
+        session.post(f"http://127.0.0.1:{port}/", json={}, timeout=5)
+    except requests.ConnectionError as exc:
+        return exc
+    finally:
+        session.close()
+    raise AssertionError(f"A connection to the closed port {port} did not fail.")
 
 
 def _leases_per_subnet(leases_by_subnet: dict[Any, list[dict[str, Any]]]):

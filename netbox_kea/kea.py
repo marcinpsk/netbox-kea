@@ -9,7 +9,7 @@ import requests
 from requests.models import HTTPBasicAuth
 
 from . import constants
-from .constants import Family, IPNetworkValue
+from .constants import Family, IPNetworkValue, Persistence
 from .dhcp_options import DHCPOption, FormManagedOption, form_managed_options, merge_option_form_rows
 from .reservations import (
     RESERVATION_PAGE_FETCH_FAILED,
@@ -140,6 +140,13 @@ def _reservation_get_arguments(response: list[KeaResponse]) -> dict[str, Any] | 
     if not isinstance(arguments, dict):
         raise RuntimeError("reservation-get returned malformed arguments.")
     return arguments
+
+
+class PersistResult(NamedTuple):
+    """The persistence state that one persist step reached, and why it failed."""
+
+    persistence: Persistence
+    diagnostics: tuple[str, ...] = ()
 
 
 class LeasePage(NamedTuple):
@@ -1220,50 +1227,68 @@ class KeaClient:
         )
         self._persist_config(service)
 
-    def network_add(self, version: int, name: str, options: list[dict] | None = None) -> None:
-        """Create a new shared network in Kea and persist the change.
-
-        Args:
-            version: DHCP version (4 or 6).
-            name: Unique name for the shared network.
-            options: Optional list of option-data dicts.
+    def shared_network_exists(self, version: Family, name: str) -> bool:
+        """Return whether the daemon has a Shared Network named *name*.
 
         Raises:
-            KeaException: If Kea returns a non-zero result code.
+            KeaException: If Kea returns a result other than 0 (found) or 3 (not found).
+            RuntimeError: If the reply is malformed or names another Shared Network.
 
         """
-        service = f"dhcp{version}"
-        network_def: dict[str, Any] = {"name": name}
-        if options:
-            network_def["option-data"] = options
-        self._config_mutation_command(
-            f"network{version}-add",
-            service,
-            {"shared-networks": [network_def]},
-        )
-        self._persist_config(service)
+        command = f"network{version}-get"
+        response = self.command(command, service=[f"dhcp{version}"], arguments={"name": name}, check=None)
+        reply = _one_reply(command, f"dhcp{version}", response, (0, 3))
+        if reply["result"] == 3:
+            return False
+        arguments = reply.get("arguments")
+        networks = arguments.get("shared-networks") if isinstance(arguments, dict) else None
+        if (
+            not isinstance(networks, list)
+            or len(networks) != 1
+            or not isinstance(networks[0], dict)
+            or networks[0].get("name") != name
+        ):
+            raise RuntimeError(f"{command} returned a malformed Shared Network for {name!r}.")
+        return True
 
-    def network_del(self, version: int, name: str) -> None:
-        """Delete a shared network from Kea and persist the change.
-
-        Subnets that were members of the deleted network fall back to the global
-        address pool (Kea behaviour).
-
-        Args:
-            version: DHCP version (4 or 6).
-            name: Name of the shared network to delete.
+    def network_add(self, version: Family, name: str) -> None:
+        """Send one ``network{v}-add`` for an empty Shared Network. It does not persist.
 
         Raises:
-            KeaException: If Kea returns a non-zero result code.
+            KeaException: If Kea returns a failure result.
+            RuntimeError: If the reply is malformed.
 
         """
+        command = f"network{version}-add"
         service = f"dhcp{version}"
-        self._config_mutation_command(
-            f"network{version}-del",
-            service,
-            {"name": name},
+        response = self._config_mutation_command(command, service, {"shared-networks": [{"name": name}]}, check=None)
+        _one_reply(command, service, response)
+
+    def network_del(self, version: Family, name: str) -> None:
+        """Send one ``network{v}-del``. Member Subnets stay and leave the Shared Network. It does not persist.
+
+        Raises:
+            KeaException: If Kea returns a failure result.
+            RuntimeError: If the reply is malformed.
+
+        """
+        command = f"network{version}-del"
+        service = f"dhcp{version}"
+        response = self._config_mutation_command(command, service, {"name": name}, check=None)
+        _one_reply(command, service, response)
+
+    def forwarding_failed(self, exc: "KeaException", version: Family) -> bool:
+        """Return whether a Control Agent answered that it could not forward a command to the daemon.
+
+        The agent sends this answer also when it loses the daemon's reply, so the daemon can have run the command.
+        """
+        text = exc.response.get("text")
+        return (
+            self.send_service
+            and exc.response.get("result") == 1
+            and isinstance(text, str)
+            and text.startswith(f"unable to forward command to the dhcp{version} service")
         )
-        self._persist_config(service)
 
     def network_update(
         self,
@@ -2079,14 +2104,7 @@ class KeaClient:
             response = self._config_mutation_command(command, service, arguments, check=None)
         else:
             response = self.command(command, service=[service], arguments=arguments, check=None)
-        if (
-            len(response) != 1
-            or not isinstance(response[0], dict)
-            or not isinstance(response[0].get("result"), int)
-            or isinstance(response[0].get("result"), bool)
-        ):
-            raise RuntimeError(f"{command} did not return one valid result for {service}.")
-        check_response(response, (0,))
+        _one_reply(command, service, response)
 
     def _config_for_update(self, version: int) -> tuple[str, dict[str, Any], dict[str, Any]]:
         """Return the service, the live config without ``hash``, and its validated ``Dhcp{v}`` block."""
@@ -2149,6 +2167,40 @@ class KeaClient:
                 raise PartialPersistError(service, exc) from exc
         else:
             logger.debug("persist_config disabled for service %s — skipping config-write after config-set", service)
+
+    def persist(self, version: Family) -> PersistResult:
+        """Write the running configuration to disk: ``config-get``, ``config-test`` of it, then ``config-write``.
+
+        It never raises. ``failed`` means that NetBox cannot confirm that the disk copy holds the running
+        configuration. A failed phase stops the step, so NetBox never writes a configuration it could not test.
+        """
+        if not self.persist_config:
+            return PersistResult("not-requested")
+        service = f"dhcp{version}"
+        # requests errors are OSError subclasses; a missing TLS file raises a plain OSError.
+        try:
+            _, config, _ = self._config_for_update(version)
+        except (KeaException, OSError, ValueError, RuntimeError):
+            logger.warning("config-get failed for %s, so config-write was not sent", service, exc_info=True)
+            return PersistResult("failed", ("Kea did not return its running configuration, so it was not saved.",))
+        try:
+            self._config_phase_command("config-test", service, config)
+        except KeaException as exc:
+            if not exc.unsupported_command:
+                logger.warning("config-test rejected the running configuration of %s: %s", service, exc)
+                return PersistResult("failed", (f"config-test rejected the running configuration: {exc.reply_text}",))
+        except (OSError, ValueError, RuntimeError):
+            logger.warning("config-test failed for %s, so config-write was not sent", service, exc_info=True)
+            return PersistResult("failed", ("config-test did not return a usable reply, so nothing was saved.",))
+        try:
+            self._config_phase_command("config-write", service)
+        except KeaException as exc:
+            logger.warning("config-write failed for %s: %s", service, exc)
+            return PersistResult("failed", (f"config-write failed: {exc.reply_text}",))
+        except (OSError, ValueError, RuntimeError):
+            logger.warning("The config-write reply of %s was lost or unreadable", service, exc_info=True)
+            return PersistResult("failed", ("The reply to config-write was lost or unreadable.",))
+        return PersistResult("persisted")
 
     def _persist_config(self, service: str) -> None:
         """Validate the current running config and persist it to disk.
@@ -2344,6 +2396,12 @@ class KeaException(Exception):
         """Return whether Kea rejected an unsupported command."""
         return self.response.get("result") == 2
 
+    @property
+    def reply_text(self) -> str:
+        """Return the text of Kea's failure reply, or its result code when the reply has no text."""
+        text = self.response.get("text")
+        return text if isinstance(text, str) and text else f"result {self.response.get('result')}"
+
 
 class KeaConfigTestError(KeaException):
     """Raised when ``config-test`` fails before any mutation has been applied.
@@ -2426,6 +2484,19 @@ class AmbiguousConfigSetError(PartialPersistError):
         ambiguous_text = f"config-set reply lost/malformed for service {service!r} — change may or may not be live"
         self.response["text"] = ambiguous_text
         self.args = (f"partial persist error for {service!r}: {ambiguous_text}",)
+
+
+def _one_reply(command: str, service: str, response: list[KeaResponse], ok_codes: Sequence[int] = (0,)) -> KeaResponse:
+    """Return the one reply of a single-service command, or raise when it is malformed or its result is not ok."""
+    if (
+        len(response) != 1
+        or not isinstance(response[0], dict)
+        or not isinstance(response[0].get("result"), int)
+        or isinstance(response[0].get("result"), bool)
+    ):
+        raise RuntimeError(f"{command} did not return one valid result for {service}.")
+    check_response(response, ok_codes)
+    return response[0]
 
 
 def check_response(resp: list[KeaResponse], ok_codes: Sequence[int]) -> None:
