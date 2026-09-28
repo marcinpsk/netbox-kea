@@ -5,6 +5,8 @@
 These tests mock all HTTP calls and require no running services.
 """
 
+import ipaddress
+from dataclasses import replace
 from typing import get_args, get_origin, get_type_hints
 from unittest import TestCase
 from unittest.mock import MagicMock, patch
@@ -14,7 +16,6 @@ import requests
 from netbox_kea import constants
 from netbox_kea.kea import (
     KeaClient,
-    KeaConfigPersistError,
     KeaException,
     KeaResponse,
     LeaseCollection,
@@ -24,11 +25,11 @@ from netbox_kea.kea import (
     LeaseQueryPreflightUnavailable,
     LeaseQueryTooBroad,
     NewSubnetFields,
-    PartialPersistError,
+    SubnetEdit,
     check_response,
     lease_query_guard_message,
 )
-from netbox_kea.tests.kea_stub import _subnet_stats, stub_kea
+from netbox_kea.tests.kea_stub import _subnet_stats, queued, stub_kea
 
 
 def _mock_http_response(json_data, status_code=200):
@@ -379,8 +380,6 @@ class TestGetAvailableCommands(TestCase):
 # ---------------------------------------------------------------------------
 
 _OK = [{"result": 0, "text": "ok"}]
-_SUBNET4_GET = [{"result": 0, "arguments": {"subnet4": [{"id": 1, "subnet": "10.0.0.0/24"}]}}]
-_SUBNET6_GET = [{"result": 0, "arguments": {"subnet6": [{"id": 2, "subnet": "2001:db8::/48"}]}}]
 
 
 def _side_effects(*responses):
@@ -657,589 +656,6 @@ class TestDHCPEnable(TestCase):
         self.assertIsNone(result)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# subnet_update
-# ─────────────────────────────────────────────────────────────────────────────
-
-_SUBNET_UPDATE_RESP = [{"result": 0, "text": "IPv4 subnet successfully updated"}]
-_CONFIG_WRITE_RESP = [{"result": 0, "text": "Configuration written."}]
-
-
-class TestSubnetUpdate(TestCase):
-    """Tests for KeaClient.subnet_update()."""
-
-    def setUp(self):
-        self.client = KeaClient(url="http://kea:8000")
-
-    def _payloads(self, mock_post):
-        return [c.kwargs.get("json") or c[1]["json"] for c in mock_post.call_args_list]
-
-    def _update_payload(self, mock_post):
-        return next(p for p in self._payloads(mock_post) if "update" in p["command"])
-
-    def test_sends_subnet4_update_command(self):
-        """subnet4-update command is sent for version=4."""
-        with patch.object(
-            self.client._session,
-            "post",
-            side_effect=_side_effects(
-                _SUBNET4_GET, _SUBNET_UPDATE_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _CONFIG_WRITE_RESP
-            ),
-        ) as mock_post:
-            self.client.subnet_update(version=4, subnet_id=1, subnet_cidr="10.0.0.0/24")
-        cmds = [p["command"] for p in self._payloads(mock_post)]
-        self.assertIn("subnet4-update", cmds)
-
-    def test_sends_subnet6_update_command(self):
-        """subnet6-update command is sent for version=6."""
-        with patch.object(
-            self.client._session,
-            "post",
-            side_effect=_side_effects(
-                _SUBNET6_GET, _SUBNET_UPDATE_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _CONFIG_WRITE_RESP
-            ),
-        ) as mock_post:
-            self.client.subnet_update(version=6, subnet_id=2, subnet_cidr="2001:db8::/48")
-        cmds = [p["command"] for p in self._payloads(mock_post)]
-        self.assertIn("subnet6-update", cmds)
-
-    def test_includes_subnet_id_and_cidr(self):
-        """The update payload must include both id and subnet fields."""
-        with patch.object(
-            self.client._session,
-            "post",
-            side_effect=_side_effects(
-                _SUBNET4_GET, _SUBNET_UPDATE_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _CONFIG_WRITE_RESP
-            ),
-        ) as mock_post:
-            self.client.subnet_update(version=4, subnet_id=1, subnet_cidr="10.0.0.0/24")
-        payload = self._update_payload(mock_post)
-        subnet_obj = payload["arguments"]["subnet4"][0]
-        self.assertEqual(subnet_obj["id"], 1)
-        self.assertEqual(subnet_obj["subnet"], "10.0.0.0/24")
-
-    def test_includes_pools_when_provided(self):
-        """Pools are formatted as [{"pool": "..."}, ...] in the subnet object."""
-        with patch.object(
-            self.client._session,
-            "post",
-            side_effect=_side_effects(
-                _SUBNET4_GET, _SUBNET_UPDATE_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _CONFIG_WRITE_RESP
-            ),
-        ) as mock_post:
-            self.client.subnet_update(
-                version=4,
-                subnet_id=1,
-                subnet_cidr="10.0.0.0/24",
-                pools=["10.0.0.100-10.0.0.200"],
-            )
-        payload = self._update_payload(mock_post)
-        subnet_obj = payload["arguments"]["subnet4"][0]
-        self.assertEqual(subnet_obj["pools"], [{"pool": "10.0.0.100-10.0.0.200"}])
-
-    def test_sets_empty_pools_list_when_none(self):
-        """When pools=None, pools key is absent (Kea keeps existing pools)."""
-        with patch.object(
-            self.client._session,
-            "post",
-            side_effect=_side_effects(
-                _SUBNET4_GET, _SUBNET_UPDATE_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _CONFIG_WRITE_RESP
-            ),
-        ) as mock_post:
-            self.client.subnet_update(version=4, subnet_id=1, subnet_cidr="10.0.0.0/24", pools=None)
-        payload = self._update_payload(mock_post)
-        subnet_obj = payload["arguments"]["subnet4"][0]
-        self.assertNotIn("pools", subnet_obj)
-
-    def test_sets_explicit_empty_pools_when_empty_list(self):
-        """When pools=[], the update sends pools:[] to remove all pools."""
-        with patch.object(
-            self.client._session,
-            "post",
-            side_effect=_side_effects(
-                _SUBNET4_GET, _SUBNET_UPDATE_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _CONFIG_WRITE_RESP
-            ),
-        ) as mock_post:
-            self.client.subnet_update(version=4, subnet_id=1, subnet_cidr="10.0.0.0/24", pools=[])
-        payload = self._update_payload(mock_post)
-        subnet_obj = payload["arguments"]["subnet4"][0]
-        self.assertEqual(subnet_obj["pools"], [])
-
-    def test_includes_gateway_option_for_v4(self):
-        """Gateway sets the 'routers' option-data entry for DHCPv4."""
-        with patch.object(
-            self.client._session,
-            "post",
-            side_effect=_side_effects(
-                _SUBNET4_GET, _SUBNET_UPDATE_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _CONFIG_WRITE_RESP
-            ),
-        ) as mock_post:
-            self.client.subnet_update(version=4, subnet_id=1, subnet_cidr="10.0.0.0/24", gateway="10.0.0.1")
-        payload = self._update_payload(mock_post)
-        option_data = payload["arguments"]["subnet4"][0].get("option-data", [])
-        routers = next((o for o in option_data if o["name"] == "routers"), None)
-        self.assertIsNotNone(routers)
-        self.assertEqual(routers["data"], "10.0.0.1")
-
-    def test_includes_dns_servers_option(self):
-        """DNS servers set the 'domain-name-servers' option for DHCPv4."""
-        with patch.object(
-            self.client._session,
-            "post",
-            side_effect=_side_effects(
-                _SUBNET4_GET, _SUBNET_UPDATE_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _CONFIG_WRITE_RESP
-            ),
-        ) as mock_post:
-            self.client.subnet_update(
-                version=4,
-                subnet_id=1,
-                subnet_cidr="10.0.0.0/24",
-                dns_servers=["8.8.8.8", "1.1.1.1"],
-            )
-        payload = self._update_payload(mock_post)
-        option_data = payload["arguments"]["subnet4"][0].get("option-data", [])
-        dns = next((o for o in option_data if o["name"] == "domain-name-servers"), None)
-        self.assertIsNotNone(dns)
-        self.assertIn("8.8.8.8", dns["data"])
-
-    def test_includes_valid_lft_when_provided(self):
-        """valid_lft is included in the subnet object when not None."""
-        with patch.object(
-            self.client._session,
-            "post",
-            side_effect=_side_effects(
-                _SUBNET4_GET, _SUBNET_UPDATE_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _CONFIG_WRITE_RESP
-            ),
-        ) as mock_post:
-            self.client.subnet_update(version=4, subnet_id=1, subnet_cidr="10.0.0.0/24", valid_lft=7200)
-        payload = self._update_payload(mock_post)
-        subnet_obj = payload["arguments"]["subnet4"][0]
-        self.assertEqual(subnet_obj["valid-lifetime"], 7200)
-
-    def test_calls_config_write_after_update(self):
-        """config-write is called after subnet{v}-update to persist the change."""
-        with patch.object(
-            self.client._session,
-            "post",
-            side_effect=_side_effects(
-                _SUBNET4_GET, _SUBNET_UPDATE_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _CONFIG_WRITE_RESP
-            ),
-        ) as mock_post:
-            self.client.subnet_update(version=4, subnet_id=1, subnet_cidr="10.0.0.0/24")
-        cmds = [p["command"] for p in self._payloads(mock_post)]
-        self.assertIn("config-write", cmds)
-
-    def test_raises_on_kea_error(self):
-        """KeaException is raised when Kea returns a non-zero result."""
-        with patch.object(
-            self.client._session,
-            "post",
-            side_effect=_side_effects([{"result": 1, "text": "subnet not found"}]),
-        ):
-            with self.assertRaises(KeaException):
-                self.client.subnet_update(version=4, subnet_id=99, subnet_cidr="10.0.0.0/24")
-
-    def test_returns_none_on_success(self):
-        """subnet_update returns None on success."""
-        with patch.object(
-            self.client._session,
-            "post",
-            side_effect=_side_effects(
-                _SUBNET4_GET, _SUBNET_UPDATE_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _CONFIG_WRITE_RESP
-            ),
-        ):
-            result = self.client.subnet_update(version=4, subnet_id=1, subnet_cidr="10.0.0.0/24")
-        self.assertIsNone(result)
-
-    def test_sends_renew_timer_when_provided(self):
-        """F11: subnet_update must include renew-timer in subnet payload when renew_timer is given."""
-        with patch.object(
-            self.client._session,
-            "post",
-            side_effect=_side_effects(
-                _SUBNET4_GET, _SUBNET_UPDATE_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _CONFIG_WRITE_RESP
-            ),
-        ) as mock_post:
-            self.client.subnet_update(version=4, subnet_id=1, subnet_cidr="10.0.0.0/24", renew_timer=600)
-        payload = self._update_payload(mock_post)
-        subnet_obj = payload["arguments"]["subnet4"][0]
-        self.assertEqual(subnet_obj["renew-timer"], 600)
-
-    def test_sends_rebind_timer_when_provided(self):
-        """F11: subnet_update must include rebind-timer in subnet payload when rebind_timer is given."""
-        with patch.object(
-            self.client._session,
-            "post",
-            side_effect=_side_effects(
-                _SUBNET4_GET, _SUBNET_UPDATE_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _CONFIG_WRITE_RESP
-            ),
-        ) as mock_post:
-            self.client.subnet_update(version=4, subnet_id=1, subnet_cidr="10.0.0.0/24", rebind_timer=900)
-        payload = self._update_payload(mock_post)
-        subnet_obj = payload["arguments"]["subnet4"][0]
-        self.assertEqual(subnet_obj["rebind-timer"], 900)
-
-    def test_omits_renew_timer_when_not_provided(self):
-        """F11: renew-timer must not appear in subnet payload when renew_timer=None."""
-        with patch.object(
-            self.client._session,
-            "post",
-            side_effect=_side_effects(
-                _SUBNET4_GET, _SUBNET_UPDATE_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _CONFIG_WRITE_RESP
-            ),
-        ) as mock_post:
-            self.client.subnet_update(version=4, subnet_id=1, subnet_cidr="10.0.0.0/24")
-        payload = self._update_payload(mock_post)
-        subnet_obj = payload["arguments"]["subnet4"][0]
-        self.assertNotIn("renew-timer", subnet_obj)
-
-    def test_omits_rebind_timer_when_not_provided(self):
-        """F11: rebind-timer must not appear in subnet payload when rebind_timer=None."""
-        with patch.object(
-            self.client._session,
-            "post",
-            side_effect=_side_effects(
-                _SUBNET4_GET, _SUBNET_UPDATE_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _CONFIG_WRITE_RESP
-            ),
-        ) as mock_post:
-            self.client.subnet_update(version=4, subnet_id=1, subnet_cidr="10.0.0.0/24")
-        payload = self._update_payload(mock_post)
-        subnet_obj = payload["arguments"]["subnet4"][0]
-        self.assertNotIn("rebind-timer", subnet_obj)
-
-    def test_sends_ntp_servers_option_when_provided(self):
-        """subnet_update must include ntp-servers option-data when ntp_servers is given."""
-        with patch.object(
-            self.client._session,
-            "post",
-            side_effect=_side_effects(
-                _SUBNET4_GET, _SUBNET_UPDATE_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _CONFIG_WRITE_RESP
-            ),
-        ) as mock_post:
-            self.client.subnet_update(version=4, subnet_id=1, subnet_cidr="10.0.0.0/24", ntp_servers=["10.0.0.1"])
-        payload = self._update_payload(mock_post)
-        subnet_obj = payload["arguments"]["subnet4"][0]
-        opt = next((o for o in subnet_obj.get("option-data", []) if o.get("name") == "ntp-servers"), None)
-        self.assertIsNotNone(opt, "ntp-servers option-data entry not found")
-        self.assertEqual(opt["data"], "10.0.0.1")
-
-    def test_sends_min_valid_lft_when_provided(self):
-        """subnet_update must include min-valid-lifetime when min_valid_lft is given."""
-        with patch.object(
-            self.client._session,
-            "post",
-            side_effect=_side_effects(
-                _SUBNET4_GET, _SUBNET_UPDATE_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _CONFIG_WRITE_RESP
-            ),
-        ) as mock_post:
-            self.client.subnet_update(version=4, subnet_id=1, subnet_cidr="10.0.0.0/24", min_valid_lft=300)
-        payload = self._update_payload(mock_post)
-        subnet_obj = payload["arguments"]["subnet4"][0]
-        self.assertEqual(subnet_obj["min-valid-lifetime"], 300)
-
-    def test_sends_max_valid_lft_when_provided(self):
-        """subnet_update must include max-valid-lifetime when max_valid_lft is given."""
-        with patch.object(
-            self.client._session,
-            "post",
-            side_effect=_side_effects(
-                _SUBNET4_GET, _SUBNET_UPDATE_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _CONFIG_WRITE_RESP
-            ),
-        ) as mock_post:
-            self.client.subnet_update(version=4, subnet_id=1, subnet_cidr="10.0.0.0/24", max_valid_lft=7200)
-        payload = self._update_payload(mock_post)
-        subnet_obj = payload["arguments"]["subnet4"][0]
-        self.assertEqual(subnet_obj["max-valid-lifetime"], 7200)
-
-    def test_sends_ddns_qualifying_suffix_when_provided(self):
-        """ddns-qualifying-suffix is included in the payload when provided."""
-        with patch.object(
-            self.client._session,
-            "post",
-            side_effect=_side_effects(
-                _SUBNET4_GET, _SUBNET_UPDATE_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _CONFIG_WRITE_RESP
-            ),
-        ) as mock_post:
-            self.client.subnet_update(
-                version=4, subnet_id=1, subnet_cidr="10.0.0.0/24", ddns_qualifying_suffix="example.com."
-            )
-        payload = self._update_payload(mock_post)
-        subnet_obj = payload["arguments"]["subnet4"][0]
-        self.assertEqual(subnet_obj["ddns-qualifying-suffix"], "example.com.")
-
-    def test_does_not_add_ddns_qualifying_suffix_when_absent_from_live_subnet_and_not_provided(self):
-        """ddns-qualifying-suffix stays absent when the live subnet lacks it and arg is not provided."""
-        with patch.object(
-            self.client._session,
-            "post",
-            side_effect=_side_effects(
-                _SUBNET4_GET, _SUBNET_UPDATE_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _CONFIG_WRITE_RESP
-            ),
-        ) as mock_post:
-            self.client.subnet_update(version=4, subnet_id=1, subnet_cidr="10.0.0.0/24")
-        payload = self._update_payload(mock_post)
-        subnet_obj = payload["arguments"]["subnet4"][0]
-        self.assertNotIn("ddns-qualifying-suffix", subnet_obj)
-
-    def test_clears_ddns_qualifying_suffix_present_in_live_subnet(self):
-        """Passing "" removes ddns-qualifying-suffix even when the live subnet had one."""
-        live_with_ddns = [
-            {
-                "result": 0,
-                "arguments": {
-                    "subnet4": [{"id": 1, "subnet": "10.0.0.0/24", "ddns-qualifying-suffix": "old.example.com."}]
-                },
-            }
-        ]
-        with patch.object(
-            self.client._session,
-            "post",
-            side_effect=_side_effects(
-                live_with_ddns, _SUBNET_UPDATE_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _CONFIG_WRITE_RESP
-            ),
-        ) as mock_post:
-            self.client.subnet_update(version=4, subnet_id=1, subnet_cidr="10.0.0.0/24", ddns_qualifying_suffix="")
-        payload = self._update_payload(mock_post)
-        subnet_obj = payload["arguments"]["subnet4"][0]
-        self.assertNotIn("ddns-qualifying-suffix", subnet_obj)
-
-    def test_preserves_ddns_qualifying_suffix_when_omitted(self):
-        """Omitting the arg keeps the live subnet's existing suffix (None = preserve)."""
-        live_with_ddns = [
-            {
-                "result": 0,
-                "arguments": {
-                    "subnet4": [{"id": 1, "subnet": "10.0.0.0/24", "ddns-qualifying-suffix": "keep.example.com."}]
-                },
-            }
-        ]
-        with patch.object(
-            self.client._session,
-            "post",
-            side_effect=_side_effects(
-                live_with_ddns, _SUBNET_UPDATE_RESP, _CONFIG_GET_RUNNING_RESP, _OK, _CONFIG_WRITE_RESP
-            ),
-        ) as mock_post:
-            self.client.subnet_update(version=4, subnet_id=1, subnet_cidr="10.0.0.0/24")
-        subnet_obj = self._update_payload(mock_post)["arguments"]["subnet4"][0]
-        self.assertEqual(subnet_obj["ddns-qualifying-suffix"], "keep.example.com.")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# _persist_config — config-get → config-test(args) → config-write(args)
-# ─────────────────────────────────────────────────────────────────────────────
-
-_CONFIG_GET_RUNNING_RESP = [{"result": 0, "arguments": {"Dhcp4": {"valid-lifetime": 3600}, "hash": "abc123"}}]
-_CONFIG_GET_RUNNING_RESP_V6 = [{"result": 0, "arguments": {"Dhcp6": {"valid-lifetime": 3600}, "hash": "abc123"}}]
-_CONFIG_TEST_OK_RESP = [{"result": 0, "text": "Configuration seems OK."}]
-_CONFIG_TEST_NOT_SUPPORTED_RESP = [{"result": 2, "text": "Command not supported."}]
-_CONFIG_TEST_FAIL_RESP = [{"result": 1, "text": "Configuration check failed."}]
-
-
-class TestPersistConfig(TestCase):
-    """Tests for KeaClient._persist_config() — verifies config-get → config-test(args) → config-write(args) flow."""
-
-    def setUp(self):
-        self.client = KeaClient(url="http://kea:8000")
-
-    def _payloads(self, mock_post):
-        return [(c.kwargs.get("json") or c[1]["json"]) for c in mock_post.call_args_list]
-
-    def _cmds(self, mock_post):
-        return [p["command"] for p in self._payloads(mock_post)]
-
-    def test_flow_is_config_get_then_config_test_then_config_write(self):
-        """_persist_config issues config-get, then config-test, then config-write in order."""
-        with patch.object(
-            self.client._session,
-            "post",
-            side_effect=_side_effects(_CONFIG_GET_RUNNING_RESP, _CONFIG_TEST_OK_RESP, _CONFIG_WRITE_RESP),
-        ) as mock_post:
-            self.client._persist_config("dhcp4")
-        cmds = self._cmds(mock_post)
-        self.assertEqual(cmds, ["config-get", "config-test", "config-write"])
-
-    def test_config_test_receives_config_from_config_get(self):
-        """config-test is called with the full arguments returned by config-get (hash stripped)."""
-        with patch.object(
-            self.client._session,
-            "post",
-            side_effect=_side_effects(_CONFIG_GET_RUNNING_RESP, _CONFIG_TEST_OK_RESP, _CONFIG_WRITE_RESP),
-        ) as mock_post:
-            self.client._persist_config("dhcp4")
-        payloads = self._payloads(mock_post)
-        test_payload = next(p for p in payloads if p["command"] == "config-test")
-        expected_config = {k: v for k, v in _CONFIG_GET_RUNNING_RESP[0]["arguments"].items() if k != "hash"}
-        self.assertEqual(test_payload["arguments"], expected_config)
-
-    def test_config_write_receives_config_from_config_get(self):
-        """config-write is called without arguments (Kea config-write only accepts optional filename)."""
-        with patch.object(
-            self.client._session,
-            "post",
-            side_effect=_side_effects(_CONFIG_GET_RUNNING_RESP, _CONFIG_TEST_OK_RESP, _CONFIG_WRITE_RESP),
-        ) as mock_post:
-            self.client._persist_config("dhcp4")
-        payloads = self._payloads(mock_post)
-        write_payload = next(p for p in payloads if p["command"] == "config-write")
-        self.assertNotIn("arguments", write_payload)
-
-    def test_config_test_not_supported_falls_through_to_config_write(self):
-        """When config-test returns result=2 (not supported), config-write is still called."""
-        with patch.object(
-            self.client._session,
-            "post",
-            side_effect=_side_effects(_CONFIG_GET_RUNNING_RESP, _CONFIG_TEST_NOT_SUPPORTED_RESP, _CONFIG_WRITE_RESP),
-        ) as mock_post:
-            self.client._persist_config("dhcp4")
-        self.assertIn("config-write", self._cmds(mock_post))
-
-    def test_config_test_failure_raises_kea_config_persist_error(self):
-        """When config-test (called with proper args) returns a non-zero, non-2 result, KeaConfigPersistError is raised.
-
-        _persist_config() is called AFTER a native mutation is already live, so the running config
-        has changed.  The appropriate exception is KeaConfigPersistError (change is live but
-        config-write was skipped).
-        """
-
-        with patch.object(
-            self.client._session,
-            "post",
-            side_effect=_side_effects(_CONFIG_GET_RUNNING_RESP, _CONFIG_TEST_FAIL_RESP),
-        ):
-            with self.assertRaises(KeaConfigPersistError):
-                self.client._persist_config("dhcp4")
-
-    def test_config_test_rejection_is_a_live_unpersisted_change(self):
-        """Every handler for a live but unpersisted change also catches a config-test rejection by type."""
-        self.assertTrue(issubclass(KeaConfigPersistError, PartialPersistError))
-        with patch.object(
-            self.client._session,
-            "post",
-            side_effect=_side_effects(_CONFIG_GET_RUNNING_RESP, _CONFIG_TEST_FAIL_RESP),
-        ):
-            with self.assertRaises(PartialPersistError) as ctx:
-                self.client._persist_config("dhcp4")
-        self.assertIsInstance(ctx.exception, KeaConfigPersistError)
-        self.assertEqual(ctx.exception.service, "dhcp4")
-        self.assertIsInstance(ctx.exception.__cause__, KeaException)
-        self.assertIn("config-test rejected the running config", ctx.exception.response["text"])
-        self.assertIn("config-test rejected the running config", str(ctx.exception))
-
-    def test_config_write_not_called_when_config_test_fails(self):
-        """When config-test returns an error, config-write is NOT called."""
-        with patch.object(
-            self.client._session,
-            "post",
-            side_effect=_side_effects(_CONFIG_GET_RUNNING_RESP, _CONFIG_TEST_FAIL_RESP),
-        ) as mock_post:
-            with self.assertRaises(KeaConfigPersistError):
-                self.client._persist_config("dhcp4")
-        self.assertNotIn("config-write", self._cmds(mock_post))
-
-    def test_config_write_failure_raises_partial_persist_error(self):
-        """When config-write fails, PartialPersistError is raised."""
-
-        with patch.object(
-            self.client._session,
-            "post",
-            side_effect=_side_effects(
-                _CONFIG_GET_RUNNING_RESP, _CONFIG_TEST_OK_RESP, [{"result": 1, "text": "write failed"}]
-            ),
-        ):
-            with self.assertRaises(PartialPersistError):
-                self.client._persist_config("dhcp4")
-
-    def test_correct_service_used_for_all_commands(self):
-        """config-get, config-test, and config-write are all sent with the correct service."""
-        with patch.object(
-            self.client._session,
-            "post",
-            side_effect=_side_effects(_CONFIG_GET_RUNNING_RESP_V6, _CONFIG_TEST_OK_RESP, _CONFIG_WRITE_RESP),
-        ) as mock_post:
-            self.client._persist_config("dhcp6")
-        payloads = self._payloads(mock_post)
-        for payload in payloads:
-            self.assertEqual(payload["service"], ["dhcp6"])
-        # config-test arguments should reference Dhcp6, not Dhcp4
-        test_payload = next(p for p in payloads if p["command"] == "config-test")
-        self.assertIn("Dhcp6", test_payload["arguments"])
-        self.assertNotIn("Dhcp4", test_payload["arguments"])
-
-    def test_config_get_failure_falls_back_to_no_args_config_write(self):
-        """When config-get fails, config-test is skipped and config-write is called without arguments."""
-        with patch.object(
-            self.client._session,
-            "post",
-            side_effect=_side_effects([{"result": 1, "text": "config-get failed"}], _CONFIG_WRITE_RESP),
-        ) as mock_post:
-            self.client._persist_config("dhcp4")
-        cmds = self._cmds(mock_post)
-        self.assertIn("config-write", cmds)
-        self.assertNotIn("config-test", cmds)
-        write_payload = next(p for p in self._payloads(mock_post) if p["command"] == "config-write")
-        self.assertNotIn("arguments", write_payload)
-
-    def test_config_write_requests_exception_raises_partial_persist_error(self):
-        """requests.RequestException from config-write is wrapped in PartialPersistError."""
-        import requests as req
-
-        def _side_effect(url, **kwargs):
-            cmd = kwargs.get("json", {}).get("command", "")
-            if cmd == "config-write":
-                raise req.RequestException("connection reset")
-            return _mock_http_response(_CONFIG_GET_RUNNING_RESP if cmd == "config-get" else _CONFIG_TEST_OK_RESP)
-
-        with patch.object(self.client._session, "post", side_effect=_side_effect):
-            with self.assertRaises(PartialPersistError):
-                self.client._persist_config("dhcp4")
-
-    def test_config_write_value_error_raises_partial_persist_error(self):
-        """ValueError from config-write is wrapped in PartialPersistError."""
-
-        def _side_effect(url, **kwargs):
-            cmd = kwargs.get("json", {}).get("command", "")
-            if cmd == "config-write":
-                raise ValueError("bad JSON")
-            return _mock_http_response(_CONFIG_GET_RUNNING_RESP if cmd == "config-get" else _CONFIG_TEST_OK_RESP)
-
-        with patch.object(self.client._session, "post", side_effect=_side_effect):
-            with self.assertRaises(PartialPersistError):
-                self.client._persist_config("dhcp4")
-
-    def test_config_test_transport_error_raises_kea_config_persist_error(self):
-        """requests.RequestException from config-test aborts config-write and raises KeaConfigPersistError."""
-        import requests as req
-
-        def _side_effect(url, **kwargs):
-            cmd = kwargs.get("json", {}).get("command", "")
-            if cmd == "config-test":
-                raise req.RequestException("timeout")
-            return _mock_http_response(_CONFIG_GET_RUNNING_RESP)
-
-        with patch.object(self.client._session, "post", side_effect=_side_effect):
-            with self.assertRaises(KeaConfigPersistError):
-                self.client._persist_config("dhcp4")
-
-    def test_config_test_transport_error_does_not_call_config_write(self):
-        """When config-test has a transport error, config-write must NOT be called."""
-        import requests as req
-
-        calls: list[str] = []
-
-        def _side_effect(url, **kwargs):
-            cmd = kwargs.get("json", {}).get("command", "")
-            calls.append(cmd)
-            if cmd == "config-test":
-                raise req.RequestException("timeout")
-            return _mock_http_response(_CONFIG_GET_RUNNING_RESP)
-
-        with patch.object(self.client._session, "post", side_effect=_side_effect):
-            with self.assertRaises(KeaConfigPersistError):
-                self.client._persist_config("dhcp4")
-        self.assertNotIn("config-write", calls)
-
-
 # TestLeaseUpdate
 # ---------------------------------------------------------------------------
 
@@ -1461,21 +877,6 @@ class TestNetworkSubnetAdd(TestCase):
         self.assertEqual(body["service"], ["dhcp4"])
         self.assertEqual(body["arguments"], {"name": "prod-net", "id": 5})
 
-    def test_the_edit_view_variant_persists_after_the_move(self):
-        """network_subnet_add_and_persist sends the persist step after network4-subnet-add succeeds."""
-        running = _CONFIG_GET_RUNNING_RESP[0]
-        responses = {
-            "network4-subnet-add": _NETWORK_SUBNET_ADD_OK,
-            "config-get": running,
-            "config-test": _CONFIG_TEST_OK_RESP[0],
-            "config-write": _CONFIG_WRITE_RESP[0],
-        }
-        with stub_kea(responses) as kea:
-            self.client.network_subnet_add_and_persist(version=4, name="prod-net", subnet_id=5)
-        self.assertEqual(kea.commands(), ["network4-subnet-add", "config-get", "config-test", "config-write"])
-        self.assertEqual(kea.bodies("network4-subnet-add")[0]["arguments"], {"name": "prod-net", "id": 5})
-        self.assertEqual(kea.bodies("config-test")[0]["arguments"], {"Dhcp4": running["arguments"]["Dhcp4"]})
-
     def test_raises_kea_exception_on_failure(self):
         """KeaException is raised when the command returns a non-zero result."""
         with stub_kea({"network4-subnet-add": _NETWORK_SUBNET_ADD_FAIL}) as kea, self.assertRaises(KeaException):
@@ -1487,54 +888,33 @@ class TestNetworkSubnetAdd(TestCase):
 # TestNetworkSubnetDel
 # ---------------------------------------------------------------------------
 
-_NETWORK_SUBNET_DEL_OK = [{"result": 0, "text": "Subnet removed from shared network."}]
-_NETWORK_SUBNET_DEL_FAIL = [{"result": 1, "text": "subnet not found in network"}]
-
 
 class TestNetworkSubnetDel(TestCase):
-    """Tests for KeaClient.network_subnet_del(version, name, subnet_id) -> None."""
+    """KeaClient.network_subnet_del sends one network{v}-subnet-del and does not persist."""
 
     def setUp(self):
         self.client = KeaClient(url="http://kea:8000")
 
-    def _payloads(self, mock_post):
-        return [(c.kwargs.get("json") or c[1]["json"]) for c in mock_post.call_args_list]
+    def test_sends_one_command_with_name_and_id_without_a_persist_step(self):
+        removed = {"result": 0, "text": "IPv4 subnet 10.0.5.0/24 (id 5) is now removed from shared network 'prod-net'"}
+        with stub_kea({"network4-subnet-del": removed}) as kea:
+            self.client.network_subnet_del(4, "prod-net", 5)
+        self.assertEqual(kea.commands(), ["network4-subnet-del"])
+        (body,) = kea.bodies("network4-subnet-del")
+        self.assertEqual(body["service"], ["dhcp4"])
+        self.assertEqual(body["arguments"], {"name": "prod-net", "id": 5})
 
-    def _cmds(self, mock_post):
-        return [p["command"] for p in self._payloads(mock_post)]
+    def test_a_failure_result_raises_kea_exception(self):
+        outside = {
+            "result": 3,
+            "text": "The IPv4 subnet with id 99 is not part of the shared network with name 'prod-net' found",
+        }
+        with stub_kea({"network4-subnet-del": outside}), self.assertRaises(KeaException):
+            self.client.network_subnet_del(4, "prod-net", 99)
 
-    def test_sends_correct_command_and_args(self):
-        """network4-subnet-del is sent with name and id in arguments."""
-        with patch.object(
-            self.client._session,
-            "post",
-            side_effect=_side_effects(
-                _NETWORK_SUBNET_DEL_OK, _CONFIG_GET_RUNNING_RESP, _CONFIG_TEST_OK_RESP, _CONFIG_WRITE_RESP
-            ),
-        ) as mock_post:
-            self.client.network_subnet_del(version=4, name="prod-net", subnet_id=5)
-        payload = next(p for p in self._payloads(mock_post) if p["command"] == "network4-subnet-del")
-        self.assertEqual(payload["service"], ["dhcp4"])
-        self.assertEqual(payload["arguments"]["name"], "prod-net")
-        self.assertEqual(payload["arguments"]["id"], 5)
-
-    def test_persist_config_called_after_subnet_del(self):
-        """config-write is called after network4-subnet-del succeeds."""
-        with patch.object(
-            self.client._session,
-            "post",
-            side_effect=_side_effects(
-                _NETWORK_SUBNET_DEL_OK, _CONFIG_GET_RUNNING_RESP, _CONFIG_TEST_OK_RESP, _CONFIG_WRITE_RESP
-            ),
-        ) as mock_post:
-            self.client.network_subnet_del(version=4, name="prod-net", subnet_id=5)
-        self.assertIn("config-write", self._cmds(mock_post))
-
-    def test_raises_kea_exception_on_failure(self):
-        """KeaException is raised when the command returns a non-zero result."""
-        with patch.object(self.client._session, "post", return_value=_mock_http_response(_NETWORK_SUBNET_DEL_FAIL)):
-            with self.assertRaises(KeaException):
-                self.client.network_subnet_del(version=4, name="prod-net", subnet_id=99)
+    def test_a_malformed_reply_raises_runtime_error(self):
+        with stub_kea({"network4-subnet-del": [_OK[0], _OK[0]]}), self.assertRaises(RuntimeError):
+            self.client.network_subnet_del(4, "prod-net", 5)
 
 
 # ---------------------------------------------------------------------------
@@ -2102,51 +1482,6 @@ class TestLeaseSearch(TestCase):
 
 
 # ---------------------------------------------------------------------------
-# TestPersistConfig — additional exception-type coverage
-# ---------------------------------------------------------------------------
-
-
-class TestPersistConfigExceptionTypes(TestCase):
-    """Tests that requests.RequestException and ValueError in config-get fall back to config-write."""
-
-    def setUp(self):
-        self.client = KeaClient(url="http://kea:8000")
-
-    def _cmds(self, mock_post):
-        payloads = [(c.kwargs.get("json") or c[1]["json"]) for c in mock_post.call_args_list]
-        return [p["command"] for p in payloads]
-
-    def test_requests_request_exception_falls_back_to_config_write(self):
-        """A requests.RequestException from config-get causes fallback to bare config-write."""
-        import requests as req
-
-        def _side_effect(url, **kwargs):
-            if kwargs.get("json", {}).get("command") == "config-get":
-                raise req.RequestException("network error")
-            return _mock_http_response(_CONFIG_WRITE_RESP)
-
-        with patch.object(self.client._session, "post", side_effect=_side_effect) as mock_post:
-            self.client._persist_config("dhcp4")
-        cmds = self._cmds(mock_post)
-        self.assertIn("config-write", cmds)
-        self.assertNotIn("config-test", cmds)
-
-    def test_value_error_falls_back_to_config_write(self):
-        """A ValueError from config-get causes fallback to bare config-write."""
-
-        def _side_effect(url, **kwargs):
-            if kwargs.get("json", {}).get("command") == "config-get":
-                raise ValueError("unexpected value")
-            return _mock_http_response(_CONFIG_WRITE_RESP)
-
-        with patch.object(self.client._session, "post", side_effect=_side_effect) as mock_post:
-            self.client._persist_config("dhcp4")
-        cmds = self._cmds(mock_post)
-        self.assertIn("config-write", cmds)
-        self.assertNotIn("config-test", cmds)
-
-
-# ---------------------------------------------------------------------------
 # TestSubnetGet
 # ---------------------------------------------------------------------------
 
@@ -2237,127 +1572,187 @@ class TestSubnetGet(TestCase):
 
 
 # ---------------------------------------------------------------------------
-# TestSubnetUpdateMerge
+# subnet_definition and subnet_update
 # ---------------------------------------------------------------------------
 
-_LIVE_SUBNET4_WITH_RELAY = {
-    "id": 42,
-    "subnet": "10.0.0.0/24",
-    "relay": {"ip-addresses": ["10.0.0.254"]},
-    "allocator": "random",
-    "client-class": "premium",
-    "pools": [{"pool": "10.0.0.50-10.0.0.99"}],
-    "option-data": [
-        {"name": "routers", "data": "10.0.0.1"},
-        {"name": "domain-name", "data": "old.example.com"},  # NOT managed — must be preserved
-    ],
-    "valid-lifetime": 7200,
-}
-_SUBNET4_GET_WITH_RELAY_RESP = [{"result": 0, "arguments": {"subnet4": [_LIVE_SUBNET4_WITH_RELAY]}}]
-_SUBNET_UPDATE_OK = [{"result": 0, "arguments": {}, "text": "IPv4 subnet updated"}]
-
-_LIVE_SUBNET6_WITH_DNS = {
-    "id": 100,
-    "subnet": "2001:db8::/48",
-    "option-data": [
-        {"name": "dns-servers", "data": "2001:4860:4860::8888"},
-        {"name": "domain-search", "data": "example.com"},  # NOT managed — must be preserved
-    ],
-    "valid-lifetime": 3600,
-}
-_SUBNET6_GET_WITH_DNS_RESP = [{"result": 0, "arguments": {"subnet6": [_LIVE_SUBNET6_WITH_DNS]}}]
-_SUBNET_UPDATE_OK_V6 = [{"result": 0, "arguments": {}, "text": "IPv6 subnet updated"}]
+# Every managed field empty: a form-managed DHCP Option is removed, and every lifetime keeps its live value.
+_BLANK = SubnetEdit(
+    pools=(),
+    gateway="",
+    dns_servers=(),
+    ntp_servers=(),
+    ddns_qualifying_suffix="",
+    valid_lifetime=None,
+    min_valid_lifetime=None,
+    max_valid_lifetime=None,
+    renew_timer=None,
+    rebind_timer=None,
+)
 
 
-class TestSubnetUpdateIdentity(TestCase):
-    def test_a_non_object_subnet_get_entry_is_rejected(self):
-        response = {"result": 0, "arguments": {"subnet4": ["not-an-object"]}}
-        with KeaClient(url="http://kea.example.invalid") as client, stub_kea({"subnet4-get": response}):
-            with self.assertRaisesRegex(RuntimeError, "^subnet4-get returned an invalid subnet$"):
-                client.subnet_get(4, 7)
-
-    def test_a_numeric_live_cidr_cannot_mutate_the_subnet(self):
-        response = {"result": 0, "arguments": {"subnet4": [{"id": 7, "subnet": 3323068416}]}}
-        with KeaClient(url="http://kea.example.invalid") as client, stub_kea({"subnet4-get": response}) as stub:
-            with self.assertRaises(RuntimeError):
-                client.subnet_update(4, 7, "198.18.0.0/32", valid_lft=7200)
-        self.assertEqual(stub.commands(), ["subnet4-get"])
-
-    def test_equivalent_ipv6_spellings_preserve_the_live_cidr(self):
-        for live, requested in (
-            ("2001:0DB8:0000:0000:0000:0000:0000:0000/64", "2001:db8::/64"),
-            ("2001:db8::/64", "2001:0db8:0000:0000::/64"),
-            ("2001:db8::/64", "2001:db8::1/64"),
-        ):
-            with self.subTest(live=live, requested=requested):
-                responses = {
-                    "subnet6-get": {"result": 0, "arguments": {"subnet6": [{"id": 7, "subnet": live}]}},
-                    "subnet6-update": {"result": 0},
-                    "config-get": {"result": 0, "arguments": {"Dhcp6": {}}},
-                    "config-test": {"result": 0},
-                    "config-write": {"result": 0},
-                }
-                with KeaClient(url="http://kea.example.invalid") as client, stub_kea(responses) as stub:
-                    client.subnet_update(6, 7, requested, valid_lft=7200)
-                update = stub.bodies("subnet6-update")[0]
-                self.assertEqual(update["arguments"]["subnet6"][0]["subnet"], live)
-                self.assertEqual(update["arguments"]["subnet6"][0]["valid-lifetime"], 7200)
-                self.assertEqual(stub.commands()[-1], "config-write")
-
-    def test_different_or_invalid_cidrs_cannot_mutate_the_subnet(self):
-        for live, requested in (
-            ("2001:db8::/64", "2001:db8:1::/64"),
-            ("2001:db8::/64", "2001:db8::/48"),
-            ("2001:db8::/64", "not-a-network"),
-            ("not-a-network", "2001:db8::/64"),
-        ):
-            with self.subTest(live=live, requested=requested):
-                response = {"result": 0, "arguments": {"subnet6": [{"id": 7, "subnet": live}]}}
-                with KeaClient(url="http://kea.example.invalid") as client, stub_kea({"subnet6-get": response}) as stub:
-                    with self.assertRaises(ValueError):
-                        client.subnet_update(6, 7, requested, valid_lft=7200)
-                self.assertEqual(stub.commands(), ["subnet6-get"])
+def _subnet_get_reply(version: int, subnet) -> dict:
+    return {"result": 0, "arguments": {f"subnet{version}": [subnet]}}
 
 
-class TestSubnetUpdateMerge(TestCase):
-    """Tests for KeaClient.subnet_update() — verifies read-modify-write merge behaviour."""
+class TestSubnetDefinition(TestCase):
+    """KeaClient.subnet_definition reads one Subnet for an update. Two reads of the same Subnet are equal."""
 
     def setUp(self):
         self.client = KeaClient(url="http://kea:8000")
 
+    def test_two_reads_of_the_same_subnet_are_equal_and_a_changed_subnet_is_not(self):
+        live = {"id": 42, "subnet": "10.0.0.5/24", "pools": [], "valid-lifetime": 3600}
+        reordered = dict(reversed(live.items()))
+        changed = {**live, "valid-lifetime": 7200}
+        replies = queued(*(_subnet_get_reply(4, subnet) for subnet in (live, reordered, changed)))
+        with stub_kea({"subnet4-get": replies}) as kea:
+            first, same, other = (self.client.subnet_definition(4, 42) for _ in range(3))
+        self.assertEqual(first, same)
+        self.assertNotEqual(first, other)
+        self.assertEqual(first.network, ipaddress.ip_network("10.0.0.0/24"))
+        self.assertEqual([body["arguments"] for body in kea.bodies("subnet4-get")], [{"id": 42}] * 3)
+
+    def test_a_reply_that_is_not_one_valid_subnet_raises_runtime_error(self):
+        for label, entry in (
+            ("not an object", "subnet"),
+            ("another ID", {"id": 7, "subnet": "10.0.0.0/24"}),
+            ("numeric CIDR", {"id": 42, "subnet": 3323068416}),
+            ("no CIDR", {"id": 42}),
+            ("other family", {"id": 42, "subnet": "2001:db8::/64"}),
+            ("option-data not a list", {"id": 42, "subnet": "10.0.0.0/24", "option-data": {}}),
+            ("option entry not an object", {"id": 42, "subnet": "10.0.0.0/24", "option-data": ["routers"]}),
+        ):
+            with self.subTest(label), stub_kea({"subnet4-get": _subnet_get_reply(4, entry)}) as kea:
+                with self.assertRaises(RuntimeError):
+                    self.client.subnet_definition(4, 42)
+                self.assertEqual(kea.commands(), ["subnet4-get"])
+
+    def test_a_missing_subnet_raises_kea_exception(self):
+        missing = {"result": 3, "text": "No subnet with id 42 found"}
+        with stub_kea({"subnet4-get": missing}), self.assertRaises(KeaException):
+            self.client.subnet_definition(4, 42)
+
+
+class TestSubnetUpdate(TestCase):
+    """KeaClient.subnet_update sends the Subnet that it read with the form fields, and does not persist."""
+
+    def setUp(self):
+        self.client = KeaClient(url="http://kea:8000")
+
+    def _sent(self, live: dict, version: int = 4, **fields) -> dict:
+        """Return the Subnet that subnet{v}-update sends for *live* and the form *fields*."""
+        responses = {
+            f"subnet{version}-get": _subnet_get_reply(version, live),
+            f"subnet{version}-update": {"result": 0, "text": f"IPv{version} subnet updated"},
+        }
+        with stub_kea(responses) as kea:
+            self.client.subnet_update(self.client.subnet_definition(version, live["id"]), replace(_BLANK, **fields))
+        self.assertEqual(kea.commands(), [f"subnet{version}-get", f"subnet{version}-update"])
+        (body,) = kea.bodies(f"subnet{version}-update")
+        self.assertEqual(body["service"], [f"dhcp{version}"])
+        (subnet,) = body["arguments"][f"subnet{version}"]
+        return subnet
+
+    def _options(self, existing: list, version: int = 4, **fields) -> list:
+        subnet = "10.0.0.0/24" if version == 4 else "2001:db8::/48"
+        return self._sent({"id": 42, "subnet": subnet, "option-data": existing}, version, **fields)["option-data"]
+
+    def test_the_update_keeps_every_field_that_the_form_does_not_manage(self):
+        live = {
+            "id": 42,
+            "subnet": "10.0.0.0/24",
+            "relay": {"ip-addresses": ["10.0.0.254"]},
+            "allocator": "random",
+            "client-class": "premium",
+            "pools": [{"pool": "10.0.0.50-10.0.0.99", "option-data": []}],
+            "option-data": [{"name": "routers", "data": "10.0.0.1"}, {"name": "domain-name", "data": "example.org"}],
+            "valid-lifetime": 7200,
+            "ddns-qualifying-suffix": "old.example.org.",
+            "metadata": {"server-tags": ["all"]},
+        }
+        sent = self._sent(live, pools=("10.0.0.100-10.0.0.110",), gateway="10.0.0.2", ddns_qualifying_suffix="")
+        self.assertEqual(
+            sent,
+            {
+                "id": 42,
+                "subnet": "10.0.0.0/24",
+                "relay": {"ip-addresses": ["10.0.0.254"]},
+                "allocator": "random",
+                "client-class": "premium",
+                "pools": [{"pool": "10.0.0.100-10.0.0.110"}],
+                "option-data": [
+                    {"name": "domain-name", "data": "example.org"},
+                    {"name": "routers", "data": "10.0.0.2"},
+                ],
+                "valid-lifetime": 7200,
+            },
+        )
+
+    def test_a_lifetime_or_timer_is_set_with_the_subnet_parameter_name_and_none_keeps_it(self):
+        live = {
+            "id": 42,
+            "subnet": "10.0.0.0/24",
+            "valid-lifetime": 3600,
+            "min-valid-lifetime": 1800,
+            "max-valid-lifetime": 7200,
+            "renew-timer": 900,
+            "rebind-timer": 1500,
+        }
+        kept = self._sent(live)
+        self.assertEqual({key: kept[key] for key in live}, live)
+        values = {
+            "valid_lifetime": 4000,
+            "min_valid_lifetime": 2000,
+            "max_valid_lifetime": 8000,
+            "renew_timer": 600,
+            "rebind_timer": 900,
+        }
+        sent = self._sent(live, **values)
+        self.assertEqual(
+            {key: sent[key] for key in live},
+            {
+                "id": 42,
+                "subnet": "10.0.0.0/24",
+                "valid-lifetime": 4000,
+                "min-valid-lifetime": 2000,
+                "max-valid-lifetime": 8000,
+                "renew-timer": 600,
+                "rebind-timer": 900,
+            },
+        )
+        # Kea refuses the lease field valid-lft in a Subnet as a spurious parameter.
+        self.assertFalse({"valid-lft", "min-valid-lft", "max-valid-lft"} & set(sent))
+
+    def test_a_ddns_suffix_is_set_or_removed(self):
+        live = {"id": 42, "subnet": "10.0.0.0/24", "ddns-qualifying-suffix": "old.example.org."}
+        self.assertEqual(
+            self._sent(live, ddns_qualifying_suffix="new.example.org.")["ddns-qualifying-suffix"], "new.example.org."
+        )
+        self.assertNotIn("ddns-qualifying-suffix", self._sent(live))
+
+    def test_the_update_sends_the_cidr_text_that_kea_declares(self):
+        live = {"id": 7, "subnet": "2001:0DB8:0000:0000::5/64"}
+        self.assertEqual(self._sent(live, version=6)["subnet"], "2001:0DB8:0000:0000::5/64")
+
+    def test_the_values_that_the_form_showed_keep_the_options_and_empty_fields_remove_them(self):
+        existing = [
+            {"code": 3, "data": "198.18.0.1", "never-send": True},
+            {"code": 6, "data": "198.18.0.53", "never-send": True},
+            {"code": 42, "data": "198.18.0.123", "never-send": True},
+        ]
+        shown = {"gateway": "198.18.0.1", "dns_servers": ("198.18.0.53",), "ntp_servers": ("198.18.0.123",)}
+        self.assertEqual(self._options(existing, **shown), existing)
+        self.assertEqual(self._options(existing), [])
+
     def test_code_only_and_suppression_options_round_trip(self):
         """A DNS option written by code is replaced, not duplicated; a never-send entry survives an empty field."""
-        subnet_get = [
-            {
-                "result": 0,
-                "arguments": {
-                    "subnet4": [
-                        {
-                            "id": 42,
-                            "subnet": "10.0.0.0/24",
-                            "option-data": [
-                                {"code": 6, "data": "10.0.0.53", "always-send": True},
-                                {"code": 42, "never-send": True},
-                                {"name": "domain-name-servers", "space": "vendor-4491", "data": "10.0.0.99"},
-                            ],
-                        }
-                    ]
-                },
-            }
+        existing = [
+            {"code": 6, "data": "10.0.0.53", "always-send": True},
+            {"code": 42, "never-send": True},
+            {"name": "domain-name-servers", "space": "vendor-4491", "data": "10.0.0.99"},
         ]
-        with patch.object(
-            self.client._session,
-            "post",
-            side_effect=_side_effects(subnet_get, _SUBNET_UPDATE_OK, _CONFIG_GET_RUNNING_RESP, _OK, _OK),
-        ) as mock_post:
-            self.client.subnet_update(
-                version=4, subnet_id=42, subnet_cidr="10.0.0.0/24", dns_servers=["10.0.0.53"], ntp_servers=[]
-            )
-        update_call = next(
-            c.kwargs["json"] for c in mock_post.call_args_list if c.kwargs["json"]["command"] == "subnet4-update"
-        )
         self.assertEqual(
-            update_call["arguments"]["subnet4"][0]["option-data"],
+            self._options(existing, dns_servers=("10.0.0.53",)),
             [
                 {"name": "domain-name-servers", "space": "vendor-4491", "data": "10.0.0.99"},
                 {"code": 6, "data": "10.0.0.53", "always-send": True},
@@ -2365,37 +1760,10 @@ class TestSubnetUpdateMerge(TestCase):
             ],
         )
 
-    def _update_options(self, existing, **kwargs):
-        subnet_get = [
-            {"result": 0, "arguments": {"subnet4": [{"id": 42, "subnet": "10.0.0.0/24", "option-data": existing}]}}
-        ]
-        with patch.object(
-            self.client._session,
-            "post",
-            side_effect=_side_effects(subnet_get, _SUBNET_UPDATE_OK, _CONFIG_GET_RUNNING_RESP, _OK, _OK),
-        ) as mock_post:
-            self.client.subnet_update(version=4, subnet_id=42, subnet_cidr="10.0.0.0/24", **kwargs)
-        update_call = next(
-            c.kwargs["json"] for c in mock_post.call_args_list if c.kwargs["json"]["command"] == "subnet4-update"
-        )
-        return update_call["arguments"]["subnet4"][0]["option-data"]
-
-    def test_omitted_managed_values_preserve_options(self):
-        existing = [
-            {"code": 3, "data": "198.18.0.1", "never-send": True},
-            {"code": 6, "data": "198.18.0.53", "never-send": True},
-            {"code": 42, "data": "198.18.0.123", "never-send": True},
-        ]
-        self.assertEqual(self._update_options(existing, valid_lft=7200), existing)
-        self.assertEqual(self._update_options(existing, gateway="", dns_servers=[], ntp_servers=[]), [])
-
     def test_other_family_option_names_remain_unmanaged(self):
-        existing = [
-            {"name": "dns-servers", "data": "192.0.2.53"},
-            {"name": "sntp-servers", "data": "192.0.2.123"},
-        ]
+        existing = [{"name": "dns-servers", "data": "192.0.2.53"}, {"name": "sntp-servers", "data": "192.0.2.123"}]
         self.assertEqual(
-            self._update_options(existing, dns_servers=["198.18.0.53"], ntp_servers=[]),
+            self._options(existing, dns_servers=("198.18.0.53",)),
             [*existing, {"name": "domain-name-servers", "data": "198.18.0.53"}],
         )
 
@@ -2403,12 +1771,7 @@ class TestSubnetUpdateMerge(TestCase):
         for data in ("198.18.0.53,198.18.0.54", "198.18.0.53, 198.18.0.54"):
             with self.subTest(data=data):
                 existing = [{"code": 6, "data": data, "csv-format": True, "never-send": True}]
-                self.assertEqual(self._update_options(existing, dns_servers=["198.18.0.53", "198.18.0.54"]), existing)
-
-    def test_an_unchanged_value_keeps_the_delivery_flags(self):
-        """never-send can sit next to a value; the form edits the value only."""
-        existing = [{"code": 6, "data": "10.0.0.53", "never-send": True, "csv-format": True}]
-        self.assertEqual(self._update_options(existing, dns_servers=["10.0.0.53"]), existing)
+                self.assertEqual(self._options(existing, dns_servers=("198.18.0.53", "198.18.0.54")), existing)
 
     def test_class_tagged_entries_are_not_managed_by_the_form(self):
         """Kea allows one entry per class tag; the form edits only the untagged default."""
@@ -2418,182 +1781,33 @@ class TestSubnetUpdateMerge(TestCase):
             {"name": "domain-name-servers", "data": "10.0.0.53"},
         ]
         self.assertEqual(
-            self._update_options(tagged, dns_servers=["10.0.0.54"]),
+            self._options(tagged, dns_servers=("10.0.0.54",)),
             [*tagged[:2], {"name": "domain-name-servers", "data": "10.0.0.54"}],
         )
 
-    def test_an_empty_field_keeps_a_binary_encoded_entry(self):
-        """The form cannot show binary data, so an empty field must not delete it."""
-        binary = [{"code": 6, "data": "0A000035", "csv-format": False}]
-        self.assertEqual(self._update_options(binary, dns_servers=[]), binary)
-
-    def test_an_empty_gateway_keeps_a_router_array(self):
-        """The gateway field holds one address, so a router list is kept, not deleted."""
-        routers = [{"code": 3, "data": "10.0.0.1, 10.0.0.2"}]
-        self.assertEqual(self._update_options(routers, gateway=""), routers)
+    def test_an_empty_field_keeps_a_value_that_the_form_cannot_show(self):
+        """The form cannot show binary data or a router list, so an empty field must not delete them."""
+        for existing in (
+            [{"code": 6, "data": "0A000035", "csv-format": False}],
+            [{"code": 3, "data": "10.0.0.1, 10.0.0.2"}],
+        ):
+            with self.subTest(existing=existing):
+                self.assertEqual(self._options(existing), existing)
 
     def test_a_changed_value_drops_the_old_encoding_flag(self):
         """Form text is CSV, so csv-format false no longer describes the new value."""
         existing = [{"code": 6, "data": "0A000035", "csv-format": False}]
-        self.assertEqual(self._update_options(existing, dns_servers=["10.0.0.53"]), [{"code": 6, "data": "10.0.0.53"}])
+        self.assertEqual(self._options(existing, dns_servers=("10.0.0.53",)), [{"code": 6, "data": "10.0.0.53"}])
 
-    def _run_update(self, **kwargs):
-        """Run subnet_update with sensible defaults, returning the args sent to subnet4-update."""
-        with patch.object(
-            self.client._session,
-            "post",
-            side_effect=_side_effects(
-                _SUBNET4_GET_WITH_RELAY_RESP,  # subnet4-get
-                _SUBNET_UPDATE_OK,  # subnet4-update
-                _CONFIG_GET_RUNNING_RESP,  # config-get (in _persist_config)
-                _OK,  # config-test
-                _OK,  # config-write
-            ),
-        ) as mock_post:
-            defaults = {"version": 4, "subnet_id": 42, "subnet_cidr": "10.0.0.0/24"}
-            defaults.update(kwargs)
-            self.client.subnet_update(**defaults)
-        update_call = next(
-            c.kwargs.get("json") or c[1]["json"]
-            for c in mock_post.call_args_list
-            if (c.kwargs.get("json") or c[1]["json"])["command"] == "subnet4-update"
+    def test_a_dhcpv6_subnet_replaces_its_dns_option_and_keeps_the_others(self):
+        existing = [
+            {"name": "dns-servers", "data": "2001:4860:4860::8888"},
+            {"name": "domain-search", "data": "example.com"},
+        ]
+        self.assertEqual(
+            self._options(existing, version=6, dns_servers=("2001:4860:4860::8844",)),
+            [{"name": "domain-search", "data": "example.com"}, {"name": "dns-servers", "data": "2001:4860:4860::8844"}],
         )
-        return update_call["arguments"]["subnet4"][0]
-
-    def test_preserves_relay_field(self):
-        """subnet_update must include the live relay config in the sent dict."""
-        sent = self._run_update()
-        self.assertEqual(sent.get("relay"), {"ip-addresses": ["10.0.0.254"]})
-
-    def test_preserves_allocator_field(self):
-        """subnet_update must include the live allocator field."""
-        sent = self._run_update()
-        self.assertEqual(sent.get("allocator"), "random")
-
-    def test_preserves_client_class_field(self):
-        """subnet_update must include the live client-class field."""
-        sent = self._run_update()
-        self.assertEqual(sent.get("client-class"), "premium")
-
-    def test_preserves_unmanaged_option_data(self):
-        """subnet_update must keep option-data entries not managed by the form."""
-        sent = self._run_update(dns_servers=["8.8.8.8"])
-        names = [o["name"] for o in sent.get("option-data", [])]
-        self.assertIn("domain-name", names)  # unmanaged — must survive
-
-    def test_replaces_managed_option_data(self):
-        """subnet_update must replace managed option-data (routers) with the new value."""
-        sent = self._run_update(gateway="10.0.0.2")
-        routers = [o for o in sent.get("option-data", []) if o["name"] == "routers"]
-        self.assertEqual(len(routers), 1)
-        self.assertEqual(routers[0]["data"], "10.0.0.2")
-
-    def test_removes_managed_option_when_cleared(self):
-        """An explicit empty gateway removes the routers option."""
-        sent = self._run_update(gateway="")
-        names = [o["name"] for o in sent.get("option-data", [])]
-        self.assertNotIn("routers", names)
-
-    def test_overrides_valid_lft_when_provided(self):
-        """subnet_update must set valid-lifetime to the new value when provided."""
-        sent = self._run_update(valid_lft=1800)
-        self.assertEqual(sent.get("valid-lifetime"), 1800)
-
-    def test_keeps_live_valid_lft_when_none(self):
-        """subnet_update must keep the live valid-lifetime when the caller passes None."""
-        sent = self._run_update(valid_lft=None)
-        self.assertEqual(sent.get("valid-lifetime"), 7200)  # from live subnet
-
-    def test_pools_replaced_when_provided(self):
-        """subnet_update must replace pools when argument is not None."""
-        sent = self._run_update(pools=["10.0.0.50-10.0.0.99"])
-        self.assertEqual(sent.get("pools"), [{"pool": "10.0.0.50-10.0.0.99"}])
-
-    def test_pools_kept_when_none(self):
-        """subnet_update must keep live pools when pools=None."""
-        sent = self._run_update(pools=None)
-        self.assertEqual(sent.get("pools"), [{"pool": "10.0.0.50-10.0.0.99"}])
-
-    def test_calls_subnet_get_first(self):
-        """subnet_update must call subnet{v}-get before subnet{v}-update."""
-        with patch.object(
-            self.client._session,
-            "post",
-            side_effect=_side_effects(
-                _SUBNET4_GET_WITH_RELAY_RESP,
-                _SUBNET_UPDATE_OK,
-                _CONFIG_GET_RUNNING_RESP,
-                _OK,
-                _OK,
-            ),
-        ) as mock_post:
-            self.client.subnet_update(version=4, subnet_id=42, subnet_cidr="10.0.0.0/24")
-        cmds = [(c.kwargs.get("json") or c[1]["json"])["command"] for c in mock_post.call_args_list]
-        self.assertLess(cmds.index("subnet4-get"), cmds.index("subnet4-update"))
-
-    def _run_update_v6(self, **kwargs):
-        """Run subnet_update for version=6, returning the args sent to subnet6-update."""
-        with patch.object(
-            self.client._session,
-            "post",
-            side_effect=_side_effects(
-                _SUBNET6_GET_WITH_DNS_RESP,  # subnet6-get
-                _SUBNET_UPDATE_OK_V6,  # subnet6-update
-                _CONFIG_GET_RUNNING_RESP_V6,  # config-get
-                _OK,  # config-test
-                _OK,  # config-write
-            ),
-        ) as mock_post:
-            defaults = {"version": 6, "subnet_id": 100, "subnet_cidr": "2001:db8::/48"}
-            defaults.update(kwargs)
-            self.client.subnet_update(**defaults)
-        update_call = next(
-            c.kwargs.get("json") or c[1]["json"]
-            for c in mock_post.call_args_list
-            if (c.kwargs.get("json") or c[1]["json"])["command"] == "subnet6-update"
-        )
-        return update_call["arguments"]["subnet6"][0]
-
-    def test_preserves_unmanaged_option_data_v6(self):
-        """subnet_update v6 must keep option-data entries not managed by the form."""
-        sent = self._run_update_v6(dns_servers=["2001:4860:4860::8844"])
-        names = [o["name"] for o in sent.get("option-data", [])]
-        self.assertIn("domain-search", names)  # unmanaged — must survive
-
-    def test_replaces_dns_servers_option_v6(self):
-        """subnet_update v6 must replace dns-servers option-data with the new value."""
-        sent = self._run_update_v6(dns_servers=["2001:4860:4860::8844"])
-        dns = [o for o in sent.get("option-data", []) if o["name"] == "dns-servers"]
-        self.assertEqual(len(dns), 1)
-        self.assertEqual(dns[0]["data"], "2001:4860:4860::8844")
-
-
-# ---------------------------------------------------------------------------
-# TestPersistConfigMalformedArguments
-# ---------------------------------------------------------------------------
-
-
-class TestPersistConfigMalformedArguments(TestCase):
-    """_persist_config degrades gracefully when config-get arguments is null/malformed."""
-
-    def setUp(self):
-        self.client = KeaClient(url="http://kea:8000")
-
-    def test_null_arguments_does_not_raise_attribute_error(self):
-        """config-get returning null arguments should not crash _persist_config."""
-        call_count = [0]
-
-        def _side(url, **kwargs):
-            cmd = kwargs.get("json", {}).get("command", "")
-            call_count[0] += 1
-            if cmd == "config-get":
-                return _mock_http_response([{"result": 0, "arguments": None}])
-            if cmd == "config-write":
-                return _mock_http_response([{"result": 0, "text": "Config written successfully!"}])
-            return _mock_http_response(_OK)
-
-        with patch.object(self.client._session, "post", side_effect=_side):
-            self.client._persist_config("dhcp4")
 
 
 class TestKeaClientContextManager(TestCase):
@@ -2953,11 +2167,7 @@ class TestLeaseGetAllPagination(TestCase):
 
 
 class TestPersistConfigFlag(TestCase):
-    """Tests that persist_config=False skips config-write in _persist_config."""
-
-    def _cmds(self, mock_post):
-        payloads = [(c.kwargs.get("json") or c[1]["json"]) for c in mock_post.call_args_list]
-        return [p["command"] for p in payloads]
+    """Tests that persist_config=False skips the persist step."""
 
     def test_default_persist_config_is_true(self):
         """KeaClient defaults to persist_config=True."""
@@ -2981,12 +2191,12 @@ class TestPersistConfigFlag(TestCase):
         cloned = client.clone()
         self.assertTrue(cloned.persist_config)
 
-    @patch("requests.Session.post")
-    def test_persist_config_false_skips_config_write_in_persist_config_method(self, mock_post):
-        """_persist_config() makes no HTTP calls when persist_config=False."""
+    def test_persist_config_false_sends_no_persist_step(self):
+        """persist() sends nothing when persist_config=False."""
         client = KeaClient(url="http://kea:8000", persist_config=False)
-        client._persist_config("dhcp4")
-        mock_post.assert_not_called()
+        with stub_kea({}) as kea:
+            self.assertEqual(client.persist(4).persistence, "not-requested")
+        self.assertEqual(kea.commands(), [])
 
 
 # ---------------------------------------------------------------------------
@@ -3075,27 +2285,3 @@ class TestConfigPhaseCommand(TestCase):
         with stub_kea({}) as kea, self.assertRaises(ValueError):
             KeaClient(url="http://kea:8000")._config_phase_command("config-set", "dhcp4")
         self.assertEqual(kea.commands(), [])
-
-
-class TestPersistConfigRespShape(TestCase):
-    """_persist_config handles an unexpected dict resp from command() (line 1254)."""
-
-    def setUp(self):
-        self.client = KeaClient(url="http://kea:8000")
-
-    def test_command_returns_dict_falls_through_to_config_write(self):
-        """When command() returns a plain dict for config-get, _persist_config still calls config-write."""
-        cmds_seen = []
-
-        def mock_command(cmd, **kwargs):
-            cmds_seen.append(cmd)
-            if cmd == "config-get":
-                # Return a dict (not a list) — hits the else branch at line 1254
-                return {"result": 0, "arguments": {"Dhcp4": {}}}
-            # config-test and config-write succeed normally
-            return [{"result": 0, "text": "OK"}]
-
-        with patch.object(self.client, "command", side_effect=mock_command):
-            self.client._persist_config("dhcp4")
-        self.assertIn("config-get", cmds_seen)
-        self.assertIn("config-write", cmds_seen)
