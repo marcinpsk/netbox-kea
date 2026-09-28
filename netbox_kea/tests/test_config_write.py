@@ -23,7 +23,7 @@ from netbox_kea import config_write
 from netbox_kea.config_write import ConfigChangeOutcome, ConfigChangeRejected, SubnetAddOutcome
 from netbox_kea.constants import Family
 from netbox_kea.dhcp_options import DHCPOptionConflict, DHCPOptionNameChange, parse_dhcp_options
-from netbox_kea.kea import CandidateTargetMissing, NewSubnetFields, SharedNetworkEdit, SubnetEdit
+from netbox_kea.kea import CandidateTargetMissing, SharedNetworkEdit, SubnetEdit, SubnetFields
 from netbox_kea.server_configuration import parse_pool
 from netbox_kea.subnet_catalogue import CatalogueUnavailable, SubnetIdentityConflict
 
@@ -678,14 +678,14 @@ _NEW = {4: "10.0.8.0/24", 6: "2001:db8:8::/64"}
 _FAMILIES: tuple[Family, ...] = (4, 6)
 _ELSEWHERE = {4: "10.0.9.0/24", 6: "2001:db8:9::/64"}
 _FIELDS = {
-    4: NewSubnetFields(
+    4: SubnetFields(
         pools=("10.0.8.10-10.0.8.20",),
         gateway="10.0.8.1",
         dns_servers=("192.0.2.53",),
         ntp_servers=("192.0.2.123",),
         ddns_qualifying_suffix="example.org",
     ),
-    6: NewSubnetFields(
+    6: SubnetFields(
         pools=("2001:db8:8::100-2001:db8:8::1ff",),
         gateway="",
         dns_servers=("2001:db8::53",),
@@ -1183,11 +1183,13 @@ _LIVE = {
 }
 _SUBNET_EDIT = {
     4: SubnetEdit(
-        pools=("10.0.20.100-10.0.20.110",),
-        gateway="10.0.20.254",
-        dns_servers=("192.0.2.53",),
-        ntp_servers=(),
-        ddns_qualifying_suffix="",
+        fields=SubnetFields(
+            pools=("10.0.20.100-10.0.20.110",),
+            gateway="10.0.20.254",
+            dns_servers=("192.0.2.53",),
+            ntp_servers=(),
+            ddns_qualifying_suffix="",
+        ),
         valid_lifetime=7200,
         min_valid_lifetime=None,
         max_valid_lifetime=None,
@@ -1195,11 +1197,13 @@ _SUBNET_EDIT = {
         rebind_timer=None,
     ),
     6: SubnetEdit(
-        pools=("2001:db8:20::200-2001:db8:20::2ff",),
-        gateway="",
-        dns_servers=("2001:db8::54",),
-        ntp_servers=("2001:db8::123",),
-        ddns_qualifying_suffix="v6.example.org.",
+        fields=SubnetFields(
+            pools=("2001:db8:20::200-2001:db8:20::2ff",),
+            gateway="",
+            dns_servers=("2001:db8::54",),
+            ntp_servers=("2001:db8::123",),
+            ddns_qualifying_suffix="v6.example.org.",
+        ),
         valid_lifetime=None,
         min_valid_lifetime=None,
         max_valid_lifetime=None,
@@ -1268,18 +1272,26 @@ class SubnetEditTests(TestCase):
             members={} if network is None else {20: network},
         )
 
+    def _call(self, daemon: SubnetDaemon, network: str | None) -> ConfigChangeOutcome:
+        """Edit Subnet 20 as the operator saw it: in the Shared Network that the daemon holds before the call."""
+        return config_write.edit_subnet(
+            self.server,
+            daemon.family,
+            20,
+            _EDITED[daemon.family],
+            _SUBNET_EDIT[daemon.family],
+            shown_network=daemon.members.get(20),
+            shared_network=network,
+        )
+
     def _edit(self, daemon: SubnetDaemon, network: str | None) -> tuple[ConfigChangeOutcome, list[str]]:
         with stub_kea(daemon.responses()) as kea:
-            outcome = config_write.edit_subnet(
-                self.server, daemon.family, 20, _EDITED[daemon.family], _SUBNET_EDIT[daemon.family], network
-            )
+            outcome = self._call(daemon, network)
         return outcome, kea
 
     def _rejection(self, daemon: SubnetDaemon, network: str | None):
         with stub_kea(daemon.responses()) as kea, self.assertRaises(ConfigChangeRejected) as raised:
-            config_write.edit_subnet(
-                self.server, daemon.family, 20, _EDITED[daemon.family], _SUBNET_EDIT[daemon.family], network
-            )
+            self._call(daemon, network)
         return raised.exception, kea
 
     @staticmethod
@@ -1362,6 +1374,35 @@ class SubnetEditTests(TestCase):
                 self.assertEqual(rejection.reason, "not-sent")
                 self.assertEqual(rejection.diagnostics, (config_write.SUBNET_LIST_UNCONFIRMED,))
                 self.assertEqual(kea.commands(), _scope(4))
+
+    def test_a_membership_that_differs_from_the_one_the_operator_saw_sends_nothing(self):
+        for version in _FAMILIES:
+            changed = (
+                f"The Shared Network of Subnet 20 ({_EDITED[version]}) changed in Kea. Reload the page and try again."
+            )
+            for shown, live, target in (
+                # Another writer moved the Subnet, and the operator saves the fields only.
+                ("office", "lab", "office"),
+                (None, "office", None),
+                ("office", None, "office"),
+                ("office", "lab", None),
+            ):
+                with self.subTest(version=version, shown=shown, live=live, target=target):
+                    daemon = self._daemon(version, live)
+                    with stub_kea(daemon.responses()) as kea, self.assertRaises(ConfigChangeRejected) as raised:
+                        config_write.edit_subnet(
+                            self.server,
+                            version,
+                            20,
+                            _EDITED[version],
+                            _SUBNET_EDIT[version],
+                            shown_network=shown,
+                            shared_network=target,
+                        )
+                    self.assertEqual(raised.exception.reason, "not-sent")
+                    self.assertEqual(raised.exception.diagnostics, (changed,))
+                    self.assertEqual(kea.commands(), _scope(version))
+                    self.assertEqual(daemon.members, {20: live} if live else {})
 
     def test_a_missing_target_shared_network_sends_nothing(self):
         for version in _FAMILIES:

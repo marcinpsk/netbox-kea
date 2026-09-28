@@ -463,8 +463,12 @@ class SharedNetworkEdit:
 
 
 @dataclass(frozen=True)
-class NewSubnetFields:
-    """The fields of a new Subnet that the add form sets. An empty value leaves the field out."""
+class SubnetFields:
+    """The Subnet fields that the add form and the edit form both set.
+
+    An empty value leaves the field out of a new Subnet. It removes the field from an edited Subnet, except a DHCP
+    Option value that the edit form cannot show.
+    """
 
     pools: tuple[str, ...]
     gateway: str
@@ -475,17 +479,12 @@ class NewSubnetFields:
 
 @dataclass(frozen=True)
 class SubnetEdit:
-    """The Subnet fields that the edit form manages.
+    """The Subnet fields that the edit form manages: the *fields* of both forms, the lifetimes and the timers.
 
-    An empty value removes the field, except a DHCP Option value that the form cannot show. A lifetime or a timer
-    of None keeps the live value.
+    A lifetime or a timer of None keeps the live value.
     """
 
-    pools: tuple[str, ...]
-    gateway: str
-    dns_servers: tuple[str, ...]
-    ntp_servers: tuple[str, ...]
-    ddns_qualifying_suffix: str
+    fields: SubnetFields
     valid_lifetime: int | None
     min_valid_lifetime: int | None
     max_valid_lifetime: int | None
@@ -508,18 +507,19 @@ class SubnetDefinition:
         subnet = json.loads(self.entry)
         # Kea adds a read-only metadata key to some replies, so the update does not send it back.
         subnet.pop("metadata", None)
+        fields = edit.fields
         options = subnet.get("option-data", [])
         if self.family == 4:
-            options = _replace_managed_option(options, 4, "gateway", edit.gateway, single_value=True)
-        options = _replace_managed_option(options, self.family, "dns_servers", ", ".join(edit.dns_servers))
+            options = _replace_managed_option(options, 4, "gateway", fields.gateway, single_value=True)
+        options = _replace_managed_option(options, self.family, "dns_servers", ", ".join(fields.dns_servers))
         subnet["option-data"] = _replace_managed_option(
-            options, self.family, "ntp_servers", ", ".join(edit.ntp_servers)
+            options, self.family, "ntp_servers", ", ".join(fields.ntp_servers)
         )
-        if edit.ddns_qualifying_suffix:
-            subnet["ddns-qualifying-suffix"] = edit.ddns_qualifying_suffix
+        if fields.ddns_qualifying_suffix:
+            subnet["ddns-qualifying-suffix"] = fields.ddns_qualifying_suffix
         else:
             subnet.pop("ddns-qualifying-suffix", None)
-        subnet["pools"] = [{"pool": pool} for pool in edit.pools]
+        subnet["pools"] = [{"pool": pool} for pool in fields.pools]
         # A Subnet takes the *-lifetime keys; valid-lft is a lease field that Kea refuses here.
         for key, value in (
             ("valid-lifetime", edit.valid_lifetime),
@@ -1345,7 +1345,7 @@ class KeaClient:
 
         return _configured_subnet_id_for_network(subnet_collections, version, network)
 
-    def subnet_add(self, version: Family, subnet_id: int, cidr: str, fields: NewSubnetFields) -> None:
+    def subnet_add(self, version: Family, subnet_id: int, cidr: str, fields: SubnetFields) -> None:
         """Send one ``subnet{v}-add`` for the Subnet *cidr* with *subnet_id*. It does not persist.
 
         Raises:
@@ -2105,11 +2105,10 @@ class KeaException(Exception):
 
 
 class PartialPersistError(KeaException):
-    """Raised when a Kea mutation is live but was not written to disk.
+    """A live Kea change that was not written to disk, from the per-command persist step that config_write replaced.
 
-    The change is applied in memory but will be lost on Kea restart.  This class
-    reports a failed config-write; subclasses report the other causes.
-    The original exception from the failed phase is stored in ``__cause__``.
+    No write path raises it now. KeaClient.persist reports a failed persist step as a Persistence value. #207
+    deletes this class.
     """
 
     def __init__(self, service: str, cause: Exception) -> None:
@@ -2123,14 +2122,9 @@ class PartialPersistError(KeaException):
 
 
 class KeaConfigPersistError(PartialPersistError):
-    """Raised when ``_persist_config`` rejects the already-live config via ``config-test``.
+    """A live Kea change whose running configuration config-test rejected, so config-write was not sent.
 
-    The mutation IS already applied to the running daemon (the change is live in
-    memory) but config-test found the resulting config invalid, so config-write
-    was skipped.  The change **will be lost on daemon restart**.
-
-    Inherits from :exc:`PartialPersistError` because a caller must treat both the
-    same way: the change is live but not written to disk.
+    No write path raises it now. #207 deletes this class together with :exc:`PartialPersistError`.
     """
 
     def __init__(self, service: str, cause: Exception) -> None:
