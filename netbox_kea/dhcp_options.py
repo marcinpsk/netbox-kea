@@ -36,24 +36,30 @@ class DHCPOption:
         return self.match_key, frozenset(self.client_classes)
 
     def form_initial(self) -> dict[str, Any]:
-        """Return editable values and the stable identity of this existing row."""
-        identity: dict[str, Any] = {
+        """Return editable values, and the identity and value that the operator saw for this existing row."""
+        original: dict[str, Any] = {
             key: value
             for key, value in {
                 "space": self.space,
                 "code": self.code,
                 "name": self.name,
+                "data": self.data,
+                "always-send": self.always_send,
             }.items()
             if value is not None
         }
         if self.client_classes:
-            identity["client-classes"] = list(self.client_classes)
+            original["client-classes"] = list(self.client_classes)
         return {
             "name": self.name or "",
             "data": self.data,
             "always_send": bool(self.always_send),
-            "original_option": identity,
+            "original_option": original,
         }
+
+    def same_value(self, other: DHCPOption) -> bool:
+        """Return whether both options send the same data with the same always-send flag."""
+        return (self.data, self.always_send) == (other.data, other.always_send)
 
     def matches_intent(self, intended: DHCPOption, *, exact_space: bool = False) -> bool:
         """Return whether this resolved Option is the target of a submitted intent.
@@ -147,17 +153,26 @@ def parse_dhcp_options(entries: Any) -> tuple[DHCPOption, ...]:
 
 
 def merge_option_form_rows(rows: list[dict[str, Any]], existing: Any) -> list[dict[str, Any]]:
-    """Merge exposed edits onto fresh raw options selected by their typed identity."""
+    """Merge exposed edits onto fresh raw options selected by their typed identity.
+
+    Raises:
+        DHCPOptionConflict: If a row's option is missing, ambiguous, submitted twice, or has a changed live value.
+        DHCPOptionNameChange: If a row renames a coded DHCP Option.
+
+    """
     parsed = parse_dhcp_options(existing)
     used: set[tuple[tuple[str | None, int | str | None], frozenset[str]]] = set()
     result = []
     for row in rows:
-        identity = row.get("original_option")
-        if identity is not None:
-            key = parse_dhcp_option(identity).assignment_key
+        original = row.get("original_option")
+        if original is not None:
+            seen = parse_dhcp_option(original)
+            key = seen.assignment_key
             matches = [index for index, option in enumerate(parsed) if option.assignment_key == key]
             if len(matches) != 1 or key in used:
                 raise DHCPOptionConflict("An existing DHCP Option is missing, ambiguous, or submitted twice.")
+            if not parsed[matches[0]].same_value(seen):
+                raise DHCPOptionConflict("The live value of a DHCP Option changed. Reload the form before saving.")
             used.add(key)
             option = dict(existing[matches[0]])
         else:

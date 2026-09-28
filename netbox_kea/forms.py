@@ -1319,7 +1319,7 @@ class SubnetOptionsForm(forms.Form):
 
 
 class ConfigurationOptionsForm(SubnetOptionsForm):
-    """Edit a configuration option while retaining its original identity."""
+    """Edit a configuration option while retaining its original identity and the value that the operator saw."""
 
     original_option = forms.JSONField(required=False, widget=forms.HiddenInput)
 
