@@ -212,7 +212,7 @@ class TestReservationLeaseRelationship(_ViewTestBase):
                 return {"result": 1, "text": "lease database error"}
             return {"result": 3}
 
-        _response, rows, _kea = self._rows(
+        _response, rows, kea = self._rows(
             {
                 "reservation-get-page": _res_page(
                     [
@@ -222,6 +222,11 @@ class TestReservationLeaseRelationship(_ViewTestBase):
                 ),
                 "lease4-get-by-state": leases,
             }
+        )
+
+        self.assertCountEqual(
+            [body["arguments"]["subnet-id"] for body in kea.bodies("lease4-get-by-state")],
+            [20, 21],
         )
 
         by_subnet = {row["subnet_id"]: row["has_active_lease"] for row in rows}

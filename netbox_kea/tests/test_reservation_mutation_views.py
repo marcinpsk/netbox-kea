@@ -159,6 +159,7 @@ class TestReservationMutationViews(_ViewTestBase):
 
         self.assertEqual(response.status_code, 302)
         self.assertIn("reservation-add", kea.commands())
+        self.assertNotIn("ip-address", kea.bodies("reservation-add")[0]["arguments"]["reservation"])
         warnings = [
             str(message) for message in get_messages(response.wsgi_request) if message.level == messages.WARNING
         ]
