@@ -26,7 +26,6 @@ from .reservations import (
     ReservationDiagnostic,
     ReservationIdentity,
     ReservationMutationResult,
-    ReservationPersistence,
     ReservationScope,
     ReservationSnapshot,
     _exact_reservation,
@@ -981,20 +980,6 @@ class KeaClient:
         if not response or not isinstance(response[0], dict) or response[0].get("result") != 0:
             raise RuntimeError(f"{command} returned a malformed success response.")
 
-    def _reservation_mutation_persistence(
-        self,
-        version: int,
-    ) -> ReservationPersistence:
-        """Persist one confirmed Reservation mutation and report its outcome."""
-        if not self.persist_config:
-            return "not-requested"
-        try:
-            self._persist_config(f"dhcp{version}")
-        except (PartialPersistError, RuntimeError):
-            logger.warning("Could not persist a confirmed DHCPv%s Reservation mutation", version, exc_info=True)
-            return "failed"
-        return "persisted"
-
     def _verify_reservation(
         self,
         intended: Reservation | None,
@@ -1026,12 +1011,13 @@ class KeaClient:
             reservation.family,
             {"reservation": raw},
         )
-        persistence = self._reservation_mutation_persistence(reservation.family)
+        persisted = self.persist(reservation.family)
         return ReservationMutationResult(
             previous=None,
             intended=reservation,
             application="applied",
-            persistence=persistence,
+            persistence=persisted.persistence,
+            persistence_diagnostics=persisted.diagnostics,
             verification=self._verify_reservation(reservation, reservation, catalogue),
         )
 
@@ -1082,12 +1068,13 @@ class KeaClient:
             target.family,
             {"reservation": merged},
         )
-        persistence = self._reservation_mutation_persistence(target.family)
+        persisted = self.persist(target.family)
         return ReservationMutationResult(
             previous=current,
             intended=intended,
             application="applied",
-            persistence=persistence,
+            persistence=persisted.persistence,
+            persistence_diagnostics=persisted.diagnostics,
             verification=self._verify_reservation(intended, target, catalogue),
         )
 
@@ -1110,12 +1097,13 @@ class KeaClient:
                 "identifier": target.identity.value,
             },
         )
-        persistence = self._reservation_mutation_persistence(target.family)
+        persisted = self.persist(target.family)
         return ReservationMutationResult(
             previous=current,
             intended=None,
             application="applied",
-            persistence=persistence,
+            persistence=persisted.persistence,
+            persistence_diagnostics=persisted.diagnostics,
             verification=self._verify_reservation(None, target, catalogue),
         )
 
