@@ -1638,7 +1638,7 @@ class TestSyncPoolToNetboxIPRange(TestCase):
     """sync_pool_to_netbox_ip_range creates/updates NetBox IPRange objects."""
 
     def _sync(self, pool_str, subnet_cidr, vrf=None):
-        from netbox_kea.server_configuration import parse_pool
+        from netbox_kea.pools import parse_pool
         from netbox_kea.sync import sync_pool_to_netbox_ip_range
 
         subnet = ipaddress.ip_network(subnet_cidr)
@@ -1687,7 +1687,7 @@ class TestSyncPoolToNetboxIPRange(TestCase):
 
     def test_dash_pool_takes_the_prefix_length_of_the_subnet_network(self):
         from netbox_kea.kea import subnet_network
-        from netbox_kea.server_configuration import parse_pool
+        from netbox_kea.pools import parse_pool
         from netbox_kea.sync import sync_pool_to_netbox_ip_range
 
         subnet = subnet_network("10.9.1.5/22", 4)
@@ -1779,7 +1779,7 @@ class TestDuplicateRowsListUrl(TestCase):
         return sorted(row.pk for row in response.context["table"].data)
 
     def _range_error(self, vrf):
-        from netbox_kea.server_configuration import parse_pool
+        from netbox_kea.pools import parse_pool
         from netbox_kea.sync import DuplicateNetBoxRowsError, sync_pool_to_netbox_ip_range
 
         subnet = ipaddress.ip_network("192.168.13.0/24")

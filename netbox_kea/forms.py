@@ -16,6 +16,7 @@ from .constants import Family, IPNetworkValue
 from .dhcp_options import parse_dhcp_option
 from .kea import SharedNetworkEdit, subnet_network
 from .models import Server
+from .pools import Pool, parse_pool
 from .reservation_transfer import MAX_DOCUMENT_BYTES as MAX_TRANSFER_DOCUMENT_BYTES
 from .reservations import (
     ReservationCapabilities,
@@ -23,7 +24,6 @@ from .reservations import (
     reservation_identifier_choices,
     reservation_identifier_types,
 )
-from .server_configuration import Pool, parse_pool
 from .subnet_catalogue import MAX_SUBNET_ID, MIN_SUBNET_ID, VerifiedSubnet
 from .utilities import is_hex_string, parse_delegated_prefixes
 

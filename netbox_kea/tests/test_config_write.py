@@ -25,7 +25,7 @@ from netbox_kea.config_write import ConfigChangeOutcome, ConfigChangeRejected, S
 from netbox_kea.constants import Family
 from netbox_kea.dhcp_options import DHCPOptionConflict, DHCPOptionNameChange, parse_dhcp_options
 from netbox_kea.kea import CandidateTargetMissing, SharedNetworkEdit, SubnetEdit, SubnetFields
-from netbox_kea.server_configuration import parse_pool
+from netbox_kea.pools import parse_pool
 from netbox_kea.subnet_catalogue import CatalogueUnavailable, SubnetIdentityConflict
 
 from .kea_stub import (

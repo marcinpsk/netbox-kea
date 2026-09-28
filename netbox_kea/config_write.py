@@ -32,7 +32,7 @@ from .kea import (
     SubnetFields,
     subnet_network,
 )
-from .server_configuration import Pool
+from .pools import Pool
 from .subnet_catalogue import (
     CatalogueUnavailable,
     MutationScope,
