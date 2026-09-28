@@ -420,13 +420,13 @@ def _sync_one_server(
     sync_ip_ranges: bool,
     max_leases: int,
     stats: dict[str, int],
-    conflict_ips: set[str] | None = None,
     *,
+    conflict_ips: set[str],
     duplicates: list[DuplicateNetBoxRowsError],
 ) -> None:
     """Sync a single server's leases, reservations, prefixes, and IP ranges.
 
-    *conflict_ips* is an optional caller-owned set that collects the foreign NetBox
+    *conflict_ips* is a caller-owned set that collects the foreign NetBox
     IPs this run refused to overwrite, so the caller can name them in the job
     summary.  One set per server, shared by both phases and both IP versions: a
     foreign IP that has *both* a lease and a reservation is one conflict for the
@@ -441,8 +441,6 @@ def _sync_one_server(
     all_synced: list[dict | Reservation] = []
     # Records the job deliberately did not write, whose addresses cleanup must keep.
     protected: list[dict | Reservation] = []
-    if conflict_ips is None:
-        conflict_ips = set()
     # Cleanup is only safe when both sources contributed, otherwise we risk
     # removing IPs that exist in the source we didn't sync.
     cleanup_safe = sync_leases and sync_reservations
