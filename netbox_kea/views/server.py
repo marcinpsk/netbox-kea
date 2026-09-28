@@ -16,8 +16,7 @@ from ..models import Server
 from ..utilities import (
     format_duration,
 )
-from ._base import _option_payload
-from .subnets import _diagnostic_messages
+from ._base import _diagnostic_messages, _option_payload
 
 logger = logging.getLogger(__name__)
 
