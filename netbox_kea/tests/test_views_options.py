@@ -24,6 +24,7 @@ rejection; the Kea reply of each case lives in ``utils._read_modify_write_cases`
 """
 
 import copy
+import html
 import json
 import re
 
@@ -214,8 +215,17 @@ class TestSubnetOptionsView(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(
             response.context["formset"].initial,
-            [{"name": "", "data": "opaque", "always_send": True, "original_option": {"code": 222}}],
+            [
+                {
+                    "name": "",
+                    "data": "opaque",
+                    "always_send": True,
+                    "original_option": {"code": 222, "data": "opaque", "always-send": True},
+                }
+            ],
         )
+        hidden = re.search(r'name="form-0-original_option" value="([^"]*)"', response.content.decode())
+        self.assertEqual(json.loads(html.unescape(hidden[1])), {"code": 222, "data": "opaque", "always-send": True})
 
     def test_get_refuses_a_subnet_that_kea_did_not_verify(self):
         """A Subnet options change needs a Verified Subnet, so the form is not offered without one."""
@@ -1226,6 +1236,22 @@ class TestConfigurationOptionIdentity(_ViewTestBase):
                     self.assertNotIn("config-set", kea.commands())
                     messages = [str(message) for message in django_messages.get_messages(response.wsgi_request)]
                     self.assertIn("DHCP Options changed or are ambiguous. Reload the form before saving.", messages)
+
+    def test_a_stale_value_in_the_form_is_a_conflict_before_any_write(self):
+        seen = [{"code": 6, "data": "198.18.0.53"}, {"code": 42, "data": "198.18.0.123"}]
+        live = [{"code": 6, "data": "198.18.0.54"}, seen[1]]
+        for scope in ("server", "subnet"):
+            with self.subTest(scope=scope):
+                with _persist_stub(self._config(scope, seen)):
+                    data = self._submitted(self.client.get(self._url(scope)))
+                data["form-1-data"] = "198.18.0.124"
+                with _persist_stub(self._config(scope, live)) as kea:
+                    response = self.client.post(self._url(scope), data)
+                self.assertEqual(response.status_code, 302)
+                self.assertNotIn("config-test", kea.commands())
+                self.assertNotIn("config-set", kea.commands())
+                messages = [str(message) for message in django_messages.get_messages(response.wsgi_request)]
+                self.assertIn("DHCP Options changed or are ambiguous. Reload the form before saving.", messages)
 
     def test_class_specific_options_keep_distinct_values_and_metadata(self):
         options = [
