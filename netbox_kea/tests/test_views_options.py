@@ -217,16 +217,45 @@ class TestSubnetOptionsView(_ViewTestBase):
             [{"name": "", "data": "opaque", "always_send": True, "original_option": {"code": 222}}],
         )
 
-    def test_get_renders_without_the_subnet_cmds_hook(self):
-        """The editor reads the configuration snapshot, so a missing hook does not block it."""
+    def test_get_refuses_a_subnet_that_kea_did_not_verify(self):
+        """A Subnet options change needs a Verified Subnet, so the form is not offered without one."""
         responses = _catalogue_responses_for_subnets(4, [_SUBNET4])
-        responses["subnet4-get"] = {"result": 2, "text": "'subnet4-get' command not supported."}
-        with stub_kea(responses) as kea:
+        responses["subnet4-list"] = {"result": 2, "text": "'subnet4-list' command not supported."}
+        with stub_kea(responses):
             response = self.client.get(self._url())
 
-        self.assertEqual(response.status_code, 200)
-        self.assertIn("8.8.8.8", response.content.decode())
-        self.assertNotIn("subnet4-get", kea.commands())
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk]))
+        self.assertIn(
+            (
+                django_messages.ERROR,
+                (
+                    "Kea did not confirm the identity of Subnet 42, because the subnet_cmds hook is not loaded. "
+                    "NetBox changes the DHCP Options of a Subnet only after Kea confirms its identity."
+                ),
+            ),
+            self._messages(response),
+        )
+
+    def test_post_without_the_subnet_cmds_hook_is_rejected_before_config_set(self):
+        responses = {"subnet4-list": {"result": 2, "text": "'subnet4-list' command not supported."}}
+        with _persist_stub(_EMPTY_OPTIONS_CONFIG_GET, **responses) as kea:
+            response = self.client.post(self._url(), self._post_data())
+
+        self._assert_redirect_to_integer_pk(response)
+        self.assertEqual(
+            self._messages(response),
+            [
+                (
+                    django_messages.ERROR,
+                    (
+                        "The change was not sent to Kea. NetBox could not confirm Kea's Subnet list, so it did not "
+                        "send the change. Try again later."
+                    ),
+                )
+            ],
+        )
+        self.assertNotIn("config-set", kea.commands())
 
     def test_get_refuses_an_incomplete_subnet_instead_of_offering_a_filtered_list(self):
         """Saving a filtered list would delete the entry the parser omitted."""
@@ -246,17 +275,24 @@ class TestSubnetOptionsView(_ViewTestBase):
         with stub_kea(_catalogue_responses_for_subnets(4, [_SUBNET4])) as kea:
             self.client.get(reverse("plugins:netbox_kea:server_option_def4", args=[self.server.pk]))
             self.client.get(self._url())
+            warm = kea.commands().count("config-get")
             self.client.get(self._url())
 
-        self.assertEqual(kea.commands().count("config-get"), 3)
+        self.assertEqual(kea.commands().count("config-get"), warm + 1)
 
     def test_get_unavailable_configuration_shows_diagnostic_and_redirects(self):
-        with stub_kea({"config-get": requests.ConnectionError("unreachable")}):
+        unreachable = requests.ConnectionError("unreachable")
+        with stub_kea({"subnet4-list": unreachable, "config-get": unreachable}):
             response = self.client.get(self._url())
 
         self.assertEqual(response.status_code, 302)
         texts = [str(message) for message in django_messages.get_messages(response.wsgi_request)]
         self.assertIn("Kea configuration facts are unavailable.", texts)
+        self.assertIn(
+            "Kea did not confirm the identity of Subnet 42. "
+            "NetBox changes the DHCP Options of a Subnet only after Kea confirms its identity.",
+            texts,
+        )
 
     def test_post_runs_the_read_modify_write_on_the_verified_subnet(self):
         """POST opens the Subnet scope, then runs the read-modify-write and redirects."""
@@ -1068,9 +1104,9 @@ class TestSubnetOptionsSharedNetwork(_ViewTestBase):
 
     def test_get_subnet_in_shared_network(self):
         """A subnet found inside a shared-network is located and rendered."""
-        with stub_kea(
-            _catalogue_responses_for_subnets(4, [], shared_networks=[{"name": "sn", "subnet4": [self._SUBNET]}])
-        ):
+        responses = _catalogue_responses_for_subnets(4, [], shared_networks=[{"name": "sn", "subnet4": [self._SUBNET]}])
+        responses["subnet4-list"] = _identities(responses["config-get"])["subnet4-list"]
+        with stub_kea(responses):
             response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "10.99.0.0/24")
@@ -1116,7 +1152,7 @@ class TestSubnetOptionsGetClientError(_ViewTestBase):
             response = self.client.get(url, follow=True)
         self.assertEqual(response.status_code, 200)
         msgs = [str(m) for m in response.context["messages"]]
-        self.assertTrue(any("could not load subnet configuration" in m.lower() for m in msgs))
+        self.assertTrue(any("did not confirm the identity of subnet 1." in m.lower() for m in msgs))
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)

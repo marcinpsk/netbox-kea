@@ -11,7 +11,6 @@ from utilities.views import register_model_view
 
 from .. import config_write, forms, server_configuration, tables
 from ..constants import Family
-from ..kea import SharedNetworkEdit
 from ..models import Server
 from ..utilities import check_dhcp_enabled
 from ._base import (
@@ -288,16 +287,7 @@ class BaseServerSharedNetworkEditView(_KeaChangeMixin, ConditionalLoginRequiredM
                 },
             )
 
-        cd = form.cleaned_data
-        edit = SharedNetworkEdit(
-            description=cd.get("description") or "",
-            interface=cd.get("interface") or "",
-            relay_addresses=tuple(
-                address.strip() for address in (cd["relay_addresses"] or "").split(",") if address.strip()
-            ),
-            dns_servers=tuple(address for address in cd["dns_servers"].split(",") if address),
-            ntp_servers=tuple(address for address in cd["ntp_servers"].split(",") if address),
-        )
+        edit = form.to_edit()
         _run_config_change(
             request,
             f"Shared network '{network_name}' updated.",
