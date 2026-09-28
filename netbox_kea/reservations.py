@@ -8,7 +8,7 @@ from collections.abc import Collection, Mapping
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Generic, Literal, TypeVar, cast
 
-from .constants import Family, IPAddressValue
+from .constants import Family, IPAddressValue, Persistence
 from .dhcp_options import DHCPOption, parse_dhcp_options
 
 if TYPE_CHECKING:
@@ -277,7 +277,6 @@ class ClearValue:
 
 FieldChange = Unchanged | SetValue[T] | ClearValue
 UNCHANGED = Unchanged()
-ReservationPersistence = Literal["persisted", "failed", "not-requested"]
 
 
 @dataclass(frozen=True)
@@ -297,7 +296,8 @@ class ReservationMutationResult:
     previous: Reservation | None
     intended: Reservation | None
     application: Literal["applied"]
-    persistence: ReservationPersistence
+    persistence: Persistence
+    persistence_diagnostics: tuple[str, ...]
     verification: Literal["verified", "failed"]
 
 
