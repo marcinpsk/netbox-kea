@@ -23,6 +23,7 @@ import threading
 from collections import deque
 from collections.abc import Sequence
 from contextlib import contextmanager
+from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
 from typing import Any, cast
@@ -30,6 +31,7 @@ from unittest.mock import patch
 
 import requests
 
+from netbox_kea.constants import Family
 from netbox_kea.reservations import (
     GlobalReservationScope,
     IdentifierType,
@@ -433,6 +435,135 @@ def _catalogue_responses_for_subnets(
             },
         },
     }
+
+
+RUN = "run"
+
+
+@dataclass(frozen=True)
+class Applied:
+    """A scripted answer of ``SubnetDaemon``: run the command, then answer with *answer* (a payload or an exception)."""
+
+    answer: Any
+
+
+class SubnetDaemon:
+    """One Kea daemon that holds Subnets and Shared Networks and answers the Subnet commands like Kea 3.2.0.
+
+    ``script`` sets how the next calls of a command end, one entry per call. ``RUN`` runs the command. A payload or
+    an exception answers without running it. ``Applied(answer)`` runs it and then answers with *answer*. After the
+    script, each call runs. ``before`` queues a change of another writer that runs just before the next call.
+    """
+
+    def __init__(self, family: Family, subnets: Sequence[dict[str, Any]] = (), networks: Sequence[str] = ()) -> None:
+        self.family = family
+        self.subnets = [dict(subnet) for subnet in subnets]
+        self.networks = list(networks)
+        # Subnet ID to the name of its Shared Network.
+        self.members: dict[int, str] = {}
+        self._scripts: dict[str, deque] = {}
+        self._writers: dict[str, deque] = {}
+        self._changes = 0
+
+    def script(self, command: str, *answers: Any) -> None:
+        """Queue how the next calls of *command* end."""
+        self._scripts.setdefault(command, deque()).extend(answers)
+
+    def before(self, command: str, change: Any) -> None:
+        """Run *change* (a callable that takes this daemon) just before the next call of *command*."""
+        self._writers.setdefault(command, deque()).append(change)
+
+    def add(self, subnet: dict[str, Any], network: str | None = None) -> None:
+        """Add *subnet*, as another writer would."""
+        self.subnets.append(dict(subnet))
+        if network is not None:
+            self.members[subnet["id"]] = network
+        self._changes += 1
+
+    def remove(self, subnet_id: int) -> None:
+        """Delete the Subnet with *subnet_id*, as another writer would."""
+        self.subnets = [subnet for subnet in self.subnets if subnet["id"] != subnet_id]
+        self.members.pop(subnet_id, None)
+        self._changes += 1
+
+    def ids(self) -> list[int]:
+        """Return the ID of each Subnet in order."""
+        return [subnet["id"] for subnet in self.subnets]
+
+    def responses(self) -> dict[str, Any]:
+        """Return the ``stub_kea`` responses of this daemon."""
+        v = self.family
+        handlers = {
+            f"subnet{v}-list": self._list,
+            "config-get": self._config_get,
+            f"network{v}-get": self._network_get,
+            f"subnet{v}-add": self._subnet_add,
+            f"network{v}-subnet-add": self._network_subnet_add,
+            f"subnet{v}-del": self._subnet_del,
+            "config-test": lambda _body: {"result": 0, "text": "Configuration seems sane."},
+            "config-write": lambda _body: {"result": 0, "text": "Configuration written."},
+        }
+        return {command: self._answering(command, handler) for command, handler in handlers.items()}
+
+    def _answering(self, command: str, run: Any) -> Any:
+        def answer(body: dict[str, Any]) -> Any:
+            writers = self._writers.get(command)
+            if writers:
+                writers.popleft()(self)
+            scripts = self._scripts.get(command)
+            scripted = scripts.popleft() if scripts else RUN
+            if isinstance(scripted, Applied):
+                run(body)
+                return scripted.answer
+            if isinstance(scripted, str) and scripted == RUN:
+                return run(body)
+            return scripted
+
+        return answer
+
+    def _list(self, _body: dict[str, Any]) -> dict[str, Any]:
+        entries = [
+            {"id": subnet["id"], "subnet": subnet["subnet"], "shared-network-name": self.members.get(subnet["id"])}
+            for subnet in self.subnets
+        ]
+        return {"result": 0, "text": f"{len(entries)} subnets found", "arguments": {"subnets": entries}}
+
+    def _config_get(self, _body: dict[str, Any]) -> dict[str, Any]:
+        key = f"subnet{self.family}"
+        networks = [
+            {"name": name, key: [s for s in self.subnets if self.members.get(s["id"]) == name]}
+            for name in self.networks
+        ]
+        daemon = {key: [s for s in self.subnets if s["id"] not in self.members], "shared-networks": networks}
+        return {"result": 0, "arguments": {f"Dhcp{self.family}": daemon, "hash": f"change-{self._changes}"}}
+
+    def _network_get(self, body: dict[str, Any]) -> dict[str, Any]:
+        name = body["arguments"]["name"]
+        return _network_present(self.family, name) if name in self.networks else _network_absent(name)
+
+    def _subnet_add(self, body: dict[str, Any]) -> dict[str, Any]:
+        (subnet,) = body["arguments"][f"subnet{self.family}"]
+        if subnet["id"] in self.ids():
+            return {"result": 1, "text": f"ID of the new IPv{self.family} subnet '{subnet['id']}' is already in use"}
+        if any(existing["subnet"] == subnet["subnet"] for existing in self.subnets):
+            return {"result": 1, "text": f"subnet with the prefix of '{subnet['subnet']}' already exists"}
+        self.add(subnet)
+        return {"result": 0, "text": f"IPv{self.family} subnet added", "arguments": {"subnets": [dict(subnet)]}}
+
+    def _network_subnet_add(self, body: dict[str, Any]) -> dict[str, Any]:
+        name, subnet_id = body["arguments"]["name"], body["arguments"]["id"]
+        if name not in self.networks or subnet_id not in self.ids() or subnet_id in self.members:
+            return {"result": 1, "text": f"Unable to add subnet {subnet_id} to shared network '{name}'"}
+        self.members[subnet_id] = name
+        self._changes += 1
+        return {"result": 0, "text": f"IPv{self.family} subnet {subnet_id} added to shared network {name}"}
+
+    def _subnet_del(self, body: dict[str, Any]) -> dict[str, Any]:
+        subnet_id = body["arguments"]["id"]
+        if subnet_id not in self.ids():
+            return {"result": 3, "text": f"no subnet with id {subnet_id}"}
+        self.remove(subnet_id)
+        return {"result": 0, "text": f"IPv{self.family} subnet {subnet_id} deleted"}
 
 
 @contextmanager
