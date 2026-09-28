@@ -7,6 +7,7 @@ outcome alone cannot show a command that was sent when it must not be.
 """
 
 import copy
+import dataclasses
 import ipaddress
 import json
 import threading
@@ -1687,6 +1688,82 @@ class SubnetEditTests(TestCase):
             ),
         )
         self.assertEqual(kea.commands()[-5:], ["subnet4-update", "subnet4-get", *_PERSIST])
+
+
+# Pool-level keys as Kea 3.2.0 returns them: client-classes is a list.
+_POOL_KEYS = {"option-data": [{"name": "domain-name", "data": "pool.example.org"}], "client-classes": ["lab"]}
+_KEPT_POOL = {4: "10.0.20.10-10.0.20.20", 6: "2001:db8:20::100-2001:db8:20::1ff"}
+_OTHER_POOL = {4: "10.0.20.30-10.0.20.40", 6: "2001:db8:20::300-2001:db8:20::3ff"}
+# Kea echoes a prefix Pool in CIDR form, and the form sends its range.
+_PREFIX_POOL = {
+    4: ("10.0.20.64/28", "10.0.20.64-10.0.20.79"),
+    6: ("2001:db8:20::400/120", "2001:db8:20::400-2001:db8:20::4ff"),
+}
+_NEW_NTP = {4: ("192.0.2.123",), 6: ("2001:db8::124",)}
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class SubnetEditPoolTests(TestCase):
+    """A Subnet edit keeps the Pool-level fields of each Pool that the form keeps."""
+
+    def setUp(self):
+        self.server = _make_db_server()
+
+    def _sent(self, version: Family, live: dict, pools: tuple[str, ...]) -> dict:
+        """Save Subnet 20 from *live* with *pools* and a new NTP server, and return the Subnet that the update sent."""
+        edit = _SUBNET_EDIT[version]
+        edit = dataclasses.replace(
+            edit, fields=dataclasses.replace(edit.fields, pools=pools, ntp_servers=_NEW_NTP[version])
+        )
+        daemon = SubnetDaemon(version, [live], networks=("office",), members={})
+        with stub_kea(daemon.responses()) as kea:
+            outcome = config_write.edit_subnet(
+                self.server, version, 20, _EDITED[version], edit, shown_network=None, shared_network=None
+            )
+        self.assertEqual(outcome, ConfigChangeOutcome("applied", "persisted"))
+        (body,) = kea.bodies(f"subnet{version}-update")
+        return body["arguments"][f"subnet{version}"][0]
+
+    @staticmethod
+    def _live(version: Family, pools: list) -> dict:
+        return {**_LIVE[version], "pools": pools}
+
+    def test_a_save_that_keeps_the_pool_range_keeps_its_pool_level_fields(self):
+        for version in _FAMILIES:
+            with self.subTest(version=version):
+                pool = {"pool": _KEPT_POOL[version], "pool-id": 7, **_POOL_KEYS}
+                sent = self._sent(version, self._live(version, [pool]), (_KEPT_POOL[version],))
+                self.assertEqual(sent["pools"], [pool])
+
+    def test_a_save_that_adds_or_removes_a_pool_keeps_the_fields_of_the_other_pools(self):
+        for version in _FAMILIES:
+            kept = {"pool": _KEPT_POOL[version], **_POOL_KEYS}
+            other = {"pool": _OTHER_POOL[version], "client-classes": ["voip"]}
+            with self.subTest(version=version, change="add"):
+                sent = self._sent(version, self._live(version, [kept]), (_KEPT_POOL[version], _OTHER_POOL[version]))
+                self.assertEqual(sent["pools"], [kept, {"pool": _OTHER_POOL[version]}])
+            with self.subTest(version=version, change="remove"):
+                sent = self._sent(version, self._live(version, [kept, other]), (_OTHER_POOL[version],))
+                self.assertEqual(sent["pools"], [other])
+
+    def test_a_live_prefix_pool_matches_the_same_range_in_the_form(self):
+        for version in _FAMILIES:
+            prefix, text = _PREFIX_POOL[version]
+            with self.subTest(version=version):
+                sent = self._sent(version, self._live(version, [{"pool": prefix, **_POOL_KEYS}]), (text,))
+                self.assertEqual(sent["pools"], [{"pool": text, **_POOL_KEYS}])
+
+    def test_a_live_pool_entry_that_does_not_parse_is_never_matched(self):
+        live = self._live(4, [_KEPT_POOL[4], {"pool": "not a pool", **_POOL_KEYS}])
+        sent = self._sent(4, live, (_KEPT_POOL[4],))
+        self.assertEqual(sent["pools"], [{"pool": _KEPT_POOL[4]}])
+
+    def test_the_update_keeps_the_prefix_delegation_pools(self):
+        pd_pools = [{"prefix": "2001:db8:8000::", "prefix-len": 48, "delegated-len": 56, "client-classes": ["cpe"]}]
+        live = {**self._live(6, [{"pool": _KEPT_POOL[6]}]), "pd-pools": pd_pools}
+        sent = self._sent(6, live, (_OTHER_POOL[6],))
+        self.assertEqual(sent["pd-pools"], pd_pools)
+        self.assertEqual(sent["pools"], [{"pool": _OTHER_POOL[6]}])
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
