@@ -377,6 +377,7 @@ class ApplicationTests(TestCase):
 
 _POOLS = {4: "10.0.0.10-10.0.0.20", 6: "2001:db8:1::100-2001:db8:1::1ff"}
 _NEW_POOLS = {4: "10.0.0.100-10.0.0.110", 6: "2001:db8:1::200-2001:db8:1::2ff"}
+_OTHER_POOLS = {4: "10.0.0.200-10.0.0.210", 6: "2001:db8:1::300-2001:db8:1::3ff"}
 _SEEN = {4: "10.0.0.0/24", 6: "2001:db8:1::/64"}
 _MOVED = {4: "10.0.1.0/24", 6: "2001:db8:2::/64"}
 _HOST_BITS = {4: "10.0.0.5/24", 6: "2001:db8:1::5/64"}
@@ -552,6 +553,26 @@ class SubnetAndPoolChangeTests(TestCase):
                             "The read after the failure shows the change.",
                         ),
                     )
+                    self.assertEqual(kea.commands()[-5:], [f"subnet{version}-list", "config-get", *_PERSIST])
+
+    def test_a_failure_whose_target_shows_the_change_and_another_writers_change_is_unknown(self):
+        failure = {"result": 1, "text": "allocator initialization failed"}
+        for version in (4, 6):
+            # Another writer added a third Pool after the command, so the Pools match no state this change expects.
+            changed = {
+                "add_pool": _subnet(version, pools=(_POOLS[version], _NEW_POOLS[version], _OTHER_POOLS[version])),
+                "delete_pool": _subnet(version, pools=(_OTHER_POOLS[version],)),
+            }
+            for name, operation, command in self._operations(version):
+                if name not in changed:
+                    continue
+                with self.subTest(version=version, operation=name):
+                    responses = _subnet_change(version, _subnet(version), changed[name], **{command: failure})
+                    with stub_kea(responses) as kea:
+                        outcome = operation()
+                    self.assertEqual(outcome.application, "unknown")
+                    self.assertEqual(outcome.persistence, "persisted")
+                    self.assertEqual(outcome.diagnostics[1], "The read after the failure shows the change.")
                     self.assertEqual(kea.commands()[-5:], [f"subnet{version}-list", "config-get", *_PERSIST])
 
     def test_a_failure_whose_target_read_fails_is_unknown(self):
