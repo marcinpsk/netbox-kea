@@ -70,13 +70,14 @@ class TestCombinedSubnetDiagnostics(_ViewTestBase):
             url = reverse(f"plugins:netbox_kea:server_subnet4_{action}", args=[self.server.pk, 7])
             self.assertTrue(f'href="{url}"' in response.content.decode(), f"Missing {action} action")
 
-    def test_writable_configured_subnet_offers_options_without_identity_actions(self):
+    def test_writable_configured_subnet_offers_no_options_or_identity_actions(self):
+        """A Subnet options change needs a Verified Subnet, so a Subnet that Kea did not confirm has no form."""
         response = self._subnet_actions_response(verified=False)
         self.assertEqual(response.status_code, 200)
-        options_url = reverse("plugins:netbox_kea:server_subnet4_options_edit", args=[self.server.pk, 7])
-        self.assertTrue(f'href="{options_url}"' in response.content.decode(), "Missing options action")
-        wipe_url = reverse("plugins:netbox_kea:server_subnet4_wipe_leases", args=[self.server.pk, 7])
-        self.assertNotContains(response, f'href="{wipe_url}"')
+        self.assertContains(response, "198.18.0.0/24")
+        for action in ("options_edit", "wipe_leases"):
+            url = reverse(f"plugins:netbox_kea:server_subnet4_{action}", args=[self.server.pk, 7])
+            self.assertNotContains(response, f'href="{url}"')
 
     def test_readonly_subnet_has_no_mutation_actions(self):
         response = self._subnet_actions_response(writable=False)

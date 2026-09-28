@@ -14,7 +14,7 @@ from . import constants
 from .config_write import SUBNET_LIST_UNCONFIRMED, subnet_changed
 from .constants import Family, IPNetworkValue
 from .dhcp_options import parse_dhcp_option
-from .kea import subnet_network
+from .kea import SharedNetworkEdit, subnet_network
 from .models import Server
 from .reservation_transfer import MAX_DOCUMENT_BYTES as MAX_TRANSFER_DOCUMENT_BYTES
 from .reservations import (
@@ -1594,6 +1594,22 @@ class SharedNetworkEditForm(forms.Form):
         return ",".join(
             _parse_ip_address_list(self.cleaned_data.get("ntp_servers", ""), "Invalid NTP server IP address: '{entry}'")
         )
+
+    def to_edit(self) -> SharedNetworkEdit:
+        """Return the Shared Network edit of the valid form. The clean methods already strip each address."""
+        data = self.cleaned_data
+        return SharedNetworkEdit(
+            description=data["description"],
+            interface=data["interface"],
+            relay_addresses=_address_tuple(data["relay_addresses"]),
+            dns_servers=_address_tuple(data["dns_servers"]),
+            ntp_servers=_address_tuple(data["ntp_servers"]),
+        )
+
+
+def _address_tuple(cleaned: str) -> tuple[str, ...]:
+    """Split a cleaned, comma-joined address list. An empty list is an empty tuple."""
+    return tuple(cleaned.split(",")) if cleaned else ()
 
 
 # ---------------------------------------------------------------------------

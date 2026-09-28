@@ -209,8 +209,11 @@ Subnet with both.
 A read-modify-write operation holds the lock from its `config-get` to the end of the
 persist step. `KeaClient` sends each command (`config_candidate`, `config_test`,
 `config_set`); `CandidateConfiguration` in `kea.py` edits the raw configuration in place,
-because the wire-discipline gate keeps wire literals out of `config_write`. Any failure result on `config-set` is
-`unknown`, because Kea commits the configuration before the hook initialization can fail.
+because the wire-discipline gate keeps wire literals out of `config_write`. An edit
+raises `MalformedConfiguration` for a configuration that it cannot edit safely, and
+`config_write` catches only that type, so a bug still fails loudly. Any failure result on
+`config-set` is `unknown`, because Kea commits the configuration before the hook
+initialization can fail.
 A stale or renamed DHCP Option row (`DHCPOptionConflict`, `DHCPOptionNameChange`) is not
 a Configuration Change result: it leaves the operation before any command that changes
 the configuration, and the options views show it as a form error.

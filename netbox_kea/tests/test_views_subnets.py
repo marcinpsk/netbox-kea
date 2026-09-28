@@ -93,15 +93,16 @@ def _pool_add_registry(subnet_id: int, cidr: str) -> dict:
 class TestServerSubnets4View(_ViewTestBase):
     """GET /plugins/kea/servers/<pk>/subnets4/"""
 
-    def test_configured_subnet_offers_options_without_identity_hook(self):
+    def test_configured_subnet_offers_no_options_without_identity_hook(self):
+        """A Subnet options change needs a Verified Subnet, which Kea cannot confirm without subnet_cmds."""
         config = {"result": 0, "arguments": {"Dhcp4": {"subnet4": [{"id": 7, "subnet": "198.18.0.0/24"}]}}}
         with stub_kea({**_ABSENT_READ_HOOKS, "config-get": config}):
             response = self.client.get(reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk]))
-        options_url = reverse("plugins:netbox_kea:server_subnet4_options_edit", args=[self.server.pk, 7])
-        self.assertContains(response, f'href="{options_url}"')
-        self.assertContains(response, "Edit options")
-        wipe_url = reverse("plugins:netbox_kea:server_subnet4_wipe_leases", args=[self.server.pk, 7])
-        self.assertNotContains(response, f'href="{wipe_url}"')
+        self.assertContains(response, "198.18.0.0/24")
+        self.assertNotContains(response, "Edit options")
+        for action in ("options_edit", "wipe_leases"):
+            url = reverse(f"plugins:netbox_kea:server_subnet4_{action}", args=[self.server.pk, 7])
+            self.assertNotContains(response, f'href="{url}"')
 
     def test_get_returns_200(self):
         url = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
