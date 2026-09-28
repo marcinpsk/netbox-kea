@@ -1700,6 +1700,28 @@ _PREFIX_POOL = {
     6: ("2001:db8:20::400/120", "2001:db8:20::400-2001:db8:20::4ff"),
 }
 _NEW_NTP = {4: ("192.0.2.123",), 6: ("2001:db8::124",)}
+_NTP_OPTION = {4: "ntp-servers", 6: "sntp-servers"}
+# Every field equals the live Subnet except the NTP server. None keeps a lifetime or a timer.
+_NTP_ONLY_EDIT = {
+    version: SubnetEdit(
+        fields=SubnetFields(
+            pools=(_KEPT_POOL[version],),
+            gateway=gateway,
+            dns_servers=dns_servers,
+            ntp_servers=_NEW_NTP[version],
+            ddns_qualifying_suffix=suffix,
+        ),
+        valid_lifetime=None,
+        min_valid_lifetime=None,
+        max_valid_lifetime=None,
+        renew_timer=None,
+        rebind_timer=None,
+    )
+    for version, gateway, dns_servers, suffix in (
+        (4, "10.0.20.1", (), "old.example.org."),
+        (6, "", ("2001:db8::53",), ""),
+    )
+}
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
@@ -1711,10 +1733,8 @@ class SubnetEditPoolTests(TestCase):
 
     def _sent(self, version: Family, live: dict, pools: tuple[str, ...]) -> dict:
         """Save Subnet 20 from *live* with *pools* and a new NTP server, and return the Subnet that the update sent."""
-        edit = _SUBNET_EDIT[version]
-        edit = dataclasses.replace(
-            edit, fields=dataclasses.replace(edit.fields, pools=pools, ntp_servers=_NEW_NTP[version])
-        )
+        edit = _NTP_ONLY_EDIT[version]
+        edit = dataclasses.replace(edit, fields=dataclasses.replace(edit.fields, pools=pools))
         daemon = SubnetDaemon(version, [live], networks=("office",), members={})
         with stub_kea(daemon.responses()) as kea:
             outcome = config_write.edit_subnet(
@@ -1732,8 +1752,16 @@ class SubnetEditPoolTests(TestCase):
         for version in _FAMILIES:
             with self.subTest(version=version):
                 pool = {"pool": _KEPT_POOL[version], "pool-id": 7, **_POOL_KEYS}
-                sent = self._sent(version, self._live(version, [pool]), (_KEPT_POOL[version],))
+                live = self._live(version, [pool])
+                sent = self._sent(version, live, (_KEPT_POOL[version],))
                 self.assertEqual(sent["pools"], [pool])
+                # The save changes only the NTP server: every other field equals the live Subnet.
+                ntp = [option for option in sent["option-data"] if option["name"] == _NTP_OPTION[version]]
+                self.assertEqual(ntp, [{"name": _NTP_OPTION[version], "data": ", ".join(_NEW_NTP[version])}])
+                other_options = [option for option in sent["option-data"] if option not in ntp]
+                self.assertCountEqual(other_options, live["option-data"])
+                expected = {key: value for key, value in live.items() if key not in ("metadata", "option-data")}
+                self.assertEqual({key: value for key, value in sent.items() if key != "option-data"}, expected)
 
     def test_a_save_that_adds_or_removes_a_pool_keeps_the_fields_of_the_other_pools(self):
         for version in _FAMILIES:
