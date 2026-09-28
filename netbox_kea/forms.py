@@ -11,7 +11,7 @@ from utilities.forms.fields import CSVModelChoiceField, TagFilterField
 from utilities.forms.rendering import FieldSet
 
 from . import constants
-from .constants import Family
+from .constants import Family, IPNetworkValue
 from .dhcp_options import parse_dhcp_option
 from .models import Server
 from .reservation_transfer import MAX_DOCUMENT_BYTES as MAX_TRANSFER_DOCUMENT_BYTES
@@ -21,8 +21,9 @@ from .reservations import (
     reservation_identifier_choices,
     reservation_identifier_types,
 )
-from .subnet_catalogue import MAX_SUBNET_ID, MIN_SUBNET_ID
-from .utilities import is_hex_string, parse_delegated_prefixes, parse_pool_range
+from .server_configuration import Pool, parse_pool
+from .subnet_catalogue import MAX_SUBNET_ID, MIN_SUBNET_ID, VerifiedSubnet
+from .utilities import is_hex_string, parse_delegated_prefixes
 
 
 def _parse_ip_address_list(value: str, error_message: str) -> list[str]:
@@ -811,31 +812,8 @@ class GlobalServer6FilterForm(forms.Form):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def _validate_pool_string(pool: str) -> None:
-    """Validate a single pool string (range or CIDR).
-
-    Raises:
-        ValidationError: If the pool string is not a valid IP range or CIDR.
-
-    """
-    if "-" in pool and "/" not in pool:
-        try:
-            parse_pool_range(pool)
-        except (AddrFormatError, ValueError) as exc:
-            raise forms.ValidationError(f"Invalid pool range '{pool}': {exc}") from exc
-    elif "/" in pool:
-        try:
-            parse_pool_range(pool)
-        except (AddrFormatError, ValueError) as exc:
-            raise forms.ValidationError(f"Invalid pool CIDR '{pool}': {exc}") from exc
-    else:
-        raise forms.ValidationError(
-            f"Invalid pool format '{pool}': use range (e.g. 10.0.0.1-10.0.0.50) or CIDR (e.g. 10.0.0.0/28)."
-        )
-
-
 class PoolAddForm(forms.Form):
-    """Form for adding a DHCP pool to an existing subnet."""
+    """Form for adding a DHCP pool to an existing Verified Subnet."""
 
     pool = forms.CharField(
         label="Pool",
@@ -843,13 +821,34 @@ class PoolAddForm(forms.Form):
         max_length=255,
     )
 
-    def clean_pool(self) -> str:  # noqa: D102
-        value = self.cleaned_data["pool"].strip()
-        _validate_pool_string(value)
-        if "-" in value and "/" not in value:
-            start, end = value.split("-", 1)
-            return f"{start.strip()}-{end.strip()}"
-        return value
+    def __init__(self, *args: Any, subnet: VerifiedSubnet | None, **kwargs: Any) -> None:
+        """Keep the Verified Subnet that the Pool must fit; ``None`` means the Subnet is unknown."""
+        super().__init__(*args, **kwargs)
+        self.subnet = subnet
+
+    def clean_pool(self) -> Pool | None:
+        """Parse the Pool inside the Subnet and reject an overlap with an existing Pool."""
+        if self.subnet is None:
+            return None
+        try:
+            pool = parse_pool(self.cleaned_data["pool"], self.subnet.network)
+        except ValueError as exc:
+            raise forms.ValidationError(str(exc)) from exc
+        # Without configuration facts the existing Pools are unknown, so Kea decides.
+        existing = self.subnet.configuration.pools if self.subnet.configuration is not None else ()
+        overlapping = next((other for other in existing if other.overlaps(pool)), None)
+        if overlapping is not None:
+            raise forms.ValidationError(f"Pool {pool.range} overlaps existing Pool {overlapping.range}.")
+        return pool
+
+    def clean(self) -> dict[str, Any] | None:
+        """Reject the form when the Subnet is not in the Subnet Catalogue."""
+        cleaned = super().clean()
+        if self.subnet is None:
+            raise forms.ValidationError(
+                "This Subnet is not in the current Subnet Catalogue. Reload the Subnets page and try again."
+            )
+        return cleaned
 
 
 class _SubnetBaseForm(forms.Form):
@@ -892,20 +891,8 @@ class _SubnetBaseForm(forms.Form):
     )
 
     def clean_pools(self) -> list[str]:
-        """Validate each pool line and normalise the range separator spacing."""
-        value = self.cleaned_data["pools"].strip()
-        if not value:
-            return []
-        pools = [p.strip() for p in value.splitlines() if p.strip()]
-        normalized = []
-        for pool in pools:
-            _validate_pool_string(pool)
-            if "-" in pool and "/" not in pool:
-                start, end = pool.split("-", 1)
-                normalized.append(f"{start.strip()}-{end.strip()}")
-            else:
-                normalized.append(pool)
-        return normalized
+        """Split the Pools into one entry for each non-empty line."""
+        return [line.strip() for line in self.cleaned_data["pools"].splitlines() if line.strip()]
 
     def clean_gateway(self) -> str:
         """Validate the gateway is an IP address; blank means no gateway."""
@@ -937,6 +924,8 @@ class _SubnetBaseForm(forms.Form):
         except ValueError:
             return cleaned
 
+        if "pools" in cleaned:
+            self._clean_pools_in(subnet_net, cleaned)
         subnet_version = subnet_net.version
 
         gateway = cleaned.get("gateway", "")
@@ -973,6 +962,26 @@ class _SubnetBaseForm(forms.Form):
                     break
 
         return cleaned
+
+    def _clean_pools_in(self, subnet: IPNetworkValue, cleaned: dict[str, Any]) -> None:
+        """Parse each Pool line inside *subnet*; the Pools must not overlap each other."""
+        pools: list[Pool] = []
+        errors: list[str] = []
+        for line in cleaned["pools"]:
+            try:
+                pool = parse_pool(line, subnet)
+            except ValueError as exc:
+                errors.append(str(exc))
+                continue
+            overlapping = next((other for other in pools if other.overlaps(pool)), None)
+            if overlapping is not None:
+                errors.append(f"Pool {pool.range} overlaps Pool {overlapping.range}.")
+                continue
+            pools.append(pool)
+        if errors:
+            self.add_error("pools", errors)
+            return
+        cleaned["pools"] = pools
 
 
 class SubnetAddForm(_SubnetBaseForm):
