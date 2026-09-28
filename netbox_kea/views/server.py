@@ -69,23 +69,18 @@ def _get_global_options(request: HttpRequest, server: "Server") -> dict[str, dic
 
     result: dict[str, dict[str, str]] = {}
     for label, version in families.items():
-        try:
-            snapshot = server_configuration.display(server, version)
-            diagnostics = "; ".join(diagnostic.message for diagnostic in snapshot.diagnostics)
-            _diagnostic_messages(
-                request, snapshot.diagnostics, messages.WARNING if snapshot.available else messages.ERROR
-            )
-            if not snapshot.available:
-                logger.warning("Global DHCP Options are unavailable for %s: %s", label, diagnostics)
-                continue
-            if not snapshot.global_options_complete:
-                logger.warning("Global DHCP Options are incomplete for %s: %s", label, diagnostics)
-            opts = format_option_data([_option_payload(option) for option in snapshot.global_options], version=version)
-            if opts:
-                # Convert snake_case keys to "Title Case" for display
-                result[label] = {k.replace("_", " ").title(): v for k, v in opts.items()}
-        except (OSError, RuntimeError, ValueError):
-            logger.warning("Unexpected error fetching global DHCP Options for %s", label, exc_info=True)
+        snapshot = server_configuration.display(server, version)
+        diagnostics = "; ".join(diagnostic.message for diagnostic in snapshot.diagnostics)
+        _diagnostic_messages(request, snapshot.diagnostics, messages.WARNING if snapshot.available else messages.ERROR)
+        if not snapshot.available:
+            logger.warning("Global DHCP Options are unavailable for %s: %s", label, diagnostics)
+            continue
+        if not snapshot.global_options_complete:
+            logger.warning("Global DHCP Options are incomplete for %s: %s", label, diagnostics)
+        opts = format_option_data([_option_payload(option) for option in snapshot.global_options], version=version)
+        if opts:
+            # Convert snake_case keys to "Title Case" for display
+            result[label] = {k.replace("_", " ").title(): v for k, v in opts.items()}
     return result
 
 

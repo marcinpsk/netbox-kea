@@ -421,7 +421,8 @@ def _sync_one_server(
     max_leases: int,
     stats: dict[str, int],
     conflict_ips: set[str] | None = None,
-    duplicates: list[DuplicateNetBoxRowsError] | None = None,
+    *,
+    duplicates: list[DuplicateNetBoxRowsError],
 ) -> None:
     """Sync a single server's leases, reservations, prefixes, and IP ranges.
 
@@ -432,7 +433,7 @@ def _sync_one_server(
     operator to resolve, not two.  Each phase still accumulates into its own list
     because ``sync_{lease,reservation}_to_netbox`` append to it.
 
-    *duplicates* is an optional caller-owned list that collects the Kea subnets and
+    *duplicates* is a caller-owned list that collects the Kea subnets and
     pools that match more than one NetBox row, so the caller can name them.
     """
     from .sync import cleanup_stale_ips_batch
@@ -442,8 +443,6 @@ def _sync_one_server(
     protected: list[dict | Reservation] = []
     if conflict_ips is None:
         conflict_ips = set()
-    if duplicates is None:
-        duplicates = []
     # Cleanup is only safe when both sources contributed, otherwise we risk
     # removing IPs that exist in the source we didn't sync.
     cleanup_safe = sync_leases and sync_reservations

@@ -871,14 +871,14 @@ class TestStatusViewNullArgs(_ViewTestBase):
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestGetGlobalOptionsGenericException(_ViewTestBase):
-    """Line 221-222: generic exception in _get_global_options is swallowed."""
+    """A failed Server Configuration read leaves the status page without global options."""
 
     def _url(self):
         return reverse("plugins:netbox_kea:server_status", args=[self.server.pk])
 
     def test_generic_exception_swallowed(self):
         """A transport error in config-get for global options is swallowed; the page renders normally."""
-        # config-get raises a transport error at the boundary → _get_global_options swallows it → {}.
+        # config-get raises a transport error at the boundary → an unavailable snapshot → {}.
         stub = {
             "status-get": {"result": 0, "arguments": {"pid": 1, "uptime": 0, "reload": 0}},
             "version-get": {"result": 0, "arguments": {"extended": "2.0"}},
@@ -886,8 +886,6 @@ class TestGetGlobalOptionsGenericException(_ViewTestBase):
         }
         with stub_kea(stub):
             response = self.client.get(self._url())
-        # Exception in get_extra_context() is caught by the outer try/except in get_extra_context;
-        # the page must still render as 200 (degraded state, not 500).
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["global_options"], {})
 
