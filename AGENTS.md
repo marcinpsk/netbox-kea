@@ -201,7 +201,8 @@ operation returns a `ConfigChangeOutcome` (`applied`/`unknown` and
 `persisted`/`failed`/`not-requested`) or raises `ConfigChangeRejected` with a reason.
 A view runs it through `_run_config_change` in `views/_base.py`, which owns the
 messages, and catches nothing itself. Shared Network add and delete use it; the
-classes above stay for the other callers until the contract ticket removes them.
+classes above stay for the other callers until #207 removes them. Only `config_write`
+operations take the per-daemon advisory lock, so the old write paths do not wait for it.
 
 ## Security & Code Quality Rules
 
