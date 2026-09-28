@@ -103,7 +103,7 @@ mutation rules of ADR 0001.
 - `add_pool` and `delete_pool` take the same ID and CIDR pair, and a typed `Pool`. The Verified Subnet supplies
   the CIDR for the delta commands, so the separate `subnet-get` lookup goes.
 
-One Pool parser exists: the one in `server_configuration`. The forms use it. A Pool outside its Subnet, or a Pool
+One Pool parser exists: the one in `pools`. The forms use it. A Pool outside its Subnet, or a Pool
 that overlaps an existing Pool of the Verified Subnet, is a form error. When the configuration facts of the
 Subnet are missing, the overlap check does not run, and Kea decides. A Reservation address inside a Pool stays a
 warning, and one domain function computes it for both the Pool and the Reservation forms.
