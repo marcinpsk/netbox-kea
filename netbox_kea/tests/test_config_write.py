@@ -588,6 +588,85 @@ class SubnetAndPoolChangeTests(TestCase):
                 self.assertEqual(outcome.persistence, "persisted")
                 self.assertEqual(outcome.diagnostics[1], "The read after the failure did not succeed.")
 
+    def test_a_pool_that_the_subnet_does_not_hold_or_already_holds_is_not_sent(self):
+        for version in (4, 6):
+            seen, held, absent = _SEEN[version], _POOLS[version], _NEW_POOLS[version]
+            for name, pool, diagnostic in (
+                ("delete_pool", absent, f"Subnet 1 ({seen}) has no Pool {absent}. Reload the page and try again."),
+                ("add_pool", held, f"Subnet 1 ({seen}) already has Pool {held}. Reload the page and try again."),
+            ):
+                with self.subTest(version=version, operation=name):
+                    with stub_kea(_subnet_change(version, _subnet(version))) as kea:
+                        with self.assertRaises(ConfigChangeRejected) as raised:
+                            getattr(config_write, name)(self.server, version, 1, seen, _pool(version, pool))
+                    self.assertEqual(raised.exception.reason, "not-sent")
+                    self.assertEqual(raised.exception.diagnostics, (diagnostic,))
+                    self.assertEqual(kea.commands(), [f"subnet{version}-list", "config-get"])
+
+    def test_without_configuration_facts_kea_decides_on_the_pool(self):
+        catalogue = _catalogue_responses_for_subnets(4, [_subnet(4)])["config-get"]
+        for name, pool, command in (
+            ("delete_pool", _NEW_POOLS[4], "subnet4-pool-del"),
+            ("add_pool", _POOLS[4], "subnet4-pool-add"),
+        ):
+            with self.subTest(operation=name):
+                # Only the scope read gets no configuration. The persist step reads it.
+                responses = _subnet_change(4, _subnet(4), **{"config-get": queued(requests.ReadTimeout(), catalogue)})
+                with stub_kea(responses) as kea:
+                    outcome = getattr(config_write, name)(self.server, 4, 1, _SEEN[4], _pool(4, pool))
+                self.assertEqual(outcome, ConfigChangeOutcome("applied", "persisted"))
+                self.assertIn(command, kea.commands())
+
+    def test_a_delete_of_a_pool_that_kea_declares_as_a_prefix_sends_its_range(self):
+        """Kea 3.2.0 matches a Pool by its addresses, so the range form deletes a Pool declared as a prefix."""
+        for version, prefix, sent in (
+            (4, "10.0.0.0/28", "10.0.0.0-10.0.0.15"),
+            (6, "2001:db8:1::/120", "2001:db8:1::-2001:db8:1::ff"),
+        ):
+            with self.subTest(version=version):
+                declared = _subnet(version, pools=(prefix,))
+                with stub_kea(_subnet_change(version, declared, pool_commands=False)) as kea:
+                    outcome = config_write.delete_pool(self.server, version, 1, _SEEN[version], _pool(version, prefix))
+                self.assertEqual(outcome, ConfigChangeOutcome("applied", "persisted"))
+                self.assertEqual(
+                    kea.bodies(f"subnet{version}-delta-del")[0]["arguments"][f"subnet{version}"][0]["pools"],
+                    [{"pool": sent}],
+                )
+
+    def test_a_pool_failure_whose_subnet_id_now_names_another_network_is_unknown(self):
+        """The Pool commands carry only the ID, so the Pool can be live on the Subnet that now has that ID."""
+        failure = {"result": 1, "text": "command failed"}
+        moved = _subnet(4, cidr=_MOVED[4], pools=())
+        for name, operation, command in self._operations(4)[1:]:
+            with self.subTest(operation=name):
+                with stub_kea(_subnet_change(4, _subnet(4), moved, **{command: failure})):
+                    outcome = operation()
+                self.assertEqual(outcome.application, "unknown")
+                self.assertEqual(outcome.persistence, "persisted")
+                self.assertEqual(outcome.diagnostics[1], "The read after the failure did not succeed.")
+
+    def test_a_failed_pool_add_whose_subnet_is_gone_is_a_kea_rejection(self):
+        failure = {"result": 1, "text": "command failed"}
+        with stub_kea(_subnet_change(4, _subnet(4), None, **{"subnet4-pool-add": failure})):
+            with self.assertRaises(ConfigChangeRejected) as raised:
+                config_write.add_pool(self.server, 4, 1, _SEEN[4], _pool(4, _NEW_POOLS[4]))
+        self.assertEqual(raised.exception.reason, "kea-rejected")
+
+    def test_result_5_a_forwarding_failure_and_a_malformed_reply_are_unknown_and_still_persisted(self):
+        for label, reply in (
+            ("result 5", {"result": 5, "text": "configuration could not be restored"}),
+            ("forwarding failure", _CONTROL_AGENT["network4-add"]),
+            ("malformed reply", [_OK, _OK]),
+        ):
+            for name, operation, command in self._operations(4):
+                with self.subTest(reply=label, operation=name):
+                    with stub_kea(_subnet_change(4, _subnet(4), **{command: reply})) as kea:
+                        outcome = operation()
+                    self.assertEqual(outcome.application, "unknown")
+                    self.assertEqual(outcome.persistence, "persisted")
+                    # No check read follows the failure.
+                    self.assertEqual(kea.commands(), [*self._before(4, command), command, *_PERSIST])
+
     def test_a_lost_reply_is_unknown_and_still_persisted(self):
         for name, operation, command in self._operations(4):
             with self.subTest(operation=name):

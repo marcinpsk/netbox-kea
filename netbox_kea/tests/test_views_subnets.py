@@ -2313,7 +2313,9 @@ class TestSubnetAndPoolChangesRequireTheVerifiedSubnet(_ViewTestBase):
             with self.subTest(name):
                 messages, kea = self._post(url, data, _change_responses(_subnet_1()))
                 self.assertEqual(messages, [(django_messages.SUCCESS, confirmed)])
-                self.assertEqual(kea.commands()[-4:], [command, "config-get", "config-test", "config-write"])
+                # The Pool add reads the Reservations after the change, for its overlap warning.
+                commands = [name for name in kea.commands() if name != "reservation-get-page"]
+                self.assertEqual(commands[-4:], [command, "config-get", "config-test", "config-write"])
 
     def test_the_commands_name_the_verified_subnet_and_the_typed_pool(self):
         bodies = {
@@ -2405,6 +2407,24 @@ class TestSubnetAndPoolChangesRequireTheVerifiedSubnet(_ViewTestBase):
                     ],
                 )
 
+    def test_a_delete_get_that_cannot_confirm_the_subnet_redirects_with_an_error(self):
+        failed = {"result": 1, "text": "internal error"}
+        unconfirmed = "NetBox could not confirm Subnet 1 in Kea. Reload the Subnets page and try again."
+        for name, url, _data, _command, reads, _confirmed in self._cases():
+            if reads:
+                continue  # The Pool add GET shows the form error instead.
+            for state, responses in (
+                ("unreadable", _change_responses(_subnet_1(), **{"subnet4-list": failed, "config-get": failed})),
+                ("absent", _change_responses(None)),
+            ):
+                with self.subTest(name, state=state):
+                    self.client.cookies.pop("messages", None)
+                    with stub_kea(responses):
+                        response = self.client.get(url)
+                    self.assertEqual(response.status_code, 302)
+                    errors = [str(m) for m in get_messages(response.wsgi_request) if m.level == django_messages.ERROR]
+                    self.assertIn(unconfirmed, errors)
+
     def test_a_delete_without_the_cidr_sends_nothing(self):
         for name, url, _data, _command, reads, _confirmed in self._cases():
             if reads:
@@ -2419,7 +2439,7 @@ class TestSubnetAndPoolChangesRequireTheVerifiedSubnet(_ViewTestBase):
         with stub_kea(_change_responses(_subnet_1())) as kea:
             response = self.client.post(url, {"pool": _NEW_POOL})
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Reload the Subnets page and try again.")
+        self.assertContains(response, "Invalid subnet CIDR")
         self.assertNotIn("subnet4-pool-add", kea.commands())
 
     def test_an_invalid_client_configuration_sends_nothing(self):
@@ -2466,11 +2486,13 @@ class TestSubnetDeleteExceptionPaths(_ViewTestBase):
     def _url(self, subnet_id=42):
         return reverse("plugins:netbox_kea:server_subnet4_delete", args=[self.server.pk, subnet_id])
 
-    def test_get_exception_still_renders(self):
-        """A subnet-get failure (result 1 → KeaException) in GET must still render the confirm page."""
+    def test_get_exception_redirects_with_an_error(self):
+        """A failed configuration read leaves no CIDR for the confirm form, so the GET redirects."""
         with stub_kea({**_ABSENT_READ_HOOKS, "config-get": {"result": 1, "text": "configuration unavailable"}}):
             response = self.client.get(self._url())
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 302)
+        errors = [str(m) for m in get_messages(response.wsgi_request) if m.level == django_messages.ERROR]
+        self.assertIn("NetBox could not confirm Subnet 42 in Kea. Reload the Subnets page and try again.", errors)
 
 
 # ---------------------------------------------------------------------------
@@ -3298,12 +3320,12 @@ class TestSubnetAddPartialPersistNetworkAssign(_ViewTestBase):
 class TestSubnetDeleteClientError(_ViewTestBase):
     """Subnet delete handlers must handle get_client() failures gracefully."""
 
-    def test_get_with_get_client_failure_renders(self):
-        """A real get_client() failure in delete GET must still render the confirm page, not 500."""
+    def test_get_with_get_client_failure_redirects(self):
+        """A real get_client() failure in delete GET redirects with an error, not 500."""
         bad = _make_db_server(name="bad-cert-del-get", client_cert_path="/nonexistent/cert.pem")
         url = reverse("plugins:netbox_kea:server_subnet4_delete", args=[bad.pk, 1])
         response = self.client.get(url)
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 302)
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
@@ -3369,8 +3391,8 @@ class TestPoolDeltaHostBitsSubnet(_ViewTestBase):
     The page shows the canonical CIDR; the Verified Subnet supplies Kea's text, so no Subnet lookup by ID runs.
     """
 
-    def _stub(self, version, cidr, command):
-        subnet = {"id": 1, "subnet": cidr}
+    def _stub(self, version, cidr, command, pools=()):
+        subnet = {"id": 1, "subnet": cidr, "pools": [{"pool": pool} for pool in pools]}
         return stub_kea(
             {
                 f"subnet{version}-list": _subnet_list(version, [subnet]),
@@ -3401,7 +3423,7 @@ class TestPoolDeltaHostBitsSubnet(_ViewTestBase):
     def test_pool_delete_sends_the_declared_ipv6_prefix(self):
         pool = "2001:db8:1::100-2001:db8:1::1ff"
         url = reverse("plugins:netbox_kea:server_subnet6_pool_delete", args=[self.server.pk, 1, pool])
-        with self._stub(6, "2001:db8:1::5/64", "subnet6-delta-del") as kea:
+        with self._stub(6, "2001:db8:1::5/64", "subnet6-delta-del", pools=(pool,)) as kea:
             response = self.client.post(url, {"subnet_cidr": "2001:db8:1::/64"})
         self.assertEqual(response.status_code, 302)
         self.assertEqual(
@@ -3566,30 +3588,55 @@ class TestPoolAddChecksTheVerifiedSubnet(_ViewTestBase):
                 )
                 self.assertIn(f"Pool {sent} added to subnet 1.", [str(m) for m in get_messages(response.wsgi_request)])
 
-    def _assert_reload_error(self, response, kea):
+    def _assert_form_error(self, response, kea, message):
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("pool", response.context["form"].errors)
-        self.assertContains(response, "Reload the Subnets page and try again.")
+        self.assertEqual(response.context["form"].non_field_errors(), [message])
         self._assert_no_write(kea)
         self.assertNotIn("reservation-get-page", kea.commands())
 
     def test_an_id_that_names_no_verified_subnet_is_a_form_error_and_kea_gets_no_command(self):
         response, kea = self._post("10.0.0.100-10.0.0.110", subnet_id=99)
 
-        self._assert_reload_error(response, kea)
-
-    def test_an_unavailable_catalogue_is_a_form_error_and_kea_gets_no_command(self):
-        response, kea = self._post(
-            "10.0.0.100-10.0.0.110",
-            **{
-                "subnet4-list": {"result": 1, "text": "internal error"},
-                "config-get": {"result": 1, "text": "internal error"},
-            },
+        self._assert_form_error(
+            response, kea, "This Subnet is not in the current Subnet Catalogue. Reload the Subnets page and try again."
         )
 
-        self._assert_reload_error(response, kea)
-        errors = [str(m) for m in get_messages(response.wsgi_request) if m.level == django_messages.ERROR]
-        self.assertTrue(errors)
+    def test_an_unconfirmed_subnet_list_is_a_form_error_that_never_reads_as_absent(self):
+        failed = {"result": 1, "text": "internal error"}
+        for name, overrides in (
+            ("unavailable catalogue", {"subnet4-list": failed, "config-get": failed}),
+            ("identity read fails", {"subnet4-list": failed}),
+        ):
+            with self.subTest(name):
+                response, kea = self._post("10.0.0.100-10.0.0.110", **overrides)
+
+                self._assert_form_error(
+                    response,
+                    kea,
+                    "NetBox could not confirm Kea's Subnet list, so it did not send the change. Try again later.",
+                )
+                self.assertNotContains(response, "not in the current Subnet Catalogue")
+
+    def test_a_cidr_that_is_not_the_verified_subnet_says_that_the_subnet_changed(self):
+        with stub_kea({**_ABSENT_READ_HOOKS, **_pool_add_catalogue()}) as kea:
+            response = self.client.post(self._url(), {"subnet_cidr": "10.0.1.0/24", "pool": "10.0.0.100-10.0.0.110"})
+
+        self._assert_form_error(response, kea, "Subnet 1 (10.0.1.0/24) changed in Kea. Reload the page and try again.")
+
+    def test_a_rejected_change_shows_no_reservation_warning(self):
+        reservations = _res_page([{"subnet-id": 1, "hw-address": "aa:bb:cc:dd:ee:01", "ip-address": "10.0.0.50"}])
+        response, kea = self._post(
+            "10.0.0.32/27",
+            **{"reservation-get-page": reservations, "subnet4-pool-add": {"result": 1, "text": "command failed"}},
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            [(m.level, str(m)) for m in get_messages(response.wsgi_request)],
+            [(django_messages.ERROR, "Kea rejected the change. Kea replied: command failed")],
+        )
+        self.assertNotIn("reservation-get-page", kea.commands())
 
     def test_a_reservation_inside_the_new_pool_is_a_warning(self):
         reservations = _res_page(
@@ -4069,7 +4116,7 @@ class TestSubnetViewCoverageGaps(_ViewTestBase):
         url = reverse("plugins:netbox_kea:server_subnet4_pool_add", args=[bad.pk, 42])
         response = self.client.post(url, {"subnet_cidr": "10.0.0.0/24", "pool": "10.0.0.100-10.0.0.200"})
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Reload the Subnets page and try again.")
+        self.assertContains(response, "NetBox could not confirm Kea&#x27;s Subnet list")
         msgs = list(get_messages(response.wsgi_request))
         self.assertTrue(any(m.level == django_messages.ERROR for m in msgs))
 
