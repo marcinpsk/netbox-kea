@@ -141,6 +141,10 @@ def _reservation_get_arguments(response: list[KeaResponse]) -> dict[str, Any] | 
     return arguments
 
 
+# The Pool commands exist as an add and a delete, each as ``subnet{v}-pool-*`` or ``subnet{v}-delta-*``.
+PoolAction = Literal["add", "del"]
+
+
 class PersistResult(NamedTuple):
     """The persistence state that one persist step reached, and why it failed."""
 
@@ -1196,24 +1200,18 @@ class KeaClient:
             raise
         self._persist_config(service)
 
-    def subnet_del(self, version: int, subnet_id: int) -> None:
-        """Delete an existing subnet from Kea and persist the change.
-
-        Args:
-            version: DHCP version (4 or 6).
-            subnet_id: Kea subnet ID to delete.
+    def subnet_del(self, version: Family, subnet_id: int) -> None:
+        """Send one ``subnet{v}-del``. It does not persist.
 
         Raises:
-            KeaException: If Kea returns a non-zero result code.
+            KeaException: If Kea returns a failure result.
+            RuntimeError: If the reply is malformed.
 
         """
+        command = f"subnet{version}-del"
         service = f"dhcp{version}"
-        self._config_mutation_command(
-            f"subnet{version}-del",
-            service,
-            {"id": subnet_id},
-        )
-        self._persist_config(service)
+        response = self._config_mutation_command(command, service, {"id": subnet_id}, check=None)
+        _one_reply(command, service, response)
 
     def shared_network_exists(self, version: Family, name: str) -> bool:
         """Return whether the daemon has a Shared Network named *name*.
@@ -2008,81 +2006,34 @@ class KeaClient:
         """
         self.command("dhcp-enable", service=[service])
 
-    def pool_add(self, version: int, subnet_id: int, pool: str) -> None:
-        """Add a pool to an existing subnet and persist the change.
-
-        Supports both Kea 2.x (``subnet{v}-pool-add``) and Kea 3.x
-        (``subnet{v}-delta-add``). The delta command requires the subnet CIDR,
-        which is fetched automatically when the pool-add command is unavailable.
-
-        Args:
-            version: DHCP version (4 or 6).
-            subnet_id: Kea subnet ID to add the pool to.
-            pool: Pool range string (e.g. ``"10.0.0.50-10.0.0.99"`` or CIDR ``"10.0.0.0/28"``).
+    def pool_uses_delta(self, version: Family, action: PoolAction) -> bool:
+        """Return whether a Pool change needs ``subnet{v}-delta-{action}``, because ``subnet{v}-pool-{action}`` is absent.
 
         Raises:
-            KeaException: If Kea returns a non-zero result code for either command.
-            RuntimeError: If the delta-add path's ``get_subnet_cidr`` lookup gets a
-                malformed ``subnet{version}-get`` response.
-            ValueError: If the delta-add path's ``get_subnet_cidr`` lookup returns a
-                CIDR that doesn't match *version*'s address family.
+            KeaException: If ``list-commands`` fails.
+            RuntimeError: If the ``list-commands`` reply is malformed.
 
         """
-        service = f"dhcp{version}"
-        subnet_key = f"subnet{version}"
-        available = self.get_available_commands(service)
-        if f"subnet{version}-pool-add" in available:
-            self._config_mutation_command(
-                f"subnet{version}-pool-add",
-                service,
-                {subnet_key: [{"id": subnet_id, "pools": [{"pool": pool}]}]},
-            )
-        else:
-            subnet_cidr = self.get_subnet_cidr(version, subnet_id)
-            self._config_mutation_command(
-                f"subnet{version}-delta-add",
-                service,
-                {subnet_key: [{"id": subnet_id, "subnet": subnet_cidr, "pools": [{"pool": pool}]}]},
-            )
-        self._persist_config(service)
+        return f"subnet{version}-pool-{action}" not in self.get_available_commands(f"dhcp{version}")
 
-    def pool_del(self, version: int, subnet_id: int, pool: str) -> None:
-        """Remove a pool from an existing subnet and persist the change.
+    def pool_change(
+        self, version: Family, action: PoolAction, subnet_id: int, declared_cidr: str, pool: str, *, delta: bool
+    ) -> None:
+        """Send one Pool add or delete for the Subnet. It does not persist.
 
-        Supports both Kea 2.x (``subnet{v}-pool-del``) and Kea 3.x
-        (``subnet{v}-delta-del``). The delta command requires the subnet CIDR,
-        which is fetched automatically when the pool-del command is unavailable.
-
-        Args:
-            version: DHCP version (4 or 6).
-            subnet_id: Kea subnet ID to remove the pool from.
-            pool: Pool range string identifying the pool to delete.
+        *declared_cidr* is the Subnet text that Kea declares; only the delta command sends it.
 
         Raises:
-            KeaException: If Kea returns a non-zero result code for either command.
-            RuntimeError: If the delta-del path's ``get_subnet_cidr`` lookup gets a
-                malformed ``subnet{version}-get`` response.
-            ValueError: If the delta-del path's ``get_subnet_cidr`` lookup returns a
-                CIDR that doesn't match *version*'s address family.
+            KeaException: If Kea returns a failure result.
+            RuntimeError: If the reply is malformed.
 
         """
+        command = f"subnet{version}-{'delta' if delta else 'pool'}-{action}"
         service = f"dhcp{version}"
-        subnet_key = f"subnet{version}"
-        available = self.get_available_commands(service)
-        if f"subnet{version}-pool-del" in available:
-            self._config_mutation_command(
-                f"subnet{version}-pool-del",
-                service,
-                {subnet_key: [{"id": subnet_id, "pools": [{"pool": pool}]}]},
-            )
-        else:
-            subnet_cidr = self.get_subnet_cidr(version, subnet_id)
-            self._config_mutation_command(
-                f"subnet{version}-delta-del",
-                service,
-                {subnet_key: [{"id": subnet_id, "subnet": subnet_cidr, "pools": [{"pool": pool}]}]},
-            )
-        self._persist_config(service)
+        subnet: dict[str, Any] = {"id": subnet_id, "subnet": declared_cidr} if delta else {"id": subnet_id}
+        subnet["pools"] = [{"pool": pool}]
+        response = self._config_mutation_command(command, service, {f"subnet{version}": [subnet]}, check=None)
+        _one_reply(command, service, response)
 
     def _config_phase_command(self, command: str, service: str, arguments: dict[str, Any] | None = None) -> None:
         """Require one well-formed success reply for a single-service config phase."""
@@ -2253,62 +2204,11 @@ class KeaClient:
             )
             raise PartialPersistError(service, exc) from exc
 
-    def get_subnet_cidr(self, version: int, subnet_id: int) -> str:
-        """Fetch the CIDR string for *subnet_id* from Kea (e.g. ``"10.0.0.0/24"``).
-
-        Args:
-            version: DHCP version (4 or 6).
-            subnet_id: Kea subnet ID to look up.
-
-        Returns:
-            Subnet CIDR string.
-
-        Raises:
-            KeaException: If Kea reports the subnet as not found (result code 3).
-            RuntimeError: If the response itself is malformed (missing/wrong-typed
-                ``arguments``, ``subnet{v}``, subnet entry, or ``subnet`` field —
-                including an empty ``subnet{v}`` list despite a result-0 response).
-            ValueError: If ``subnet`` is a string but not a CIDR of the requested
-                family.
-
-        """
-        service = f"dhcp{version}"
-        subnet_key = f"subnet{version}"
-        resp = self.command(
-            f"subnet{version}-get",
-            service=[service],
-            arguments={"id": subnet_id},
-            check=(0, 3),
-        )
-        if not resp or not isinstance(resp[0], dict):
-            raise RuntimeError(f"subnet{version}-get returned malformed response: {resp!r}")
-        if resp[0].get("result") == 3:
-            raise KeaException(resp[0], index=0)
-        arguments = resp[0].get("arguments")
-        if not isinstance(arguments, dict):
-            raise RuntimeError(f"subnet{version}-get returned malformed arguments: {resp[0]!r}")
-        subnets = arguments.get(subnet_key)
-        if not isinstance(subnets, list):
-            raise RuntimeError(f"subnet{version}-get returned a non-list {subnet_key!r}: {subnets!r}")
-        if not subnets:
-            raise RuntimeError(f"subnet{version}-get returned an empty {subnet_key!r} despite result=0: {resp[0]!r}")
-        if not isinstance(subnets[0], dict):
-            raise RuntimeError(f"subnet{version}-get returned a non-dict subnet entry: {subnets[0]!r}")
-        cidr = subnets[0].get("subnet")
-        if not isinstance(cidr, str) or not cidr:
-            raise RuntimeError(f"subnet{version}-get response missing 'subnet' field for id={subnet_id}")
-        try:
-            subnet_network(cidr, version)
-        except ValueError as exc:
-            raise ValueError(f"subnet{version}-get returned a CIDR not matching IPv{version}: {cidr!r}") from exc
-        return cidr
-
     def subnet_get(self, version: int, subnet_id: int) -> dict:
         """Fetch the full subnet config dict for *subnet_id* from Kea.
 
-        Unlike :meth:`get_subnet_cidr`, this method returns the complete
-        subnet object (id, subnet, pools, option-data, relay, allocator, ...)
-        enabling a read-modify-write cycle without losing live-only fields.
+        The complete subnet object (id, subnet, pools, option-data, relay, allocator, ...)
+        enables a read-modify-write cycle without losing live-only fields.
 
         Args:
             version: DHCP version (4 or 6).

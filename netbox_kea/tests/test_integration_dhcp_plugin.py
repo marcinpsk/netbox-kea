@@ -76,6 +76,7 @@ def _reservation_snapshot(conf: dict, version: Family, hosts: list[dict] | None 
                 subnet_id=int(entry["id"]),
                 network=ipaddress.ip_network(entry["subnet"]),
             ),
+            declared_cidr=entry["subnet"],
             configuration=None,
             shared_network=None,
         )
