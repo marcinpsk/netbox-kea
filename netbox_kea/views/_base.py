@@ -86,16 +86,19 @@ class _KeaChangeMixin:
         return super().dispatch(request, *args, **kwargs)  # type: ignore[misc]
 
 
-def _run_config_change(request: HttpRequest, confirmed: str, change: Callable[[], ConfigChangeOutcome]) -> None:
-    """Run one Configuration Change and show one message for its outcome or its rejection.
+def _run_config_change(
+    request: HttpRequest, confirmed: str, change: Callable[[], ConfigChangeOutcome]
+) -> ConfigChangeOutcome | None:
+    """Run one Configuration Change, show one message for its outcome or its rejection, and return the outcome.
 
     *confirmed* is the message for a change that Kea applied, such as "Shared network 'x' created."
+    Returns None after a rejection.
     """
     try:
         outcome = change()
     except ConfigChangeRejected as rejection:
         messages.error(request, " ".join((_REJECTED[rejection.reason], *rejection.diagnostics)))
-        return
+        return None
     if outcome.application == "unknown":
         # Never claim the change is live: the disk warning names the running configuration only.
         not_saved = ("Kea also could not save its running configuration to disk.",)
@@ -106,6 +109,7 @@ def _run_config_change(request: HttpRequest, confirmed: str, change: Callable[[]
         messages.warning(request, " ".join((confirmed, restart, *outcome.diagnostics)))
     else:
         messages.success(request, confirmed)
+    return outcome
 
 
 def _option_payload(option: DHCPOption) -> dict[str, Any]:

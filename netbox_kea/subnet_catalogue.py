@@ -171,6 +171,11 @@ class CatalogueSnapshot:
             and (not (self.identity_complete or self.configuration_complete) or not self.consistent)
         )
 
+    @property
+    def confirms_absence(self) -> bool:
+        """Return whether a Subnet that the identity facts do not verify is absent from Kea."""
+        return self.identity_complete and self.consistent
+
     def find_by_id(self, subnet_id: int) -> VerifiedSubnet | ConfiguredSubnet | None:
         """Return the verified or configured Subnet with an exact Kea ID, if present."""
         if isinstance(subnet_id, bool) or not isinstance(subnet_id, int):
@@ -828,8 +833,7 @@ class MutationScope(AbstractContextManager["MutationScope"]):
         return self.snapshot
 
     def _require_complete_identity(self, message: str) -> None:
-        snapshot = self._require_snapshot()
-        if not snapshot.identity_complete or not snapshot.consistent:
+        if not self._require_snapshot().confirms_absence:
             raise CatalogueUnavailable(message)
 
 

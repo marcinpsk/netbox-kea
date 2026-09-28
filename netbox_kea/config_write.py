@@ -48,6 +48,14 @@ def _int4(text: str) -> int:
 _LOCK_CLASS = _int4("netbox_kea.config_write")
 
 
+SUBNET_LIST_UNCONFIRMED = "NetBox could not confirm Kea's Subnet list, so it did not send the change. Try again later."
+
+
+def subnet_changed(subnet_id: int, cidr: str) -> str:
+    """Return the message for a Subnet ID that no longer names the network *cidr* that the page showed."""
+    return f"Subnet {subnet_id} ({cidr}) changed in Kea. Reload the page and try again."
+
+
 @dataclass(frozen=True)
 class ConfigChangeOutcome:
     """The result of a Configuration Change that is live or can be live."""
@@ -78,8 +86,7 @@ def add_shared_network(server: Server, family: Family, name: str) -> ConfigChang
             lambda: client.network_add(family, name),
             not_live=lambda: not client.shared_network_exists(family, name),
         )
-        persisted = client.persist(family)
-    return ConfigChangeOutcome(application, persisted.persistence, diagnostics + persisted.diagnostics)
+        return _persisted(client, family, application, diagnostics)
 
 
 def delete_shared_network(server: Server, family: Family, name: str) -> ConfigChangeOutcome:
@@ -93,8 +100,7 @@ def delete_shared_network(server: Server, family: Family, name: str) -> ConfigCh
             lambda: client.network_del(family, name),
             not_live=lambda: client.shared_network_exists(family, name),
         )
-        persisted = client.persist(family)
-    return ConfigChangeOutcome(application, persisted.persistence, diagnostics + persisted.diagnostics)
+        return _persisted(client, family, application, diagnostics)
 
 
 def delete_subnet(server: Server, family: Family, subnet_id: int, cidr: str) -> ConfigChangeOutcome:
@@ -102,14 +108,15 @@ def delete_subnet(server: Server, family: Family, subnet_id: int, cidr: str) -> 
     with _client(server, family) as client, _serialized(client, family):
         with mutation(server, family) as scope:
             subnet = _subnet_as_seen(scope, subnet_id, cidr)
+
+        def still_there() -> bool:
+            current = _subnet_now(server, family, subnet.subnet_id)
+            return current is not None and current.network == subnet.network
+
         application, diagnostics = _mutate(
-            client,
-            family,
-            lambda: client.subnet_del(family, subnet.subnet_id),
-            not_live=lambda: _still_there(server, family, subnet) is not None,
+            client, family, lambda: client.subnet_del(family, subnet.subnet_id), not_live=still_there
         )
-        persisted = client.persist(family)
-    return ConfigChangeOutcome(application, persisted.persistence, diagnostics + persisted.diagnostics)
+        return _persisted(client, family, application, diagnostics)
 
 
 def add_pool(server: Server, family: Family, subnet_id: int, cidr: str, pool: Pool) -> ConfigChangeOutcome:
@@ -128,6 +135,7 @@ def _change_pool(
     with _client(server, family) as client, _serialized(client, family):
         with mutation(server, family) as scope:
             subnet = _subnet_as_seen(scope, subnet_id, cidr)
+        _require_pool_state(subnet, action, pool)
         delta = _read_before(lambda: client.pool_uses_delta(family, action))
         application, diagnostics = _mutate(
             client,
@@ -136,7 +144,14 @@ def _change_pool(
             # Not live: an added Pool is absent, or a deleted Pool is still there.
             not_live=lambda: (pool in _pools_now(server, family, subnet)) == (action == "del"),
         )
-        persisted = client.persist(family)
+        return _persisted(client, family, application, diagnostics)
+
+
+def _persisted(
+    client: KeaClient, family: Family, application: Application, diagnostics: tuple[str, ...]
+) -> ConfigChangeOutcome:
+    """Run the persist step and return the outcome of the change."""
+    persisted = client.persist(family)
     return ConfigChangeOutcome(application, persisted.persistence, diagnostics + persisted.diagnostics)
 
 
@@ -177,34 +192,48 @@ def _subnet_as_seen(scope: MutationScope, subnet_id: int, cidr: str) -> Verified
     try:
         subnet = scope.find_by_id(subnet_id)
     except CatalogueUnavailable as exc:
-        raise ConfigChangeRejected(
-            "not-sent", ("NetBox could not confirm Kea's Subnet list, so it did not send the change. Try again later.",)
-        ) from exc
+        raise ConfigChangeRejected("not-sent", (SUBNET_LIST_UNCONFIRMED,)) from exc
     if subnet is None or subnet.network != subnet_network(cidr, scope.family):
-        raise ConfigChangeRejected(
-            "not-sent",
-            (f"Subnet {subnet_id} ({cidr}) changed in Kea. Reload the page and try again.",),
-        )
+        raise ConfigChangeRejected("not-sent", (subnet_changed(subnet_id, cidr),))
     return subnet
 
 
-def _still_there(server: Server, family: Family, subnet: VerifiedSubnet) -> VerifiedSubnet | None:
-    """Read *subnet* again in a fresh scope. Return it while its ID still names its network, else None."""
+def _require_pool_state(subnet: VerifiedSubnet, action: PoolAction, pool: Pool) -> None:
+    """Reject a Pool delete that the Subnet does not hold, or a Pool add that it holds. Without facts, Kea decides."""
+    if subnet.configuration is None:
+        return
+    held = pool in subnet.configuration.pools
+    if action == "del" and not held:
+        problem = f"has no Pool {pool.range}"
+    elif action == "add" and held:
+        problem = f"already has Pool {pool.range}"
+    else:
+        return
+    raise ConfigChangeRejected(
+        "not-sent", (f"Subnet {subnet.subnet_id} ({subnet.cidr}) {problem}. Reload the page and try again.",)
+    )
+
+
+def _subnet_now(server: Server, family: Family, subnet_id: int) -> VerifiedSubnet | None:
+    """Read the Subnet with *subnet_id* in a fresh scope. Return None when no Subnet has that ID."""
     with mutation(server, family) as scope:
-        current = scope.find_by_id(subnet.subnet_id)
-    return current if current is not None and current.network == subnet.network else None
+        return scope.find_by_id(subnet_id)
 
 
 def _pools_now(server: Server, family: Family, subnet: VerifiedSubnet) -> tuple[Pool, ...]:
-    """Return the Pools that *subnet* holds now, and none when the Subnet is gone.
+    """Return the Pools that *subnet* holds now, and none when its ID is gone.
 
     Raises:
-        CatalogueUnavailable: If Kea did not return the configuration facts of the Subnet, so its Pools are unknown.
+        CatalogueUnavailable: If the ID now names another network, or Kea did not return the configuration facts
+            of the Subnet, so the Pools that the command reached are unknown.
 
     """
-    current = _still_there(server, family, subnet)
+    current = _subnet_now(server, family, subnet.subnet_id)
     if current is None:
         return ()
+    # The Pool commands carry only the ID, so the change can be live on the Subnet that now has it.
+    if current.network != subnet.network:
+        raise CatalogueUnavailable(f"Subnet ID {subnet.subnet_id} now names {current.cidr}.")
     if current.configuration is None:
         raise CatalogueUnavailable("Kea did not return the configuration facts of the Subnet.")
     return current.configuration.pools
