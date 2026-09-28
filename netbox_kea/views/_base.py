@@ -37,9 +37,6 @@ OutcomeT = TypeVar("OutcomeT", bound=ConfigChangeOutcome)
 # Protects the <path:pool> URL parameter from injection before it reaches the Kea API.
 _POOL_RE = re.compile(r"^[0-9a-fA-F.:/-]{3,100}$")
 
-# The warning for a PartialPersistError: the change is live, but Kea did not write it to disk.
-_LIVE_NOT_PERSISTED = "Change applied but may not survive a Kea restart (not written to disk)."
-
 _UNCONFIRMED = "Kea did not confirm the change. Check the server configuration before retrying."
 _REJECTED: dict[RejectionReason, str] = {
     "kea-rejected": "Kea rejected the change.",

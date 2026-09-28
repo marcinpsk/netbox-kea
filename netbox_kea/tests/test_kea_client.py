@@ -5,6 +5,7 @@
 These tests mock all HTTP calls and require no running services.
 """
 
+import dataclasses
 import ipaddress
 from dataclasses import replace
 from typing import get_args, get_origin, get_type_hints
@@ -24,8 +25,8 @@ from netbox_kea.kea import (
     LeaseQueryNotMeasurable,
     LeaseQueryPreflightUnavailable,
     LeaseQueryTooBroad,
-    NewSubnetFields,
     SubnetEdit,
+    SubnetFields,
     check_response,
     lease_query_guard_message,
 )
@@ -392,7 +393,7 @@ def _side_effects(*responses):
 # TestSubnetAdd
 # ---------------------------------------------------------------------------
 
-_NO_FIELDS = NewSubnetFields(pools=(), gateway="", dns_servers=(), ntp_servers=(), ddns_qualifying_suffix="")
+_NO_FIELDS = SubnetFields(pools=(), gateway="", dns_servers=(), ntp_servers=(), ddns_qualifying_suffix="")
 
 
 class TestSubnetAdd(TestCase):
@@ -408,7 +409,7 @@ class TestSubnetAdd(TestCase):
         self.assertEqual(kea.bodies("subnet4-add")[0]["arguments"], {"subnet4": [{"subnet": "10.99.0.0/24", "id": 10}]})
 
     def test_a_dhcpv6_subnet_carries_no_gateway(self):
-        fields = NewSubnetFields(
+        fields = SubnetFields(
             pools=(), gateway="2001:db8::1", dns_servers=(), ntp_servers=(), ddns_qualifying_suffix=""
         )
         with stub_kea({"subnet6-add": {"result": 0, "text": "IPv6 subnet added"}}) as kea:
@@ -1577,17 +1578,21 @@ class TestSubnetGet(TestCase):
 
 # Every managed field empty: a form-managed DHCP Option is removed, and every lifetime keeps its live value.
 _BLANK = SubnetEdit(
-    pools=(),
-    gateway="",
-    dns_servers=(),
-    ntp_servers=(),
-    ddns_qualifying_suffix="",
+    fields=_NO_FIELDS,
     valid_lifetime=None,
     min_valid_lifetime=None,
     max_valid_lifetime=None,
     renew_timer=None,
     rebind_timer=None,
 )
+_FORM_FIELDS = frozenset(field.name for field in dataclasses.fields(SubnetFields))
+
+
+def _edit(**values) -> SubnetEdit:
+    """Return the blank edit with *values*, given by the name of a form field, a lifetime or a timer."""
+    fields = {name: value for name, value in values.items() if name in _FORM_FIELDS}
+    lifetimes = {name: value for name, value in values.items() if name not in _FORM_FIELDS}
+    return replace(_BLANK, fields=replace(_BLANK.fields, **fields), **lifetimes)
 
 
 def _subnet_get_reply(version: int, subnet) -> dict:
@@ -1646,7 +1651,7 @@ class TestSubnetUpdate(TestCase):
             f"subnet{version}-update": {"result": 0, "text": f"IPv{version} subnet updated"},
         }
         with stub_kea(responses) as kea:
-            self.client.subnet_update(self.client.subnet_definition(version, live["id"]), replace(_BLANK, **fields))
+            self.client.subnet_update(self.client.subnet_definition(version, live["id"]), _edit(**fields))
         self.assertEqual(kea.commands(), [f"subnet{version}-get", f"subnet{version}-update"])
         (body,) = kea.bodies(f"subnet{version}-update")
         self.assertEqual(body["service"], [f"dhcp{version}"])

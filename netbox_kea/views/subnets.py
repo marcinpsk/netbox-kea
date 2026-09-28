@@ -15,7 +15,7 @@ from utilities.views import register_model_view
 
 from .. import config_write, forms, server_configuration, tables
 from ..constants import Family
-from ..kea import KeaException, NewSubnetFields, SubnetEdit, subnet_network
+from ..kea import KeaException, SubnetEdit, SubnetFields, subnet_network
 from ..models import Server
 from ..reservations import InSubnetReservationScope
 from ..subnet_catalogue import (
@@ -379,6 +379,17 @@ def _network_choices(snapshot: server_configuration.ServerConfigurationSnapshot)
     return [("", "— (global pool) —"), *((network.name, network.name) for network in snapshot.shared_networks)]
 
 
+def _subnet_fields(cleaned_data: dict[str, Any]) -> SubnetFields:
+    """Return the Subnet fields that the add form and the edit form both set, from the cleaned data of either."""
+    return SubnetFields(
+        pools=tuple(pool.range for pool in cleaned_data["pools"]),
+        gateway=cleaned_data["gateway"],
+        dns_servers=tuple(cleaned_data["dns_servers"]),
+        ntp_servers=tuple(cleaned_data["ntp_servers"]),
+        ddns_qualifying_suffix=cleaned_data["ddns_qualifying_suffix"],
+    )
+
+
 def _inherited_subnet_options(
     snapshot: server_configuration.ServerConfigurationSnapshot,
     current_network: str,
@@ -460,13 +471,7 @@ class _BaseSubnetAddView(_KeaChangeMixin, generic.ObjectView):
             form.add_error("subnet", f"Enter an IPv{self.dhcp_version} Subnet CIDR.")
             return self._render(request, server, form)
         shared_network: str | None = cd["shared_network"] or None
-        fields = NewSubnetFields(
-            pools=tuple(pool.range for pool in cd["pools"]),
-            gateway=cd["gateway"],
-            dns_servers=tuple(cd["dns_servers"]),
-            ntp_servers=tuple(cd["ntp_servers"]),
-            ddns_qualifying_suffix=cd["ddns_qualifying_suffix"],
-        )
+        fields = _subnet_fields(cd)
 
         def added(outcome: config_write.SubnetAddOutcome) -> str:
             joined = f" to Shared Network '{shared_network}'" if shared_network else ""
@@ -550,8 +555,13 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
             snapshot.diagnostics + configuration.diagnostics,
             messages.WARNING if configuration.available else messages.ERROR,
         )
-        if not configuration.available or configured_target is None:
-            messages.warning(request, "Could not load shared-network data; network assignment may be inaccurate.")
+        membership_confirmed = configuration.available and configured_target is not None
+        if not membership_confirmed:
+            messages.warning(
+                request,
+                "Could not confirm the Shared Network of this Subnet, so this form cannot be saved. "
+                "Reload the page and try again.",
+            )
         settings = subnet_configuration.settings
         initial = {
             "subnet_cidr": subnet_cidr,
@@ -564,6 +574,8 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
             "rebind_timer": settings.rebind_timer,
             "ddns_qualifying_suffix": settings.ddns_qualifying_suffix or "",
             "shared_network": display_network,
+            "shown_network": display_network,
+            "shown_network_confirmed": membership_confirmed,
         }
         form = forms.SubnetEditForm(initial=initial)
         form.fields["shared_network"].choices = _network_choices(configuration)
@@ -619,7 +631,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
 
     def post(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         server = self.get_object(pk=pk)
-        # The form reads the Shared Networks for its choices only; config_write reads the membership itself.
+        # The form reads the Shared Networks for its choices; config_write checks the membership that the page showed.
         configuration = server_configuration.for_verification(server, self.dhcp_version)
         _diagnostic_messages(request, configuration.diagnostics, messages.WARNING)
         form = forms.SubnetEditForm(request.POST)
@@ -639,11 +651,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
             form.add_error("subnet_cidr", f"Enter an IPv{self.dhcp_version} Subnet CIDR.")
             return self._render_post(request, server, subnet_id, form, configuration)
         edit = SubnetEdit(
-            pools=tuple(pool.range for pool in cd["pools"]),
-            gateway=cd["gateway"],
-            dns_servers=tuple(cd["dns_servers"]),
-            ntp_servers=tuple(cd["ntp_servers"]),
-            ddns_qualifying_suffix=cd["ddns_qualifying_suffix"],
+            fields=_subnet_fields(cd),
             valid_lifetime=cd["valid_lft"],
             min_valid_lifetime=cd["min_valid_lft"],
             max_valid_lifetime=cd["max_valid_lft"],
@@ -654,7 +662,13 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
             request,
             f"Subnet {subnet_id} ({cidr}) updated.",
             lambda: config_write.edit_subnet(
-                server, self.dhcp_version, subnet_id, cidr, edit, cd["shared_network"] or None
+                server,
+                self.dhcp_version,
+                subnet_id,
+                cidr,
+                edit,
+                shown_network=cd["shown_network"] or None,
+                shared_network=cd["shared_network"] or None,
             ),
         )
         if outcome is None:

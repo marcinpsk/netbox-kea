@@ -1069,9 +1069,9 @@ class SubnetAddForm(_SubnetBaseForm):
 class SubnetEditForm(_SubnetBaseForm):
     """Form for editing an existing DHCP subnet in Kea.
 
-    The subnet CIDR and ID are immutable. The CIDR is a hidden field, so the change
-    acts only on the Subnet that the page showed. All other fields are optional;
-    leaving a field blank means "clear that option".
+    The subnet CIDR and ID are immutable. The CIDR and the Shared Network that the page showed are hidden
+    fields, so the change acts only on the Subnet that the page showed. All other fields are optional. A blank
+    Pool, option or DDNS field removes that value. A blank lifetime or timer keeps the live value.
 
     ``shared_network`` choices are set dynamically by the view at render time.
     """
@@ -1115,9 +1115,15 @@ class SubnetEditForm(_SubnetBaseForm):
         choices=[],
         help_text="Assign this subnet to a shared network, or leave blank to use the global address pool.",
     )
+    # The Shared Network that the page showed; blank means none. Kept exactly as Kea names it.
+    shown_network = forms.CharField(widget=forms.HiddenInput, required=False, strip=False)
+    # False: the page could not confirm the Shared Network, so the form cannot be saved.
+    shown_network_confirmed = forms.BooleanField(widget=forms.HiddenInput, required=False)
 
     field_order = [
         "subnet_cidr",
+        "shown_network",
+        "shown_network_confirmed",
         "shared_network",
         "pools",
         "gateway",
@@ -1134,6 +1140,16 @@ class SubnetEditForm(_SubnetBaseForm):
     def clean_subnet_cidr(self) -> str:
         """Accept host bits here: Kea allows them, so this CIDR is echoed back from its config."""
         return _validate_subnet_cidr(self.cleaned_data["subnet_cidr"], strict=False)
+
+    def clean(self) -> dict[str, Any] | None:
+        """Refuse a page that could not confirm the Shared Network, because a save would guess the membership."""
+        cleaned = super().clean()
+        if not self.cleaned_data.get("shown_network_confirmed"):
+            raise forms.ValidationError(
+                "NetBox could not confirm the Shared Network of this Subnet when it showed the page. "
+                "Reload the page and try again."
+            )
+        return cleaned
 
 
 # ─────────────────────────────────────────────────────────────────────────────
