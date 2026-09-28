@@ -47,6 +47,14 @@ def bad_view_defers_the_change_to_another_helper(request, server):
         logger.exception("Could not delete the Shared Network")
 
 
+def bad_view_evaluates_the_change_before_the_mapper(request, server):
+    try:
+        # ruleid: kea-config-change-in-broad-except
+        return _run_config_change(request, "Deleted.", config_write.delete_shared_network(server, 4, "net"))
+    except Exception:
+        logger.exception("Could not delete the Shared Network")
+
+
 def ok_view_catches_around_the_mapper(request, server):
     try:
         # ok: kea-config-change-in-broad-except
