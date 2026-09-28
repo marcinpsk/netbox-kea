@@ -99,6 +99,13 @@ def test_a_list_commands_reply_cannot_advertise_a_command_kea_does_not_have():
         _call(stub, "list-commands")
 
 
+def test_a_list_commands_response_object_cannot_advertise_a_command_kea_does_not_have():
+    advertised = _http_response([{"result": 0, "arguments": ["subnet4-delta-add", "subnet4-pool-add"]}])
+    stub = KeaHttpStub({"list-commands": advertised})
+    with pytest.raises(AssertionError, match=r"advertises \['subnet4-pool-add'\]"):
+        _call(stub, "list-commands")
+
+
 def test_callable_resolves_against_request_body():
     stub = KeaHttpStub({"version-get": lambda body: {"echo": body["command"]}})
     assert _call(stub) == [{"echo": "version-get"}]

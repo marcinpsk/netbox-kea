@@ -60,6 +60,16 @@ def _is_exc(obj: Any) -> bool:
     return isinstance(obj, BaseException) or (isinstance(obj, type) and issubclass(obj, BaseException))
 
 
+def _decoded(response: requests.Response) -> Any:
+    """Return the JSON body of a successful *response*, or None for an error or a body that is not JSON."""
+    if not response.ok:
+        return None
+    try:
+        return response.json()
+    except ValueError:
+        return None
+
+
 class ResponseQueue:
     """An explicit FIFO of sequential responses for one command.
 
@@ -189,12 +199,13 @@ class KeaHttpStub:
             spec = spec(body)
         if _is_exc(spec):
             raise spec() if isinstance(spec, type) else spec
-        if isinstance(spec, requests.Response):
-            return spec
         if cmd == "list-commands":
-            for entry in spec if isinstance(spec, list) else [spec]:
+            payload = _decoded(spec) if isinstance(spec, requests.Response) else spec
+            for entry in payload if isinstance(payload, list) else [payload]:
                 if isinstance(entry, dict) and isinstance(entry.get("arguments"), list):
                     _assert_kea_has(entry["arguments"], "advertises")
+        if isinstance(spec, requests.Response):
+            return spec
         return _http_response(spec if isinstance(spec, list) else [spec], url=url)
 
     # --- assertion helpers ---
