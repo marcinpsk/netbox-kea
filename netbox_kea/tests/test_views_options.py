@@ -30,11 +30,14 @@ Error paths are driven through the real client too:
 """
 
 import copy
+import json
 
 import requests
 from django.contrib import messages as django_messages
 from django.test import override_settings
 from django.urls import reverse
+
+from netbox_kea import server_configuration
 
 from .kea_stub import _catalogue_responses_for_subnets, queued, stub_kea
 from .utils import _PLUGINS_CONFIG, _make_db_server, _ViewTestBase
@@ -563,6 +566,28 @@ class TestServerOptionDef4ListView(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.context["options_load_error"])
 
+    def test_malformed_definitions_are_dropped_with_a_warning(self):
+        valid = {"name": "site", "code": 222, "type": "record", "space": "dhcp4", "record-types": "uint16, string"}
+        cases = (
+            ({"site": valid}, "Kea returned a non-list Option Definition collection."),
+            ([{**valid, "array": "yes"}], "Kea returned an invalid Option Definition."),
+            ([{**valid, "encapsulate": 7}], "Kea returned an invalid Option Definition."),
+            ([{**valid, "record-types": "uint16,,string"}], "Kea returned an invalid Option Definition."),
+        )
+        for definitions, warning in cases:
+            with self.subTest(definitions=definitions):
+                server_configuration.invalidate(self.server, 4)
+                config = {"result": 0, "arguments": {"Dhcp4": {"option-def": definitions}}}
+                with stub_kea({"config-get": config}):
+                    response = self.client.get(self._url())
+
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.context["option_defs"], [])
+                warnings = [
+                    str(message) for message in response.context["messages"] if message.level == django_messages.WARNING
+                ]
+                self.assertIn(warning, warnings)
+
     def test_empty_list_shows_200(self):
         """GET with empty option-def list returns 200 without errors."""
         with stub_kea({"config-get": _option_def_config(_OPTION_DEF_LIST_EMPTY)}):
@@ -885,6 +910,24 @@ class TestServerOptionsPostInvalid(_ViewTestBase):
                 },
             )
         self.assertEqual(response.status_code, 200)
+        self.assertNotIn("config-set", kea.commands())
+
+    def test_post_new_row_without_data_rerenders_with_a_data_error(self):
+        """A new option row needs a value; only an existing option may keep its data empty."""
+        with stub_kea(_catalogue_responses_for_subnets(4, [])) as kea:
+            response = self.client.post(
+                self._url(),
+                {
+                    "form-TOTAL_FORMS": "1",
+                    "form-INITIAL_FORMS": "0",
+                    "form-MIN_NUM_FORMS": "0",
+                    "form-MAX_NUM_FORMS": "1000",
+                    "form-0-name": "routers",
+                    "form-0-data": "",
+                },
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["formset"].forms[0].errors["data"], ["This field is required."])
         self.assertNotIn("config-set", kea.commands())
 
     def test_post_with_always_send_includes_flag(self):
@@ -1515,6 +1558,22 @@ class TestConfigurationOptionIdentity(_ViewTestBase):
                 expected = copy.deepcopy(live)
                 expected[1]["data"] = "198.18.0.56"
                 self.assertEqual(written["option-data"], expected)
+
+    def test_a_tampered_original_identity_is_a_form_error_before_any_write(self):
+        options = [{"code": 6, "space": "dhcp4", "data": "198.18.0.53", "client-classes": ["group-a"]}]
+        for classes in ("group-a", [""]):
+            with self.subTest(classes=classes):
+                with _persist_stub(self._config("server", options)):
+                    data = self._submitted(self.client.get(self._url("server")))
+                data["form-0-original_option"] = json.dumps({**options[0], "client-classes": classes})
+                with _persist_stub(self._config("server", options)) as kea:
+                    post = self.client.post(self._url("server"), data)
+                self.assertEqual(post.status_code, 200)
+                self.assertEqual(
+                    post.context["formset"].forms[0].errors["original_option"],
+                    ["Invalid original DHCP Option identity."],
+                )
+                self.assertNotIn("config-set", kea.commands())
 
     def test_coded_option_name_cannot_change_to_an_incompatible_option(self):
         for scope in ("server", "subnet"):

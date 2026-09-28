@@ -112,6 +112,10 @@ class TestServerConfiguration(TestCase):
             server_configuration.display(self.server, 4)
         self.assertEqual(kea.commands(), ["config-get"] * 3)
 
+    def test_public_operations_reject_an_invalid_family(self):
+        with self.assertRaisesMessage(ValueError, "family must be 4 or 6"):
+            server_configuration.display(self.server, 5)
+
     def test_unavailable_has_no_facts(self):
         with stub_kea({"config-get": requests.ConnectionError("unreachable")}):
             snapshot = server_configuration.display(self.server, 4)

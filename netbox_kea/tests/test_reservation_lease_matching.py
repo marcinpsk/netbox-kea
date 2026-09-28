@@ -204,6 +204,51 @@ class TestReservationLeaseRelationship(_ViewTestBase):
         self.assertIsNone(rows[0]["has_active_lease"])
         self.assertNotContains(response, "No Lease")
 
+    def test_a_failed_subnet_lease_query_leaves_only_that_subnet_indeterminate(self):
+        """A Kea error for one Subnet is unknown there, and the other Subnet still answers."""
+
+        def leases(body):
+            if body["arguments"]["subnet-id"] == 20:
+                return {"result": 1, "text": "lease database error"}
+            return {"result": 3}
+
+        _response, rows, _kea = self._rows(
+            {
+                "reservation-get-page": _res_page(
+                    [
+                        {"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:01", "ip-address": "198.18.0.20"},
+                        {"subnet-id": 21, "hw-address": "aa:bb:cc:dd:ee:02", "ip-address": "198.18.1.20"},
+                    ]
+                ),
+                "lease4-get-by-state": leases,
+            }
+        )
+
+        by_subnet = {row["subnet_id"]: row["has_active_lease"] for row in rows}
+        self.assertEqual(by_subnet, {20: None, 21: False})
+
+    def test_a_global_identity_query_error_reports_by_its_cause(self):
+        """A missing identity query hides every relationship; any other Kea error hides only its own."""
+        for reply, scoped in (
+            ({"result": 2, "text": "unknown command"}, None),
+            ({"result": 1, "text": "lease database error"}, False),
+        ):
+            with self.subTest(result=reply["result"]):
+                _response, rows, _kea = self._rows(
+                    {
+                        "reservation-get-page": _res_page(
+                            [
+                                {"subnet-id": 0, "hw-address": "aa:bb:cc:dd:ee:01"},
+                                {"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:02", "ip-address": "198.18.0.20"},
+                            ]
+                        ),
+                        "lease4-get-by-hw-address": reply,
+                        "lease4-get-by-state": _leases_per_subnet({20: []}),
+                    }
+                )
+                by_subnet = {row["subnet_id"]: row["has_active_lease"] for row in rows}
+                self.assertEqual(by_subnet, {0: None, 20: scoped})
+
     def test_an_unexpected_worker_failure_is_logged_at_exception_level(self):
         """An unexpected enrichment failure is visible without DEBUG logging."""
         with self.assertLogs("netbox_kea.views.reservations", level="ERROR") as logs:

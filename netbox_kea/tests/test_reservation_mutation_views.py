@@ -141,6 +141,29 @@ class TestReservationMutationViews(_ViewTestBase):
         self.assertEqual(len(warnings), 1, warnings)
         self.assertIn("198.18.0.0/24", warnings[0])
 
+    def test_create_without_an_address_skips_the_pool_overlap_check(self):
+        """An addressless Reservation cannot overlap a pool, so no configuration is needed."""
+        from django.contrib import messages
+        from django.contrib.messages import get_messages
+
+        responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
+        responses["config-get"]["arguments"]["Dhcp4"]["subnet4"] = [{"id": 21, "subnet": "invalid"}]
+        raw = {"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:ff"}
+        responses.update({"reservation-add": {"result": 0}, "reservation-get": _res_get(raw)})
+
+        with stub_kea(responses) as kea:
+            response = self.client.post(
+                reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk]),
+                {"subnet_cidr": "198.18.0.0/24", "identifier_type": "hw-address", "identifier": "AA-BB-CC-DD-EE-FF"},
+            )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("reservation-add", kea.commands())
+        warnings = [
+            str(message) for message in get_messages(response.wsgi_request) if message.level == messages.WARNING
+        ]
+        self.assertFalse(any("pool overlap check did not run" in warning for warning in warnings), warnings)
+
     def test_create_uses_the_typed_operation_and_emits_one_typed_signal(self):
         responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
         raw = {
