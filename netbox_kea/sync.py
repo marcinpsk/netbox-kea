@@ -970,14 +970,15 @@ def _parse_pool_range(pool_str: str, subnet_prefix_len: int) -> tuple[str, str] 
 _POOL_TOO_LARGE: object = object()
 
 
-def sync_pool_to_netbox_ip_range(pool_str: str, subnet_cidr: str, vrf=None) -> tuple | object | None:
+def sync_pool_to_netbox_ip_range(pool_str: str, subnet: IPNetworkValue, vrf=None) -> tuple | object | None:
     """Create or update a NetBox IPRange from a Kea pool definition.
 
     Args:
-        pool_str:    Kea pool string, e.g. ``"192.168.10.50-192.168.10.100"`` or
-                     ``"192.168.10.128/25"``.
-        subnet_cidr: Parent subnet CIDR (e.g. ``"192.168.10.0/24"``) used to derive
-                     the prefix length for range-format pools.
+        pool_str: Kea pool string, e.g. ``"192.168.10.50-192.168.10.100"`` or
+                  ``"192.168.10.128/25"``.
+        subnet:   The parsed parent Subnet network, e.g. from
+                  :func:`netbox_kea.kea.subnet_network`. Its prefix length tags the
+                  addresses of a range-format pool.
         vrf: NetBox VRF instance to assign the IP range to.  ``None`` means the global VRF.
 
     Returns one of three outcomes:
@@ -990,14 +991,9 @@ def sync_pool_to_netbox_ip_range(pool_str: str, subnet_cidr: str, vrf=None) -> t
 
     """
     from ipam.models import IPRange
-    from netaddr import AddrFormatError, IPNetwork
+    from netaddr import IPNetwork
 
-    try:
-        subnet_prefix_len = IPNetwork(subnet_cidr).prefixlen
-    except (AddrFormatError, ValueError):
-        subnet_prefix_len = 32 if ":" not in subnet_cidr else 128
-
-    addresses = _parse_pool_range(pool_str, subnet_prefix_len)
+    addresses = _parse_pool_range(pool_str, subnet.prefixlen)
     if addresses is None:
         return None
 

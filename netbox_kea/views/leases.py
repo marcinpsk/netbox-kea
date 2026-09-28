@@ -1148,12 +1148,6 @@ def _enrich_leases_with_badges(
         reservation_by_ip, host_cmds_available, failed_ips = _fetch_reservations_for_leases(
             client, version, catalogue, leases
         )
-    except KeaException as exc:
-        if exc.unsupported_command:
-            host_cmds_available = False
-        else:
-            failed_ips = {lease.get("ip_address", "") for lease in leases}
-            logger.warning("reservation lookup failed during lease enrichment: %s", exc)
     except Exception as exc:
         failed_ips = {lease.get("ip_address", "") for lease in leases}
         logger.warning("unexpected error during lease enrichment: %s", exc, exc_info=True)

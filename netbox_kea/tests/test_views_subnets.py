@@ -1327,7 +1327,14 @@ class TestSubnetEditNetworkChoicesNoneArguments(_ViewTestBase):
         return reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, subnet_id])
 
     def test_get_rejects_malformed_subnet_response(self):
-        for payload in ([], {"result": 0, "arguments": {"subnet4": {"id": 42}}}):
+        payloads = (
+            [],
+            {"result": 0, "arguments": {"subnet4": {"id": 42}}},
+            {"result": 0, "arguments": {"subnet4": ["not-an-object"]}},
+            {"result": 0, "arguments": {"subnet4": [{"id": 7, "subnet": "10.0.0.0/24"}]}},
+            {"result": 0, "arguments": {"subnet4": [{"id": 42, "subnet": "10.0.0.0/24", "pools": [{"pool": "bad"}]}]}},
+        )
+        for payload in payloads:
             with (
                 self.subTest(payload=payload),
                 stub_kea(
@@ -1350,6 +1357,22 @@ class TestSubnetEditNetworkChoicesNoneArguments(_ViewTestBase):
                         for message in get_messages(response.wsgi_request)
                     )
                 )
+
+    def test_get_ignores_membership_under_a_duplicate_shared_network_name(self):
+        """A duplicate network name makes membership unknown, so the form reads the Subnet alone."""
+        member = {"id": 42, "subnet": "10.0.0.0/24"}
+        config = {
+            "result": 0,
+            "arguments": {
+                "Dhcp4": {"shared-networks": [{"name": "dup", "subnet4": [member]}, {"name": "dup", "subnet4": []}]}
+            },
+        }
+        with stub_kea({**_ABSENT_READ_HOOKS, "config-get": config, "subnet4-get": _SUBNET4_GET_FULL[0]}) as kea:
+            response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["form"].initial["shared_network"], "")
+        self.assertContains(response, "network assignment may be inaccurate")
+        self.assertIn("subnet4-get", kea.commands())
 
     def test_get_falls_back_when_config_returns_none_arguments(self):
         """Malformed configuration leaves the Subnet form available."""

@@ -130,11 +130,6 @@ class ConfiguredSubnet:
         """Return the declared identity for display without verifying it."""
         return self.candidate_identity
 
-    @property
-    def cidr(self) -> str:
-        """Return the canonical declared CIDR text."""
-        return self.identity.cidr
-
 
 @dataclass(frozen=True)
 class CatalogueSnapshot:

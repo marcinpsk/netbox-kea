@@ -4290,6 +4290,12 @@ _SUBNET_UPDATE_OK_V6 = [{"result": 0, "arguments": {}, "text": "IPv6 subnet upda
 
 
 class TestSubnetUpdateIdentity(TestCase):
+    def test_a_non_object_subnet_get_entry_is_rejected(self):
+        response = {"result": 0, "arguments": {"subnet4": ["not-an-object"]}}
+        with KeaClient(url="http://kea.example.invalid") as client, stub_kea({"subnet4-get": response}):
+            with self.assertRaisesRegex(RuntimeError, "^subnet4-get returned an invalid subnet$"):
+                client.subnet_get(4, 7)
+
     def test_a_numeric_live_cidr_cannot_mutate_the_subnet(self):
         response = {"result": 0, "arguments": {"subnet4": [{"id": 7, "subnet": 3323068416}]}}
         with KeaClient(url="http://kea.example.invalid") as client, stub_kea({"subnet4-get": response}) as stub:

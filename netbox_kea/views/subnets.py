@@ -37,6 +37,7 @@ from ..utilities import (
 )
 from ._base import (
     _LIVE_NOT_PERSISTED,
+    _POOL_RE,
     _catalogue_subnet_row,
     _diagnostic_messages,
     _enrich_subnet_statistics,
@@ -45,8 +46,6 @@ from ._base import (
 )
 
 logger = logging.getLogger(__name__)
-
-_POOL_RE = re.compile(r"^[0-9a-fA-F.:/-]{3,100}$")
 
 # Single consolidated "Subnets" tab covering subnets AND shared networks for both
 # protocols. Owned by ServerDHCP4SubnetsView (the one class-level tab); the other

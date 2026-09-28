@@ -23,8 +23,8 @@ from ..utilities import (
     check_dhcp_enabled,
     kea_error_hint,
 )
-from ._base import _LIVE_NOT_PERSISTED, ConditionalLoginRequiredMixin, _KeaChangeMixin
-from .subnets import _SUBNETS_TAB, _diagnostic_messages
+from ._base import _LIVE_NOT_PERSISTED, ConditionalLoginRequiredMixin, _diagnostic_messages, _KeaChangeMixin
+from .subnets import _SUBNETS_TAB
 
 logger = logging.getLogger(__name__)
 

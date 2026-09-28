@@ -227,6 +227,21 @@ class TestServerSharedNetworks4View(_ViewTestBase):
         self.assertContains(response, "Kea returned a non-object Shared Network.")
         self.assertTrue(any(message.level == django_messages.WARNING for message in response.context["messages"]))
 
+    def test_non_object_user_context_shows_the_network_without_a_description(self):
+        responses = _catalogue_responses_for_subnets(
+            4,
+            [],
+            shared_networks=[{"name": "clients", "user-context": "legacy note", "subnet4": []}],
+        )
+
+        with stub_kea(responses):
+            response = self.client.get(self._url())
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "clients")
+        self.assertNotContains(response, "legacy note")
+        self.assertContains(response, "Kea returned an invalid user-context setting.")
+
     def test_get_with_dhcp4_disabled_redirects(self):
         v6_only = _make_db_server(name="v6-only-sn", dhcp4=False, dhcp6=True)
         url = reverse("plugins:netbox_kea:server_shared_networks4", args=[v6_only.pk])

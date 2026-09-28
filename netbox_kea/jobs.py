@@ -361,7 +361,7 @@ def _sync_subnet_entry(
         for pool in pools:
             pool_str = pool.range
             try:
-                result = sync_pool_to_netbox_ip_range(pool_str, subnet_cidr, vrf=vrf)
+                result = sync_pool_to_netbox_ip_range(pool_str, subnet.network, vrf=vrf)
                 if result is _POOL_TOO_LARGE:
                     # Intentional skip; not an error.
                     pass
@@ -420,19 +420,20 @@ def _sync_one_server(
     sync_ip_ranges: bool,
     max_leases: int,
     stats: dict[str, int],
-    conflict_ips: set[str] | None = None,
-    duplicates: list[DuplicateNetBoxRowsError] | None = None,
+    *,
+    conflict_ips: set[str],
+    duplicates: list[DuplicateNetBoxRowsError],
 ) -> None:
     """Sync a single server's leases, reservations, prefixes, and IP ranges.
 
-    *conflict_ips* is an optional caller-owned set that collects the foreign NetBox
+    *conflict_ips* is a caller-owned set that collects the foreign NetBox
     IPs this run refused to overwrite, so the caller can name them in the job
     summary.  One set per server, shared by both phases and both IP versions: a
     foreign IP that has *both* a lease and a reservation is one conflict for the
     operator to resolve, not two.  Each phase still accumulates into its own list
     because ``sync_{lease,reservation}_to_netbox`` append to it.
 
-    *duplicates* is an optional caller-owned list that collects the Kea subnets and
+    *duplicates* is a caller-owned list that collects the Kea subnets and
     pools that match more than one NetBox row, so the caller can name them.
     """
     from .sync import cleanup_stale_ips_batch
@@ -440,10 +441,6 @@ def _sync_one_server(
     all_synced: list[dict | Reservation] = []
     # Records the job deliberately did not write, whose addresses cleanup must keep.
     protected: list[dict | Reservation] = []
-    if conflict_ips is None:
-        conflict_ips = set()
-    if duplicates is None:
-        duplicates = []
     # Cleanup is only safe when both sources contributed, otherwise we risk
     # removing IPs that exist in the source we didn't sync.
     cleanup_safe = sync_leases and sync_reservations
