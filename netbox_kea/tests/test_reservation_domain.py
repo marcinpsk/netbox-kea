@@ -50,6 +50,7 @@ _REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 def _catalogue(family: Family, subnet_id: int, cidr: str) -> CatalogueSnapshot:
     subnet = VerifiedSubnet(
         identity=SubnetIdentity(subnet_id=subnet_id, network=ip_network(cidr)),
+        declared_cidr=cidr,
         configuration=None,
         shared_network=None,
     )

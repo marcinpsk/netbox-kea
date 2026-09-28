@@ -7,7 +7,7 @@
   <div class="col col-md-6 offset-md-3">
     <div class="card">
       <div class="card-header">
-        <strong>Add Pool to DHCPv{{ dhcp_version }} Subnet {{ subnet_id }}</strong>
+        <strong>Add Pool to DHCPv{{ dhcp_version }} Subnet {% if subnet_cidr %}{{ subnet_cidr }} (ID {{ subnet_id }}){% else %}{{ subnet_id }}{% endif %}</strong>
       </div>
       <div class="card-body">
         <form method="post">

@@ -26,6 +26,7 @@
         </p>
         <form method="post">
           {% csrf_token %}
+          {{ form.subnet_cidr }}
           <div class="text-end mt-3">
             <a href="{{ return_url }}" class="btn btn-secondary me-2">Cancel</a>
             <button type="submit" class="btn btn-danger">

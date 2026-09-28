@@ -13,9 +13,9 @@ from netbox.views import generic
 from utilities.htmx import htmx_partial
 from utilities.views import register_model_view
 
-from .. import forms, server_configuration, tables
+from .. import config_write, forms, server_configuration, tables
 from ..constants import Family
-from ..kea import KeaClient, KeaException, PartialPersistError
+from ..kea import KeaClient, KeaException, PartialPersistError, subnet_network
 from ..models import Server
 from ..reservations import InSubnetReservationScope
 from ..subnet_catalogue import (
@@ -42,10 +42,15 @@ from ._base import (
     _diagnostic_messages,
     _enrich_subnet_statistics,
     _KeaChangeMixin,
+    _run_config_change,
     _subnet_option_fields,
 )
 
 logger = logging.getLogger(__name__)
+
+_NO_SUBNET_CIDR = (
+    "The page did not send a valid Subnet CIDR, so nothing was sent to Kea. Reload the page and try again."
+)
 
 # Single consolidated "Subnets" tab covering subnets AND shared networks for both
 # protocols. Owned by ServerDHCP4SubnetsView (the one class-level tab); the other
@@ -168,7 +173,7 @@ class ServerDHCP4SubnetsView(BaseServerDHCPSubnetsView):
 
 def _warn_reservations_in_pool(
     request: HttpRequest,
-    client: KeaClient,
+    server: Server,
     catalogue: CatalogueSnapshot,
     subnet: VerifiedSubnet,
     pool: server_configuration.Pool,
@@ -181,6 +186,7 @@ def _warn_reservations_in_pool(
         f"The Reservation overlap check did not run. Pool {pool.range} was not checked against existing Reservations."
     )
     try:
+        client = server.get_client(version=catalogue.family)
         snapshot = client.reservation_snapshot(catalogue.family, catalogue, page_size=200, subnet_id=subnet.subnet_id)
         if not snapshot.complete:
             # No warning below would otherwise read as "no overlapping reservation".
@@ -213,6 +219,18 @@ def _warn_reservations_in_pool(
         messages.warning(request, check_failed_message)
 
 
+def _displayed_subnet(
+    request: HttpRequest, server: Server, family: Family, subnet_id: int
+) -> tuple[CatalogueSnapshot, VerifiedSubnet | None]:
+    """Return the displayed Subnet Catalogue and its Verified Subnet with *subnet_id*; show why it is missing."""
+    catalogue = subnet_catalogue(server, family)
+    found = catalogue.find_by_id(subnet_id)
+    if isinstance(found, VerifiedSubnet):
+        return catalogue, found
+    _diagnostic_messages(request, catalogue.diagnostics, messages.ERROR if catalogue.unavailable else messages.WARNING)
+    return catalogue, None
+
+
 class _BasePoolAddView(_KeaChangeMixin, generic.ObjectView):
     """Base view for adding a pool to a subnet."""
 
@@ -231,6 +249,7 @@ class _BasePoolAddView(_KeaChangeMixin, generic.ObjectView):
                 "object": server,
                 "form": form,
                 "subnet_id": subnet_id,
+                "subnet_cidr": form.subnet.cidr if form.subnet is not None else "",
                 "dhcp_version": self.dhcp_version,
                 "return_url": self._subnets_url(server.pk),
                 "tab": self.tab,
@@ -239,45 +258,26 @@ class _BasePoolAddView(_KeaChangeMixin, generic.ObjectView):
 
     def get(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         server = self.get_object(pk=pk)
-        return self._render(request, server, subnet_id, forms.PoolAddForm(subnet=None))
+        _, subnet = _displayed_subnet(request, server, self.dhcp_version, subnet_id)
+        initial = {"subnet_cidr": subnet.cidr} if subnet is not None else {}
+        return self._render(request, server, subnet_id, forms.PoolAddForm(initial=initial, subnet=subnet))
 
     def post(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         server = self.get_object(pk=pk)
-        return_url = self._subnets_url(pk)
-        catalogue = subnet_catalogue(server, self.dhcp_version)
-        found = catalogue.find_by_id(subnet_id)
-        subnet = found if isinstance(found, VerifiedSubnet) else None
+        catalogue, subnet = _displayed_subnet(request, server, self.dhcp_version, subnet_id)
         form = forms.PoolAddForm(request.POST, subnet=subnet)
-        if subnet is None:
-            _diagnostic_messages(
-                request, catalogue.diagnostics, messages.ERROR if catalogue.unavailable else messages.WARNING
-            )
-        if subnet is None or not form.is_valid():
+        if not form.is_valid() or form.subnet is None:
             return self._render(request, server, subnet_id, form)
         pool: server_configuration.Pool = form.cleaned_data["pool"]
-        try:
-            client = server.get_client(version=self.dhcp_version)
-        except (ValueError, requests.RequestException):
-            logger.exception("Failed to create Kea client for server %s", pk)
-            messages.error(request, "Failed to connect to Kea: see server logs.")
-            return redirect(return_url)
-        _warn_reservations_in_pool(request, client, catalogue, subnet, pool)
-        try:
+        cidr: str = form.cleaned_data["subnet_cidr"]
+        _warn_reservations_in_pool(request, server, catalogue, form.subnet, pool)
+        _run_config_change(
+            request,
             # Kea accepts an explicit range for both families, and the Subnets table shows this text.
-            client.pool_add(version=self.dhcp_version, subnet_id=subnet_id, pool=pool.range)
-            messages.success(request, f"Pool {pool.range} added to subnet {subnet_id}.")
-        except PartialPersistError:
-            messages.warning(request, _LIVE_NOT_PERSISTED)
-        except KeaException as exc:
-            logger.exception("Failed to add pool to subnet %s", subnet_id)
-            messages.error(request, kea_error_hint(exc))
-        except requests.RequestException:
-            logger.exception("Failed to add pool to subnet %s (network error)", subnet_id)
-            messages.error(request, "Network error communicating with Kea: see server logs.")
-        except (ValueError, RuntimeError):
-            logger.exception("Failed to add pool to subnet %s", subnet_id)
-            messages.error(request, "Failed to add pool: see server logs for details.")
-        return redirect(return_url)
+            f"Pool {pool.range} added to subnet {subnet_id}.",
+            lambda: config_write.add_pool(server, self.dhcp_version, subnet_id, cidr, pool),
+        )
+        return redirect(self._subnets_url(pk))
 
 
 class ServerSubnet4PoolAddView(_BasePoolAddView):
@@ -309,6 +309,8 @@ class _BasePoolDeleteView(_KeaChangeMixin, generic.ObjectView):
         if not _POOL_RE.match(re.sub(r"\s+", "", pool)):
             return HttpResponse("Invalid pool format.", status=400)
         server = self.get_object(pk=pk)
+        _, subnet = _displayed_subnet(request, server, self.dhcp_version, subnet_id)
+        subnet_cidr = subnet.cidr if subnet is not None else ""
         return render(
             request,
             self.template_name,
@@ -316,6 +318,8 @@ class _BasePoolDeleteView(_KeaChangeMixin, generic.ObjectView):
                 "object": server,
                 "pool": pool,
                 "subnet_id": subnet_id,
+                "subnet_cidr": subnet_cidr,
+                "form": forms.SubnetConfirmForm(initial={"subnet_cidr": subnet_cidr}, family=self.dhcp_version),
                 "dhcp_version": self.dhcp_version,
                 "return_url": self._subnets_url(pk),
                 "tab": self.tab,
@@ -328,26 +332,21 @@ class _BasePoolDeleteView(_KeaChangeMixin, generic.ObjectView):
             return HttpResponse("Invalid pool format.", status=400)
         server = self.get_object(pk=pk)
         return_url = self._subnets_url(pk)
-        try:
-            client = server.get_client(version=self.dhcp_version)
-        except (requests.RequestException, ValueError):
-            logger.exception("Failed to connect to Kea for pool delete on server %s", pk)
-            messages.error(request, "Failed to connect to Kea: see server logs.")
+        form = forms.SubnetConfirmForm(request.POST, family=self.dhcp_version)
+        if not form.is_valid():
+            messages.error(request, _NO_SUBNET_CIDR)
             return redirect(return_url)
+        cidr: str = form.cleaned_data["subnet_cidr"]
         try:
-            client.pool_del(version=self.dhcp_version, subnet_id=subnet_id, pool=pool)
-            messages.success(request, f"Pool {pool} removed from subnet {subnet_id}.")
-        except PartialPersistError:
-            messages.warning(request, _LIVE_NOT_PERSISTED)
-        except KeaException as exc:
-            logger.exception("Failed to remove pool from subnet %s", subnet_id)
-            messages.error(request, kea_error_hint(exc))
-        except requests.RequestException:
-            logger.exception("Failed to remove pool from subnet %s (network error)", subnet_id)
-            messages.error(request, "Network error communicating with Kea: see server logs.")
-        except (ValueError, RuntimeError):
-            logger.exception("Failed to remove pool from subnet %s", subnet_id)
-            messages.error(request, "Failed to remove pool: see server logs for details.")
+            typed = server_configuration.parse_pool(pool, subnet_network(cidr, self.dhcp_version))
+        except ValueError:
+            messages.error(request, f"Pool {pool} is not a valid Pool of Subnet {cidr}. Nothing was sent to Kea.")
+            return redirect(return_url)
+        _run_config_change(
+            request,
+            f"Pool {typed.range} removed from subnet {subnet_id}.",
+            lambda: config_write.delete_pool(server, self.dhcp_version, subnet_id, cidr, typed),
+        )
         return redirect(return_url)
 
 
@@ -879,6 +878,7 @@ class _BaseSubnetDeleteView(_KeaChangeMixin, generic.ObjectView):
                 "object": server,
                 "subnet_id": subnet_id,
                 "subnet_cidr": subnet_cidr,
+                "form": forms.SubnetConfirmForm(initial={"subnet_cidr": subnet_cidr}, family=self.dhcp_version),
                 "dhcp_version": self.dhcp_version,
                 "return_url": self._subnets_url(pk),
                 "tab": self.tab,
@@ -888,26 +888,16 @@ class _BaseSubnetDeleteView(_KeaChangeMixin, generic.ObjectView):
     def post(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         server = self.get_object(pk=pk)
         return_url = self._subnets_url(pk)
-        try:
-            client = server.get_client(version=self.dhcp_version)
-        except (requests.RequestException, ValueError):
-            logger.exception("Failed to connect to Kea for subnet delete on server %s", pk)
-            messages.error(request, "Failed to connect to Kea: see server logs.")
+        form = forms.SubnetConfirmForm(request.POST, family=self.dhcp_version)
+        if not form.is_valid():
+            messages.error(request, _NO_SUBNET_CIDR)
             return redirect(return_url)
-        try:
-            client.subnet_del(version=self.dhcp_version, subnet_id=subnet_id)
-            messages.success(request, f"Subnet {subnet_id} deleted.")
-        except PartialPersistError:
-            messages.warning(request, _LIVE_NOT_PERSISTED)
-        except KeaException as exc:
-            logger.exception("Failed to delete subnet %s", subnet_id)
-            messages.error(request, kea_error_hint(exc))
-        except requests.RequestException:
-            logger.exception("Failed to delete subnet %s (network error)", subnet_id)
-            messages.error(request, "Network error communicating with Kea: see server logs.")
-        except ValueError:
-            logger.exception("Failed to delete subnet %s", subnet_id)
-            messages.error(request, "Failed to delete subnet: see server logs for details.")
+        cidr: str = form.cleaned_data["subnet_cidr"]
+        _run_config_change(
+            request,
+            f"Subnet {subnet_id} ({cidr}) deleted.",
+            lambda: config_write.delete_subnet(server, self.dhcp_version, subnet_id, cidr),
+        )
         return redirect(return_url)
 
 

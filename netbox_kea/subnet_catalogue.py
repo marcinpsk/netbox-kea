@@ -98,6 +98,8 @@ class VerifiedSubnet:
     """A unique Subnet identity with optional full configuration facts."""
 
     identity: SubnetIdentity
+    # Kea's `subnet` text verbatim: Kea keeps host bits and compares this text in the delta commands.
+    declared_cidr: str
     configuration: SubnetConfiguration | None
     shared_network: SharedNetworkMembership | None
 
@@ -207,6 +209,7 @@ class ConfigurationOnlyCatalogueSnapshot(IncompleteCatalogueSnapshot):
 @dataclass(frozen=True)
 class _IdentityFact:
     identity: SubnetIdentity
+    declared_cidr: str
     shared_network_name: str | None
     membership_complete: bool
 
@@ -324,6 +327,7 @@ def _parse_identity_entries(entries: list[Any], family: Family) -> _IdentityObse
         facts.append(
             _IdentityFact(
                 identity=identity,
+                declared_cidr=entry["subnet"],
                 shared_network_name=shared_network_name,
                 membership_complete=membership_complete,
             )
@@ -637,6 +641,7 @@ def _reconcile(
             subnets.append(
                 VerifiedSubnet(
                     identity=identity_fact.identity,
+                    declared_cidr=identity_fact.declared_cidr,
                     configuration=configured_fact.configuration,
                     shared_network=_membership(shared_network_name),
                 )
@@ -645,6 +650,7 @@ def _reconcile(
             subnets.append(
                 VerifiedSubnet(
                     identity=identity_fact.identity,
+                    declared_cidr=identity_fact.declared_cidr,
                     configuration=None,
                     shared_network=_membership(identity_fact.shared_network_name),
                 )
