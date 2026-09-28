@@ -13,7 +13,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import requests
-from django.db import OperationalError, connection
+from django.db import OperationalError, connection, connections
 from django.test import TestCase, TransactionTestCase, override_settings
 from urllib3.exceptions import ProtocolError
 
@@ -561,3 +561,25 @@ class LockTests(TransactionTestCase):
         self.assertEqual(kea.commands(), ["network4-get", "network4-add", *_PERSIST])
         self.assertEqual(self._names(kea), ["held"])
         self.assertEqual(self.results["holder"], ConfigChangeOutcome("applied", "persisted"))
+
+    def test_a_failed_commit_after_the_change_keeps_the_outcome(self):
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT pg_backend_pid()")
+            (pid,) = cursor.fetchone()
+
+        def terminate_then_ok(body):
+            killer = connections.create_connection("default")
+            try:
+                with killer.cursor() as cursor:
+                    cursor.execute("SELECT pg_terminate_backend(%s, 5000)", [pid])
+                    self.assertTrue(cursor.fetchone()[0])
+            finally:
+                killer.close()
+            return _OK
+
+        with stub_kea({**self._responses(), "network4-add": terminate_then_ok}) as kea:
+            with self.assertLogs(config_write.logger, "WARNING") as logs:
+                outcome = config_write.add_shared_network(self.holder, 4, "net-a")
+        self.assertEqual(outcome, ConfigChangeOutcome("applied", "persisted"))
+        self.assertEqual(kea.commands(), ["network4-get", "network4-add", *_PERSIST])
+        self.assertIsNotNone(logs.records[-1].exc_info)

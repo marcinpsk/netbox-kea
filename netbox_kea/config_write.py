@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 import requests
-from django.db import OperationalError, connection, transaction
+from django.db import DatabaseError, OperationalError, connection, transaction
 from urllib3.exceptions import MaxRetryError, NewConnectionError
 
 from .constants import Family, Persistence
@@ -109,22 +109,32 @@ def _client(server: Server, family: Family) -> KeaClient:
 @contextmanager
 def _serialized(client: KeaClient, family: Family) -> Iterator[None]:
     """Hold the advisory lock of one Kea daemon and family until the transaction ends."""
-    with transaction.atomic():
-        with connection.cursor() as cursor:
-            cursor.execute("SELECT current_setting('lock_timeout')")
-            (previous,) = cursor.fetchone()
-            # A lock_timeout without a unit is in milliseconds.
-            cursor.execute("SELECT set_config('lock_timeout', %s::text, true)", [round(LOCK_WAIT_SECONDS * 1000)])
-            try:
-                cursor.execute("SELECT pg_advisory_xact_lock(%s, %s)", [_LOCK_CLASS, _int4(f"{family} {client.url}")])
-            except OperationalError as exc:
-                if getattr(exc.__cause__, "sqlstate", None) != _LOCK_NOT_AVAILABLE:
-                    raise
-                raise ConfigChangeRejected(
-                    "not-sent", ("Another change to this Kea server is still running. Try again later.",)
-                ) from exc
-            cursor.execute("SELECT set_config('lock_timeout', %s, true)", [previous])
-        yield
+    body_done = False
+    try:
+        with transaction.atomic():
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT current_setting('lock_timeout')")
+                (previous,) = cursor.fetchone()
+                # A lock_timeout without a unit is in milliseconds.
+                cursor.execute("SELECT set_config('lock_timeout', %s::text, true)", [round(LOCK_WAIT_SECONDS * 1000)])
+                try:
+                    cursor.execute(
+                        "SELECT pg_advisory_xact_lock(%s, %s)", [_LOCK_CLASS, _int4(f"{family} {client.url}")]
+                    )
+                except OperationalError as exc:
+                    if getattr(exc.__cause__, "sqlstate", None) != _LOCK_NOT_AVAILABLE:
+                        raise
+                    raise ConfigChangeRejected(
+                        "not-sent", ("Another change to this Kea server is still running. Try again later.",)
+                    ) from exc
+                cursor.execute("SELECT set_config('lock_timeout', %s, true)", [previous])
+            yield
+            body_done = True
+    except DatabaseError:
+        if not body_done:
+            raise
+        # The transaction holds only the lock, and the change is already live in Kea.
+        logger.warning("The lock transaction failed to end after the Configuration Change", exc_info=True)
 
 
 def _read_before(read: Callable[[], bool]) -> bool:
