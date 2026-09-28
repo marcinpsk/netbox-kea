@@ -136,11 +136,10 @@ def _change_pool(
         with mutation(server, family) as scope:
             subnet = _subnet_as_seen(scope, subnet_id, cidr)
         _require_pool_state(subnet, action, pool)
-        delta = _read_before(lambda: client.pool_uses_delta(family, action))
         application, diagnostics = _mutate(
             client,
             family,
-            lambda: client.pool_change(family, action, subnet.subnet_id, subnet.declared_cidr, pool.range, delta=delta),
+            lambda: client.pool_change(family, action, subnet.subnet_id, subnet.declared_cidr, pool.range),
             # Not live: an added Pool is absent, or a deleted Pool is still there.
             not_live=lambda: (pool in _pools_now(server, family, subnet)) == (action == "del"),
         )
@@ -241,7 +240,7 @@ def _pools_now(server: Server, family: Family, subnet: VerifiedSubnet) -> tuple[
     current = _subnet_now(server, family, subnet.subnet_id)
     if current is None:
         return ()
-    # The Pool commands carry only the ID, so the change can be live on the Subnet that now has it.
+    # The ID now names another network, so this read cannot show the Pools of the Subnet that the command named.
     if current.network != subnet.network:
         raise CatalogueUnavailable(f"Subnet ID {subnet.subnet_id} now names {current.cidr}.")
     if current.configuration is None:

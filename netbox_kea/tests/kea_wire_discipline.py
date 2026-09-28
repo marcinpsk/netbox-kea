@@ -85,8 +85,6 @@ WIRE_COMMANDS = frozenset(
         "subnet4-delta-del",
         "subnet4-get",
         "subnet4-list",
-        "subnet4-pool-add",
-        "subnet4-pool-del",
         "subnet4-update",
         "subnet6-add",
         "subnet6-del",
@@ -94,8 +92,6 @@ WIRE_COMMANDS = frozenset(
         "subnet6-delta-del",
         "subnet6-get",
         "subnet6-list",
-        "subnet6-pool-add",
-        "subnet6-pool-del",
         "subnet6-update",
         "version-get",
     }

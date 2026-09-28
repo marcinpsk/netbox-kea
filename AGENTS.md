@@ -396,7 +396,7 @@ resort, reserved for true external boundaries you cannot run locally.
   - `lease_cmds` — `lease4/6-get-by-hostname/hw-address/state`, `lease4/6-update/add`
   - `subnet_cmds` — `subnet4/6-list/get/add/update` (alternative to `config-get`)
   - `stat_cmds` — `stat-lease4/6-get` for per-subnet utilization
-- **Pool operations** support both Kea 2.x and 3.x APIs.
+- **Pool operations** use `subnet4/6-delta-add` and `subnet4/6-delta-del` (Kea 2.2+). `subnet_cmds` has no `subnet4/6-pool-add` or `-pool-del` command.
 
 ## Conventions
 
