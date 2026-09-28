@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from ipam.models import IPAddress as NbIPAddress
 
     from .constants import IPNetworkValue
+    from .server_configuration import Pool
 
 logger = logging.getLogger(__name__)
 
@@ -935,77 +936,38 @@ def sync_subnet_to_netbox_prefix(
     return prefix_obj, created, did_update
 
 
-def _parse_pool_range(pool_str: str, subnet_prefix_len: int) -> tuple[str, str] | None:
-    """Parse a Kea pool string and return ``(start_address, end_address)`` in CIDR form.
-
-    Handles:
-    - Range format ``"192.168.10.50-192.168.10.100"`` → host IPs tagged with the
-      parent subnet prefix length.
-    - CIDR format ``"192.168.10.128/25"`` → network/broadcast addresses with the
-      pool's own prefix length.
-
-    Returns ``None`` when the format is unrecognised or parsing fails.
-    """
-    from netaddr import AddrFormatError, IPNetwork
-    from netaddr import IPAddress as NetaddrIP
-
-    pool_str = pool_str.strip()
-    try:
-        if "-" in pool_str and "/" not in pool_str:
-            parts = pool_str.split("-", 1)
-            start_ip = str(NetaddrIP(parts[0].strip()))
-            end_ip = str(NetaddrIP(parts[1].strip()))
-            return f"{start_ip}/{subnet_prefix_len}", f"{end_ip}/{subnet_prefix_len}"
-        if "/" in pool_str:
-            net = IPNetwork(pool_str)
-            return f"{net.network}/{net.prefixlen}", f"{net[-1]}/{net.prefixlen}"
-    except (AddrFormatError, ValueError, IndexError):
-        logger.debug("Failed to parse pool range %r", pool_str)
-    return None
-
-
 # Sentinel returned by sync_pool_to_netbox_ip_range when the pool is intentionally
 # skipped because its size exceeds the PostgreSQL integer limit. Callers must check
 # `result is _POOL_TOO_LARGE` and treat it as a no-op (not an error).
 _POOL_TOO_LARGE: object = object()
 
 
-def sync_pool_to_netbox_ip_range(pool_str: str, subnet: IPNetworkValue, vrf=None) -> tuple | object | None:
-    """Create or update a NetBox IPRange from a Kea pool definition.
+def sync_pool_to_netbox_ip_range(pool: Pool, subnet: IPNetworkValue, vrf=None) -> tuple | object:
+    """Create or update a NetBox IPRange from a Kea Pool.
 
     Args:
-        pool_str: Kea pool string, e.g. ``"192.168.10.50-192.168.10.100"`` or
-                  ``"192.168.10.128/25"``.
-        subnet:   The parsed parent Subnet network, e.g. from
-                  :func:`netbox_kea.kea.subnet_network`. Its prefix length tags the
-                  addresses of a range-format pool.
+        pool:   The parsed Pool, from :func:`netbox_kea.server_configuration.parse_pool`.
+        subnet: The parsed parent Subnet network. Its prefix length tags both endpoints.
         vrf: NetBox VRF instance to assign the IP range to.  ``None`` means the global VRF.
 
-    Returns one of three outcomes:
+    Returns one of two outcomes:
 
-    * ``(ip_range_object, created, did_update)`` — pool was synced successfully.
-    * ``None`` — pool string could not be parsed; caller should treat as an error.
-    * :data:`_POOL_TOO_LARGE` sentinel — pool was intentionally skipped because its
-      size exceeds the PostgreSQL integer limit; callers should treat this as a no-op,
-      not an error.
+    * ``(ip_range_object, created, did_update)``: the pool was synced.
+    * :data:`_POOL_TOO_LARGE` sentinel: the pool was skipped because its size exceeds
+      the PostgreSQL integer limit; callers should treat this as a no-op, not an error.
 
     """
     from ipam.models import IPRange
     from netaddr import IPNetwork
 
-    addresses = _parse_pool_range(pool_str, subnet.prefixlen)
-    if addresses is None:
-        return None
-
-    start_addr_str, end_addr_str = addresses
-    start_addr = IPNetwork(start_addr_str)
-    end_addr = IPNetwork(end_addr_str)
+    start_addr = IPNetwork(f"{pool.start}/{subnet.prefixlen}")
+    end_addr = IPNetwork(f"{pool.end}/{subnet.prefixlen}")
 
     # NetBox stores IPRange.size in a PostgreSQL integer column (max 2^31-1).
     # Reject a larger pool before IPRange.save() raises NumericValueOutOfRange.
     _PG_INTEGER_MAX = 2_147_483_647
-    if int(end_addr.ip - start_addr.ip) + 1 > _PG_INTEGER_MAX:
-        logger.debug("Skipping pool %r: range too large to store as NetBox IPRange", pool_str)
+    if int(pool.end) - int(pool.start) + 1 > _PG_INTEGER_MAX:
+        logger.debug("Skipping pool %r: range too large to store as NetBox IPRange", pool.range)
         return _POOL_TOO_LARGE
 
     # A pool is identified by its endpoints and VRF, independent of stored prefix lengths.
@@ -1013,7 +975,7 @@ def sync_pool_to_netbox_ip_range(pool_str: str, subnet: IPNetworkValue, vrf=None
         IPRange.objects.filter(
             start_address__net_host=str(start_addr.ip), end_address__net_host=str(end_addr.ip), vrf=vrf
         ),
-        f"pool {pool_str}",
+        f"pool {pool.range}",
         {"start_address": str(start_addr.ip), "end_address": str(end_addr.ip), "vrf_id": vrf.pk if vrf else "null"},
     )
     created = range_obj is None

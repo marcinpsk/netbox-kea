@@ -1537,65 +1537,6 @@ class TestSyncCleanupParameter(TestCase):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# TestParsePoolRange
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-class TestParsePoolRange(TestCase):
-    """_parse_pool_range handles dash-separated and CIDR pool formats."""
-
-    def _parse(self, pool_str, subnet_prefix_len):
-        from netbox_kea.sync import _parse_pool_range
-
-        return _parse_pool_range(pool_str, subnet_prefix_len)
-
-    def test_range_format_ipv4(self):
-        """'start-end' range format returns host CIDRs tagged with subnet prefix length."""
-        start, end = self._parse("192.168.1.50-192.168.1.100", 24)
-        self.assertEqual(start, "192.168.1.50/24")
-        self.assertEqual(end, "192.168.1.100/24")
-
-    def test_range_format_ipv6(self):
-        start, end = self._parse("2001:db8::1-2001:db8::ff", 64)
-        self.assertEqual(start, "2001:db8::1/64")
-        self.assertEqual(end, "2001:db8::ff/64")
-
-    def test_cidr_format_ipv4(self):
-        """CIDR pool format returns network/last address with the pool's prefix length."""
-        start, end = self._parse("192.168.1.128/25", 24)
-        self.assertEqual(start, "192.168.1.128/25")
-        self.assertEqual(end, "192.168.1.255/25")
-
-    def test_cidr_format_ipv6(self):
-        """IPv6 CIDR pool must not produce 'None' as end address."""
-        start, end = self._parse("2001:db8::/64", 48)
-        self.assertEqual(start, "2001:db8::/64")
-        self.assertNotIn("None", end)
-        self.assertEqual(end, "2001:db8::ffff:ffff:ffff:ffff/64")
-
-    def test_cidr_host_route_ipv4(self):
-        """IPv4 /32 CIDR pool must not produce 'None' as end address."""
-        start, end = self._parse("192.168.1.1/32", 24)
-        self.assertEqual(start, "192.168.1.1/32")
-        self.assertEqual(end, "192.168.1.1/32")
-
-    def test_cidr_host_route_ipv6(self):
-        """/128 CIDR pool must not produce 'None' as end address (broadcast=None on IPv6)."""
-        start, end = self._parse("2001:db8::1/128", 64)
-        self.assertEqual(start, "2001:db8::1/128")
-        self.assertEqual(end, "2001:db8::1/128")
-
-    def test_invalid_format_returns_none(self):
-        result = self._parse("not-a-pool", 24)
-        self.assertIsNone(result)
-
-    def test_whitespace_trimmed(self):
-        start, end = self._parse("  192.168.1.50-192.168.1.100  ", 24)
-        self.assertEqual(start, "192.168.1.50/24")
-        self.assertEqual(end, "192.168.1.100/24")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # TestSyncSubnetToNetboxPrefix
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -1697,9 +1638,11 @@ class TestSyncPoolToNetboxIPRange(TestCase):
     """sync_pool_to_netbox_ip_range creates/updates NetBox IPRange objects."""
 
     def _sync(self, pool_str, subnet_cidr, vrf=None):
+        from netbox_kea.server_configuration import parse_pool
         from netbox_kea.sync import sync_pool_to_netbox_ip_range
 
-        return sync_pool_to_netbox_ip_range(pool_str, ipaddress.ip_network(subnet_cidr), vrf=vrf)
+        subnet = ipaddress.ip_network(subnet_cidr)
+        return sync_pool_to_netbox_ip_range(parse_pool(pool_str, subnet), subnet, vrf=vrf)
 
     def test_creates_range_for_dash_pool(self):
         from ipam.models import IPRange
@@ -1713,9 +1656,11 @@ class TestSyncPoolToNetboxIPRange(TestCase):
 
     def test_creates_range_for_cidr_pool(self):
         result = self._sync("192.168.1.128/25", "192.168.1.0/24")
-        self.assertIsNotNone(result)
-        _range_obj, created, _ = result
+        range_obj, created, _ = result
         self.assertTrue(created)
+        # Both endpoints take the prefix length of the Subnet, not of the Pool prefix.
+        self.assertEqual(str(range_obj.start_address), "192.168.1.128/24")
+        self.assertEqual(str(range_obj.end_address), "192.168.1.255/24")
 
     def test_idempotent_on_second_call(self):
         self._sync("192.168.2.50-192.168.2.100", "192.168.2.0/24")
@@ -1742,18 +1687,16 @@ class TestSyncPoolToNetboxIPRange(TestCase):
 
     def test_dash_pool_takes_the_prefix_length_of_the_subnet_network(self):
         from netbox_kea.kea import subnet_network
+        from netbox_kea.server_configuration import parse_pool
         from netbox_kea.sync import sync_pool_to_netbox_ip_range
 
-        result = sync_pool_to_netbox_ip_range("10.9.1.10-10.9.1.20", subnet_network("10.9.1.5/22", 4))
+        subnet = subnet_network("10.9.1.5/22", 4)
+        result = sync_pool_to_netbox_ip_range(parse_pool("10.9.1.10-10.9.1.20", subnet), subnet)
         self.assertIsNotNone(result)
         range_obj, created, _ = result
         self.assertTrue(created)
         self.assertEqual(str(range_obj.start_address), "10.9.1.10/22")
         self.assertEqual(str(range_obj.end_address), "10.9.1.20/22")
-
-    def test_returns_none_for_invalid_pool(self):
-        result = self._sync("invalid-pool-string!", "192.168.1.0/24")
-        self.assertIsNone(result)
 
     def test_ipv6_pool(self):
         """IPv6 dash-range pools must work and not produce 'None' in addresses."""
@@ -1836,12 +1779,12 @@ class TestDuplicateRowsListUrl(TestCase):
         return sorted(row.pk for row in response.context["table"].data)
 
     def _range_error(self, vrf):
+        from netbox_kea.server_configuration import parse_pool
         from netbox_kea.sync import DuplicateNetBoxRowsError, sync_pool_to_netbox_ip_range
 
+        subnet = ipaddress.ip_network("192.168.13.0/24")
         with self.assertRaises(DuplicateNetBoxRowsError) as ctx:
-            sync_pool_to_netbox_ip_range(
-                "192.168.13.50-192.168.13.100", ipaddress.ip_network("192.168.13.0/24"), vrf=vrf
-            )
+            sync_pool_to_netbox_ip_range(parse_pool("192.168.13.50-192.168.13.100", subnet), subnet, vrf=vrf)
         return ctx.exception
 
     def _prefix_error(self, vrf):

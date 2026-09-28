@@ -12,7 +12,6 @@ from django.http import HttpResponse
 from django.shortcuts import redirect
 from django_tables2 import Table
 from django_tables2.export import TableExport
-from netaddr import IPNetwork, IPRange
 from utilities.views import ViewTab
 
 from . import constants
@@ -29,21 +28,6 @@ def format_duration(s: int | None) -> str | None:
     hours, rest = divmod(s, 3600)
     minutes, seconds = divmod(rest, 60)
     return f"{hours:02}:{minutes:02}:{seconds:02}"
-
-
-def parse_pool_range(pool: str) -> IPNetwork | IPRange:
-    """Return the address range represented by one Kea pool string.
-
-    A hyphenated string is a start-end range. All other strings are CIDRs.
-
-    Raises:
-        AddrFormatError: If an address is invalid, a range is reversed, or its bounds use different families.
-
-    """
-    if "-" in pool and "/" not in pool:
-        start, end = pool.split("-", 1)
-        return IPRange(start.strip(), end.strip())
-    return IPNetwork(pool)
 
 
 def _enrich_lease(now: datetime, lease: dict[str, Any]) -> dict[str, Any]:
