@@ -2118,39 +2118,6 @@ class KeaException(Exception):
         return text if isinstance(text, str) and text else f"result {self.response.get('result')}"
 
 
-class PartialPersistError(KeaException):
-    """A live Kea change that was not written to disk, from the per-command persist step that config_write replaced.
-
-    No write path raises it now. KeaClient.persist reports a failed persist step as a Persistence value. #207
-    deletes this class.
-    """
-
-    def __init__(self, service: str, cause: Exception) -> None:
-        response: KeaResponse = {
-            "result": -1,
-            "text": f"config-write failed for service {service!r} — change is live but not persisted to disk",
-            "arguments": [],
-        }
-        super().__init__(response, msg=f"partial persist error for {service!r}")
-        self.service = service
-
-
-class KeaConfigPersistError(PartialPersistError):
-    """A live Kea change whose running configuration config-test rejected, so config-write was not sent.
-
-    No write path raises it now. #207 deletes this class together with :exc:`PartialPersistError`.
-    """
-
-    def __init__(self, service: str, cause: Exception) -> None:
-        super().__init__(service, cause)
-        rejected_text = (
-            f"config-test rejected the running config for service {service!r}; "
-            "mutation is live but config-write was skipped"
-        )
-        self.response["text"] = rejected_text
-        self.args = (f"config persist error for {service!r}: {rejected_text}",)
-
-
 def _one_reply(command: str, service: str, response: list[KeaResponse], ok_codes: Sequence[int] = (0,)) -> KeaResponse:
     """Return the one reply of a single-service command, or raise when it is malformed or its result is not ok."""
     if (
