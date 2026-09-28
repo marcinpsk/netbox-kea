@@ -17,15 +17,14 @@ Command chains (all issued through the real client):
   ``config-test`` → ``config-write``; ``persist_config`` defaults True).
 * **delete** (``config_write.delete_shared_network``): ``network{v}-get``,
   ``network{v}-del``, then the same persist step.
-* **edit** (``network_update``): the POST verifies a live Server Configuration,
-  then ``network_update`` runs its read-modify-write cycle. The resulting body
-  proves the version, network, and DHCP Options end to end.
+* **edit** (``config_write.edit_shared_network``): ``config-get``, the edit in
+  place, ``config-test``, ``config-set``, then the persist step. The config-set
+  body proves the version, network, and DHCP Options end to end.
 
 Error paths are driven through the real client: a failure result is a payload
 with a non-zero ``result``, and a transport error is a ``requests`` exception
-instance raised at the HTTP boundary. ``test_config_write`` covers the add and
-delete outcomes in depth; the tests here cover one message per outcome and per
-rejection.
+instance raised at the HTTP boundary. ``test_config_write`` covers the outcomes
+in depth; the tests here cover one message per outcome and per rejection.
 """
 
 import copy
@@ -35,9 +34,6 @@ from django.contrib import messages as django_messages
 from django.test import override_settings
 from django.urls import reverse
 
-from netbox_kea.config_write import ConfigChangeRejected
-from netbox_kea.views._base import _run_config_change
-
 from .kea_stub import (
     _catalogue_responses_for_subnets,
     _network_absent,
@@ -46,7 +42,7 @@ from .kea_stub import (
     queued,
     stub_kea,
 )
-from .utils import _PLUGINS_CONFIG, _make_db_server, _ViewTestBase
+from .utils import _PLUGINS_CONFIG, _make_db_server, _ReadModifyWriteMessages, _ViewTestBase
 
 _CONFIG_OK = {"result": 0}
 
@@ -126,9 +122,7 @@ def _delete_stub(name, reply=_CONFIG_OK, *, version=4, **overrides):
 def _edit_stub(config_get, **overrides):
     """Stub the shared-network edit read-modify-write chain.
 
-    The edit POST verifies the live Server Configuration before ``network_update``
-    runs the write cycle. *config_get* is deep-copied because ``network_update``
-    mutates its fetched configuration in place.
+    *config_get* is deep-copied, so the edit in place never changes the module-level fixture.
     """
     base = {
         "config-get": copy.deepcopy(config_get),
@@ -141,9 +135,9 @@ def _edit_stub(config_get, **overrides):
 
 
 def _written_sn(kea, version=4):
-    """Return the shared-network dict ``network_update`` pushed back via config-set."""
+    """Return the shared-network dict that the edit pushed back via config-set."""
     bodies = kea.bodies("config-set")
-    assert bodies, "config-set was never issued (network_update did not complete)"
+    assert bodies, "config-set was never issued (the edit did not complete)"
     return bodies[0]["arguments"][f"Dhcp{version}"]["shared-networks"][0]
 
 
@@ -646,28 +640,6 @@ class TestSharedNetworkDeleteMessages(_SharedNetworkChangeMessages, _ViewTestBas
         return _network_absent("net-prod")
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-class TestConfigChangeMessage(_ViewTestBase):
-    """The message for a config-test rejection, which no Shared Network add or delete can raise."""
-
-    def test_a_config_test_rejection_says_the_change_was_not_applied(self):
-        request = self._make_request()
-
-        def change():
-            raise ConfigChangeRejected("config-test-rejected", ("Kea replied: subnet overlaps",))
-
-        _run_config_change(request, "Shared network 'x' updated.", change)
-        self.assertEqual(
-            [(m.level, str(m)) for m in django_messages.get_messages(request)],
-            [
-                (
-                    django_messages.ERROR,
-                    "Kea's config-test rejected the change, so it was not applied. Kea replied: subnet overlaps",
-                )
-            ],
-        )
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # TestServerSharedNetwork4EditView (F2b)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -824,21 +796,26 @@ class TestServerSharedNetwork4EditView(_ViewTestBase):
         config["arguments"]["Dhcp4"]["shared-networks"][0]["option-data"] = None
         with _edit_stub(config) as kea:
             get = self.client.get(self._url())
-            post = self.client.post(self._url(), self._post_data(description="Renamed"))
-
         self.assertEqual(get.status_code, 302)
-        self.assertEqual(post.status_code, 200)
-        self.assertContains(post, "Could not reload")
-        self.assertNotIn("config-set", kea.commands())
+        self._fresh_client()
+        with _edit_stub(config) as kea:
+            post = self.client.post(self._url(), self._post_data(description="Renamed"))
+        self.assertEqual(post.status_code, 302)
+        self.assertEqual(
+            [str(m) for m in django_messages.get_messages(post.wsgi_request)],
+            ["The change was not sent to Kea. Kea returned a configuration that NetBox cannot edit safely."],
+        )
+        self.assertEqual(kea.commands(), ["config-get"])
 
-    def test_post_valid_calls_network_update_and_redirects(self):
-        """POST with valid data runs the read-modify-write cycle and redirects."""
+    def test_post_valid_runs_the_read_modify_write_and_redirects(self):
+        """POST with valid data reads the configuration once, under the lock, and redirects."""
         with _edit_stub(_sn_config(4, "prod-net")) as kea:
             response = self.client.post(self._url(), self._post_data(description="Updated description"))
         self.assertEqual(response.status_code, 302)
         self._assert_no_none_pk_redirect(response)
-        # config-set proves network_update completed the read-modify-write cycle.
-        self.assertIn("config-set", kea.commands())
+        self.assertEqual(
+            kea.commands(), ["config-get", "config-test", "config-set", "config-get", "config-test", "config-write"]
+        )
         written = _written_sn(kea, 4)
         self.assertEqual(written["user-context"], {"comment": "Updated description"})
         self.assertNotIn("description", written)
@@ -884,43 +861,11 @@ class TestServerSharedNetwork4EditView(_ViewTestBase):
             self.client.post(self._url(), self._post_data(description=""))
         self.assertNotIn("user-context", _written_sn(kea, 4))
 
-    def test_post_passes_version_4_to_network_update(self):
+    def test_post_sends_the_config_set_to_dhcp4(self):
         """POST must issue the config-set to the dhcp4 service."""
         with _edit_stub(_sn_config(4, "prod-net")) as kea:
             self.client.post(self._url(), self._post_data())
         self.assertEqual(kea.bodies("config-set")[0]["service"], ["dhcp4"])
-
-    def test_post_kea_exception_shows_error_and_redirects(self):
-        """config-test failure surfaces a generic error and must not leak raw Kea text."""
-        with _edit_stub(_sn_config(4, "prod-net"), **{"config-test": {"result": 1, "text": "config error"}}):
-            response = self.client.post(self._url(), self._post_data(), follow=True)
-        self.assertEqual(response.status_code, 200)
-        self._assert_no_none_pk_redirect(response)
-        messages_list = list(response.context["messages"])
-        self.assertTrue(
-            any(m.level == django_messages.ERROR for m in messages_list),
-            f"Expected an ERROR message; got: {[(m.level, m.message) for m in messages_list]}",
-        )
-        # Raw Kea error text must not appear in either rendered response or queued messages
-        self.assertNotIn(b"config error", response.content)
-        for m in messages_list:
-            self.assertNotIn("config error", m.message, f"Raw Kea error text leaked into message: {m.message}")
-
-    def test_post_partial_persist_error_shows_warning(self):
-        """config-write failure (PartialPersistError) redirects with a warning (no 500)."""
-        with _edit_stub(_sn_config(4, "prod-net"), **{"config-write": {"result": 1, "text": "write failed"}}):
-            response = self.client.post(self._url(), self._post_data(), follow=True)
-        self.assertEqual(response.status_code, 200)
-        messages_list = list(response.context["messages"])
-        self.assertTrue(
-            any(m.level == django_messages.WARNING for m in messages_list),
-            f"Expected a WARNING message; got: {[(m.level, m.message) for m in messages_list]}",
-        )
-        self.assertIn(
-            "Change applied but may not survive a Kea restart (not written to disk).",
-            [str(message) for message in messages_list],
-        )
-        self.assertFalse(any("Kea did not confirm the change" in str(message) for message in messages_list))
 
     def test_get_requires_login(self):
         """Unauthenticated GET must redirect to login."""
@@ -948,7 +893,7 @@ class TestServerSharedNetwork6EditView(_ViewTestBase):
             response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
 
-    def test_post_calls_network_update_with_version_6(self):
+    def test_post_sends_the_config_set_to_dhcp6(self):
         """POST must issue the config-set to the dhcp6 service."""
         with _edit_stub(_sn_config(6, "prod-net6")) as kea:
             self.client.post(
@@ -980,6 +925,19 @@ class TestServerSharedNetwork6EditView(_ViewTestBase):
 # ---------------------------------------------------------------------------
 # Tests for shared network POST — option-data preservation
 # ---------------------------------------------------------------------------
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestSharedNetworkEditMessages(_ReadModifyWriteMessages):
+    """One POST per Configuration Change outcome and per rejection, for the Shared Network edit."""
+
+    def test_edit(self):
+        self._assert_one_message_per_case(
+            reverse("plugins:netbox_kea:server_shared_network4_edit", args=[self.server.pk, "prod-net"]),
+            {"name": "prod-net", "description": "x"},
+            {"config-get": _sn_config(4, "prod-net")},
+            "Shared network 'prod-net' updated.",
+        )
 
 
 class TestSharedNetworkEditAmbiguousWrite(_ViewTestBase):
@@ -1019,12 +977,18 @@ class TestSharedNetworkEditAmbiguousWrite(_ViewTestBase):
                         [
                             (
                                 django_messages.WARNING,
-                                "Kea did not confirm the change. Check the server configuration before retrying.",
+                                (
+                                    "Kea did not confirm the change. Check the server configuration before retrying. "
+                                    "Kea's reply to the change was lost or unreadable."
+                                ),
                             )
                         ],
                     )
-                    self.assertIn("config-set", kea.commands())
-                    self.assertNotIn("config-write", kea.commands())
+                    # config-write saves what Kea runs, whether the change applied or not.
+                    self.assertEqual(
+                        kea.commands()[:6],
+                        ["config-get", "config-test", "config-set", "config-get", "config-test", "config-write"],
+                    )
 
     def test_malformed_validation_and_persistence_replies_keep_their_phase_meaning(self):
         for version in (4, 6):
@@ -1050,7 +1014,11 @@ class TestSharedNetworkEditAmbiguousWrite(_ViewTestBase):
                                 [
                                     (
                                         django_messages.WARNING,
-                                        "Change applied but may not survive a Kea restart (not written to disk).",
+                                        (
+                                            "Shared network 'clients' updated. It is live, but it may not survive "
+                                            "a Kea restart, because Kea did not save it to disk. "
+                                            "The reply to config-write was lost or unreadable."
+                                        ),
                                     )
                                 ],
                             )
@@ -1181,35 +1149,31 @@ class TestSharedNetworkEditSnapshotFailures(_ViewTestBase):
 
         self.assertEqual(response.status_code, 302)
 
-    def test_post_aborts_when_reload_returns_empty(self):
-        """POST aborts with an error when the verified network is absent."""
-        with stub_kea({"config-get": _EMPTY_SN_CONFIG_V4}):
-            response = self.client.post(self._url(), self._post_data())
-        # Must re-render (not crash) with error message
-        self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Could not reload")
-
-    def test_post_aborts_when_family_configuration_is_not_an_object(self):
-        with stub_kea({"config-get": {"result": 0, "arguments": {"Dhcp4": []}}}) as kea:
-            response = self.client.post(self._url(), self._post_data())
-
-        self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Could not reload")
-        self.assertNotIn("config-set", kea.commands())
-
-    def test_post_aborts_when_shared_network_collection_is_incomplete(self):
-        responses = _catalogue_responses_for_subnets(
-            4,
-            [],
-            shared_networks=[{"name": "prod-net", "subnet4": []}, None],
+    def test_post_is_not_sent_when_the_configuration_cannot_be_edited(self):
+        """The edit reads the network under the lock; a missing network or a malformed configuration sends nothing."""
+        incomplete = _catalogue_responses_for_subnets(
+            4, [], shared_networks=[{"name": "prod-net", "subnet4": []}, None]
         )
-
-        with stub_kea(responses) as kea:
-            response = self.client.post(self._url(), self._post_data())
-
-        self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Could not reload")
-        self.assertNotIn("config-set", kea.commands())
+        cases = (
+            (_EMPTY_SN_CONFIG_V4, "Shared Network 'prod-net' not found."),
+            (
+                {"result": 0, "arguments": {"Dhcp4": []}},
+                "Kea did not return a usable reply to the read before the change.",
+            ),
+            (incomplete["config-get"], "Kea returned a configuration that NetBox cannot edit safely."),
+            (requests.ConnectionError("boom"), "Kea did not return a usable reply to the read before the change."),
+        )
+        for config_get, diagnostic in cases:
+            with self.subTest(diagnostic=diagnostic, config_get=repr(config_get)):
+                self._fresh_client()
+                with stub_kea({"config-get": config_get}) as kea:
+                    response = self.client.post(self._url(), self._post_data())
+                self.assertEqual(response.status_code, 302)
+                self.assertEqual(
+                    [(m.level, str(m)) for m in django_messages.get_messages(response.wsgi_request)],
+                    [(django_messages.ERROR, f"The change was not sent to Kea. {diagnostic}")],
+                )
+                self.assertEqual(kea.commands(), ["config-get"])
 
     def test_post_sets_ntp_servers_option(self):
         """POST with ntp_servers populates option-data with an ntp-servers entry."""
@@ -1229,14 +1193,6 @@ class TestSharedNetworkEditSnapshotFailures(_ViewTestBase):
         ntp_opts = [o for o in options if o.get("name") == "ntp-servers"]
         self.assertEqual(len(ntp_opts), 1)
         self.assertEqual(ntp_opts[0]["data"], "10.0.0.1")
-
-    def test_post_generic_exception_rerenders(self):
-        """A transport error during network_update must not crash (no 500)."""
-        # Verification succeeds, then the write path raises a transport error.
-        stub = {"config-get": queued(_sn_config(4, "prod-net"), requests.ConnectionError("boom"))}
-        with stub_kea(stub):
-            response = self.client.post(self._url(), self._post_data())
-        self.assertIn(response.status_code, (200, 302))
 
     def test_post_invalid_form_rerenders(self):
         """POST with missing required field must re-render the form (200, no Kea)."""

@@ -3,6 +3,7 @@ import ipaddress
 import json
 import logging
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from typing import Any, Literal, NamedTuple, TypedDict, cast
 
 import requests
@@ -416,11 +417,109 @@ def _set_shared_network_description(network: dict[str, Any], description: str) -
 
 
 def _config_entries(container: dict[str, Any], key: str, service: str) -> list[dict[str, Any]]:
-    """Return the objects listed at *key* in a live configuration, or raise ``KeaException``."""
+    """Return the objects listed at *key* in a live configuration, or raise ``RuntimeError``."""
     entries = container.get(key, [])
     if not isinstance(entries, list) or not all(isinstance(entry, dict) for entry in entries):
-        raise KeaException({"result": -1, "text": f"config-get returned a malformed {key} list for {service}"})
+        raise RuntimeError(f"config-get returned a malformed {key} list for {service}.")
     return entries
+
+
+class CandidateTargetMissing(Exception):
+    """The candidate configuration has no object that the edit names."""
+
+
+@dataclass(frozen=True)
+class SharedNetworkEdit:
+    """The Shared Network fields that the edit form manages. An empty value removes the field."""
+
+    description: str
+    interface: str
+    relay_addresses: tuple[str, ...]
+    dns_servers: tuple[str, ...]
+    ntp_servers: tuple[str, ...]
+
+
+class CandidateConfiguration:
+    """The running configuration of one daemon from ``config-get``, which a read-modify-write edits in place.
+
+    Every field that Kea returned stays, so a ``config-set`` of it keeps the fields that NetBox does not model.
+    An edit raises ``RuntimeError`` or ``ValueError`` for a malformed configuration, and
+    ``CandidateTargetMissing`` when the object it names is absent.
+    """
+
+    def __init__(self, family: Family, arguments: dict[str, Any]) -> None:
+        """Keep *arguments*, the ``config-get`` arguments without ``hash``.
+
+        Raises:
+            RuntimeError: If the ``Dhcp{v}`` block is not an object.
+
+        """
+        daemon = arguments.get(f"Dhcp{family}")
+        if not isinstance(daemon, dict):
+            raise RuntimeError(f"config-get returned a non-object Dhcp{family} for dhcp{family}.")
+        self.family = family
+        self.service = f"dhcp{family}"
+        self.arguments = arguments
+        self._daemon = daemon
+
+    def set_global_options(self, rows: list[dict[str, Any]]) -> None:
+        """Merge the options form *rows* into the server-global DHCP Options."""
+        self._daemon["option-data"] = merge_option_form_rows(rows, self._daemon.get("option-data", []))
+
+    def set_subnet_options(self, subnet_id: int, network: IPNetworkValue, rows: list[dict[str, Any]]) -> None:
+        """Merge the options form *rows* into the Subnet with *subnet_id*, only while that ID names *network*."""
+        subnet_key = f"subnet{self.family}"
+        subnets = list(_config_entries(self._daemon, subnet_key, self.service))
+        for shared_network in _config_entries(self._daemon, "shared-networks", self.service):
+            subnets.extend(_config_entries(shared_network, subnet_key, self.service))
+        matches = [subnet for subnet in subnets if _is_subnet_id(subnet.get("id"), subnet_id)]
+        if len(matches) > 1:
+            raise RuntimeError(f"config-get declares more than one Subnet with ID {subnet_id}.")
+        if not matches or subnet_network(matches[0].get("subnet"), self.family) != network:
+            raise CandidateTargetMissing
+        matches[0]["option-data"] = merge_option_form_rows(rows, matches[0].get("option-data", []))
+
+    def add_option_definition(self, option_def: dict[str, Any]) -> None:
+        """Append *option_def* to the Option Definitions."""
+        self._daemon["option-def"] = [*_config_entries(self._daemon, "option-def", self.service), option_def]
+
+    def delete_option_definition(self, code: int, space: str) -> None:
+        """Remove the Option Definitions with *code* in *space*."""
+        definitions = _config_entries(self._daemon, "option-def", self.service)
+        kept = [entry for entry in definitions if not (entry.get("code") == code and entry.get("space") == space)]
+        if len(kept) == len(definitions):
+            raise CandidateTargetMissing
+        self._daemon["option-def"] = kept
+
+    def edit_shared_network(self, name: str, edit: SharedNetworkEdit) -> None:
+        """Set the managed fields of the Shared Network *name*, and keep every other field."""
+        matches = [
+            network
+            for network in _config_entries(self._daemon, "shared-networks", self.service)
+            if network.get("name") == name
+        ]
+        if len(matches) > 1:
+            raise RuntimeError(f"config-get declares more than one Shared Network named {name!r}.")
+        if not matches:
+            raise CandidateTargetMissing
+        network = matches[0]
+        _set_shared_network_description(network, edit.description)
+        if edit.interface:
+            network["interface"] = edit.interface
+        else:
+            network.pop("interface", None)
+        if edit.relay_addresses:
+            network["relay"] = {"ip-addresses": list(edit.relay_addresses)}
+        else:
+            network.pop("relay", None)
+        options = list(_config_entries(network, "option-data", self.service))
+        options = _replace_managed_option(options, self.family, "dns_servers", ",".join(edit.dns_servers))
+        options = _replace_managed_option(options, self.family, "ntp_servers", ",".join(edit.ntp_servers))
+        network["option-data"] = options
+
+
+def _is_subnet_id(value: Any, subnet_id: int) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value == subnet_id
 
 
 class KeaClient:
@@ -1276,57 +1375,6 @@ class KeaClient:
             and text.startswith(f"unable to forward command to the dhcp{version} service")
         )
 
-    def network_update(
-        self,
-        version: int,
-        name: str,
-        description: str | None = None,
-        interface: str | None = None,
-        relay_addresses: list[str] | None = None,
-        dns_servers: list[str] | None = None,
-        ntp_servers: list[str] | None = None,
-    ) -> None:
-        """Update a shared network's properties via config-get → config-test → config-set → config-write.
-
-        Only provided (non-None) fields are modified; others are left unchanged. DNS
-        and NTP updates preserve all unmanaged DHCP Options and existing option metadata.
-        Raises ``KeaException`` if *name* is not found in the config.
-        Raises ``KeaConfigTestError`` if config-test validation fails.
-        Raises ``PartialPersistError`` if config-write fails after a successful config-set (change
-        is live but will not survive restart).
-        """
-        service, config, daemon = self._config_for_update(version)
-
-        network: dict[str, Any] | None = None
-        for sn in _config_entries(daemon, "shared-networks", service):
-            if sn.get("name") == name:
-                network = sn
-                break
-        if network is None:
-            raise KeaException({"result": 3, "text": f"Shared network '{name}' not found in config"})
-
-        if description is not None:
-            _set_shared_network_description(network, description)
-        if interface is not None:
-            if interface:
-                network["interface"] = interface
-            else:
-                network.pop("interface", None)
-        if relay_addresses is not None:
-            if relay_addresses:
-                network["relay"] = {"ip-addresses": relay_addresses}
-            else:
-                network.pop("relay", None)
-        if dns_servers is not None or ntp_servers is not None:
-            options = list(_config_entries(network, "option-data", service))
-            if dns_servers is not None:
-                options = _replace_managed_option(options, version, "dns_servers", ",".join(dns_servers))
-            if ntp_servers is not None:
-                options = _replace_managed_option(options, version, "ntp_servers", ",".join(ntp_servers))
-            network["option-data"] = options
-
-        self._apply_config(service, config)
-
     def network_subnet_add(self, version: int, name: str, subnet_id: int) -> None:
         """Move an existing subnet into a shared network.
 
@@ -1473,108 +1521,6 @@ class KeaClient:
             {subnet_key: [subnet_def]},
         )
         self._persist_config(service)
-
-    def subnet_update_options(self, version: int, subnet_id: int, options: list[dict[str, Any]]) -> None:
-        """Merge form rows into a subnet's option-data via config-get → config-test → config-set → config-write.
-
-        Free Kea has no option-set hook, so the only supported approach is a full
-        read-modify-write cycle: fetch the current config, merge the submitted rows
-        onto the subnet's ``option-data`` by original identity, then validate, apply
-        and persist the modified config.
-
-        Args:
-            version: DHCP version (4 or 6).
-            subnet_id: Kea subnet ID.
-            options: Cleaned form rows covering every live option by original identity.
-                Set ``DELETE`` on an existing row to remove it.
-
-        Raises:
-            KeaException: If ``subnet_id`` is not found, or if ``config-test`` fails.
-            DHCPOptionConflict: If a row's original identity is missing, ambiguous, or submitted twice.
-            PartialPersistError: If ``config-write`` fails after a successful ``config-set``.
-
-        """
-        subnet_key = f"subnet{version}"
-        service, config, daemon = self._config_for_update(version)
-
-        subnet = None
-        for s in _config_entries(daemon, subnet_key, service):
-            if s.get("id") == subnet_id:
-                subnet = s
-                break
-        if subnet is None:
-            for sn in _config_entries(daemon, "shared-networks", service):
-                for s in _config_entries(sn, subnet_key, service):
-                    if s.get("id") == subnet_id:
-                        subnet = s
-                        break
-                if subnet is not None:
-                    break
-        if subnet is None:
-            raise KeaException({"result": 3, "text": f"Subnet id {subnet_id} not found in config"})
-
-        subnet["option-data"] = merge_option_form_rows(options, subnet.get("option-data", []))
-        self._apply_config(service, config)
-
-    def server_update_options(self, version: int, options: list[dict[str, Any]]) -> None:
-        """Merge form rows into server-level option-data via config-get → config-test → config-set → config-write.
-
-        Merges onto the ``option-data`` list at the ``Dhcp{v}`` level (not per-subnet)
-        by original identity.
-        Uses the same read-modify-write pipeline as :meth:`subnet_update_options`.
-
-        Args:
-            version: DHCP version (4 or 6).
-            options: Cleaned form rows covering every live option by original identity.
-                Set ``DELETE`` on an existing row to remove it.
-
-        Raises:
-            KeaException: If ``config-test`` fails.
-            DHCPOptionConflict: If a row's original identity is missing, ambiguous, or submitted twice.
-            PartialPersistError: If ``config-write`` fails after a successful ``config-set``.
-
-        """
-        service, config, daemon = self._config_for_update(version)
-        daemon["option-data"] = merge_option_form_rows(options, daemon.get("option-data", []))
-        self._apply_config(service, config)
-
-    def option_def_add(self, version: int, option_def: dict) -> None:
-        """Append a new option-def entry via config-get → config-test → config-set → config-write.
-
-        Args:
-            version: DHCP version (4 or 6).
-            option_def: A dict with keys ``name``, ``code``, ``type``, ``space``,
-                and optionally ``array``, ``encapsulate``, ``record-types``.
-
-        Raises:
-            KeaException: If ``config-test`` fails.
-            PartialPersistError: If ``config-write`` fails after a successful ``config-set``.
-
-        """
-        service, config, daemon = self._config_for_update(version)
-        daemon["option-def"] = [*_config_entries(daemon, "option-def", service), option_def]
-        self._apply_config(service, config)
-
-    def option_def_del(self, version: int, code: int, space: str) -> None:
-        """Remove an option-def entry by code+space via config-get → config-test → config-set → config-write.
-
-        Args:
-            version: DHCP version (4 or 6).
-            code: Option code of the entry to remove.
-            space: Option space of the entry to remove.
-
-        Raises:
-            KeaConfigTestError: If ``config-test`` fails before the mutation is applied.
-            PartialPersistError: If ``config-write`` fails after a successful ``config-set``.
-
-        """
-        service, config, daemon = self._config_for_update(version)
-        defs = _config_entries(daemon, "option-def", service)
-        new_defs = [d for d in defs if not (d.get("code") == code and d.get("space") == space)]
-        if len(new_defs) == len(defs):
-            raise KeaException({"result": 3, "text": f"option-def code={code} space={space} not found"})
-        daemon["option-def"] = new_defs
-        self._apply_config(service, config)
 
     def lease_wipe(self, version: int, subnet_id: int) -> None:
         """Delete all leases in a subnet using the ``lease{v}-wipe`` command.
@@ -2030,67 +1976,42 @@ class KeaClient:
             response = self.command(command, service=[service], arguments=arguments, check=None)
         _one_reply(command, service, response)
 
-    def _config_for_update(self, version: int) -> tuple[str, dict[str, Any], dict[str, Any]]:
-        """Return the service, the live config without ``hash``, and its validated ``Dhcp{v}`` block."""
-        service = f"dhcp{version}"
-        resp = self.command("config-get", service=[service])
-        config = resp[0].get("arguments") if resp and isinstance(resp[0], dict) else None
-        if not isinstance(config, dict):
-            raise KeaException({"result": -1, "text": f"config-get returned unexpected arguments for {service}"})
-        # Kea 2.4+ adds "hash"; config-test and config-set reject it.
-        config.pop("hash", None)
-        daemon = config.get(f"Dhcp{version}")
-        if not isinstance(daemon, dict):
-            raise KeaException({"result": -1, "text": f"config-get returned a non-object Dhcp{version} for {service}"})
-        return service, config, daemon
-
-    def _apply_config(self, service: str, config: dict) -> None:
-        """Validate, apply, and persist a modified config dict.
-
-        Used by read-modify-write methods (e.g. ``subnet_update_options``,
-        ``server_update_options``, ``option_def_add/del``) that mutate a config
-        obtained from ``config-get`` and need to push it back.
-
-        Flow: ``config-test`` → ``config-set`` → ``config-write``.
-
-        Args:
-            service: Kea service name (e.g. ``"dhcp4"``).
-            config: The full config dict (already mutated) to apply.
+    def config_candidate(self, version: Family) -> "CandidateConfiguration":
+        """Send one ``config-get`` and return the running configuration, for a read-modify-write.
 
         Raises:
-            KeaConfigTestError: If ``config-test`` fails (result != 2).
-            PartialPersistError: If ``config-write`` fails after ``config-set``.
+            KeaException: If Kea returns a failure result.
+            RuntimeError: If the reply or its ``Dhcp{v}`` block is malformed.
 
         """
-        try:
-            self._config_phase_command("config-test", service, config)
-        except KeaException as exc:
-            if exc.unsupported_command:
-                logger.debug("config-test not supported for service %s — skipping pre-flight check", service)
-            else:
-                logger.warning("config-test failed for service %s — aborting config-set", service)
-                raise KeaConfigTestError(service, exc) from exc
-        except (requests.RequestException, ValueError, RuntimeError) as exc:
-            logger.warning(
-                "config-test transport/parse error for service %s — aborting config-set",
-                service,
-            )
-            raise KeaConfigTestError(service, exc) from exc
-        try:
-            self._config_phase_command("config-set", service, config)
-        except (requests.RequestException, ValueError, RuntimeError) as exc:
-            logger.warning(
-                "config-set transport/parse error for service %s — change may be live but unpersisted", service
-            )
-            raise AmbiguousConfigSetError(service, exc) from exc
-        if self.persist_config:
-            try:
-                self._config_phase_command("config-write", service)
-            except (KeaException, requests.RequestException, ValueError, RuntimeError) as exc:
-                logger.warning("config-write failed for service %s — change not persisted to disk", service)
-                raise PartialPersistError(service, exc) from exc
-        else:
-            logger.debug("persist_config disabled for service %s — skipping config-write after config-set", service)
+        command, service = "config-get", f"dhcp{version}"
+        reply = _one_reply(command, service, self.command(command, service=[service], check=None))
+        arguments = reply.get("arguments")
+        if not isinstance(arguments, dict):
+            raise RuntimeError(f"{command} returned no configuration object for {service}.")
+        # Kea 2.4+ adds "hash"; config-test and config-set reject it.
+        arguments.pop("hash", None)
+        return CandidateConfiguration(version, arguments)
+
+    def config_test(self, candidate: "CandidateConfiguration") -> None:
+        """Send one ``config-test`` of *candidate*. It changes nothing.
+
+        Raises:
+            KeaException: If Kea returns a failure result.
+            RuntimeError: If the reply is malformed.
+
+        """
+        self._config_phase_command("config-test", candidate.service, candidate.arguments)
+
+    def config_set(self, candidate: "CandidateConfiguration") -> None:
+        """Send one ``config-set`` of *candidate*. It does not persist.
+
+        Raises:
+            KeaException: If Kea returns a failure result.
+            RuntimeError: If the reply is malformed.
+
+        """
+        self._config_phase_command("config-set", candidate.service, candidate.arguments)
 
     def persist(self, version: Family) -> PersistResult:
         """Write the running configuration to disk: ``config-get``, ``config-test`` of it, then ``config-write``.
@@ -2103,12 +2024,12 @@ class KeaClient:
         service = f"dhcp{version}"
         # requests errors are OSError subclasses; a missing TLS file raises a plain OSError.
         try:
-            _, config, _ = self._config_for_update(version)
+            candidate = self.config_candidate(version)
         except (KeaException, OSError, ValueError, RuntimeError):
             logger.warning("config-get failed for %s, so config-write was not sent", service, exc_info=True)
             return PersistResult("failed", ("Kea did not return its running configuration, so it was not saved.",))
         try:
-            self._config_phase_command("config-test", service, config)
+            self.config_test(candidate)
         except KeaException as exc:
             if not exc.unsupported_command:
                 logger.warning("config-test rejected the running configuration of %s: %s", service, exc)
@@ -2276,28 +2197,6 @@ class KeaException(Exception):
         return text if isinstance(text, str) and text else f"result {self.response.get('result')}"
 
 
-class KeaConfigTestError(KeaException):
-    """Raised when ``config-test`` fails before any mutation has been applied.
-
-    The Kea configuration is unchanged — no data has been written.
-    The original :exc:`KeaException` from config-test is stored in ``__cause__``.
-
-    Used by ``_apply_config`` (read-modify-write methods such as
-    ``subnet_update_options`` and ``server_update_options``) where config-test
-    is run *before* ``config-set``, so a failure means the running config is
-    still intact.
-    """
-
-    def __init__(self, service: str, cause: Exception) -> None:
-        response: KeaResponse = {
-            "result": -1,
-            "text": f"config-test failed for service {service!r} — mutation was not applied",
-            "arguments": [],
-        }
-        super().__init__(response, msg=f"config-test error for {service!r}")
-        self.service = service
-
-
 class PartialPersistError(KeaException):
     """Raised when a Kea mutation is live but was not written to disk.
 
@@ -2324,8 +2223,7 @@ class KeaConfigPersistError(PartialPersistError):
     was skipped.  The change **will be lost on daemon restart**.
 
     Inherits from :exc:`PartialPersistError` because a caller must treat both the
-    same way: the change is live but not written to disk.  Distinct from
-    :exc:`KeaConfigTestError`, which is raised before any mutation is applied.
+    same way: the change is live but not written to disk.
     """
 
     def __init__(self, service: str, cause: Exception) -> None:
@@ -2336,27 +2234,6 @@ class KeaConfigPersistError(PartialPersistError):
         )
         self.response["text"] = rejected_text
         self.args = (f"config persist error for {service!r}: {rejected_text}",)
-
-
-class AmbiguousConfigSetError(PartialPersistError):
-    """Raised when a config-set reply is lost or malformed.
-
-    The change *may* be live but we cannot confirm — the transport or JSON
-    parsing failed after sending the config-set command.  Distinct from
-    :exc:`PartialPersistError` where we *know* the mutation succeeded but
-    config-write failed.
-
-    Inherits from :exc:`PartialPersistError` so existing ``except
-    PartialPersistError`` handlers still catch it.  Callers that need to
-    distinguish ambiguous-set from definite-write-failure can catch this
-    subclass first.
-    """
-
-    def __init__(self, service: str, cause: Exception) -> None:
-        super().__init__(service, cause)
-        ambiguous_text = f"config-set reply lost/malformed for service {service!r} — change may or may not be live"
-        self.response["text"] = ambiguous_text
-        self.args = (f"partial persist error for {service!r}: {ambiguous_text}",)
 
 
 def _one_reply(command: str, service: str, response: list[KeaResponse], ok_codes: Sequence[int] = (0,)) -> KeaResponse:
