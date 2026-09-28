@@ -195,7 +195,8 @@ A view runs it through `_run_config_change` in `views/_base.py`, which owns the
 messages, and catches nothing itself. Shared Network add, edit and delete, Subnet add, edit and
 delete, Pool add and delete, Subnet and server DHCP Options, and Option Definition add and
 delete use it. An OpenGrep rule refuses an `except` of `ConfigChangeRejected` in `views/`
-outside `_run_config_change`, and a second rule keeps that function in `views/_base.py`. Only `config_write` operations take the per-daemon advisory
+outside `_run_config_change`. A second rule keeps that function in `views/_base.py`, and a third
+refuses a broad `except` around a direct `config_write` call in a view. Only `config_write` operations take the per-daemon advisory
 lock. Reservation mutations call `KeaClient.persist`, but they do not wait for the lock. A Subnet, Pool
 or Subnet DHCP Options operation takes the Subnet ID and the CIDR that the page showed, and
 sends nothing unless its `MutationScope` returns a Verified Subnet with both.

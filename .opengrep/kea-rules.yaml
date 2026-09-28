@@ -333,3 +333,53 @@ rules:
     pattern: |
       def _run_config_change(...):
           ...
+
+  - id: kea-config-change-in-broad-except
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Do not call a config_write operation inside a try whose except catches
+      Exception, BaseException, or everything. That handler also catches
+      ConfigChangeRejected and hides it from _run_config_change() in
+      views/_base.py. Pass the call to _run_config_change() as a lambda, and
+      catch only the errors that you expect.
+    metadata:
+      category: maintainability
+      confidence: HIGH
+      references:
+        - "docs/adr/0005-configuration-changes-return-a-typed-outcome.md: Presentation"
+    paths:
+      include:
+        - "**/views/**"
+    patterns:
+      - pattern-either:
+          - patterns:
+              - pattern-either:
+                  - pattern-inside: |
+                      try:
+                          ...
+                      except (..., $EXC, ...):
+                          ...
+                  - pattern-inside: |
+                      try:
+                          ...
+                      except $EXC as $E:
+                          ...
+                  - pattern-inside: |
+                      try:
+                          ...
+                      except (..., $EXC, ...) as $E:
+                          ...
+              - metavariable-pattern:
+                  metavariable: $EXC
+                  pattern-either:
+                    - pattern: Exception
+                    - pattern: BaseException
+          - pattern-inside: |
+              try:
+                  ...
+              except:
+                  ...
+      - pattern: config_write.$OP(...)
+      # The mapper catches the rejection before an outer handler sees it.
+      - pattern-not-inside: _run_config_change(...)
