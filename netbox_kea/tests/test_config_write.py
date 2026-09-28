@@ -980,8 +980,8 @@ class SubnetAddTests(TestCase):
                     rejection.diagnostics,
                     (
                         (
-                            "The assignment to Shared Network 'net-a' did not apply, so NetBox deleted Subnet 8 "
-                            f"({_NEW[version]}) again."
+                            f"NetBox added Subnet 8 ({_NEW[version]}), but the assignment to Shared Network 'net-a' "
+                            "did not apply, so NetBox deleted the Subnet again."
                         ),
                         "Kea replied: subnet is in use",
                     ),
@@ -1011,7 +1011,10 @@ class SubnetAddTests(TestCase):
         self.assertEqual(
             rejection.diagnostics,
             (
-                "The assignment to Shared Network 'net-a' did not apply, so NetBox deleted Subnet 8 (10.0.8.0/24) again.",
+                (
+                    "NetBox added Subnet 8 (10.0.8.0/24), but the assignment to Shared Network 'net-a' did not apply, "
+                    "so NetBox deleted the Subnet again."
+                ),
                 "Kea could not be reached.",
             ),
         )

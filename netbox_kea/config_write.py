@@ -224,8 +224,8 @@ def _assign_new_subnet(
         undo = _delete_new_subnet(server, client, family, identity)
         if undo is None:
             deleted = (
-                f"The assignment to Shared Network '{name}' did not apply, so NetBox deleted Subnet "
-                f"{identity.subnet_id} ({identity.cidr}) again."
+                f"NetBox added Subnet {identity.subnet_id} ({identity.cidr}), but the assignment to Shared Network "
+                f"'{name}' did not apply, so NetBox deleted the Subnet again."
             )
             raise ConfigChangeRejected(rejection.reason, (deleted, *rejection.diagnostics)) from rejection
         return "unknown", (added, f"{assign}: not applied.", *rejection.diagnostics, *undo)

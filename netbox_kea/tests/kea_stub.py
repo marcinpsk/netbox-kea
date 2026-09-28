@@ -21,9 +21,10 @@ import json
 import socket
 import threading
 from collections import deque
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
+from enum import Enum
 from functools import cache
 from pathlib import Path
 from typing import Any, cast
@@ -410,22 +411,34 @@ def _catalogue_responses_for_subnets(
     *,
     config_hash: str = "shared-catalogue",
     shared_networks: Sequence[Any] = (),
+    members: Mapping[int, str] | None = None,
     global_options: tuple[dict[str, Any], ...] = (),
     option_definitions: tuple[dict[str, Any], ...] = (),
 ) -> dict[str, Any]:
     """The same Catalogue responses for an explicit *subnets* list.
 
     Callers that already carry their own ``subnet{v}-list`` reach the Catalogue shape
-    through this entry point, so it stays defined once.
+    through this entry point, so it stays defined once. *members* maps a Subnet ID to
+    the name of its Shared Network: the list then names the network of each Subnet, and
+    ``config-get`` nests each member Subnet in its network.
     """
     subnets = list(subnets)
-    configuration: dict[str, Any] = {f"subnet{version}": subnets, "shared-networks": list(shared_networks)}
+    listed = subnets
+    networks = list(shared_networks)
+    if members is not None:
+        key = f"subnet{version}"
+        listed = [{**subnet, "shared-network-name": members.get(subnet["id"])} for subnet in subnets]
+        networks = [
+            {**network, key: [s for s in subnets if members.get(s["id"]) == network["name"]]} for network in networks
+        ]
+        subnets = [subnet for subnet in subnets if subnet["id"] not in members]
+    configuration: dict[str, Any] = {f"subnet{version}": subnets, "shared-networks": networks}
     if global_options:
         configuration["option-data"] = list(global_options)
     if option_definitions:
         configuration["option-def"] = list(option_definitions)
     return {
-        f"subnet{version}-list": _subnet_list(version, subnets),
+        f"subnet{version}-list": _subnet_list(version, listed),
         "list-commands": _reservation_mutation_commands(),
         "config-get": {
             "result": 0,
@@ -437,7 +450,13 @@ def _catalogue_responses_for_subnets(
     }
 
 
-RUN = "run"
+class Run(Enum):
+    """The ``SubnetDaemon`` script entry that runs the command."""
+
+    RUN = "run"
+
+
+RUN = Run.RUN
 
 
 @dataclass(frozen=True)
@@ -462,14 +481,14 @@ class SubnetDaemon:
         # Subnet ID to the name of its Shared Network.
         self.members: dict[int, str] = {}
         self._scripts: dict[str, deque] = {}
-        self._writers: dict[str, deque] = {}
+        self._writers: dict[str, deque[Callable[[SubnetDaemon], None]]] = {}
         self._changes = 0
 
     def script(self, command: str, *answers: Any) -> None:
         """Queue how the next calls of *command* end."""
         self._scripts.setdefault(command, deque()).extend(answers)
 
-    def before(self, command: str, change: Any) -> None:
+    def before(self, command: str, change: Callable[[SubnetDaemon], None]) -> None:
         """Run *change* (a callable that takes this daemon) just before the next call of *command*."""
         self._writers.setdefault(command, deque()).append(change)
 
@@ -505,7 +524,9 @@ class SubnetDaemon:
         }
         return {command: self._answering(command, handler) for command, handler in handlers.items()}
 
-    def _answering(self, command: str, run: Any) -> Any:
+    def _answering(
+        self, command: str, run: Callable[[dict[str, Any]], dict[str, Any]]
+    ) -> Callable[[dict[str, Any]], Any]:
         def answer(body: dict[str, Any]) -> Any:
             writers = self._writers.get(command)
             if writers:
@@ -515,27 +536,26 @@ class SubnetDaemon:
             if isinstance(scripted, Applied):
                 run(body)
                 return scripted.answer
-            if isinstance(scripted, str) and scripted == RUN:
+            if scripted is Run.RUN:
                 return run(body)
             return scripted
 
         return answer
 
+    def _catalogue(self) -> dict[str, Any]:
+        return _catalogue_responses_for_subnets(
+            self.family,
+            self.subnets,
+            config_hash=f"change-{self._changes}",
+            shared_networks=[{"name": name} for name in self.networks],
+            members=self.members,
+        )
+
     def _list(self, _body: dict[str, Any]) -> dict[str, Any]:
-        entries = [
-            {"id": subnet["id"], "subnet": subnet["subnet"], "shared-network-name": self.members.get(subnet["id"])}
-            for subnet in self.subnets
-        ]
-        return {"result": 0, "text": f"{len(entries)} subnets found", "arguments": {"subnets": entries}}
+        return self._catalogue()[f"subnet{self.family}-list"]
 
     def _config_get(self, _body: dict[str, Any]) -> dict[str, Any]:
-        key = f"subnet{self.family}"
-        networks = [
-            {"name": name, key: [s for s in self.subnets if self.members.get(s["id"]) == name]}
-            for name in self.networks
-        ]
-        daemon = {key: [s for s in self.subnets if s["id"] not in self.members], "shared-networks": networks}
-        return {"result": 0, "arguments": {f"Dhcp{self.family}": daemon, "hash": f"change-{self._changes}"}}
+        return self._catalogue()["config-get"]
 
     def _network_get(self, body: dict[str, Any]) -> dict[str, Any]:
         name = body["arguments"]["name"]

@@ -1442,8 +1442,8 @@ class TestLeaseAdd(TestCase):
 # TestNetworkSubnetAdd
 # ---------------------------------------------------------------------------
 
-_NETWORK_SUBNET_ADD_OK = [{"result": 0, "text": "Subnet added to shared network."}]
-_NETWORK_SUBNET_ADD_FAIL = [{"result": 1, "text": "subnet not found"}]
+_NETWORK_SUBNET_ADD_OK = {"result": 0, "text": "Subnet added to shared network."}
+_NETWORK_SUBNET_ADD_FAIL = {"result": 1, "text": "subnet not found"}
 
 
 class TestNetworkSubnetAdd(TestCase):
@@ -1452,42 +1452,35 @@ class TestNetworkSubnetAdd(TestCase):
     def setUp(self):
         self.client = KeaClient(url="http://kea:8000")
 
-    def _payloads(self, mock_post):
-        return [(c.kwargs.get("json") or c[1]["json"]) for c in mock_post.call_args_list]
-
-    def _cmds(self, mock_post):
-        return [p["command"] for p in self._payloads(mock_post)]
-
     def test_sends_one_command_with_name_and_id_without_a_persist_step(self):
         """network4-subnet-add is sent with name and id in arguments, and nothing after it."""
-        with patch.object(
-            self.client._session,
-            "post",
-            side_effect=_side_effects(_NETWORK_SUBNET_ADD_OK),
-        ) as mock_post:
+        with stub_kea({"network4-subnet-add": _NETWORK_SUBNET_ADD_OK}) as kea:
             self.client.network_subnet_add(version=4, name="prod-net", subnet_id=5)
-        self.assertEqual(self._cmds(mock_post), ["network4-subnet-add"])
-        payload = self._payloads(mock_post)[0]
-        self.assertEqual(payload["service"], ["dhcp4"])
-        self.assertEqual(payload["arguments"], {"name": "prod-net", "id": 5})
+        self.assertEqual(kea.commands(), ["network4-subnet-add"])
+        (body,) = kea.bodies("network4-subnet-add")
+        self.assertEqual(body["service"], ["dhcp4"])
+        self.assertEqual(body["arguments"], {"name": "prod-net", "id": 5})
 
     def test_the_edit_view_variant_persists_after_the_move(self):
         """network_subnet_add_and_persist sends the persist step after network4-subnet-add succeeds."""
-        with patch.object(
-            self.client._session,
-            "post",
-            side_effect=_side_effects(
-                _NETWORK_SUBNET_ADD_OK, _CONFIG_GET_RUNNING_RESP, _CONFIG_TEST_OK_RESP, _CONFIG_WRITE_RESP
-            ),
-        ) as mock_post:
+        running = _CONFIG_GET_RUNNING_RESP[0]
+        responses = {
+            "network4-subnet-add": _NETWORK_SUBNET_ADD_OK,
+            "config-get": running,
+            "config-test": _CONFIG_TEST_OK_RESP[0],
+            "config-write": _CONFIG_WRITE_RESP[0],
+        }
+        with stub_kea(responses) as kea:
             self.client.network_subnet_add_and_persist(version=4, name="prod-net", subnet_id=5)
-        self.assertEqual(self._cmds(mock_post), ["network4-subnet-add", "config-get", "config-test", "config-write"])
+        self.assertEqual(kea.commands(), ["network4-subnet-add", "config-get", "config-test", "config-write"])
+        self.assertEqual(kea.bodies("network4-subnet-add")[0]["arguments"], {"name": "prod-net", "id": 5})
+        self.assertEqual(kea.bodies("config-test")[0]["arguments"], {"Dhcp4": running["arguments"]["Dhcp4"]})
 
     def test_raises_kea_exception_on_failure(self):
         """KeaException is raised when the command returns a non-zero result."""
-        with patch.object(self.client._session, "post", return_value=_mock_http_response(_NETWORK_SUBNET_ADD_FAIL)):
-            with self.assertRaises(KeaException):
-                self.client.network_subnet_add(version=4, name="prod-net", subnet_id=99)
+        with stub_kea({"network4-subnet-add": _NETWORK_SUBNET_ADD_FAIL}) as kea, self.assertRaises(KeaException):
+            self.client.network_subnet_add(version=4, name="prod-net", subnet_id=99)
+        self.assertEqual(kea.bodies("network4-subnet-add")[0]["arguments"], {"name": "prod-net", "id": 99})
 
 
 # ---------------------------------------------------------------------------

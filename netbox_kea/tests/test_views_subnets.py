@@ -1833,8 +1833,8 @@ class TestSubnetAddMessages(_ViewTestBase):
                 (
                     django_messages.ERROR,
                     (
-                        "Kea rejected the change. The assignment to Shared Network 'alpha' did not apply, so NetBox "
-                        "deleted Subnet 4 (10.2.0.0/24) again. Kea replied: subnet is in use"
+                        "Kea rejected the change. NetBox added Subnet 4 (10.2.0.0/24), but the assignment to Shared "
+                        "Network 'alpha' did not apply, so NetBox deleted the Subnet again. Kea replied: subnet is in use"
                     ),
                 )
             ],

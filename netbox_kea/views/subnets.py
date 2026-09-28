@@ -460,13 +460,13 @@ class _BaseSubnetAddView(_KeaChangeMixin, generic.ObjectView):
         if ipaddress.ip_network(cidr).version != self.dhcp_version:
             form.add_error("subnet", f"Enter an IPv{self.dhcp_version} Subnet CIDR.")
             return self._render(request, server, form)
-        shared_network: str | None = cd.get("shared_network") or None
+        shared_network: str | None = cd["shared_network"] or None
         fields = NewSubnetFields(
             pools=tuple(pool.range for pool in cd["pools"]),
             gateway=cd["gateway"],
             dns_servers=tuple(cd["dns_servers"]),
             ntp_servers=tuple(cd["ntp_servers"]),
-            ddns_qualifying_suffix=cd.get("ddns_qualifying_suffix") or "",
+            ddns_qualifying_suffix=cd["ddns_qualifying_suffix"],
         )
 
         def added(outcome: config_write.SubnetAddOutcome) -> str:
