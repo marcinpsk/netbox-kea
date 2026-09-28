@@ -118,7 +118,6 @@ netbox_kea/views/subnets.py:0: error: "Field" has no attribute "choices"  [attr-
 netbox_kea/views/subnets.py:0: error: "Field" has no attribute "choices"  [attr-defined]
 netbox_kea/views/subnets.py:0: error: "Field" has no attribute "choices"  [attr-defined]
 netbox_kea/views/subnets.py:0: error: "Field" has no attribute "choices"  [attr-defined]
-netbox_kea/views/subnets.py:0: error: "Field" has no attribute "choices"  [attr-defined]
 netbox_kea/views/reservations.py:0: error: Item "AbstractBaseUser" of "AbstractBaseUser | AnonymousUser" has no attribute "has_perm"  [union-attr]
 netbox_kea/views/leases.py:0: error: Item "AbstractBaseUser" of "AbstractBaseUser | AnonymousUser" has no attribute "has_perm"  [union-attr]
 netbox_kea/views/leases.py:0: error: "HttpRequest" has no attribute "htmx"  [attr-defined]

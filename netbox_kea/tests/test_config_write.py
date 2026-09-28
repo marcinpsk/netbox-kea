@@ -20,13 +20,17 @@ from django.test import TestCase, TransactionTestCase, override_settings
 from urllib3.exceptions import ProtocolError
 
 from netbox_kea import config_write
-from netbox_kea.config_write import ConfigChangeOutcome, ConfigChangeRejected
+from netbox_kea.config_write import ConfigChangeOutcome, ConfigChangeRejected, SubnetAddOutcome
 from netbox_kea.constants import Family
 from netbox_kea.dhcp_options import DHCPOptionConflict, DHCPOptionNameChange, parse_dhcp_options
-from netbox_kea.kea import CandidateTargetMissing, SharedNetworkEdit
+from netbox_kea.kea import CandidateTargetMissing, NewSubnetFields, SharedNetworkEdit
 from netbox_kea.server_configuration import parse_pool
+from netbox_kea.subnet_catalogue import CatalogueUnavailable, SubnetIdentityConflict
 
 from .kea_stub import (
+    RUN,
+    Applied,
+    SubnetDaemon,
     _catalogue_responses_for_subnets,
     _http_response,
     _network_absent,
@@ -664,6 +668,494 @@ class SubnetAndPoolChangeTests(TestCase):
                     ConfigChangeOutcome("unknown", "persisted", ("Kea's reply to the change was lost or unreadable.",)),
                 )
                 self.assertEqual(kea.commands(), ["subnet4-list", "config-get", command, *_PERSIST])
+
+
+_EXISTING = {
+    4: [{"id": 3, "subnet": "10.0.3.0/24"}, {"id": 7, "subnet": "10.0.7.0/24"}],
+    6: [{"id": 3, "subnet": "2001:db8:3::/64"}, {"id": 7, "subnet": "2001:db8:7::/64"}],
+}
+_NEW = {4: "10.0.8.0/24", 6: "2001:db8:8::/64"}
+_FAMILIES: tuple[Family, ...] = (4, 6)
+_ELSEWHERE = {4: "10.0.9.0/24", 6: "2001:db8:9::/64"}
+_FIELDS = {
+    4: NewSubnetFields(
+        pools=("10.0.8.10-10.0.8.20",),
+        gateway="10.0.8.1",
+        dns_servers=("192.0.2.53",),
+        ntp_servers=("192.0.2.123",),
+        ddns_qualifying_suffix="example.org",
+    ),
+    6: NewSubnetFields(
+        pools=("2001:db8:8::100-2001:db8:8::1ff",),
+        gateway="",
+        dns_servers=("2001:db8::53",),
+        ntp_servers=("2001:db8::123",),
+        ddns_qualifying_suffix="",
+    ),
+}
+_SENT = {
+    4: {
+        "subnet": "10.0.8.0/24",
+        "id": 8,
+        "pools": [{"pool": "10.0.8.10-10.0.8.20"}],
+        "option-data": [
+            {"name": "routers", "data": "10.0.8.1"},
+            {"name": "domain-name-servers", "data": "192.0.2.53"},
+            {"name": "ntp-servers", "data": "192.0.2.123"},
+        ],
+        "ddns-qualifying-suffix": "example.org",
+    },
+    6: {
+        "subnet": "2001:db8:8::/64",
+        "id": 8,
+        "pools": [{"pool": "2001:db8:8::100-2001:db8:8::1ff"}],
+        "option-data": [
+            {"name": "dns-servers", "data": "2001:db8::53"},
+            {"name": "sntp-servers", "data": "2001:db8::123"},
+        ],
+    },
+}
+
+
+def _scope(version: int) -> list[str]:
+    """The commands of one Subnet Catalogue read."""
+    return [f"subnet{version}-list", "config-get"]
+
+
+def _steps(version: int, state: str) -> tuple[str, str]:
+    """The diagnostics that name the add and the state of the assignment to 'net-a'."""
+    return (
+        f"Step 1, add Subnet 8 ({_NEW[version]}): applied.",
+        f"Step 2, assign it to Shared Network 'net-a': {state}.",
+    )
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class SubnetAddTests(TestCase):
+    """A Subnet add, and its assignment to a Shared Network, as one Configuration Change."""
+
+    def setUp(self):
+        self.server = _make_db_server()
+
+    def _daemon(self, version: Family, subnets=None) -> SubnetDaemon:
+        return SubnetDaemon(version, _EXISTING[version] if subnets is None else subnets, networks=("net-a", "net-b"))
+
+    def _add(self, daemon: SubnetDaemon, *, subnet_id: int | None = None, network: str | None = None):
+        with stub_kea(daemon.responses()) as kea:
+            outcome = config_write.add_subnet(
+                self.server, daemon.family, _NEW[daemon.family], subnet_id, _FIELDS[daemon.family], network
+            )
+        return outcome, kea
+
+    def _rejection(self, daemon: SubnetDaemon, *, subnet_id: int | None = None, network: str | None = None):
+        with stub_kea(daemon.responses()) as kea, self.assertRaises(ConfigChangeRejected) as raised:
+            config_write.add_subnet(
+                self.server, daemon.family, _NEW[daemon.family], subnet_id, _FIELDS[daemon.family], network
+            )
+        return raised.exception, kea
+
+    @staticmethod
+    def _sent_ids(kea, version: int) -> list[int]:
+        return [body["arguments"][f"subnet{version}"][0]["id"] for body in kea.bodies(f"subnet{version}-add")]
+
+    def test_an_add_takes_the_next_free_id_and_sends_the_form_fields(self):
+        for version in _FAMILIES:
+            with self.subTest(version=version):
+                daemon = self._daemon(version)
+                outcome, kea = self._add(daemon)
+                self.assertEqual(outcome, SubnetAddOutcome("applied", "persisted", subnet_id=8))
+                self.assertEqual(kea.commands(), [*_scope(version), f"subnet{version}-add", *_PERSIST])
+                self.assertEqual(
+                    kea.bodies(f"subnet{version}-add"),
+                    [
+                        {
+                            "command": f"subnet{version}-add",
+                            "service": [f"dhcp{version}"],
+                            "arguments": {f"subnet{version}": [_SENT[version]]},
+                        }
+                    ],
+                )
+                self.assertEqual(daemon.ids(), [3, 7, 8])
+
+    def test_an_operator_id_is_sent_as_given(self):
+        outcome, kea = self._add(self._daemon(4), subnet_id=12)
+        self.assertEqual(outcome, SubnetAddOutcome("applied", "persisted", subnet_id=12))
+        self.assertEqual(self._sent_ids(kea, 4), [12])
+
+    def test_an_add_with_a_shared_network_assigns_the_new_subnet_and_persists_once(self):
+        for version in _FAMILIES:
+            with self.subTest(version=version):
+                daemon = self._daemon(version)
+                outcome, kea = self._add(daemon, network="net-a")
+                self.assertEqual(outcome, SubnetAddOutcome("applied", "persisted", subnet_id=8))
+                self.assertEqual(
+                    kea.commands(),
+                    [
+                        f"network{version}-get",
+                        *_scope(version),
+                        f"subnet{version}-add",
+                        f"network{version}-subnet-add",
+                        *_PERSIST,
+                    ],
+                )
+                self.assertEqual(kea.bodies(f"network{version}-get")[0]["arguments"], {"name": "net-a"})
+                self.assertEqual(
+                    kea.bodies(f"network{version}-subnet-add"),
+                    [
+                        {
+                            "command": f"network{version}-subnet-add",
+                            "service": [f"dhcp{version}"],
+                            "arguments": {"name": "net-a", "id": 8},
+                        }
+                    ],
+                )
+                self.assertEqual(daemon.members, {8: "net-a"})
+
+    def test_a_missing_shared_network_sends_no_add(self):
+        for version in _FAMILIES:
+            with self.subTest(version=version):
+                rejection, kea = self._rejection(self._daemon(version), network="net-c")
+                self.assertEqual(rejection.reason, "not-sent")
+                self.assertEqual(rejection.diagnostics, ("Shared Network 'net-c' not found.",))
+                self.assertEqual(kea.commands(), [f"network{version}-get"])
+
+    def test_an_identity_that_exists_or_cannot_be_checked_leaves_before_any_change(self):
+        taken = [*_EXISTING[4], {"id": 5, "subnet": _NEW[4]}]
+        incomplete = {"result": 1, "text": "internal error"}
+        for label, daemon, subnet_id, error, message in (
+            ("CIDR taken", self._daemon(4, taken), None, SubnetIdentityConflict, "Subnet 10.0.8.0/24 already exists."),
+            ("ID taken", self._daemon(4), 7, SubnetIdentityConflict, "Subnet ID 7 already exists."),
+            (
+                "incomplete Subnet list",
+                self._daemon(4),
+                None,
+                CatalogueUnavailable,
+                "New Subnet creation requires a complete live identity observation.",
+            ),
+        ):
+            if label == "incomplete Subnet list":
+                daemon.script("subnet4-list", incomplete)
+            with self.subTest(label), stub_kea(daemon.responses()) as kea:
+                with self.assertRaisesMessage(error, message):
+                    config_write.add_subnet(self.server, 4, _NEW[4], subnet_id, _FIELDS[4], "net-a")
+                self.assertEqual(kea.commands(), ["network4-get", *_scope(4)])
+
+    def test_a_lost_add_reply_is_unknown_with_the_sent_id_and_sends_no_assignment_or_lookup(self):
+        for label, answer in (
+            ("request lost", requests.ReadTimeout("read timed out")),
+            ("reply lost", Applied(requests.ReadTimeout("read timed out"))),
+            ("malformed reply", [_OK, _OK]),
+        ):
+            with self.subTest(label):
+                daemon = self._daemon(4)
+                daemon.script("subnet4-add", answer)
+                outcome, kea = self._add(daemon, network="net-a")
+                self.assertEqual(
+                    outcome,
+                    SubnetAddOutcome(
+                        "unknown",
+                        "persisted",
+                        ("Kea's reply to the change was lost or unreadable.", "NetBox sent Subnet 8 (10.0.8.0/24)."),
+                        subnet_id=8,
+                    ),
+                )
+                self.assertEqual(kea.commands(), ["network4-get", *_scope(4), "subnet4-add", *_PERSIST])
+
+    def test_result_5_or_a_forwarding_failure_on_the_add_is_unknown_without_a_check_read(self):
+        for label, answer in (
+            ("result 5", {"result": 5, "text": "configuration could not be restored"}),
+            ("forwarding failure", _CONTROL_AGENT["network4-add"]),
+        ):
+            with self.subTest(label):
+                daemon = self._daemon(4)
+                daemon.script("subnet4-add", answer)
+                outcome, kea = self._add(daemon)
+                self.assertEqual(outcome.application, "unknown")
+                self.assertEqual(outcome.subnet_id, 8)
+                self.assertEqual(kea.commands(), [*_scope(4), "subnet4-add", *_PERSIST])
+
+    def test_a_rejected_allocated_id_retries_once_when_another_subnet_took_it(self):
+        for version in _FAMILIES:
+            with self.subTest(version=version):
+                daemon = self._daemon(version)
+                daemon.before(f"subnet{version}-add", lambda d: d.add({"id": 8, "subnet": _ELSEWHERE[d.family]}))
+                outcome, kea = self._add(daemon, network="net-a")
+                self.assertEqual(outcome, SubnetAddOutcome("applied", "persisted", subnet_id=9))
+                self.assertEqual(self._sent_ids(kea, version), [8, 9])
+                self.assertEqual(
+                    kea.commands(),
+                    [
+                        f"network{version}-get",
+                        *_scope(version),
+                        f"subnet{version}-add",
+                        # The check read shows that another Subnet took ID 8; a fresh scope allocates the retry.
+                        *_scope(version),
+                        *_scope(version),
+                        f"subnet{version}-add",
+                        f"network{version}-subnet-add",
+                        *_PERSIST,
+                    ],
+                )
+                self.assertEqual(kea.bodies(f"network{version}-subnet-add")[0]["arguments"], {"name": "net-a", "id": 9})
+
+    def test_a_second_collision_is_not_retried_again(self):
+        daemon = self._daemon(4)
+        daemon.before("subnet4-add", lambda d: d.add({"id": 8, "subnet": "10.0.9.0/24"}))
+        daemon.before("subnet4-add", lambda d: d.add({"id": 9, "subnet": "10.0.10.0/24"}))
+        rejection, kea = self._rejection(daemon)
+        self.assertEqual(rejection.reason, "kea-rejected")
+        self.assertEqual(rejection.diagnostics, ("Kea replied: ID of the new IPv4 subnet '9' is already in use",))
+        self.assertEqual(self._sent_ids(kea, 4), [8, 9])
+        self.assertEqual(kea.commands()[-3:], ["subnet4-add", *_scope(4)])
+
+    def test_an_operator_id_never_retries(self):
+        daemon = self._daemon(4)
+        daemon.before("subnet4-add", lambda d: d.add({"id": 12, "subnet": "10.0.9.0/24"}))
+        rejection, kea = self._rejection(daemon, subnet_id=12)
+        self.assertEqual(rejection.reason, "kea-rejected")
+        self.assertEqual(rejection.diagnostics, ("Kea replied: ID of the new IPv4 subnet '12' is already in use",))
+        self.assertEqual(kea.commands(), [*_scope(4), "subnet4-add", *_scope(4)])
+
+    def test_a_rejection_while_the_sent_id_is_free_is_not_retried(self):
+        daemon = self._daemon(4)
+        daemon.script("subnet4-add", {"result": 1, "text": "invalid pool"})
+        rejection, kea = self._rejection(daemon, network="net-a")
+        self.assertEqual(rejection.reason, "kea-rejected")
+        self.assertEqual(rejection.diagnostics, ("Kea replied: invalid pool",))
+        self.assertEqual(kea.commands(), ["network4-get", *_scope(4), "subnet4-add", *_scope(4)])
+
+    def test_a_retry_whose_fresh_scope_holds_the_cidr_raises_the_identity_conflict(self):
+        daemon = self._daemon(4)
+
+        def rival(d):
+            d.add({"id": 8, "subnet": "10.0.9.0/24"})
+            d.add({"id": 20, "subnet": _NEW[4]})
+
+        daemon.before("subnet4-add", rival)
+        with stub_kea(daemon.responses()) as kea:
+            with self.assertRaisesMessage(SubnetIdentityConflict, "Subnet 10.0.8.0/24 already exists."):
+                config_write.add_subnet(self.server, 4, _NEW[4], None, _FIELDS[4], None)
+        self.assertEqual(kea.commands(), [*_scope(4), "subnet4-add", *_scope(4), *_scope(4)])
+
+    def test_a_failure_while_a_subnet_with_the_sent_id_and_cidr_is_live_is_unknown(self):
+        failure = {"result": 1, "text": "allocator initialization failed"}
+        for label, prepare in (
+            ("applied, then failed", lambda d: d.script("subnet4-add", Applied(failure))),
+            (
+                "another writer added it",
+                lambda d: d.before("subnet4-add", lambda w: w.add({"id": 8, "subnet": _NEW[4]})),
+            ),
+        ):
+            with self.subTest(label):
+                daemon = self._daemon(4)
+                prepare(daemon)
+                outcome, kea = self._add(daemon, network="net-a")
+                self.assertEqual(outcome.application, "unknown")
+                self.assertEqual(outcome.persistence, "persisted")
+                self.assertEqual(outcome.subnet_id, 8)
+                self.assertEqual(
+                    outcome.diagnostics[1:],
+                    ("The read after the failure shows the change.", "NetBox sent Subnet 8 (10.0.8.0/24)."),
+                )
+                # No retry and no assignment, and the persist step runs.
+                self.assertEqual(kea.commands(), ["network4-get", *_scope(4), "subnet4-add", *_scope(4), *_PERSIST])
+
+    def test_a_failed_add_whose_check_read_fails_is_unknown(self):
+        daemon = self._daemon(4)
+        daemon.script("subnet4-add", {"result": 1, "text": "failed"})
+        daemon.script("subnet4-list", RUN, {"result": 1, "text": "internal error"})
+        outcome, kea = self._add(daemon)
+        self.assertEqual(outcome.application, "unknown")
+        self.assertEqual(outcome.diagnostics[1], "The read after the failure did not succeed.")
+        self.assertEqual(kea.commands(), [*_scope(4), "subnet4-add", *_scope(4), *_PERSIST])
+
+    def test_a_rejected_assignment_rolls_back_the_add_and_raises_the_rejection(self):
+        for version in _FAMILIES:
+            with self.subTest(version=version):
+                daemon = self._daemon(version)
+                daemon.script(f"network{version}-subnet-add", {"result": 1, "text": "subnet is in use"})
+                rejection, kea = self._rejection(daemon, network="net-a")
+                self.assertEqual(rejection.reason, "kea-rejected")
+                self.assertEqual(
+                    rejection.diagnostics,
+                    (
+                        (
+                            f"NetBox added Subnet 8 ({_NEW[version]}), but the assignment to Shared Network 'net-a' "
+                            "did not apply, so NetBox deleted the Subnet again."
+                        ),
+                        "Kea replied: subnet is in use",
+                    ),
+                )
+                # Nothing that the change wrote is live, so no persist step runs.
+                self.assertEqual(
+                    kea.commands(),
+                    [
+                        f"network{version}-get",
+                        *_scope(version),
+                        f"subnet{version}-add",
+                        f"network{version}-subnet-add",
+                        *_scope(version),
+                        *_scope(version),
+                        f"subnet{version}-del",
+                    ],
+                )
+                self.assertEqual(kea.bodies(f"subnet{version}-del")[0]["arguments"], {"id": 8})
+                self.assertEqual(daemon.ids(), [3, 7])
+
+    def test_an_assignment_that_is_never_sent_rolls_back_the_add(self):
+        refused = _refused_connection()
+        daemon = self._daemon(4)
+        daemon.script("network4-subnet-add", refused)
+        rejection, kea = self._rejection(daemon, network="net-a")
+        self.assertEqual(rejection.reason, "not-sent")
+        self.assertEqual(
+            rejection.diagnostics,
+            (
+                (
+                    "NetBox added Subnet 8 (10.0.8.0/24), but the assignment to Shared Network 'net-a' did not apply, "
+                    "so NetBox deleted the Subnet again."
+                ),
+                "Kea could not be reached.",
+            ),
+        )
+        self.assertEqual(
+            kea.commands(),
+            ["network4-get", *_scope(4), "subnet4-add", "network4-subnet-add", *_scope(4), "subnet4-del"],
+        )
+        self.assertEqual(daemon.ids(), [3, 7])
+
+    def test_a_failed_rollback_is_unknown_and_names_both_steps(self):
+        for label, answer, rollback, check in (
+            (
+                "delete rejected",
+                {"result": 1, "text": "subnet is locked"},
+                ("Step 3, delete Subnet 8 again: not applied.", "Kea replied: subnet is locked"),
+                _scope(4),
+            ),
+            (
+                "delete reply lost",
+                Applied(requests.ReadTimeout()),
+                ("Step 3, delete Subnet 8 again: unknown.", "Kea's reply to the change was lost or unreadable."),
+                [],
+            ),
+        ):
+            with self.subTest(label):
+                daemon = self._daemon(4)
+                daemon.script("network4-subnet-add", {"result": 1, "text": "subnet is in use"})
+                daemon.script("subnet4-del", answer)
+                outcome, kea = self._add(daemon, network="net-a")
+                self.assertEqual(
+                    outcome,
+                    SubnetAddOutcome(
+                        "unknown",
+                        "persisted",
+                        (*_steps(4, "not applied"), "Kea replied: subnet is in use", *rollback),
+                        subnet_id=8,
+                    ),
+                )
+                self.assertEqual(
+                    kea.commands(),
+                    [
+                        "network4-get",
+                        *_scope(4),
+                        "subnet4-add",
+                        "network4-subnet-add",
+                        *_scope(4),
+                        *_scope(4),
+                        "subnet4-del",
+                        *check,
+                        *_PERSIST,
+                    ],
+                )
+
+    def test_a_subnet_that_another_writer_changed_is_not_rolled_back(self):
+        def moved(d):
+            d.members[8] = "net-b"
+
+        def replaced(d):
+            d.remove(8)
+            d.add({"id": 8, "subnet": "10.0.9.0/24"})
+
+        for label, change in (("moved", moved), ("replaced", replaced), ("deleted", lambda d: d.remove(8))):
+            with self.subTest(label):
+                daemon = self._daemon(4)
+                daemon.before("network4-subnet-add", change)
+                daemon.script("network4-subnet-add", {"result": 1, "text": "subnet is in use"})
+                outcome, kea = self._add(daemon, network="net-a")
+                self.assertEqual(
+                    outcome,
+                    SubnetAddOutcome(
+                        "unknown",
+                        "persisted",
+                        (
+                            *_steps(4, "not applied"),
+                            "Kea replied: subnet is in use",
+                            "Step 3, delete Subnet 8 again: not sent, because the Subnet changed in Kea.",
+                        ),
+                        subnet_id=8,
+                    ),
+                )
+                self.assertEqual(
+                    kea.commands(),
+                    [
+                        "network4-get",
+                        *_scope(4),
+                        "subnet4-add",
+                        "network4-subnet-add",
+                        *_scope(4),
+                        *_scope(4),
+                        *_PERSIST,
+                    ],
+                )
+
+    def test_an_unknown_membership_before_the_rollback_counts_as_changed(self):
+        daemon = self._daemon(4)
+        daemon.script("network4-subnet-add", {"result": 1, "text": "subnet is in use"})
+        unreadable = _subnet_list(4, [*_EXISTING[4], {"id": 8, "subnet": _NEW[4], "shared-network-name": ""}])
+        daemon.script("subnet4-list", RUN, RUN, unreadable)
+        outcome, kea = self._add(daemon, network="net-a")
+        self.assertEqual(outcome.application, "unknown")
+        self.assertEqual(
+            outcome.diagnostics[-1],
+            "Step 3, delete Subnet 8 again: not sent, because NetBox could not read the Subnet again.",
+        )
+        self.assertNotIn("subnet4-del", kea.commands())
+        self.assertEqual(daemon.ids(), [3, 7, 8])
+
+    def test_an_unconfirmed_assignment_is_unknown_and_not_rolled_back(self):
+        unreadable = _subnet_list(4, [*_EXISTING[4], {"id": 8, "subnet": _NEW[4], "shared-network-name": ""}])
+        lost = ("Kea's reply to the change was lost or unreadable.",)
+        for label, answer, check_read, diagnostics in (
+            ("reply lost", Applied(requests.ReadTimeout()), None, lost),
+            ("request lost", requests.ReadTimeout(), None, lost),
+            (
+                "failure with the change visible",
+                Applied({"result": 1, "text": "failed"}),
+                RUN,
+                ("Kea replied: failed", "The read after the failure shows the change."),
+            ),
+            (
+                "failure with an unknown membership",
+                {"result": 1, "text": "failed"},
+                unreadable,
+                ("Kea replied: failed", "The read after the failure did not succeed."),
+            ),
+        ):
+            with self.subTest(label):
+                daemon = self._daemon(4)
+                daemon.script("network4-subnet-add", answer)
+                daemon.script("subnet4-list", RUN, RUN if check_read is None else check_read)
+                check = [] if check_read is None else _scope(4)
+                outcome, kea = self._add(daemon, network="net-a")
+                self.assertEqual(
+                    outcome,
+                    SubnetAddOutcome("unknown", "persisted", (*_steps(4, "unknown"), *diagnostics), subnet_id=8),
+                )
+                self.assertEqual(
+                    kea.commands(),
+                    ["network4-get", *_scope(4), "subnet4-add", "network4-subnet-add", *check, *_PERSIST],
+                )
+                self.assertIn(8, daemon.ids())
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)

@@ -198,13 +198,19 @@ Order: `PartialPersistError` → `KeaException`.
 operation returns a `ConfigChangeOutcome` (`applied`/`unknown` and
 `persisted`/`failed`/`not-requested`) or raises `ConfigChangeRejected` with a reason.
 A view runs it through `_run_config_change` in `views/_base.py`, which owns the
-messages, and catches nothing itself. Shared Network add, edit and delete, Subnet delete,
+messages, and catches nothing itself. Shared Network add, edit and delete, Subnet add and delete,
 Pool add and delete, Subnet and server DHCP Options, and Option Definition add and delete
 use it; the classes above stay for the other callers until #207 removes them. Only
 `config_write` operations take the per-daemon advisory lock, so the old write paths do not
 wait for it. A Subnet, Pool or Subnet DHCP Options operation takes the Subnet ID and the
 CIDR that the page showed, and sends nothing unless its `MutationScope` returns a Verified
 Subnet with both.
+
+Subnet add is the first multi-step change: `add_subnet` adds the Subnet and then assigns it to
+a Shared Network. When the assignment does not apply, it deletes the Subnet again, but only
+while a fresh scope shows the Subnet with the sent ID and CIDR and no Shared Network. The
+persist step runs once, at the end. In tests, `SubnetDaemon` in `kea_stub.py` holds Subnets
+and Shared Networks, so a test can script a Kea failure or a change by another writer.
 
 A read-modify-write operation holds the lock from its `config-get` to the end of the
 persist step. `KeaClient` sends each command (`config_candidate`, `config_test`,
