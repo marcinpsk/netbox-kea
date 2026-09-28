@@ -388,8 +388,8 @@ class SyncNowErrorHandlingTest(TestCase):
         self.url = reverse("plugins:netbox_kea:server_dhcp_plugin_sync", args=[self.server.pk])
 
     def test_kea_exception_routes_through_specific_handler(self):
-        # A KeaException (or its PartialPersistError subclass) is handled by the
-        # dedicated contract branch, logged distinctly, and shown as a generic error.
+        # A KeaException is handled by the dedicated contract branch, logged
+        # distinctly, and shown as a generic error.
         with (
             patch.object(dps.dhcp_plugin, "is_available", return_value=True, autospec=True),
             patch.object(

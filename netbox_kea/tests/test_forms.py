@@ -804,13 +804,30 @@ class TestSubnetEditForm(SimpleTestCase):
     def _form(self, **kwargs):
         from netbox_kea.forms import SubnetEditForm
 
-        data = {"subnet_cidr": "10.0.0.0/24", **kwargs}
+        data = {"subnet_cidr": "10.0.0.0/24", "shown_network_confirmed": "True", **kwargs}
         return SubnetEditForm(data=data)
 
     def test_valid_minimal_form_no_optional_fields(self):
         """A form with only subnet_cidr (hidden) and no optional fields is valid."""
         form = self._form()
         self.assertTrue(form.is_valid(), form.errors)
+
+    def test_a_page_that_could_not_confirm_the_shared_network_cannot_be_saved(self):
+        """A missing or false confirmation fails closed, so a save never guesses the membership."""
+        unconfirmed = (
+            "NetBox could not confirm the Shared Network of this Subnet when it showed the page. "
+            "Reload the page and try again."
+        )
+        for value in ("False", ""):
+            with self.subTest(confirmed=value):
+                form = self._form(shown_network_confirmed=value)
+                self.assertFalse(form.is_valid())
+                self.assertEqual(form.non_field_errors(), [unconfirmed])
+
+    def test_the_shown_network_keeps_the_name_as_kea_declares_it(self):
+        form = self._form(shown_network=" office ")
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["shown_network"], " office ")
 
     def test_valid_form_with_all_fields(self):
         """A fully populated form is valid."""
@@ -1078,7 +1095,7 @@ class TestSubnetEditFormTimers(SimpleTestCase):
     def _form(self, **kwargs):
         from netbox_kea.forms import SubnetEditForm
 
-        data = {"subnet_cidr": "10.0.0.0/24", **kwargs}
+        data = {"subnet_cidr": "10.0.0.0/24", "shown_network_confirmed": "True", **kwargs}
         return SubnetEditForm(data=data)
 
     def test_form_has_renew_timer_field(self):
@@ -1179,7 +1196,7 @@ class TestSubnetEditFormAddressFamily(SimpleTestCase):
     def _form(self, **overrides):
         from netbox_kea.forms import SubnetEditForm
 
-        data = {"subnet_cidr": "192.0.2.0/24"}
+        data = {"subnet_cidr": "192.0.2.0/24", "shown_network_confirmed": "True"}
         data.update(overrides)
         return SubnetEditForm(data=data)
 
