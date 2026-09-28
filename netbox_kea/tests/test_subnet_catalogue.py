@@ -313,7 +313,6 @@ class TestSubnetCatalogue(TestCase):
                 }
             ],
         )
-        options = [{"name": "domain-name-servers", "data": "198.18.0.53"}]
 
         with stub_kea(
             {
@@ -324,7 +323,8 @@ class TestSubnetCatalogue(TestCase):
             }
         ) as kea:
             initial = display(self.server, 4)
-            self.server.get_client(version=4).subnet_update_options(4, 1, options)
+            client = self.server.get_client(version=4)
+            client.config_set(client.config_candidate(4))
             refreshed = display(self.server, 4)
 
         self.assertEqual(initial.find_by_id(1).configuration.options, ())
