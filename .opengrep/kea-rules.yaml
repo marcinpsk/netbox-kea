@@ -311,3 +311,25 @@ rules:
           def _run_config_change(...):
               ...
       - focus-metavariable: $EXC
+
+  - id: kea-config-change-mapper-outside-base
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Define _run_config_change only in views/_base.py. The rule
+      kea-config-change-rejection-caught-outside-mapper exempts a function by
+      this name, so a second definition in another view would hide its catch of
+      ConfigChangeRejected.
+    metadata:
+      category: maintainability
+      confidence: HIGH
+      references:
+        - "docs/adr/0005-configuration-changes-return-a-typed-outcome.md: Presentation"
+    paths:
+      include:
+        - "**/views/**"
+      exclude:
+        - "**/views/_base.py"
+    pattern: |
+      def _run_config_change(...):
+          ...
