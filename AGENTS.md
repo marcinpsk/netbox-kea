@@ -184,15 +184,13 @@ URL request
 ```text
 Exception
  └── KeaException                  # base — any non-ok result from Kea
-      ├── KeaConfigTestError       # config-test failed before the mutation; nothing changed
       ├── PartialPersistError      # mutation is live; config-write failed
-      │    ├── KeaConfigPersistError    # mutation is live; config-test rejected it, so no config-write
-      │    └── AmbiguousConfigSetError  # config-set status is ambiguous
+      │    └── KeaConfigPersistError    # mutation is live; config-test rejected it, so no config-write
       └── (generic Kea errors)
 ```
 
 **Catch order matters**: always catch the subclasses *before* `KeaException`.
-Order: `AmbiguousConfigSetError` → `PartialPersistError` → `KeaException`.
+Order: `PartialPersistError` → `KeaException`.
 `PartialPersistError` means the change is live but not written to disk. It covers
 `KeaConfigPersistError` by type, so do not catch that subclass separately.
 
@@ -200,12 +198,22 @@ Order: `AmbiguousConfigSetError` → `PartialPersistError` → `KeaException`.
 operation returns a `ConfigChangeOutcome` (`applied`/`unknown` and
 `persisted`/`failed`/`not-requested`) or raises `ConfigChangeRejected` with a reason.
 A view runs it through `_run_config_change` in `views/_base.py`, which owns the
-messages, and catches nothing itself. Shared Network add and delete, Subnet delete, and
-Pool add and delete use it; the classes above stay for the other callers until #207
-removes them. Only `config_write` operations take the per-daemon advisory lock, so the
-old write paths do not wait for it. A Subnet or Pool operation takes the Subnet ID and
-the CIDR that the page showed, and sends nothing unless its `MutationScope` returns a
-Verified Subnet with both.
+messages, and catches nothing itself. Shared Network add, edit and delete, Subnet delete,
+Pool add and delete, Subnet and server DHCP Options, and Option Definition add and delete
+use it; the classes above stay for the other callers until #207 removes them. Only
+`config_write` operations take the per-daemon advisory lock, so the old write paths do not
+wait for it. A Subnet, Pool or Subnet DHCP Options operation takes the Subnet ID and the
+CIDR that the page showed, and sends nothing unless its `MutationScope` returns a Verified
+Subnet with both.
+
+A read-modify-write operation holds the lock from its `config-get` to the end of the
+persist step. `KeaClient` sends each command (`config_candidate`, `config_test`,
+`config_set`); `CandidateConfiguration` in `kea.py` edits the raw configuration in place,
+because the wire-discipline gate keeps wire literals out of `config_write`. Any failure result on `config-set` is
+`unknown`, because Kea commits the configuration before the hook initialization can fail.
+A stale or renamed DHCP Option row (`DHCPOptionConflict`, `DHCPOptionNameChange`) is not
+a Configuration Change result: it leaves the operation before any command that changes
+the configuration, and the options views show it as a form error.
 
 ## Security & Code Quality Rules
 

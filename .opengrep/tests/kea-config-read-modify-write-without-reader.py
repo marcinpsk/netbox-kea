@@ -11,7 +11,7 @@ class Client:
         resp = self.command("config-get", service=[service])
         config = resp[0]["arguments"]
         config.setdefault(f"Dhcp{version}", {})["option-data"] = options
-        self._apply_config(service, config)
+        self.config_set(config)
 
     def bad_update_keyword(self, version, name):
         service = f"dhcp{version}"
@@ -19,19 +19,19 @@ class Client:
         resp = self.command(command="config-get", service=[service])
         for network in resp[0]["arguments"][f"Dhcp{version}"]["shared-networks"]:
             network["description"] = name
-        self._apply_config(service, resp[0]["arguments"])
+        self.config_set(resp[0]["arguments"])
         return name
 
     def ok_reader(self, version, options):
-        service, config, daemon = self._config_for_update(version)
-        daemon["option-data"] = options
-        self._apply_config(service, config)
+        candidate = self.config_candidate(version)
+        candidate.set_global_options(options)
+        self.config_set(candidate)
 
-    def _config_for_update(self, version):
+    def config_candidate(self, version):
         service = f"dhcp{version}"
         # ok: kea-config-read-modify-write-without-reader
         resp = self.command("config-get", service=[service])
-        return service, resp[0]["arguments"], resp[0]["arguments"][f"Dhcp{version}"]
+        return resp[0]["arguments"]
 
     def ok_read_only(self, version):
         # ok: kea-config-read-modify-write-without-reader

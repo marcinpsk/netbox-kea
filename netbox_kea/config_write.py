@@ -13,14 +13,23 @@ import logging
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 import requests
 from django.db import DatabaseError, OperationalError, connection, transaction
 from urllib3.exceptions import MaxRetryError, NewConnectionError
 
 from .constants import Family, Persistence
-from .kea import KeaClient, KeaException, PoolAction, subnet_network
+from .dhcp_options import DHCPOptionConflict, DHCPOptionNameChange
+from .kea import (
+    CandidateConfiguration,
+    CandidateTargetMissing,
+    KeaClient,
+    KeaException,
+    PoolAction,
+    SharedNetworkEdit,
+    subnet_network,
+)
 from .server_configuration import Pool
 from .subnet_catalogue import CatalogueUnavailable, MutationScope, VerifiedSubnet, mutation
 
@@ -38,6 +47,8 @@ RejectionReason = Literal["kea-rejected", "config-test-rejected", "not-sent", "i
 # Kea result 5: Kea could not return to a working configuration.
 _RESULT_FATAL = 5
 _LOCK_NOT_AVAILABLE = "55P03"
+
+T = TypeVar("T")
 
 
 def _int4(text: str) -> int:
@@ -154,6 +165,119 @@ def _persisted(
     return ConfigChangeOutcome(application, persisted.persistence, diagnostics + persisted.diagnostics)
 
 
+def set_subnet_options(
+    server: Server, family: Family, subnet_id: int, cidr: str, rows: list[dict[str, Any]]
+) -> ConfigChangeOutcome:
+    """Merge the options form *rows* into the Subnet with *subnet_id*, only while that ID names the network *cidr*.
+
+    Raises:
+        DHCPOptionConflict: If a row names a DHCP Option that is missing or ambiguous, or the rows miss one.
+        DHCPOptionNameChange: If a row renames a coded DHCP Option.
+
+    """
+    network = subnet_network(cidr, family)
+    return _read_modify_write(
+        server,
+        family,
+        lambda candidate: candidate.set_subnet_options(subnet_id, network, rows),
+        missing=subnet_changed(subnet_id, cidr),
+        seen=(subnet_id, cidr),
+    )
+
+
+def set_server_options(server: Server, family: Family, rows: list[dict[str, Any]]) -> ConfigChangeOutcome:
+    """Merge the options form *rows* into the server-global DHCP Options.
+
+    Raises:
+        DHCPOptionConflict: If a row names a DHCP Option that is missing or ambiguous, or the rows miss one.
+        DHCPOptionNameChange: If a row renames a coded DHCP Option.
+
+    """
+    return _read_modify_write(server, family, lambda candidate: candidate.set_global_options(rows))
+
+
+def add_option_definition(server: Server, family: Family, option_def: dict[str, Any]) -> ConfigChangeOutcome:
+    """Add the Option Definition *option_def*. Kea's config-test refuses a duplicate."""
+    return _read_modify_write(server, family, lambda candidate: candidate.add_option_definition(option_def))
+
+
+def delete_option_definition(server: Server, family: Family, code: int, space: str) -> ConfigChangeOutcome:
+    """Delete the Option Definition with *code* in *space*."""
+    return _read_modify_write(
+        server,
+        family,
+        lambda candidate: candidate.delete_option_definition(code, space),
+        missing=f"Option Definition {code} in space '{space}' not found.",
+    )
+
+
+def edit_shared_network(server: Server, family: Family, name: str, edit: SharedNetworkEdit) -> ConfigChangeOutcome:
+    """Set the fields of the Shared Network *name* that the edit form manages."""
+    return _read_modify_write(
+        server,
+        family,
+        lambda candidate: candidate.edit_shared_network(name, edit),
+        missing=f"Shared Network '{name}' not found.",
+    )
+
+
+def _read_modify_write(
+    server: Server,
+    family: Family,
+    edit: Callable[[CandidateConfiguration], None],
+    *,
+    missing: str = "",
+    seen: tuple[int, str] | None = None,
+) -> ConfigChangeOutcome:
+    """Edit the running configuration and send it back with config-set, all under the lock.
+
+    *missing* explains a target that *edit* does not find. *seen* is the Subnet ID and CIDR that the page showed.
+    """
+    with _client(server, family) as client, _serialized(client, family):
+        if seen is not None:
+            with mutation(server, family) as scope:
+                _subnet_as_seen(scope, *seen)
+        candidate = _read_before(lambda: client.config_candidate(family))
+        _edit(candidate, edit, missing)
+        _test_before(client, family, candidate)
+        # config-set commits and then runs the hook initialization, so no failure result proves it is not live.
+        application, diagnostics = _mutate(client, family, lambda: client.config_set(candidate), not_live=None)
+        return _persisted(client, family, application, diagnostics)
+
+
+def _edit(candidate: CandidateConfiguration, edit: Callable[[CandidateConfiguration], None], missing: str) -> None:
+    """Run *edit* on the candidate. A DHCP Option form error propagates unchanged."""
+    try:
+        edit(candidate)
+    except CandidateTargetMissing as exc:
+        raise ConfigChangeRejected("not-sent", (missing,)) from exc
+    except (DHCPOptionConflict, DHCPOptionNameChange):
+        raise
+    except (ValueError, RuntimeError) as exc:
+        logger.warning("The configuration that Kea returned cannot be edited", exc_info=True)
+        raise ConfigChangeRejected(
+            "not-sent", ("Kea returned a configuration that NetBox cannot edit safely.",)
+        ) from exc
+
+
+def _test_before(client: KeaClient, family: Family, candidate: CandidateConfiguration) -> None:
+    """Send config-test of the candidate. A Kea without config-test skips it."""
+
+    def test() -> None:
+        try:
+            client.config_test(candidate)
+        except KeaException as exc:
+            if exc.unsupported_command:
+                logger.debug("config-test is not supported on DHCPv%s, so the candidate was not tested", family)
+                return
+            if client.forwarding_failed(exc, family):
+                raise
+            logger.warning("config-test rejected a Configuration Change: %s", exc)
+            raise ConfigChangeRejected("config-test-rejected", (f"Kea replied: {exc.reply_text}",)) from exc
+
+    _read_before(test)
+
+
 def _client(server: Server, family: Family) -> KeaClient:
     try:
         return server.get_client(version=family)
@@ -248,7 +372,7 @@ def _pools_now(server: Server, family: Family, subnet: VerifiedSubnet) -> tuple[
     return current.configuration.pools
 
 
-def _read_before(read: Callable[[], bool]) -> bool:
+def _read_before(read: Callable[[], T]) -> T:
     """Run the read that comes before the change. A failure means that the change was not sent."""
     try:
         return read()
@@ -265,15 +389,18 @@ def _read_before(read: Callable[[], bool]) -> bool:
 
 
 def _mutate(
-    client: KeaClient, family: Family, send: Callable[[], None], *, not_live: Callable[[], bool]
+    client: KeaClient, family: Family, send: Callable[[], None], *, not_live: Callable[[], bool] | None
 ) -> tuple[Application, tuple[str, ...]]:
-    """Send one command that can change the configuration, and classify what Kea did with it."""
+    """Send one command that can change the configuration, and classify what Kea did with it.
+
+    *not_live* reads whether a failed command left the configuration unchanged. None: no read can show it.
+    """
     try:
         send()
     except KeaException as exc:
         logger.warning("A Configuration Change failed: %s", exc)
         diagnostic = f"Kea replied: {exc.reply_text}"
-        if exc.response.get("result") == _RESULT_FATAL or client.forwarding_failed(exc, family):
+        if not_live is None or exc.response.get("result") == _RESULT_FATAL or client.forwarding_failed(exc, family):
             return "unknown", (diagnostic,)
         try:
             unchanged = not_live()
