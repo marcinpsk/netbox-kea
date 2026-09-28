@@ -267,3 +267,47 @@ rules:
             - pattern: <... Prefix.objects ...>
             - pattern: <... IPRange.objects ...>
             - pattern: <... IPAddress.objects ...>
+
+  - id: kea-config-change-rejection-caught-outside-mapper
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Do not catch ConfigChangeRejected in a view. Run the change through
+      _run_config_change() in views/_base.py, which is the one place that turns an
+      outcome or a rejection into a message (ADR 0005). A second handler gives the
+      same rejection a different message.
+    metadata:
+      category: maintainability
+      confidence: HIGH
+      references:
+        - "docs/adr/0005-configuration-changes-return-a-typed-outcome.md: Presentation"
+    paths:
+      include:
+        - "**/views/**"
+    patterns:
+      # `except (..., $EXC, ...):` also matches `except $EXC:`. With `as`, it matches only a tuple.
+      - pattern-either:
+          - pattern: |
+              try:
+                  ...
+              except (..., $EXC, ...):
+                  ...
+          - pattern: |
+              try:
+                  ...
+              except $EXC as $E:
+                  ...
+          - pattern: |
+              try:
+                  ...
+              except (..., $EXC, ...) as $E:
+                  ...
+      - metavariable-pattern:
+          metavariable: $EXC
+          pattern-either:
+            - pattern: ConfigChangeRejected
+            - pattern: $MODULE.ConfigChangeRejected
+      - pattern-not-inside: |
+          def _run_config_change(...):
+              ...
+      - focus-metavariable: $EXC
