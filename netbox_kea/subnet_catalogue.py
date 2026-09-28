@@ -799,6 +799,14 @@ class MutationScope(AbstractContextManager["MutationScope"]):
         self._require_complete_identity("Subnet absence cannot be confirmed from an incomplete identity observation.")
         return None
 
+    def find_with_membership(self, subnet_id: int) -> VerifiedSubnet | None:
+        """Return one exact Verified Subnet whose Shared Network membership is known, or confirm its absence safely.
+
+        Only a complete identity observation shows that a Subnet without a Shared Network has none.
+        """
+        self._require_complete_identity("Shared Network membership cannot be confirmed from an incomplete observation.")
+        return self.find_by_id(subnet_id)
+
     def find_by_cidr(self, cidr: str) -> VerifiedSubnet | None:
         """Return one exact Verified Subnet, or confirm its absence safely."""
         snapshot = self._require_snapshot()
