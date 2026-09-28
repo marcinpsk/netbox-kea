@@ -41,6 +41,7 @@ from netbox_kea.reservations import (
     ReservationScope,
 )
 from netbox_kea.subnet_catalogue import SubnetIdentity
+from netbox_kea.tests.kea_wire_discipline import WIRE_COMMANDS
 
 
 def _http_response(payload: Any, status: int = 200, url: str = "") -> requests.Response:
@@ -123,6 +124,16 @@ def _assert_kea_would_accept(body: dict[str, Any]) -> None:
                 )
 
 
+def _assert_kea_has(commands: Any, verb: str) -> None:
+    """Fail on a command name that the harness Kea's list-commands reply does not contain."""
+    unknown = sorted(str(command) for command in set(commands) - WIRE_COMMANDS)
+    if unknown:
+        raise AssertionError(
+            f"KeaHttpStub: {verb} {unknown}, which the harness Kea does not have. Use a command from the "
+            "list-commands reply in kea_recordings/dhcp4.json or dhcp6.json."
+        )
+
+
 class KeaHttpStub:
     """Dispatch Kea commands by name and record the request bodies sent.
 
@@ -153,6 +164,7 @@ class KeaHttpStub:
     """
 
     def __init__(self, responses: dict[str, Any]) -> None:
+        _assert_kea_has(responses, "registers")
         self._responses = dict(responses)
         self.requests: list[dict[str, Any]] = []
         self._urls: list[str] = []
@@ -164,6 +176,7 @@ class KeaHttpStub:
             self.requests.append(body)
             self._urls.append(url)
             cmd = body.get("command")
+            _assert_kea_has([cmd], "receives")
             if cmd in ("config-test", "config-set"):
                 _assert_kea_would_accept(body)
             if cmd not in self._responses:
@@ -178,6 +191,10 @@ class KeaHttpStub:
             raise spec() if isinstance(spec, type) else spec
         if isinstance(spec, requests.Response):
             return spec
+        if cmd == "list-commands":
+            for entry in spec if isinstance(spec, list) else [spec]:
+                if isinstance(entry, dict) and isinstance(entry.get("arguments"), list):
+                    _assert_kea_has(entry["arguments"], "advertises")
         return _http_response(spec if isinstance(spec, list) else [spec], url=url)
 
     # --- assertion helpers ---

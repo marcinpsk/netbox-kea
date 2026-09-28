@@ -2133,15 +2133,14 @@ class TestFetchLeasesFromServer(_ViewTestBase):
             resp = [{"result": 0, "arguments": {"leases": [{"ip-address": address, "valid-lft": 3600, "state": 0}]}}]
         payload = resp[0] if isinstance(resp, list) else resp
         # _fetch_leases_from_server picks the command from `by`; register every
-        # lease-get variant to the same payload so whichever it issues is covered.
-        variants = [
-            f"lease{version}-get",
-            f"lease{version}-get-by-hw-address",
-            f"lease{version}-get-by-hostname",
-            f"lease{version}-get-by-client-id",
-            f"lease{version}-get-all",
-            f"lease{version}-get-by-duid",
-        ]
+        # lease-get variant of the family to the same payload so whichever it issues is covered.
+        suffixes = (
+            "",
+            "-by-hostname",
+            "-all",
+            *(("-by-hw-address", "-by-client-id") if version == 4 else ("-by-duid",)),
+        )
+        variants = [f"lease{version}-get{suffix}" for suffix in suffixes]
         with _lease_stub(dict.fromkeys(variants, payload)):
             return _fetch_leases_from_server(self.server, q, by, version)
 

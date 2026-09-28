@@ -116,6 +116,19 @@ def kea_dhcp6_url() -> str:
 
 
 @pytest.fixture(scope="session")
+def kea_control_urls() -> dict[int, str]:
+    """Return the host-side control socket of each harness daemon, by DHCP family.
+
+    These are the same daemons that KEA_DHCP4_URL and KEA_DHCP6_URL name for NetBox.
+    A run that moves one must move the other, or the two drive different daemons.
+    """
+    return {
+        4: os.environ.get("KEA_DHCP4_CONTROL_URL", "").strip() or "http://127.0.0.1:8001",
+        6: os.environ.get("KEA_DHCP6_CONTROL_URL", "").strip() or "http://127.0.0.1:8003",
+    }
+
+
+@pytest.fixture(scope="session")
 def kea_server_kwargs(kea_url: str, kea_dhcp6_url: str) -> dict:
     """Server-create kwargs for the Kea 3.0 dual-daemon harness (no Control Agent):
     ca_url/DHCPv4 -> kea-dhcp4, DHCPv6 -> kea-dhcp6, and has_control_agent disabled."""

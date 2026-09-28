@@ -486,7 +486,10 @@ def test_browser_client_fixtures_close_owned_sessions(monkeypatch, fixture_name,
         harness, "TimeoutSession" if fixture_name == "requests_session" else "KeaClient", TrackingClient
     )
     fixture = getattr(harness, fixture_name).__wrapped__
-    result = fixture(SimpleNamespace(token="test-token")) if fixture_name == "requests_session" else fixture()
+    if fixture_name == "requests_session":
+        result = fixture(SimpleNamespace(token="test-token"))
+    else:
+        result = fixture({4: "http://127.0.0.1:8001", 6: "http://127.0.0.1:8003"})
     if inspect.isgenerator(result):
         next(result)
         assert all(client.close_count == 0 for client in instances)

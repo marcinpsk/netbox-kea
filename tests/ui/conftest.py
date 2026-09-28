@@ -5,7 +5,6 @@ daemons, and one Server object joining them. Keeping the harness here is what le
 ``pytest tests/`` run every browser test in one pass.
 """
 
-import os
 import uuid
 import warnings
 from collections.abc import Iterator
@@ -145,14 +144,9 @@ class _DualEndpointKeaClient:
 
 
 @pytest.fixture
-def kea_client() -> Iterator[_DualEndpointKeaClient]:
-    # Kea 3.0: two daemons, each on its own host-exposed HTTP control socket. These are
-    # the host side of the same daemons KEA_DHCP4_URL/KEA_DHCP6_URL name for NetBox, so
-    # a run that moves one must move the other or the two drive different daemons.
-    with (
-        KeaClient(os.environ.get("KEA_DHCP4_CONTROL_URL", "").strip() or "http://127.0.0.1:8001") as dhcp4,
-        KeaClient(os.environ.get("KEA_DHCP6_CONTROL_URL", "").strip() or "http://127.0.0.1:8003") as dhcp6,
-    ):
+def kea_client(kea_control_urls: dict[int, str]) -> Iterator[_DualEndpointKeaClient]:
+    # Kea 3.0: two daemons, each on its own host-exposed HTTP control socket.
+    with KeaClient(kea_control_urls[4]) as dhcp4, KeaClient(kea_control_urls[6]) as dhcp6:
         yield _DualEndpointKeaClient(dhcp4, dhcp6)
 
 
