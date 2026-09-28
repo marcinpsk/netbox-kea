@@ -12,26 +12,34 @@ import hashlib
 import logging
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 import requests
 from django.db import DatabaseError, OperationalError, connection, transaction
 from urllib3.exceptions import MaxRetryError, NewConnectionError
 
-from .constants import Family, Persistence
+from .constants import Family, IPNetworkValue, Persistence
 from .kea import (
     CandidateConfiguration,
     CandidateTargetMissing,
     KeaClient,
     KeaException,
     MalformedConfiguration,
+    NewSubnetFields,
     PoolAction,
     SharedNetworkEdit,
     subnet_network,
 )
 from .server_configuration import Pool
-from .subnet_catalogue import CatalogueUnavailable, MutationScope, VerifiedSubnet, mutation
+from .subnet_catalogue import (
+    CatalogueUnavailable,
+    MutationScope,
+    NewSubnetIdentity,
+    SharedNetworkMembership,
+    VerifiedSubnet,
+    mutation,
+)
 
 if TYPE_CHECKING:
     from .models import Server
@@ -78,6 +86,13 @@ class ConfigChangeOutcome:
     diagnostics: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class SubnetAddOutcome(ConfigChangeOutcome):
+    """The outcome of a Subnet add, with the Subnet ID that the add sent."""
+
+    subnet_id: int = field(kw_only=True)
+
+
 class ConfigChangeRejected(Exception):
     """A Configuration Change that is not live, as far as NetBox can tell."""
 
@@ -116,18 +131,148 @@ def delete_shared_network(server: Server, family: Family, name: str) -> ConfigCh
         return _persisted(client, family, application, diagnostics)
 
 
+def add_subnet(
+    server: Server,
+    family: Family,
+    cidr: str,
+    subnet_id: int | None,
+    fields: NewSubnetFields,
+    shared_network: str | None,
+) -> SubnetAddOutcome:
+    """Add the Subnet *cidr*, and assign it to *shared_network* when one is named.
+
+    *subnet_id* None lets the Subnet Catalogue allocate the ID. When the assignment does not apply, the operation
+    deletes the new Subnet again.
+
+    Raises:
+        SubnetIdentityConflict: If a Subnet with the CIDR or with the operator's ID exists.
+        SubnetIdExhausted: If no free Subnet ID remains.
+        CatalogueUnavailable: If the Subnet list is incomplete, so NetBox cannot check the new identity.
+
+    """
+    with _client(server, family) as client, _serialized(client, family):
+        if shared_network is not None:
+            _require_shared_network(client, family, shared_network)
+        identity, application, diagnostics = _create_subnet(server, client, family, cidr, subnet_id, fields)
+        if application == "unknown":
+            diagnostics = (*diagnostics, f"NetBox sent Subnet {identity.subnet_id} ({identity.cidr}).")
+        elif shared_network is not None:
+            application, diagnostics = _assign_new_subnet(server, client, family, identity, shared_network)
+        persisted = client.persist(family)
+        return SubnetAddOutcome(
+            application, persisted.persistence, diagnostics + persisted.diagnostics, subnet_id=identity.subnet_id
+        )
+
+
+def _require_shared_network(client: KeaClient, family: Family, name: str) -> None:
+    if not _read_before(lambda: client.shared_network_exists(family, name)):
+        raise ConfigChangeRejected("not-sent", (f"Shared Network '{name}' not found.",))
+
+
+def _create_subnet(
+    server: Server, client: KeaClient, family: Family, cidr: str, requested_id: int | None, fields: NewSubnetFields
+) -> tuple[NewSubnetIdentity, Application, tuple[str, ...]]:
+    """Send the Subnet add under an identity from a live scope. Retry once when another Subnet took the allocated ID."""
+    with mutation(server, family) as scope:
+        identity = scope.prepare_creation(cidr, requested_id)
+    taken = False
+
+    def absent() -> bool:
+        # Not live only while no Subnet has the ID and the CIDR that the add sent.
+        nonlocal taken
+        current = _subnet_now(server, family, identity.subnet_id)
+        taken = current is not None and current.network != identity.network
+        return current is None or taken
+
+    def send() -> tuple[Application, tuple[str, ...]]:
+        return _mutate(
+            client,
+            family,
+            lambda: client.subnet_add(family, identity.subnet_id, identity.cidr, fields),
+            not_live=absent,
+        )
+
+    try:
+        application, diagnostics = send()
+    except ConfigChangeRejected:
+        # The check read, not Kea's error text, shows that another writer took the allocated ID.
+        if requested_id is not None or not taken:
+            raise
+        with mutation(server, family) as scope:
+            identity = scope.prepare_creation(cidr)
+        application, diagnostics = send()
+    return identity, application, diagnostics
+
+
+def _assign_new_subnet(
+    server: Server, client: KeaClient, family: Family, identity: NewSubnetIdentity, name: str
+) -> tuple[Application, tuple[str, ...]]:
+    """Assign the new Subnet to the Shared Network *name*. Delete the Subnet again when the assignment did not apply."""
+    added = f"Step 1, add Subnet {identity.subnet_id} ({identity.cidr}): applied."
+    assign = f"Step 2, assign it to Shared Network '{name}'"
+    membership = SharedNetworkMembership(name)
+
+    def not_assigned() -> bool:
+        current = _member_now(server, family, identity.subnet_id)
+        return current is None or current.shared_network != membership
+
+    try:
+        application, diagnostics = _mutate(
+            client, family, lambda: client.network_subnet_add(family, name, identity.subnet_id), not_live=not_assigned
+        )
+    except ConfigChangeRejected as rejection:
+        undo = _delete_new_subnet(server, client, family, identity)
+        if undo is None:
+            deleted = (
+                f"NetBox added Subnet {identity.subnet_id} ({identity.cidr}), but the assignment to Shared Network "
+                f"'{name}' did not apply, so NetBox deleted the Subnet again."
+            )
+            raise ConfigChangeRejected(rejection.reason, (deleted, *rejection.diagnostics)) from rejection
+        return "unknown", (added, f"{assign}: not applied.", *rejection.diagnostics, *undo)
+    if application == "unknown":
+        return "unknown", (added, f"{assign}: unknown.", *diagnostics)
+    return "applied", ()
+
+
+def _delete_new_subnet(
+    server: Server, client: KeaClient, family: Family, identity: NewSubnetIdentity
+) -> tuple[str, ...] | None:
+    """Delete the new Subnet while it holds the sent identity and no Shared Network.
+
+    Return None when the delete applied. Otherwise return the diagnostics of the rollback step.
+    """
+    step = f"Step 3, delete Subnet {identity.subnet_id} again"
+    try:
+        current = _member_now(server, family, identity.subnet_id)
+    except CatalogueUnavailable:
+        logger.warning("The read before a rollback did not confirm the Subnet", exc_info=True)
+        return (f"{step}: not sent, because NetBox could not read the Subnet again.",)
+    if current is None or current.network != identity.network or current.shared_network is not None:
+        return (f"{step}: not sent, because the Subnet changed in Kea.",)
+    try:
+        application, diagnostics = _mutate(
+            client,
+            family,
+            lambda: client.subnet_del(family, identity.subnet_id),
+            not_live=lambda: _still_there(server, family, identity.subnet_id, identity.network),
+        )
+    except ConfigChangeRejected as rejection:
+        return (f"{step}: not applied.", *rejection.diagnostics)
+    if application == "unknown":
+        return (f"{step}: unknown.", *diagnostics)
+    return None
+
+
 def delete_subnet(server: Server, family: Family, subnet_id: int, cidr: str) -> ConfigChangeOutcome:
     """Delete the Subnet with *subnet_id*, only while that ID names the network *cidr*."""
     with _client(server, family) as client, _serialized(client, family):
         with mutation(server, family) as scope:
             subnet = _subnet_as_seen(scope, subnet_id, cidr)
-
-        def still_there() -> bool:
-            current = _subnet_now(server, family, subnet.subnet_id)
-            return current is not None and current.network == subnet.network
-
         application, diagnostics = _mutate(
-            client, family, lambda: client.subnet_del(family, subnet.subnet_id), not_live=still_there
+            client,
+            family,
+            lambda: client.subnet_del(family, subnet.subnet_id),
+            not_live=lambda: _still_there(server, family, subnet.subnet_id, subnet.network),
         )
         return _persisted(client, family, application, diagnostics)
 
@@ -357,6 +502,18 @@ def _subnet_now(server: Server, family: Family, subnet_id: int) -> VerifiedSubne
     """Read the Subnet with *subnet_id* in a fresh scope. Return None when no Subnet has that ID."""
     with mutation(server, family) as scope:
         return scope.find_by_id(subnet_id)
+
+
+def _still_there(server: Server, family: Family, subnet_id: int, network: IPNetworkValue) -> bool:
+    """Read in a fresh scope whether *subnet_id* still names *network*."""
+    current = _subnet_now(server, family, subnet_id)
+    return current is not None and current.network == network
+
+
+def _member_now(server: Server, family: Family, subnet_id: int) -> VerifiedSubnet | None:
+    """Read the Subnet with *subnet_id* in a fresh scope that confirms its Shared Network membership."""
+    with mutation(server, family) as scope:
+        return scope.find_with_membership(subnet_id)
 
 
 def _pools_now(server: Server, family: Family, subnet: VerifiedSubnet) -> tuple[Pool, ...]:

@@ -31,6 +31,7 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseTable)
+OutcomeT = TypeVar("OutcomeT", bound=ConfigChangeOutcome)
 
 # Allowed characters in a pool range/CIDR string (digits, dots, colons, letters a-f, slash, hyphen).
 # Protects the <path:pool> URL parameter from injection before it reaches the Kea API.
@@ -87,12 +88,12 @@ class _KeaChangeMixin:
 
 
 def _run_config_change(
-    request: HttpRequest, confirmed: str, change: Callable[[], ConfigChangeOutcome]
-) -> ConfigChangeOutcome | None:
+    request: HttpRequest, confirmed: str | Callable[[OutcomeT], str], change: Callable[[], OutcomeT]
+) -> OutcomeT | None:
     """Run one Configuration Change, show one message for its outcome or its rejection, and return the outcome.
 
-    *confirmed* is the message for a change that Kea applied, such as "Shared network 'x' created."
-    Returns None after a rejection.
+    *confirmed* is the message for a change that Kea applied, such as "Shared network 'x' created.", or a function
+    that builds it from the outcome. Returns None after a rejection.
     """
     try:
         outcome = change()
@@ -102,13 +103,15 @@ def _run_config_change(
     if outcome.application == "unknown":
         # Never claim the change is live: the disk warning names the running configuration only.
         not_saved = ("Kea also could not save its running configuration to disk.",)
-        text = (_UNCONFIRMED, *(not_saved if outcome.persistence == "failed" else ()), *outcome.diagnostics)
-        messages.warning(request, " ".join(text))
-    elif outcome.persistence == "failed":
+        parts = (_UNCONFIRMED, *(not_saved if outcome.persistence == "failed" else ()), *outcome.diagnostics)
+        messages.warning(request, " ".join(parts))
+        return outcome
+    text = confirmed if isinstance(confirmed, str) else confirmed(outcome)
+    if outcome.persistence == "failed":
         restart = "It is live, but it may not survive a Kea restart, because Kea did not save it to disk."
-        messages.warning(request, " ".join((confirmed, restart, *outcome.diagnostics)))
+        messages.warning(request, " ".join((text, restart, *outcome.diagnostics)))
     else:
-        messages.success(request, confirmed)
+        messages.success(request, text)
     return outcome
 
 

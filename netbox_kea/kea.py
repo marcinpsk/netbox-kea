@@ -462,6 +462,17 @@ class SharedNetworkEdit:
     ntp_servers: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class NewSubnetFields:
+    """The fields of a new Subnet that the add form sets. An empty value leaves the field out."""
+
+    pools: tuple[str, ...]
+    gateway: str
+    dns_servers: tuple[str, ...]
+    ntp_servers: tuple[str, ...]
+    ddns_qualifying_suffix: str
+
+
 class CandidateConfiguration:
     """The running configuration of one daemon from ``config-get``, which a read-modify-write edits in place.
 
@@ -1274,59 +1285,33 @@ class KeaClient:
 
         return _configured_subnet_id_for_network(subnet_collections, version, network)
 
-    def subnet_add(
-        self,
-        version: int,
-        subnet_cidr: str,
-        subnet_id: int,
-        pools: list[str] | None = None,
-        gateway: str | None = None,
-        dns_servers: list[str] | None = None,
-        ntp_servers: list[str] | None = None,
-        ddns_qualifying_suffix: str | None = None,
-    ) -> None:
-        """Add a new subnet to Kea and persist the change.
-
-        Args:
-            version: DHCP version (4 or 6).
-            subnet_cidr: Subnet in CIDR notation, e.g. ``"10.0.0.0/24"``.
-            subnet_id: Kea subnet ID, allocated by the Subnet Catalogue's ``prepare_creation``.
-            pools: Optional list of initial pool ranges (e.g. ``["10.0.0.100-10.0.0.200"]``).
-            gateway: Optional default gateway IP (sets option ``routers``; DHCPv4 only).
-            dns_servers: Optional list of DNS server IPs.
-            ntp_servers: Optional list of NTP server IPs (option 42 / 31 are address arrays).
-            ddns_qualifying_suffix: Optional DDNS qualifying suffix for dynamic DNS updates.
+    def subnet_add(self, version: Family, subnet_id: int, cidr: str, fields: NewSubnetFields) -> None:
+        """Send one ``subnet{v}-add`` for the Subnet *cidr* with *subnet_id*. It does not persist.
 
         Raises:
-            KeaException: If Kea rejects the ``subnet{v}-add`` command. Kea did not apply it.
-            PartialPersistError: If the subnet is live but not persisted.
-            KeaConfigPersistError: A ``PartialPersistError`` for a live subnet that ``config-test`` rejected.
+            KeaException: If Kea returns a failure result.
+            RuntimeError: If the reply is malformed.
 
         """
+        command = f"subnet{version}-add"
         service = f"dhcp{version}"
-        subnet_def: dict[str, Any] = {"subnet": subnet_cidr, "id": subnet_id}
-        if pools:
-            subnet_def["pools"] = [{"pool": p} for p in pools]
+        subnet: dict[str, Any] = {"subnet": cidr, "id": subnet_id}
+        if fields.pools:
+            subnet["pools"] = [{"pool": pool} for pool in fields.pools]
         managed = form_managed_options(version)
         option_data: list[dict[str, str]] = []
-        if gateway and version == 4:
-            option_data.append({"name": managed["gateway"].name, "data": gateway})
-        if dns_servers:
-            option_data.append({"name": managed["dns_servers"].name, "data": ", ".join(dns_servers)})
-        if ntp_servers:
-            option_data.append({"name": managed["ntp_servers"].name, "data": ", ".join(ntp_servers)})
+        if fields.gateway and version == 4:
+            option_data.append({"name": managed["gateway"].name, "data": fields.gateway})
+        if fields.dns_servers:
+            option_data.append({"name": managed["dns_servers"].name, "data": ", ".join(fields.dns_servers)})
+        if fields.ntp_servers:
+            option_data.append({"name": managed["ntp_servers"].name, "data": ", ".join(fields.ntp_servers)})
         if option_data:
-            subnet_def["option-data"] = option_data
-        if ddns_qualifying_suffix:
-            subnet_def["ddns-qualifying-suffix"] = ddns_qualifying_suffix
-        try:
-            self._config_mutation_command(f"subnet{version}-add", service, {f"subnet{version}": [subnet_def]})
-        except (requests.RequestException, ValueError) as transport_exc:
-            # The add is ours only when the probe finds the CIDR under the ID we sent.
-            if self._find_subnet_id_by_cidr(version, subnet_cidr) == subnet_id:
-                raise PartialPersistError(service, transport_exc) from transport_exc
-            raise
-        self._persist_config(service)
+            subnet["option-data"] = option_data
+        if fields.ddns_qualifying_suffix:
+            subnet["ddns-qualifying-suffix"] = fields.ddns_qualifying_suffix
+        response = self._config_mutation_command(command, service, {f"subnet{version}": [subnet]}, check=None)
+        _one_reply(command, service, response)
 
     def subnet_del(self, version: Family, subnet_id: int) -> None:
         """Send one ``subnet{v}-del``. It does not persist.
@@ -1404,25 +1389,29 @@ class KeaClient:
             and text.startswith(f"unable to forward command to the dhcp{version} service")
         )
 
-    def network_subnet_add(self, version: int, name: str, subnet_id: int) -> None:
-        """Move an existing subnet into a shared network.
-
-        Args:
-            version: DHCP version (4 or 6).
-            name: Shared network name.
-            subnet_id: Kea subnet ID to assign.
+    def network_subnet_add(self, version: Family, name: str, subnet_id: int) -> None:
+        """Send one ``network{v}-subnet-add`` that moves the Subnet into the Shared Network *name*. It does not persist.
 
         Raises:
-            KeaException: If Kea returns a non-zero result code.
+            KeaException: If Kea returns a failure result.
+            RuntimeError: If the reply is malformed.
 
         """
+        command = f"network{version}-subnet-add"
         service = f"dhcp{version}"
-        self._config_mutation_command(
-            f"network{version}-subnet-add",
-            service,
-            {"name": name, "id": subnet_id},
-        )
-        self._persist_config(service)
+        response = self._config_mutation_command(command, service, {"name": name, "id": subnet_id}, check=None)
+        _one_reply(command, service, response)
+
+    def network_subnet_add_and_persist(self, version: Family, name: str, subnet_id: int) -> None:
+        """Send ``network_subnet_add``, then persist. Only the Subnet edit view uses it; #206 deletes it.
+
+        Raises:
+            KeaException: If Kea returns a failure result.
+            PartialPersistError: If the move is live but not persisted.
+
+        """
+        self.network_subnet_add(version, name, subnet_id)
+        self._persist_config(f"dhcp{version}")
 
     def network_subnet_del(self, version: int, name: str, subnet_id: int) -> None:
         """Remove a subnet from a shared network (subnet remains, reverts to global pool).
@@ -2180,26 +2169,6 @@ class KeaClient:
         if not isinstance(subnets[0], dict):
             raise RuntimeError(f"subnet{version}-get returned an invalid subnet")
         return dict(subnets[0])
-
-    def _find_subnet_id_by_cidr(self, version: int, cidr: str) -> int | None:
-        """Search the running Kea config for a subnet matching *cidr*.
-
-        Returns the Kea subnet ID if found, or ``None`` if the subnet does not
-        exist or if the config-get probe itself fails.  Used as a best-effort
-        disambiguation probe after a transport error on ``subnet{v}-add`` to
-        detect whether the command was actually processed by Kea.
-
-        """
-        try:
-            return self.configured_subnet_id_from_cidr(version, cidr)
-        except (KeaException, requests.RequestException, RuntimeError, ValueError):
-            logger.debug(
-                "_find_subnet_id_by_cidr: config-get failed for cidr=%s version=%s",
-                cidr,
-                version,
-                exc_info=True,
-            )
-            return None
 
 
 class KeaException(Exception):
