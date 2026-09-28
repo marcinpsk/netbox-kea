@@ -26,10 +26,10 @@ from .kea import (
     KeaClient,
     KeaException,
     MalformedConfiguration,
-    NewSubnetFields,
     PoolAction,
     SharedNetworkEdit,
     SubnetEdit,
+    SubnetFields,
     subnet_network,
 )
 from .server_configuration import Pool
@@ -137,7 +137,7 @@ def add_subnet(
     family: Family,
     cidr: str,
     subnet_id: int | None,
-    fields: NewSubnetFields,
+    fields: SubnetFields,
     shared_network: str | None,
 ) -> SubnetAddOutcome:
     """Add the Subnet *cidr*, and assign it to *shared_network* when one is named.
@@ -171,7 +171,7 @@ def _require_shared_network(client: KeaClient, family: Family, name: str) -> Non
 
 
 def _create_subnet(
-    server: Server, client: KeaClient, family: Family, cidr: str, requested_id: int | None, fields: NewSubnetFields
+    server: Server, client: KeaClient, family: Family, cidr: str, requested_id: int | None, fields: SubnetFields
 ) -> tuple[NewSubnetIdentity, Application, tuple[str, ...]]:
     """Send the Subnet add under an identity from a live scope. Retry once when another Subnet took the allocated ID."""
     with mutation(server, family) as scope:
@@ -230,18 +230,32 @@ def _assign_new_subnet(
 
 
 def edit_subnet(
-    server: Server, family: Family, subnet_id: int, cidr: str, edit: SubnetEdit, shared_network: str | None
+    server: Server,
+    family: Family,
+    subnet_id: int,
+    cidr: str,
+    edit: SubnetEdit,
+    *,
+    shown_network: str | None,
+    shared_network: str | None,
 ) -> ConfigChangeOutcome:
     """Set the fields of the Subnet with *subnet_id* that the edit form manages, and move it to *shared_network*.
 
-    The operation acts only while that ID names the network *cidr*. *shared_network* None means no Shared Network.
-    It removes the Subnet from its Shared Network, adds it to the new one, and then updates the fields. When a step
-    did not apply, it undoes the membership steps before it.
+    The operation acts only while that ID names the network *cidr* in the Shared Network *shown_network*: the
+    Subnet that the operator saw. A Shared Network of None means none. The operation removes the Subnet from its
+    Shared Network, adds it to the new one, and then updates the fields. When a step did not apply, it undoes the
+    membership steps before it.
     """
     with _client(server, family) as client, _serialized(client, family):
         with mutation(server, family) as scope:
             subnet = _subnet_as_seen(scope, subnet_id, cidr, membership=True)
         current = subnet.shared_network.name if subnet.shared_network is not None else None
+        if current != shown_network:
+            # Another writer moved the Subnet, so a move to *shared_network* would undo that change.
+            raise ConfigChangeRejected(
+                "not-sent",
+                (f"The Shared Network of Subnet {subnet_id} ({cidr}) changed in Kea. Reload the page and try again.",),
+            )
         if shared_network is not None and shared_network != current:
             _require_shared_network(client, family, shared_network)
         definition = _read_before(lambda: client.subnet_definition(family, subnet_id))

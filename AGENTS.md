@@ -163,7 +163,8 @@ URL request
   rejects a `service` that does not match the daemon the request lands on.
 - **`sync.py`**: bridges Kea data to NetBox IPAM — `sync_lease_to_netbox()`,
   `sync_reservation_to_netbox()`, `cleanup_stale_ips_batch()` (grouped by
-  `(hostname, address_family)`). Raises `PartialPersistError` on partial failures.
+  `(hostname, address_family)`). Raises `DuplicateNetBoxRowsError` when more than one
+  NetBox Prefix or IP Range matches one Kea Subnet or Pool.
 - **`jobs.py`**: `KeaIpamSyncJob` (`@system_job`). Iterates all `Server` objects,
   runs subnet/lease/reservation/prefix/range sync phases, writes a per-server
   summary to the job log.
@@ -189,10 +190,9 @@ Exception
       └── (generic Kea errors)
 ```
 
-**Catch order matters**: always catch the subclasses *before* `KeaException`.
-Order: `PartialPersistError` → `KeaException`.
-`PartialPersistError` means the change is live but not written to disk. It covers
-`KeaConfigPersistError` by type, so do not catch that subclass separately.
+No write path raises `PartialPersistError` or `KeaConfigPersistError` now, so no handler
+catches them. `KeaClient.persist` reports a failed persist step as a `Persistence` value.
+#207 deletes both classes.
 
 **`config_write` replaces this hierarchy** (ADR 0005), one operation at a time. An
 operation returns a `ConfigChangeOutcome` (`applied`/`unknown` and
@@ -200,8 +200,7 @@ operation returns a `ConfigChangeOutcome` (`applied`/`unknown` and
 A view runs it through `_run_config_change` in `views/_base.py`, which owns the
 messages, and catches nothing itself. Shared Network add, edit and delete, Subnet add, edit and
 delete, Pool add and delete, Subnet and server DHCP Options, and Option Definition add and
-delete use it. No write path raises `PartialPersistError` or `KeaConfigPersistError` now; #207
-deletes the classes above. Only `config_write` operations take the per-daemon advisory lock,
+delete use it. Only `config_write` operations take the per-daemon advisory lock,
 so the old write paths do not wait for it. A Subnet, Pool or Subnet DHCP Options operation
 takes the Subnet ID and the CIDR that the page showed, and sends nothing unless its
 `MutationScope` returns a Verified Subnet with both.
@@ -214,10 +213,11 @@ and Shared Networks, so a test can script a Kea failure or a change by another w
 
 Subnet edit (`edit_subnet`) removes the Subnet from its Shared Network, adds it to the new one,
 and then updates the fields, because Kea refuses to add a Subnet that is already in a Shared
-Network. The current membership comes from the scope, never from the POST. When a step does not
-apply, the operation undoes the applied membership steps, newest first, each only while a fresh
-scope shows the membership that the step set. The field update is the last step, so a rollback
-never undoes it. Both operations run their steps through `_run_steps` in `config_write`.
+Network. It also takes the Shared Network that the page showed, and sends nothing while the
+scope shows another one; a page that could not confirm the membership cannot save. When a step
+does not apply, the operation undoes the applied membership steps, newest first, each only while
+a fresh scope shows the membership that the step set. The field update is the last step, so a
+rollback never undoes it. Both operations run their steps through `_run_steps` in `config_write`.
 
 A read-modify-write operation holds the lock from its `config-get` to the end of the
 persist step. `KeaClient` sends each command (`config_candidate`, `config_test`,
@@ -254,7 +254,8 @@ When a rule below has a matching opengrep rule, a violation fails the local hook
   handlers.
 - **Catch `(KeaException, requests.RequestException, ValueError)` consistently** in
   mutation handlers. Split `KeaException` when you need `kea_error_hint(exc)` for
-  hook-related errors (result=2). Always catch `PartialPersistError` first.
+  hook-related errors (result=2). A Configuration Change goes through `_run_config_change`
+  instead (see "Exception hierarchy").
 - **Use `kea_error_hint(exc)` for user-facing Kea error messages** — it maps result
   codes to actionable hints (result=2 → hook library not loaded, etc.).
 - **Guard action URLs/buttons by permission AND lookup state.** Don't offer

@@ -62,6 +62,11 @@ _ABSENT_READ_HOOKS = {
 }
 
 
+def _shown(network: str = "") -> dict[str, str]:
+    """Return the hidden fields of an edit page that confirmed the Shared Network *network* of the Subnet."""
+    return {"shown_network": network, "shown_network_confirmed": "True"}
+
+
 def _edit_responses(version, subnet_response, config_response):
     """Describe consistent identity and declared configuration for the edit form."""
     subnet = deepcopy(subnet_response["arguments"][f"subnet{version}"][0])
@@ -586,7 +591,7 @@ class TestServerSubnet4EditView(_ViewTestBase):
                 self.assertEqual(initial["gateway"], "198.18.0.1")
                 self.assertEqual(initial["dns_servers"], "198.18.0.53")
                 self.assertEqual(initial["ntp_servers"], "198.18.0.123")
-                data = {"subnet_cidr": live["subnet"], "pools": "", "shared_network": ""}
+                data = {**_shown(), "subnet_cidr": live["subnet"], "pools": "", "shared_network": ""}
                 data.update(
                     {field: "" if clear else initial[field] for field in ("gateway", "dns_servers", "ntp_servers")}
                 )
@@ -605,7 +610,7 @@ class TestServerSubnet4EditView(_ViewTestBase):
                 get = self.client.get(self._url())
                 self.assertEqual(get.context["form"].initial.get("dns_servers", ""), "")
                 post = self.client.post(
-                    self._url(), {"subnet_cidr": live["subnet"], "dns_servers": "", "shared_network": ""}
+                    self._url(), {**_shown(), "subnet_cidr": live["subnet"], "dns_servers": "", "shared_network": ""}
                 )
                 self.assertEqual(post.status_code, 302)
                 self.assertEqual(self._updated_subnet(kea)["option-data"], [option])
@@ -720,6 +725,7 @@ class TestServerSubnet4EditView(_ViewTestBase):
             response = self.client.post(
                 self._url(subnet_id=42),
                 {
+                    **_shown(),
                     "subnet_cidr": "10.0.0.0/24",
                     "pools": "10.0.0.100-10.0.0.200",
                     "gateway": "10.0.0.1",
@@ -736,7 +742,14 @@ class TestServerSubnet4EditView(_ViewTestBase):
         with self._post_stub() as kea:
             self.client.post(
                 self._url(subnet_id=42),
-                {"subnet_cidr": "10.0.0.0/24", "pools": "", "gateway": "", "dns_servers": "", "ntp_servers": ""},
+                {
+                    **_shown(),
+                    "subnet_cidr": "10.0.0.0/24",
+                    "pools": "",
+                    "gateway": "",
+                    "dns_servers": "",
+                    "ntp_servers": "",
+                },
             )
         self.assertEqual(self._updated_subnet(kea)["id"], 42)
 
@@ -746,7 +759,7 @@ class TestServerSubnet4EditView(_ViewTestBase):
         with stub_kea({**_ABSENT_READ_HOOKS, **daemon.responses()}):
             response = self.client.post(
                 self._url(subnet_id=42),
-                {"subnet_cidr": "10.0.0.0/24", "pools": "10.0.0.100-10.0.0.200", "gateway": "10.0.0.1"},
+                {**_shown(), "subnet_cidr": "10.0.0.0/24", "pools": "10.0.0.100-10.0.0.200", "gateway": "10.0.0.1"},
             )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["form"]["pools"].value(), "10.0.0.100-10.0.0.200")
@@ -759,6 +772,7 @@ class TestServerSubnet4EditView(_ViewTestBase):
             response = self.client.post(
                 self._url(subnet_id=42),
                 {
+                    **_shown(),
                     "subnet_cidr": "10.0.0.0/24",
                     "pools": "",
                     "gateway": "not-an-ip",
@@ -787,6 +801,7 @@ class TestServerSubnet4EditView(_ViewTestBase):
             self.client.post(
                 self._url(subnet_id=42),
                 {
+                    **_shown(),
                     "subnet_cidr": "10.0.0.0/24",
                     "pools": "",
                     "gateway": "",
@@ -805,7 +820,14 @@ class TestServerSubnet4EditView(_ViewTestBase):
         with self._post_stub() as kea:
             self.client.post(
                 self._url(subnet_id=42),
-                {"subnet_cidr": "10.0.0.0/24", "pools": "", "gateway": "", "dns_servers": "", "ntp_servers": ""},
+                {
+                    **_shown(),
+                    "subnet_cidr": "10.0.0.0/24",
+                    "pools": "",
+                    "gateway": "",
+                    "dns_servers": "",
+                    "ntp_servers": "",
+                },
             )
         subnet = self._updated_subnet(kea)
         self.assertNotIn("renew-timer", subnet)
@@ -819,6 +841,7 @@ class TestServerSubnet4EditView(_ViewTestBase):
             self.client.post(
                 self._url(subnet_id=42),
                 {
+                    **_shown(),
                     "subnet_cidr": "10.0.0.0/24",
                     "pools": "",
                     "gateway": "",
@@ -843,6 +866,7 @@ class TestServerSubnet4EditView(_ViewTestBase):
             post = self.client.post(
                 self._url(),
                 {
+                    **_shown(),
                     "subnet_cidr": live["subnet"],
                     "pools": "",
                     "gateway": "",
@@ -866,6 +890,7 @@ class TestServerSubnet4EditView(_ViewTestBase):
             self.client.post(
                 self._url(subnet_id=42),
                 {
+                    **_shown(),
                     "subnet_cidr": "10.0.0.0/24",
                     "pools": "",
                     "gateway": "",
@@ -905,7 +930,7 @@ class TestServerSubnet4EditView(_ViewTestBase):
             response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["inherited_options"], {})
-        self.assertContains(response, "network assignment may be inaccurate")
+        self.assertContains(response, "this form cannot be saved")
 
     def test_get_inherited_options_excludes_field_already_set_in_subnet(self):
         """F5: Fields already set in the subnet itself are excluded from inherited_options."""
@@ -988,7 +1013,14 @@ class TestServerSubnet6EditView(_ViewTestBase):
         with self._post_stub() as kea:
             response = self.client.post(
                 self._url(subnet_id=7),
-                {"subnet_cidr": "2001:db8::/48", "pools": "", "gateway": "", "dns_servers": "", "ntp_servers": ""},
+                {
+                    **_shown(),
+                    "subnet_cidr": "2001:db8::/48",
+                    "pools": "",
+                    "gateway": "",
+                    "dns_servers": "",
+                    "ntp_servers": "",
+                },
             )
         self.assertEqual(response.status_code, 302)
         self._assert_no_none_pk_redirect(response)
@@ -1080,8 +1112,8 @@ class TestServerSubnet4EditViewNetworkAssignment(_ViewTestBase):
         # The form initial value should be net-alpha (selected option)
         self.assertContains(response, "net-alpha")
 
-    def test_post_moves_the_subnet_to_the_chosen_network_and_membership_comes_from_kea(self):
-        """The view sends the chosen network; config_write reads the current one from Kea, never from the POST."""
+    def test_post_moves_the_subnet_from_the_shown_network_to_the_chosen_one(self):
+        """The view sends the Shared Network that the page showed and the chosen one; Kea holds the shown one."""
         for current, chosen, deleted, added in (
             (None, "net-alpha", [], ["net-alpha"]),
             ("net-alpha", "", ["net-alpha"], []),
@@ -1097,7 +1129,7 @@ class TestServerSubnet4EditViewNetworkAssignment(_ViewTestBase):
                 )
                 with stub_kea({**_ABSENT_READ_HOOKS, **daemon.responses()}) as kea:
                     response = self.client.post(
-                        self._url(), {"subnet_cidr": "10.0.0.0/24", "shared_network": chosen, "current_network": "x"}
+                        self._url(), {"subnet_cidr": "10.0.0.0/24", "shared_network": chosen, **_shown(current or "")}
                     )
                 self.assertEqual(response.status_code, 302)
                 self.assertEqual([body["arguments"]["name"] for body in kea.bodies("network4-subnet-del")], deleted)
@@ -1197,7 +1229,7 @@ class TestSubnetEditNetworkChoicesNoneArguments(_ViewTestBase):
             response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["form"].initial["shared_network"], "")
-        self.assertContains(response, "network assignment may be inaccurate")
+        self.assertContains(response, "this form cannot be saved")
         self.assertIn("subnet4-get", kea.commands())
 
     def test_get_falls_back_when_config_returns_none_arguments(self):
@@ -1206,7 +1238,7 @@ class TestSubnetEditNetworkChoicesNoneArguments(_ViewTestBase):
         with stub_kea({**_ABSENT_READ_HOOKS, "config-get": config_none_args, "subnet4-get": _SUBNET4_GET_FULL[0]}):
             response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "network assignment may be inaccurate")
+        self.assertContains(response, "this form cannot be saved")
 
     def test_get_falls_back_when_config_raises_kea_exception(self):
         """GET must not crash when config-get fails (result 1 → real KeaException)."""
@@ -1219,7 +1251,7 @@ class TestSubnetEditNetworkChoicesNoneArguments(_ViewTestBase):
         ):
             response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "network assignment may be inaccurate")
+        self.assertContains(response, "this form cannot be saved")
 
 
 # ---------------------------------------------------------------------------
@@ -1716,6 +1748,11 @@ _EDITED_SUBNET = "Subnet 42 (10.0.0.0/24) updated."
 _SCOPE = ["subnet4-list", "config-get"]
 
 
+def _page_data(form) -> dict[str, str]:
+    """Return the data that a browser posts for *form*, as the page rendered it."""
+    return {name: "" if form[name].value() is None else str(form[name].value()) for name in form.fields}
+
+
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestSubnetEditMessages(_ViewTestBase):
     """One POST per Configuration Change outcome and per rejection, for a Subnet edit.
@@ -1736,7 +1773,9 @@ class TestSubnetEditMessages(_ViewTestBase):
     def _post(self, daemon: SubnetDaemon, **data):
         url = reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, 42])
         with stub_kea({**_ABSENT_READ_HOOKS, **daemon.responses()}) as kea:
-            response = self.client.post(url, {"subnet_cidr": "10.0.0.0/24", "shared_network": "alpha", **data})
+            response = self.client.post(
+                url, {"subnet_cidr": "10.0.0.0/24", "shared_network": "alpha", **_shown("alpha"), **data}
+            )
         messages = [(m.level, str(m)) for m in get_messages(response.wsgi_request)]
         return response, messages, kea.commands()
 
@@ -1880,6 +1919,53 @@ class TestSubnetEditMessages(_ViewTestBase):
         )
         self.assertEqual(commands, ["config-get", *_SCOPE, "network4-get"])
 
+    def test_a_membership_that_changed_after_the_page_was_shown_is_not_sent(self):
+        """Another writer moves the Subnet after the GET, so a save of the fields must not move it back."""
+        daemon = self._daemon()
+        url = reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, 42])
+        with stub_kea({**_ABSENT_READ_HOOKS, **daemon.responses()}) as kea:
+            page = self.client.get(url)
+            self.assertEqual(page.context["form"].initial["shared_network"], "alpha")
+            daemon.members[42] = "beta"
+            shown = len(kea.commands())
+            response = self.client.post(url, {**_page_data(page.context["form"]), "dns_servers": "10.0.0.53"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            [(m.level, str(m)) for m in get_messages(response.wsgi_request)],
+            [
+                (
+                    django_messages.ERROR,
+                    (
+                        "The change was not sent to Kea. The Shared Network of Subnet 42 (10.0.0.0/24) changed in "
+                        "Kea. Reload the page and try again."
+                    ),
+                )
+            ],
+        )
+        self.assertEqual(kea.commands()[shown:], ["config-get", *_SCOPE])
+        self.assertEqual(daemon.members, {42: "beta"})
+
+    def test_a_page_that_could_not_confirm_the_membership_sends_nothing(self):
+        """The page preselects no Shared Network, so a save of the fields must not take the Subnet out of it."""
+        daemon = self._daemon()
+        failed = {"result": 1, "text": "config-get failed"}
+        # The two configuration reads of the GET fail, and the reads of the POST succeed.
+        daemon.script("config-get", failed, failed)
+        url = reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, 42])
+        with stub_kea({**_ABSENT_READ_HOOKS, **daemon.responses()}) as kea:
+            page = self.client.get(url)
+            self.assertEqual(page.context["form"].initial["shared_network"], "")
+            shown = len(kea.commands())
+            response = self.client.post(url, {**_page_data(page.context["form"]), "dns_servers": "10.0.0.53"})
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(
+            response,
+            "NetBox could not confirm the Shared Network of this Subnet when it showed the page. "
+            "Reload the page and try again.",
+        )
+        self.assertEqual(kea.commands()[shown:], ["config-get"])
+        self.assertEqual(daemon.members, {42: "alpha"})
+
     def test_not_sent_after_a_refused_connection(self):
         refused = _refused_connection()
         daemon = self._daemon()
@@ -1896,6 +1982,7 @@ class TestSubnetEditMessages(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 _SUBNET4_EDIT_POST = {
+    **_shown(),
     "subnet_cidr": "10.0.0.0/24",
     "pools": "",
     "gateway": "",
@@ -2033,7 +2120,7 @@ class TestSubnetEditPostExceptions(_ViewTestBase):
                 }
                 with stub_kea({**_ABSENT_READ_HOOKS, **responses}) as kea:
                     response = self.client.post(
-                        self._url(), {"subnet_cidr": cidr, "valid_lft": "7200", "shared_network": ""}
+                        self._url(), {**_shown(), "subnet_cidr": cidr, "valid_lft": "7200", "shared_network": ""}
                     )
                 self.assertContains(
                     response,
@@ -2558,6 +2645,7 @@ class TestSubnetEditNonCanonicalCidr(_ViewTestBase):
             post_response = self.client.post(
                 self._url(),
                 {
+                    **_shown(),
                     "subnet_cidr": get_response.context["form"].initial["subnet_cidr"],
                     "valid_lft": "7200",
                     "shared_network": "",
@@ -2571,7 +2659,7 @@ class TestSubnetEditNonCanonicalCidr(_ViewTestBase):
         """A hidden field whose errors are never rendered is a dead end, not a validation message."""
         with self._stub() as kea:
             response = self.client.post(
-                self._url(), {"subnet_cidr": "not-a-subnet", "valid_lft": "7200", "shared_network": ""}
+                self._url(), {**_shown(), "subnet_cidr": "not-a-subnet", "valid_lft": "7200", "shared_network": ""}
             )
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("subnet4-update", kea.commands())
@@ -2579,7 +2667,7 @@ class TestSubnetEditNonCanonicalCidr(_ViewTestBase):
 
     def test_a_cidr_of_the_other_family_is_a_form_error_without_a_kea_write(self):
         with self._stub() as kea:
-            response = self.client.post(self._url(), {"subnet_cidr": "2001:db8::/64", "shared_network": ""})
+            response = self.client.post(self._url(), {**_shown(), "subnet_cidr": "2001:db8::/64", "shared_network": ""})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["form"].errors["subnet_cidr"], ["Enter an IPv4 Subnet CIDR."])
         self.assertEqual(kea.commands(), ["config-get"])
@@ -2587,7 +2675,7 @@ class TestSubnetEditNonCanonicalCidr(_ViewTestBase):
     def test_a_forged_cidr_cannot_replace_the_live_subnet(self):
         with self._stub("198.18.0.5/24") as kea:
             response = self.client.post(
-                self._url(), {"subnet_cidr": "198.18.1.0/24", "valid_lft": "7200", "shared_network": ""}
+                self._url(), {**_shown(), "subnet_cidr": "198.18.1.0/24", "valid_lft": "7200", "shared_network": ""}
             )
         self.assertEqual(kea.commands(), ["config-get", "subnet4-list", "config-get"])
         self.assertEqual(response.status_code, 200)
@@ -2850,7 +2938,7 @@ class TestSubnetEditNetworkDataErrors(_ViewTestBase):
                 self.assertEqual(response.status_code, 200)
                 self.assertEqual(response.context["inherited_options"], {})
             with self.subTest(method="POST"):
-                response = self.client.post(url, {"subnet_cidr": "198.18.0.0/24", "shared_network": ""})
+                response = self.client.post(url, {**_shown(), "subnet_cidr": "198.18.0.0/24", "shared_network": ""})
                 self.assertEqual(response.status_code, 200)
                 self.assertEqual(
                     set(kea.commands()) & {"subnet4-update", "network4-subnet-add", "network4-subnet-del"}, set()
@@ -2913,7 +3001,7 @@ class TestSubnetEditNetworkDataErrors(_ViewTestBase):
             )
         for url, data, command in (
             (add_url, {"subnet": "198.18.2.0/24", "shared_network": ""}, "subnet4-add"),
-            (edit_url, {"subnet_cidr": "198.18.0.0/24", "shared_network": ""}, "subnet4-update"),
+            (edit_url, {**_shown(), "subnet_cidr": "198.18.0.0/24", "shared_network": ""}, "subnet4-update"),
         ):
             with self.subTest(operation=command), stub_kea(responses) as kea:
                 response = self.client.post(url, data)
@@ -2947,7 +3035,7 @@ class TestSubnetEditNetworkDataErrors(_ViewTestBase):
             self.assertEqual(
                 response.context["inherited_options"]["dns_servers"], {"value": "198.18.0.53", "source": "global"}
             )
-            response = self.client.post(url, {"subnet_cidr": "198.18.0.0/24", "shared_network": "clients"})
+            response = self.client.post(url, {**_shown(), "subnet_cidr": "198.18.0.0/24", "shared_network": "clients"})
         self.assertEqual(response.status_code, 302)
         self.assertIn("subnet4-update", kea.commands())
         self.assertIn("network4-subnet-add", kea.commands())
@@ -2970,7 +3058,7 @@ class TestSubnetEditNetworkDataErrors(_ViewTestBase):
                 "config-write": {"result": 0},
             }
         ) as kea:
-            response = self.client.post(url, {"subnet_cidr": "198.18.0.0/24", "shared_network": ""})
+            response = self.client.post(url, {**_shown(), "subnet_cidr": "198.18.0.0/24", "shared_network": ""})
         self.assertEqual(kea.commands(), ["config-get"])
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Could not load shared networks from Kea. Please try again.")
@@ -2996,7 +3084,7 @@ class TestSubnetEditNetworkDataErrors(_ViewTestBase):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["form"].initial["subnet_cidr"], "198.18.0.0/24")
-        self.assertContains(response, "network assignment may be inaccurate")
+        self.assertContains(response, "this form cannot be saved")
         self.assertEqual(response.context["inherited_options"], {})
 
     def test_transport_error_renders_edit_form_with_warning(self):
@@ -3007,7 +3095,7 @@ class TestSubnetEditNetworkDataErrors(_ViewTestBase):
         ):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "network assignment may be inaccurate")
+        self.assertContains(response, "this form cannot be saved")
         self.assertEqual(response.context["form"].initial["subnet_cidr"], "10.0.0.0/24")
 
     def test_value_error_renders_edit_form_with_warning(self):
@@ -3018,7 +3106,7 @@ class TestSubnetEditNetworkDataErrors(_ViewTestBase):
         ):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "network assignment may be inaccurate")
+        self.assertContains(response, "this form cannot be saved")
 
 
 # ---------------------------------------------------------------------------
@@ -3794,6 +3882,7 @@ class TestSubnetLifetimeKeaParameterNames(_ViewTestBase):
             response = self.client.post(
                 self._url(),
                 {
+                    **_shown(),
                     "subnet_cidr": "10.0.0.0/24",
                     "pools": "",
                     "gateway": "",
