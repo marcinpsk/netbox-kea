@@ -106,6 +106,17 @@ The plugin degrades gracefully when optional hooks are absent — tabs for unava
 
 On Kea 3.0+ the plugin talks directly to each DHCP daemon's HTTP control socket; on Kea < 3.0 it connects through the (now-deprecated) Control Agent. CI tests against **Kea 3.2.0** using the `memfile` lease database.
 
+### netbox-branching
+
+Support for [netbox-branching](https://github.com/netboxlabs/netbox-branching) is partial. CI tests
+NetBox 4.7 with netbox-branching 1.2.1. List `netbox_branching` last in `PLUGINS`.
+
+- Kea servers, sync settings and DHCP plugin links stay in main. A branch has no copy of them, so
+  it shows main's values.
+- Kea data is live, in main and in every branch.
+- This release does not yet refuse plugin writes while a branch is active. Do not change Kea
+  servers or Kea data in a branch. A later release refuses these writes.
+
 ---
 
 ## Installation
@@ -253,7 +264,7 @@ Each server has optional overrides for the IPAM sync job:
 | `Sync Reservations` (`sync_reservations_enabled`) | `True` | Sync DHCP reservations as NetBox IP Addresses |
 | `Sync Prefixes` (`sync_prefixes_enabled`) | `True` | Sync Kea subnets as NetBox IP Prefixes |
 | `Sync IP Ranges` (`sync_ip_ranges_enabled`) | `True` | Sync Kea pools as NetBox IP Ranges |
-| `Sync VRF` (`sync_vrf`) | None (global routing table) | VRF to assign when syncing Prefixes and IP Ranges. There is no global fallback — leave blank to use the global routing table (no VRF) |
+| `Sync VRF` (`sync_vrf`) | None (global routing table) | VRF to assign when syncing Prefixes and IP Ranges. There is no global fallback — leave blank to use the global routing table (no VRF). NetBox refuses to delete a VRF while a server syncs into it |
 | `Persist configuration` (`persist_config`) | `True` | Automatically save Kea config after each change via `config-write`. Disable when Kea config is managed externally (e.g. Ansible) |
 
 These fields override the global `PLUGINS_CONFIG` values for that specific server.
