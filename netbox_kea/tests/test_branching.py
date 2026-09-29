@@ -8,6 +8,7 @@ skipping when netbox-branching is not an installed app.
 
 import importlib
 import os
+import uuid
 from collections.abc import Sequence
 
 import pytest
@@ -27,6 +28,7 @@ if not branching.installed():
 from core.models import ObjectType  # noqa: E402
 from django.apps import apps  # noqa: E402
 from django.conf import settings  # noqa: E402
+from django.contrib.auth import get_user_model  # noqa: E402
 from django.core.management import call_command  # noqa: E402
 from django.db import connection, models  # noqa: E402
 from django.db.migrations import RunPython, RunSQL, SeparateDatabaseAndState  # noqa: E402
@@ -34,8 +36,9 @@ from django.db.migrations.loader import MigrationLoader  # noqa: E402
 from django.db.migrations.operations.base import Operation  # noqa: E402
 from django.db.migrations.operations.models import ModelOperation  # noqa: E402
 from django.db.models import ProtectedError  # noqa: E402
-from django.test import SimpleTestCase, TransactionTestCase  # noqa: E402
+from django.test import RequestFactory, SimpleTestCase, TransactionTestCase  # noqa: E402
 from ipam.models import VRF  # noqa: E402
+from netbox.context_managers import event_tracking  # noqa: E402
 from netbox_branching import utilities as branching_utilities  # noqa: E402
 from netbox_branching.choices import BranchStatusChoices  # noqa: E402
 from netbox_branching.models import Branch  # noqa: E402
@@ -301,5 +304,28 @@ class ProvisionedBranchTest(TransactionTestCase):
         with activate_branch(branch):
             self.assertTrue(VRF.objects.filter(pk=vrf.pk).exists(), "the branch copy of the VRF is gone")
         self.assertTrue(VRF.objects.filter(pk=vrf.pk).exists(), "main's VRF is gone")
+        server.refresh_from_db()
+        self.assertEqual(server.sync_vrf_id, vrf.pk)
+
+    def test_a_merge_that_deletes_a_vrf_a_server_now_syncs_into_fails_and_changes_nothing(self):
+        vrf = VRF.objects.create(name="unused at branch time")
+        server = _make_db_server()
+        user = get_user_model().objects.create_user("merge-user")
+        branch = _provisioned_branch(self, "vrf delete then merge")
+        request = RequestFactory().get("/")
+        request.user, request.id = user, uuid.uuid4()
+        with activate_branch(branch), event_tracking(request):
+            VRF.objects.get(pk=vrf.pk).delete()
+        server.sync_vrf = vrf
+        server.save()
+
+        with self.assertRaises(ProtectedError):
+            branch.merge(user=user)
+
+        branch.refresh_from_db()
+        self.assertEqual(
+            branch.status, BranchStatusChoices.READY, "netbox-branching restores READY after a failed merge"
+        )
+        self.assertTrue(VRF.objects.filter(pk=vrf.pk).exists(), "the merge deleted main's VRF")
         server.refresh_from_db()
         self.assertEqual(server.sync_vrf_id, vrf.pk)
