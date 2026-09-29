@@ -5,7 +5,7 @@ from typing import Any
 
 import requests
 from django.contrib import messages
-from django.http import HttpResponse
+from django.http import HttpResponse, QueryDict
 from django.http.request import HttpRequest
 from django.shortcuts import redirect, render
 from django.urls import reverse
@@ -375,16 +375,41 @@ class ServerSubnet6PoolDeleteView(_BasePoolDeleteView):
 # ---------------------------------------------------------------------------
 
 
-def _offer_networks(
-    form: forms.SubnetAddForm | forms.SubnetEditForm, snapshot: server_configuration.ServerConfigurationSnapshot
+def _configuration_messages(
+    request: HttpRequest, configuration: server_configuration.ServerConfigurationSnapshot
 ) -> None:
-    """Offer the declared Shared Networks, including those without members, and the name that the form holds."""
-    choices = [("", "— (global pool) —"), *((network.name, network.name) for network in snapshot.shared_networks)]
-    # The snapshot can be stale, so the name that the operator chose stays selectable.
-    held = form.data.get("shared_network", "")
-    if held and held not in {name for name, _ in choices}:
-        choices.append((held, held))
-    form.fields["shared_network"].widget.choices = choices
+    _diagnostic_messages(
+        request, configuration.diagnostics, messages.WARNING if configuration.available else messages.ERROR
+    )
+
+
+def _offer_networks(
+    request: HttpRequest,
+    form: forms.SubnetAddForm | forms.SubnetEditForm,
+    snapshot: server_configuration.ServerConfigurationSnapshot,
+) -> None:
+    """Offer the declared Shared Networks and the name that the form holds, or no choice when the list is incomplete."""
+    field = form.fields["shared_network"]
+    complete = snapshot.shared_networks_complete
+    if complete:
+        choices = [("", "(global pool)"), *((network.name, network.name) for network in snapshot.shared_networks)]
+        # The snapshot can be stale, so the name that the operator chose stays selectable.
+        held = form["shared_network"].value() or ""
+        if held and held not in {name for name, _ in choices}:
+            choices.append((held, held))
+        field.widget.choices = choices
+    else:
+        messages.warning(request, "Could not load shared networks from Kea. Retry later.")
+        field.widget.choices = [("", "(failed to load networks)")]
+        field.disabled = True
+    # A page shown again must say what it offers now, not what the page before it offered.
+    if form.is_bound:
+        data = QueryDict(mutable=True)
+        data.update(form.data)
+        data["shared_networks_complete"] = "True" if complete else ""
+        form.data = data
+    else:
+        form.initial["shared_networks_complete"] = complete
 
 
 def _hint_values(options: tuple[DHCPOption, ...], family: Family) -> dict[str, str]:
@@ -444,22 +469,15 @@ class _BaseSubnetAddView(_KeaChangeMixin, generic.ObjectView):
         server = self.get_object(pk=pk)
         form = forms.SubnetAddForm()
         configuration = server_configuration.display(server, self.dhcp_version)
-        _diagnostic_messages(
-            request, configuration.diagnostics, messages.WARNING if configuration.available else messages.ERROR
-        )
-        if configuration.shared_networks_complete:
-            _offer_networks(form, configuration)
-        else:
-            messages.warning(request, "Could not load shared networks from Kea — retry later.")
-            form.fields["shared_network"].widget.choices = [("", "— failed to load networks —")]
-            form.fields["shared_network"].disabled = True
+        _configuration_messages(request, configuration)
+        _offer_networks(request, form, configuration)
         return self._render(request, server, form)
 
     def _render_post(self, request: HttpRequest, server: Server, form: forms.SubnetAddForm) -> HttpResponse:
         """Show the submitted form again, with the Shared Networks of the cached configuration."""
         configuration = server_configuration.display(server, self.dhcp_version)
-        _diagnostic_messages(request, configuration.diagnostics, messages.WARNING)
-        _offer_networks(form, configuration)
+        _configuration_messages(request, configuration)
+        _offer_networks(request, form, configuration)
         return self._render(request, server, form)
 
     def post(self, request: HttpRequest, pk: int) -> HttpResponse:
@@ -577,7 +595,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
             "original_network_confirmed": membership_confirmed,
         }
         form = forms.SubnetEditForm(initial=initial)
-        _offer_networks(form, configuration)
+        _offer_networks(request, form, configuration)
         inherited_options = (
             _inherited_subnet_options(configuration, display_network, initial)
             if configured_target is not None and configuration.shared_networks_complete
@@ -607,8 +625,8 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
     ) -> HttpResponse:
         """Show the submitted form again, with the Shared Networks and option hints of the cached configuration."""
         configuration = server_configuration.display(server, self.dhcp_version)
-        _diagnostic_messages(request, configuration.diagnostics, messages.WARNING)
-        _offer_networks(form, configuration)
+        _configuration_messages(request, configuration)
+        _offer_networks(request, form, configuration)
         submitted = {name: value for name, value in form.data.items() if name in form.fields}
         inherited_options = (
             _inherited_subnet_options(configuration, form.data.get("shared_network", ""), submitted)

@@ -1004,7 +1004,12 @@ class _SubnetBaseForm(forms.Form):
     """
 
     subnet_field: str
+    shared_network_help: str
 
+    # A free name: config_write checks that the Shared Network exists. The view sets the offered names.
+    shared_network = forms.CharField(label="Shared Network", widget=forms.Select, required=False, strip=False)
+    # False: the page could not load the Shared Networks, so its disabled select posts no name.
+    shared_networks_complete = forms.BooleanField(widget=forms.HiddenInput, required=False)
     pools = _PoolLinesField(
         label="Pools",
         required=False,
@@ -1038,9 +1043,26 @@ class _SubnetBaseForm(forms.Form):
         help_text="Domain suffix appended to hostnames before sending DDNS updates (e.g. example.com.).",
     )
 
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.fields["shared_network"].help_text = self.shared_network_help
+
+    def clean_shared_network(self) -> str:
+        """Refuse a name of only white space. Keep a real name as Kea holds it."""
+        name: str = self.cleaned_data["shared_network"]
+        if name and not name.strip():
+            raise forms.ValidationError("Enter a Shared Network name, or choose none.")
+        return name
+
     def clean(self) -> dict[str, Any] | None:
-        """Validate that gateway, DNS and NTP servers match the subnet's IP family."""
+        """Refuse a page without the Shared Network list, and match gateway, DNS and NTP servers to the family."""
         cleaned = super().clean()
+        if not self.cleaned_data.get("shared_networks_complete"):
+            self.add_error(
+                None,
+                "NetBox could not load the Shared Networks from Kea when it showed the page. "
+                "Reload the page and try again.",
+            )
         if not cleaned:
             return cleaned
         subnet_str = cleaned.get(self.subnet_field, "")
@@ -1129,6 +1151,7 @@ class SubnetAddForm(_SubnetBaseForm):
     """Form for adding a new DHCP subnet to Kea."""
 
     subnet_field = "subnet"
+    shared_network_help = "Assign this subnet to a shared network immediately after creation."
 
     subnet = forms.CharField(
         label="Subnet CIDR",
@@ -1142,15 +1165,6 @@ class SubnetAddForm(_SubnetBaseForm):
         max_value=MAX_SUBNET_ID,
         help_text="Leave blank to use the highest existing subnet ID plus one.",
     )
-    # A free name: config_write checks that the Shared Network exists. The view sets the offered names.
-    shared_network = forms.CharField(
-        label="Shared Network",
-        widget=forms.Select,
-        required=False,
-        strip=False,
-        help_text="Assign this subnet to a shared network immediately after creation.",
-    )
-
     field_order = [
         "subnet",
         "subnet_id",
@@ -1176,6 +1190,7 @@ class SubnetEditForm(_ShownValuesForm[SubnetEdit], _SubnetBaseForm):
     """
 
     subnet_field = "subnet_cidr"
+    shared_network_help = "Assign this subnet to a shared network, or leave blank to use the global address pool."
     shown_names = (
         "pools",
         "gateway",
@@ -1220,14 +1235,6 @@ class SubnetEditForm(_ShownValuesForm[SubnetEdit], _SubnetBaseForm):
         min_value=1,
         help_text="Time (seconds) after which client should rebind. Kea parameter: rebind-timer.",
     )
-    # A free name: edit_subnet checks that the Shared Network exists. The view sets the offered names.
-    shared_network = forms.CharField(
-        label="Shared Network",
-        widget=forms.Select,
-        required=False,
-        strip=False,
-        help_text="Assign this subnet to a shared network, or leave blank to use the global address pool.",
-    )
     # The Shared Network of the Subnet when the page loaded, as Kea names it; blank means none. Not a shown_ copy of
     # shared_network: edit_subnet checks the membership on its own, before the field values.
     original_network = forms.CharField(widget=forms.HiddenInput, required=False, strip=False)
@@ -1238,6 +1245,7 @@ class SubnetEditForm(_ShownValuesForm[SubnetEdit], _SubnetBaseForm):
         "subnet_cidr",
         "original_network",
         "original_network_confirmed",
+        "shared_networks_complete",
         "shared_network",
         "pools",
         "gateway",
