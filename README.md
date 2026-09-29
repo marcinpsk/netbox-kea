@@ -124,7 +124,9 @@ into each new branch. Nothing removes that copy: branch sync no longer updates i
 migrate does not drop it. NetBox still reads Kea servers from main, but a VRF delete in the branch
 checks the old copy, not main. A merge also applies to main every Kea server change that the branch
 recorded before the upgrade. Before you upgrade, merge or delete every branch that is not yet
-merged, and create new branches after the upgrade. A merged branch keeps its schema until you
+merged, and create new branches after the upgrade. If a branch changed a Kea server password, delete
+it and make the change again in main: the change log holds a placeholder, not the password, so a
+merge can write the placeholder to main. A merged branch keeps its schema until you
 archive it; archive it when you no longer need to revert it.
 
 ---
