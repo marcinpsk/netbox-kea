@@ -24,7 +24,14 @@ from netbox_kea import config_write, subnet_catalogue
 from netbox_kea.config_write import ConfigChangeOutcome, ConfigChangeRejected, SubnetAddOutcome
 from netbox_kea.constants import Family
 from netbox_kea.dhcp_options import DHCPOptionConflict, DHCPOptionNameChange, parse_dhcp_options
-from netbox_kea.kea import CandidateTargetMissing, SharedNetworkEdit, SubnetEdit, SubnetFields
+from netbox_kea.kea import (
+    CandidateTargetMissing,
+    MalformedConfiguration,
+    SharedNetworkEdit,
+    SubnetDefinition,
+    SubnetEdit,
+    SubnetFields,
+)
 from netbox_kea.pools import parse_pool
 from netbox_kea.subnet_catalogue import CatalogueUnavailable, SharedNetworkMembership, SubnetIdentityConflict
 
@@ -1485,6 +1492,20 @@ class SubnetEditTests(TestCase):
                     )
                     self.assertEqual(daemon.members, {20: target} if target else {})
                     self.assertEqual(daemon.subnet(20), _UPDATED[v])
+
+    def test_an_update_that_netbox_cannot_build_sends_no_step(self):
+        malformed = MalformedConfiguration("More than one DHCP Option entry fits the gateway field.")
+        for version in _FAMILIES:
+            with (
+                self.subTest(version=version),
+                patch.object(SubnetDefinition, "edited", autospec=True, side_effect=malformed),
+            ):
+                rejection, kea = self._rejection(self._daemon(version, "office"), "lab")
+                self.assertEqual(rejection.reason, "not-sent")
+                self.assertEqual(
+                    rejection.diagnostics, ("Kea returned a configuration that NetBox cannot edit safely.",)
+                )
+                self.assertEqual(kea.commands(), [*_scope(version), f"subnet{version}-get"])
 
     def test_an_id_and_cidr_pair_that_names_no_verified_subnet_sends_nothing(self):
         for version in _FAMILIES:

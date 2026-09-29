@@ -1651,7 +1651,8 @@ class TestSubnetUpdate(TestCase):
             f"subnet{version}-update": {"result": 0, "text": f"IPv{version} subnet updated"},
         }
         with stub_kea(responses) as kea:
-            self.client.subnet_update(self.client.subnet_definition(version, live["id"]), _edit(**fields))
+            definition = self.client.subnet_definition(version, live["id"])
+            self.client.subnet_update(definition.family, definition.edited(_edit(**fields)))
         self.assertEqual(kea.commands(), [f"subnet{version}-get", f"subnet{version}-update"])
         (body,) = kea.bodies(f"subnet{version}-update")
         self.assertEqual(body["service"], [f"dhcp{version}"])
