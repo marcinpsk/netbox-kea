@@ -2,6 +2,8 @@ import logging
 
 from netbox.plugins import PluginConfig
 
+from . import branching
+
 logger = logging.getLogger(__name__)
 
 __version__ = "1.10.2"
@@ -33,6 +35,7 @@ class NetBoxKeaConfig(PluginConfig):
         """Apply runtime configuration overrides after Django is fully initialised."""
         super().ready()
         self._configure_sync_job_interval()
+        branching.register()
 
     def _configure_sync_job_interval(self) -> None:
         """Seed the KeaIpamSyncJob interval from PLUGINS_CONFIG at startup.
