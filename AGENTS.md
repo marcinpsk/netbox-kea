@@ -369,6 +369,8 @@ resort, reserved for true external boundaries you cannot run locally.
   bump the constant, bump the CI `ref`, and re-record in one change.
 - **When fixing a bug, write the failing (red) test first**, confirm it fails against
   the unfixed code, then fix until green.
+- **No source line numbers in comments or docstrings**: name the function or the
+  behaviour. `test_no_source_line_references.py` fails on each "Lines 731-736" or "(line 910)".
 
 ### Unit test seams & patterns
 
