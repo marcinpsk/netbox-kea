@@ -2210,28 +2210,28 @@ class TestPersistConfigFlag(TestCase):
 
 
 class TestGetAvailableCommandsMalformed(TestCase):
-    """get_available_commands raises RuntimeError on empty / non-dict response (line 148)."""
+    """get_available_commands raises RuntimeError on empty / non-dict response."""
 
     def setUp(self):
         self.client = KeaClient(url="http://kea:8000")
 
     def test_empty_list_raises_runtime_error(self):
-        """Empty response list hits the 'not resp' branch and raises RuntimeError (line 148)."""
+        """Empty response list hits the 'not resp' branch and raises RuntimeError."""
         with patch.object(self.client._session, "post", return_value=_mock_http_response([])):
             with self.assertRaises(RuntimeError):
                 self.client.get_available_commands("dhcp4")
 
 
 class TestLeaseUpdateGuards(TestCase):
-    """lease_update guards on result=3 and non-dict arguments (lines 944-945, 948)."""
+    """lease_update guards on result=3 and non-dict arguments."""
 
     def setUp(self):
         self.client = KeaClient(url="http://kea:8000")
 
     def test_result3_raises_kea_exception(self):
-        """command() returning result=3 directly (bypassing check_response) raises KeaException (line 945)."""
+        """command() returning result=3 directly (bypassing check_response) raises KeaException."""
         # check_response would normally raise for result=3; patch command() to bypass it
-        # and test the explicit guard at line 944-945.
+        # and test the explicit result=3 guard in lease_update.
         with patch.object(
             self.client,
             "command",
@@ -2241,7 +2241,7 @@ class TestLeaseUpdateGuards(TestCase):
                 self.client.lease_update(version=4, ip_address="10.0.0.1")
 
     def test_non_dict_arguments_raises_value_error(self):
-        """result=0 with non-dict arguments raises ValueError (line 948)."""
+        """result=0 with non-dict arguments raises ValueError."""
         resp = [{"result": 0, "arguments": None}]
         with patch.object(self.client._session, "post", return_value=_mock_http_response(resp)):
             with self.assertRaises(ValueError):
@@ -2263,14 +2263,14 @@ class TestLeaseGetByIpNonDictArguments(TestCase):
 
 
 class TestLeaseGetAllMalformedArguments(TestCase):
-    """lease_get_all raises RuntimeError when arguments is not a dict or leases is not a list (lines 1047, 1052)."""
+    """lease_get_all raises RuntimeError when arguments is not a dict or leases is not a list."""
 
     def setUp(self):
         self.client = KeaClient(url="http://kea:8000")
 
     @patch("requests.Session.post")
     def test_arguments_not_dict_raises_runtime_error(self, mock_post):
-        """result=0 with non-dict arguments raises RuntimeError (line 1047)."""
+        """result=0 with non-dict arguments raises RuntimeError."""
         mock_post.return_value = _mock_http_response([{"result": 0, "arguments": "unexpected"}])
         with self.assertRaises(RuntimeError) as cm:
             self.client.lease_get_all(version=4)
@@ -2278,7 +2278,7 @@ class TestLeaseGetAllMalformedArguments(TestCase):
 
     @patch("requests.Session.post")
     def test_leases_not_list_raises_runtime_error(self, mock_post):
-        """result=0, arguments is dict, but leases value is not a list raises RuntimeError (line 1052)."""
+        """result=0, arguments is dict, but leases value is not a list raises RuntimeError."""
         mock_post.return_value = _mock_http_response([{"result": 0, "arguments": {"leases": "bad"}}])
         with self.assertRaises(RuntimeError) as cm:
             self.client.lease_get_all(version=4)
