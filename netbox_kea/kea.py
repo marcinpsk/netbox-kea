@@ -14,6 +14,8 @@ from .constants import Family, IPNetworkValue, Persistence
 from .dhcp_options import (
     DHCPOption,
     FormManagedOption,
+    InvalidAddress,
+    address_list,
     form_managed_options,
     merge_option_form_rows,
     parse_dhcp_options,
@@ -365,12 +367,7 @@ def _replace_managed_option(
     kept = [option for option in options if not is_managed(option)]
     if data:
         replacement = dict(existing) if existing else {"name": managed.name}
-        old_data = replacement.get("data")
-        unchanged = (
-            isinstance(old_data, str)
-            and replacement.get("csv-format") is not False
-            and [value.strip() for value in data.split(",")] == [value.strip() for value in old_data.split(",")]
-        )
+        unchanged = replacement.get("csv-format") is not False and _same_addresses(data, replacement.get("data"))
         if not unchanged:
             replacement.pop("csv-format", None)
             replacement["data"] = data
@@ -382,6 +379,16 @@ def _replace_managed_option(
     ):
         return [*kept, existing]
     return kept
+
+
+def _same_addresses(data: str, old_data: Any) -> bool:
+    """Return whether *old_data* holds the addresses of *data*, in another text form or the same one."""
+    if not isinstance(old_data, str):
+        return False
+    try:
+        return address_list(data) == address_list(old_data)
+    except InvalidAddress:
+        return False
 
 
 def shared_network_description(network: dict[str, Any]) -> str | None:
