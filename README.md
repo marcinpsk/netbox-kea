@@ -116,6 +116,16 @@ NetBox 4.7 with netbox-branching 1.2.1. List `netbox_branching` last in `PLUGINS
 - Kea data is live, in main and in every branch.
 - This release does not yet refuse plugin writes while a branch is active. Do not change Kea
   servers or Kea data in a branch. A later release refuses these writes.
+- A merge fails, and changes nothing, when the branch deletes a VRF that a Kea server in main now
+  syncs into. Clear or change that server's Sync VRF, then merge again.
+
+**Upgrade with open branches.** Earlier releases let netbox-branching copy the Kea servers table
+into each new branch. Nothing removes that copy: branch sync no longer updates it, and branch
+migrate does not drop it. NetBox still reads Kea servers from main, but a VRF delete in the branch
+checks the old copy, not main. A merge also applies to main every Kea server change that the branch
+recorded before the upgrade. Before you upgrade, merge or delete every branch that is not yet
+merged, and create new branches after the upgrade. A merged branch keeps its schema until you
+archive it; archive it when you no longer need to revert it.
 
 ---
 
@@ -264,7 +274,7 @@ Each server has optional overrides for the IPAM sync job:
 | `Sync Reservations` (`sync_reservations_enabled`) | `True` | Sync DHCP reservations as NetBox IP Addresses |
 | `Sync Prefixes` (`sync_prefixes_enabled`) | `True` | Sync Kea subnets as NetBox IP Prefixes |
 | `Sync IP Ranges` (`sync_ip_ranges_enabled`) | `True` | Sync Kea pools as NetBox IP Ranges |
-| `Sync VRF` (`sync_vrf`) | None (global routing table) | VRF to assign when syncing Prefixes and IP Ranges. There is no global fallback — leave blank to use the global routing table (no VRF). NetBox refuses to delete a VRF while a server syncs into it |
+| `Sync VRF` (`sync_vrf`) | None (global routing table) | VRF to assign when syncing Prefixes and IP Ranges. There is no global fallback: leave blank to use the global routing table (no VRF). NetBox refuses to delete a VRF while a server syncs into it |
 | `Persist configuration` (`persist_config`) | `True` | Automatically save Kea config after each change via `config-write`. Disable when Kea config is managed externally (e.g. Ansible) |
 
 These fields override the global `PLUGINS_CONFIG` values for that specific server.
