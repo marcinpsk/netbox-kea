@@ -94,13 +94,14 @@ def pytest_xdist_auto_num_workers(config) -> int:
 
 
 def pytest_configure(config) -> None:
-    """Refuse a hand-picked worker count the isolation cannot serve.
+    """Refuse a dotted coverage source, and a hand-picked worker count the isolation cannot serve.
 
     ``pytest_xdist_auto_num_workers`` only caps ``auto``. An explicit ``-n`` sails
     past it, and every worker above the ceiling gets no private Redis databases, so
     the run reports hundreds of setup errors that read like real test failures.
     ``auto`` and ``logical`` stay xdist's decision, capped by the hook.
     """
+    _refuse_a_dotted_coverage_source(config)
     requested = getattr(config.option, "numprocesses", None)
     if not isinstance(requested, int) or requested <= MAX_PARALLEL_WORKERS:
         return
@@ -108,6 +109,21 @@ def pytest_configure(config) -> None:
         f"-n {requested} exceeds the isolation limit: at most {MAX_PARALLEL_WORKERS} "
         "pytest workers get private PostgreSQL and Redis databases. Use -n auto."
     )
+
+
+def _refuse_a_dotted_coverage_source(config) -> None:
+    """Refuse ``--cov=<package>.<module>``: it leaves a second copy of the psycopg error classes.
+
+    Coverage imports a dotted source before Django starts and then removes every new module from sys.modules.
+    The psycopg C extension stays loaded with the first ``psycopg.errors``, so the errors it raises escape Django's
+    error wrapper and read as test failures.
+    """
+    for source in getattr(config.option, "cov_source", None) or ():
+        if isinstance(source, str) and "." in source and not os.path.exists(source):
+            raise pytest.UsageError(
+                f"--cov={source} names a module. Use a path, for example --cov=netbox_kea, because coverage "
+                "imports a module name before Django starts, and psycopg then has two copies of its error classes."
+            )
 
 
 def pytest_sessionstart(session) -> None:
