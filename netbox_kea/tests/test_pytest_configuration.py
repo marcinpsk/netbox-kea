@@ -264,6 +264,71 @@ def test_ci_configuration_writer_generates_the_requested_plugins(monkeypatch, tm
     }
 
 
+def _write_ci_configuration(tmp_path, *arguments: str) -> subprocess.CompletedProcess:
+    """Run the CI configuration writer into *tmp_path* with *arguments*."""
+    return subprocess.run(
+        [
+            sys.executable,
+            str(REPOSITORY_ROOT / "scripts/write_netbox_ci_configuration.py"),
+            "--output",
+            str(tmp_path / "configuration.py"),
+            *arguments,
+        ],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+
+def _module_assignments(source: str) -> dict[str, ast.expr]:
+    """Return each top-level ``NAME = value`` of *source*, by name."""
+    return {
+        node.targets[0].id: node.value
+        for node in ast.parse(source).body
+        if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name)
+    }
+
+
+def test_ci_configuration_writer_adds_netbox_branching_last_with_its_database_settings(tmp_path):
+    """The branching job gets the settings netbox-branching refuses to start without.
+
+    The file imports netbox-branching, which the unit suite does not install, so this reads it
+    as source. The branching suite loads the same file for real.
+    """
+    result = _write_ci_configuration(tmp_path, "--plugin", "netbox_kea", "--plugin", "netbox_dhcp", "--branching")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    source = (tmp_path / "configuration.py").read_text()
+    assignments = _module_assignments(source)
+    assert ast.literal_eval(assignments["PLUGINS"]) == ["netbox_kea", "netbox_dhcp", "netbox_branching"]
+    assert ast.literal_eval(assignments["DATABASE_ROUTERS"]) == ["netbox_branching.database.BranchAwareRouter"]
+    assert "DATABASE" not in assignments, "NetBox refuses DATABASE beside DATABASES"
+    databases = assignments["DATABASES"]
+    assert isinstance(databases, ast.Call)
+    assert ast.unparse(databases.func) == "DynamicSchemaDict"
+    assert ast.literal_eval(databases.args[0])["default"]["ENGINE"] == "django.db.backends.postgresql"
+    assert "from netbox_branching.utilities import DynamicSchemaDict" in source
+
+
+def test_ci_configuration_writer_refuses_netbox_branching_as_a_plain_plugin(tmp_path):
+    """Only --branching lists netbox-branching, so its database settings cannot be left out."""
+    result = _write_ci_configuration(tmp_path, "--plugin", "netbox_kea", "--plugin", "netbox_branching")
+
+    assert result.returncode != 0
+    assert "--branching" in result.stderr
+    assert not (tmp_path / "configuration.py").exists()
+
+
+def test_ci_configuration_writer_leaves_database_settings_alone_without_branching(tmp_path):
+    """The other jobs keep NetBox's plain DATABASE setting."""
+    result = _write_ci_configuration(tmp_path, "--plugin", "netbox_kea")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assignments = _module_assignments((tmp_path / "configuration.py").read_text())
+    assert "DATABASES" not in assignments
+    assert "DATABASE_ROUTERS" not in assignments
+
+
 def test_isolated_settings_define_an_api_token_pepper():
     """Keep NetBox API test tokens usable outside the generated CI settings."""
     from django.conf import settings
@@ -276,7 +341,9 @@ def test_isolated_settings_load_only_supported_test_plugins():
     from django.conf import settings
 
     assert "netbox_kea" in settings.PLUGINS
-    assert set(settings.PLUGINS) <= {"netbox_kea", "netbox_dhcp"}
+    assert set(settings.PLUGINS) <= {"netbox_kea", "netbox_dhcp", "netbox_branching"}
+    if "netbox_branching" in settings.PLUGINS:
+        assert settings.PLUGINS[-1] == "netbox_branching", "netbox-branching must be the last plugin"
 
 
 def test_option_view_contracts_are_not_accepted_in_the_mypy_baseline():
