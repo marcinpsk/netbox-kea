@@ -40,7 +40,6 @@ netbox_kea/models.py:0: error: Need type annotation for "sync_leases_enabled"  [
 netbox_kea/models.py:0: error: Need type annotation for "sync_reservations_enabled"  [var-annotated]
 netbox_kea/models.py:0: error: Need type annotation for "sync_prefixes_enabled"  [var-annotated]
 netbox_kea/models.py:0: error: Need type annotation for "sync_ip_ranges_enabled"  [var-annotated]
-netbox_kea/models.py:0: error: Need type annotation for "backfill_applied"  [var-annotated]
 netbox_kea/models.py:0: error: Need type annotation for "server"  [var-annotated]
 netbox_kea/models.py:0: error: Need type annotation for "family"  [var-annotated]
 netbox_kea/models.py:0: error: Need type annotation for "kea_subnet_id"  [var-annotated]
