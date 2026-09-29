@@ -194,7 +194,7 @@ All settings are under `PLUGINS_CONFIG["netbox_kea"]`:
 | `kea_timeout` | `30` | HTTP request timeout in seconds for Kea API calls |
 | `lease_query_max_unpaged_leases` | `1000` | Reject an unpaged Subnet lease query when its Kea statistics count exceeds this limit. Set to `0` to disable this safety check |
 | `stale_ip_cleanup` | `"remove"` | What to do with stale IPs after sync: `"remove"` (delete), `"deprecate"` (set status=deprecated), `"none"` (skip) |
-| `sync_interval_minutes` | `5` | How often the background sync job runs (minutes). Also editable via NetBox admin → Jobs |
+| `sync_interval_minutes` | `5` | Initial interval of the background sync job (minutes). Edit it later on the **Sync Jobs** page |
 | `sync_leases_enabled` | `True` | Sync active DHCP leases to NetBox IPAM |
 | `sync_reservations_enabled` | `True` | Sync Kea reservations to NetBox IPAM |
 | `sync_prefixes_enabled` | `True` | Sync Kea subnets to NetBox IPAM as IP Prefixes |
@@ -202,7 +202,8 @@ All settings are under `PLUGINS_CONFIG["netbox_kea"]`:
 | `sync_max_leases_per_server` | `50000` | Hard cap on leases fetched per server per sync run. Set to `0` for no limit |
 
 `./manage.py migrate` reads `sync_interval_minutes`, `sync_enabled` and the four `sync_*_enabled`
-toggles once, when it creates the Sync Configuration. After that, the **Sync Jobs** page holds these values.
+toggles once, when it creates the Sync Configuration. After that, the **Sync Jobs** page holds these values,
+and a later change to these settings in `PLUGINS_CONFIG` has no effect.
 
 Subnet lease searches use `stat-lease4-get` or `stat-lease6-get` before an
 unpaged lease command. Kea statistics can reject a query that is already too
@@ -307,7 +308,7 @@ Each server's summary reports `created`, `updated`, `errors`, `prefix_errors`, `
 
 View job history, next scheduled time and logs under **System → Background Jobs → Kea IPAM Sync**.
 
-The sync interval can be changed live via the NetBox admin without restarting the worker — edit the `interval` field on the job object.
+To change the sync interval, edit it on the **Sync Jobs** page. You do not need to restart the worker: the new interval applies after the next scheduled run.
 
 ---
 
