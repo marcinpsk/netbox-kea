@@ -15,6 +15,7 @@ from netbox_kea.subnet_catalogue import (
     ConfigurationOnlyCatalogueSnapshot,
     IdentityOnlyCatalogueSnapshot,
     IncompleteCatalogueSnapshot,
+    SharedNetworkMembership,
     SubnetIdentityConflict,
     SubnetIdExhausted,
     VerifiedSubnet,
@@ -758,6 +759,25 @@ class TestSubnetCatalogue(TestCase):
 
         self.assertFalse(snapshot.consistent)
         self.assertIn("configuration-changed-during-retry", {item.code for item in snapshot.diagnostics})
+
+    def test_an_identity_entry_without_the_membership_key_takes_the_membership_from_the_configuration(self):
+        """Kea 3.2.0 always sends shared-network-name, so an entry without it shows no membership."""
+        identities = _identity(4, [{"id": 1, "subnet": "198.18.1.0/24"}])
+        member = {"name": "access-a", "subnet4": [{"id": 1, "subnet": "198.18.1.0/24"}]}
+        for label, configuration, membership in (
+            ("configuration read", _config(4, [], shared_networks=[member]), SharedNetworkMembership("access-a")),
+            ("configuration unavailable", _config(4, [], result=1), None),
+        ):
+            with self.subTest(label), stub_kea({"subnet4-list": identities, "config-get": configuration}):
+                snapshot = display(self.server, 4)
+                with mutation(self.server, 4) as scope:
+                    if membership is None:
+                        with self.assertRaisesMessage(CatalogueUnavailable, "membership cannot be confirmed"):
+                            scope.find_with_membership(1)
+                    else:
+                        self.assertEqual(scope.find_with_membership(1).shared_network, membership)
+                # The display keeps the Subnet either way.
+                self.assertEqual(snapshot.find_by_id(1).shared_network, membership)
 
     def test_shared_network_membership_disagreement_quarantines_subnet(self):
         identities = _identity(
