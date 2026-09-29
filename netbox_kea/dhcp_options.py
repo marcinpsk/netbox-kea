@@ -104,6 +104,38 @@ def form_managed_options(version: int) -> dict[str, FormManagedOption]:
     return {option.field: option for option in _FORM_MANAGED_OPTIONS[version]}
 
 
+def form_option_fields(options: tuple[DHCPOption, ...], version: int) -> dict[str, str]:
+    """Return the data of each DHCP Option that a Subnet or Shared Network form field shows, keyed by form field."""
+    fields: dict[str, str] = {}
+    for option in options:
+        field = _form_option_field(option, version)
+        if field is not None:
+            fields[field] = option.data
+    return fields
+
+
+def _form_option_field(option: DHCPOption, version: int) -> str | None:
+    """Return the form field a default-space option maps to, by code first.
+
+    Class-tagged and binary-encoded entries are not shown: the form has no
+    field for a tag and no way to enter binary data.
+    """
+    if option.space not in (None, f"dhcp{version}") or option.client_classes or option.csv_format is False:
+        return None
+    field = next(
+        (
+            managed.field
+            for managed in form_managed_options(version).values()
+            if (managed.code == option.code if option.code is not None else managed.name == option.name)
+        ),
+        None,
+    )
+    # The gateway field holds one address; a router array has no form representation.
+    if field == "gateway" and "," in option.data:
+        return None
+    return field
+
+
 def parse_dhcp_option(entry: Any) -> DHCPOption:
     """Parse one raw Kea option-data entry.
 

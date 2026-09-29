@@ -15,6 +15,7 @@ from utilities.views import register_model_view
 
 from .. import config_write, forms, server_configuration, tables
 from ..constants import Family
+from ..dhcp_options import form_option_fields
 from ..kea import KeaException, SubnetEdit, SubnetFields, subnet_network
 from ..models import Server
 from ..pools import Pool, addresses_in_pools, parse_pool
@@ -41,7 +42,6 @@ from ._base import (
     _enrich_subnet_statistics,
     _KeaChangeMixin,
     _run_config_change,
-    _subnet_option_fields,
 )
 
 logger = logging.getLogger(__name__)
@@ -399,14 +399,14 @@ def _inherited_subnet_options(
     """Return option hints not overridden by the Subnet form."""
     inherited = {
         field: {"value": value, "source": "global"}
-        for field, value in _subnet_option_fields(snapshot.global_options, snapshot.family).items()
+        for field, value in form_option_fields(snapshot.global_options, snapshot.family).items()
     }
     network = next((network for network in snapshot.shared_networks if network.name == current_network), None)
     if network is not None:
         inherited.update(
             {
                 field: {"value": value, "source": f"shared-network: {current_network}"}
-                for field, value in _subnet_option_fields(network.options, snapshot.family).items()
+                for field, value in form_option_fields(network.options, snapshot.family).items()
             }
         )
     return {field: hint for field, hint in inherited.items() if not form_values.get(field)}
@@ -567,7 +567,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
         initial = {
             "subnet_cidr": subnet_cidr,
             "pools": "\n".join(pool.range for pool in subnet_configuration.pools),
-            **_subnet_option_fields(subnet_configuration.options, self.dhcp_version),
+            **form_option_fields(subnet_configuration.options, self.dhcp_version),
             "valid_lft": settings.valid_lifetime,
             "min_valid_lft": settings.min_valid_lifetime,
             "max_valid_lft": settings.max_valid_lifetime,
