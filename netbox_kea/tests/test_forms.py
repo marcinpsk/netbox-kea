@@ -824,6 +824,46 @@ class TestSubnetEditForm(SimpleTestCase):
                 self.assertFalse(form.is_valid())
                 self.assertEqual(form.non_field_errors(), [unconfirmed])
 
+    def test_shown_cleans_each_hidden_copy_the_same_way_as_its_field(self):
+        from netbox_kea.kea import SubnetEdit, SubnetFields
+
+        values = {
+            "pools": " 10.0.0.16/28 \r\n\r\n10.0.0.100 - 10.0.0.110",
+            "gateway": " 10.0.0.1 ",
+            "dns_servers": "10.0.0.53 , 10.0.0.54",
+            "ntp_servers": "",
+            "ddns_qualifying_suffix": " example.org. ",
+            "valid_lft": "3600",
+            "rebind_timer": "",
+        }
+        form = self._form(**values, **{f"shown_{name}": value for name, value in values.items()})
+        self.assertTrue(form.is_valid(), form.errors)
+        expected = SubnetEdit(
+            fields=SubnetFields(
+                pools=("10.0.0.16-10.0.0.31", "10.0.0.100-10.0.0.110"),
+                gateway="10.0.0.1",
+                dns_servers=("10.0.0.53", "10.0.0.54"),
+                ntp_servers=(),
+                ddns_qualifying_suffix="example.org.",
+            ),
+            valid_lifetime=3600,
+            min_valid_lifetime=None,
+            max_valid_lifetime=None,
+            renew_timer=None,
+            rebind_timer=None,
+        )
+        self.assertEqual((form.to_edit(), form.shown()), (expected, expected))
+
+    def test_a_shown_value_that_does_not_clean_refuses_the_form(self):
+        for field, value in (("shown_pools", "10.1.0.0/28"), ("shown_gateway", "gw"), ("shown_valid_lft", "x")):
+            with self.subTest(field=field):
+                form = self._form(**{field: value})
+                self.assertFalse(form.is_valid())
+                self.assertEqual(
+                    form.non_field_errors(),
+                    ["The values that the page showed are not valid. Reload the page and try again."],
+                )
+
     def test_the_shown_network_keeps_the_name_as_kea_declares_it(self):
         form = self._form(shown_network=" office ")
         self.assertTrue(form.is_valid(), form.errors)
@@ -1308,7 +1348,7 @@ class TestSharedNetworkEditForm(SimpleTestCase):
         """An empty relay_addresses string is accepted (clears relay)."""
         form = self._form(relay_addresses="")
         self.assertTrue(form.is_valid(), form.errors)
-        self.assertEqual(form.cleaned_data["relay_addresses"], "")
+        self.assertEqual(form.cleaned_data["relay_addresses"], [])
 
     def test_to_edit_applies_one_strip_rule_to_every_address_list(self):
         from netbox_kea.kea import SharedNetworkEdit
@@ -1355,13 +1395,13 @@ class TestSharedNetworkEditForm(SimpleTestCase):
         """A single valid DNS server IP is accepted and normalized."""
         form = self._form(dns_servers="  8.8.8.8  ")
         self.assertTrue(form.is_valid(), form.errors)
-        self.assertEqual(form.cleaned_data["dns_servers"], "8.8.8.8")
+        self.assertEqual(form.cleaned_data["dns_servers"], ["8.8.8.8"])
 
     def test_valid_multiple_dns_servers(self):
         """Multiple comma-separated DNS server IPs are accepted and normalized."""
         form = self._form(dns_servers="8.8.8.8 , 1.1.1.1")
         self.assertTrue(form.is_valid(), form.errors)
-        self.assertEqual(form.cleaned_data["dns_servers"], "8.8.8.8,1.1.1.1")
+        self.assertEqual(form.cleaned_data["dns_servers"], ["8.8.8.8", "1.1.1.1"])
 
     def test_invalid_dns_server_fails_validation(self):
         """A non-IP value in dns_servers raises a ValidationError."""
@@ -1373,13 +1413,13 @@ class TestSharedNetworkEditForm(SimpleTestCase):
         """A single valid NTP server IP is accepted and normalized."""
         form = self._form(ntp_servers="  10.0.0.1  ")
         self.assertTrue(form.is_valid(), form.errors)
-        self.assertEqual(form.cleaned_data["ntp_servers"], "10.0.0.1")
+        self.assertEqual(form.cleaned_data["ntp_servers"], ["10.0.0.1"])
 
     def test_valid_multiple_ntp_servers(self):
         """Multiple comma-separated NTP server IPs are accepted and normalized."""
         form = self._form(ntp_servers="10.0.0.1 , 10.0.0.2")
         self.assertTrue(form.is_valid(), form.errors)
-        self.assertEqual(form.cleaned_data["ntp_servers"], "10.0.0.1,10.0.0.2")
+        self.assertEqual(form.cleaned_data["ntp_servers"], ["10.0.0.1", "10.0.0.2"])
 
     def test_invalid_ntp_server_fails_validation(self):
         """A non-IP value in ntp_servers raises a ValidationError."""
@@ -1388,10 +1428,32 @@ class TestSharedNetworkEditForm(SimpleTestCase):
         self.assertIn("ntp_servers", form.errors)
 
     def test_relay_addresses_normalized(self):
-        """Relay addresses with extra whitespace are normalized to comma-separated."""
-        form = self._form(relay_addresses="  10.0.0.1 , 10.0.0.2  ")
+        """Relay addresses with extra whitespace are normalized to canonical addresses."""
+        form = self._form(relay_addresses="  10.0.0.1 , 2001:DB8::0001  ")
         self.assertTrue(form.is_valid(), form.errors)
-        self.assertEqual(form.cleaned_data["relay_addresses"], "10.0.0.1,10.0.0.2")
+        self.assertEqual(form.cleaned_data["relay_addresses"], ["10.0.0.1", "2001:db8::1"])
+
+    def test_shown_cleans_each_hidden_copy_the_same_way_as_its_field(self):
+        from netbox_kea.kea import SharedNetworkEdit
+
+        values = {
+            "description": " Office\r\nFloor 2 ",
+            "interface": " eth1 ",
+            "relay_addresses": " 10.0.0.1 , ,2001:DB8::0001 ",
+            "dns_servers": "8.8.8.8,1.1.1.1",
+            "ntp_servers": " , ",
+        }
+        form = self._form(**values, **{f"shown_{name}": value for name, value in values.items()})
+        self.assertTrue(form.is_valid(), form.errors)
+        expected = SharedNetworkEdit("OfficeFloor 2", "eth1", ("10.0.0.1", "2001:db8::1"), ("8.8.8.8", "1.1.1.1"), ())
+        self.assertEqual((form.to_edit(), form.shown()), (expected, expected))
+
+    def test_a_shown_value_that_does_not_clean_refuses_the_form(self):
+        form = self._form(shown_dns_servers="not-an-ip")
+        self.assertFalse(form.is_valid())
+        self.assertEqual(
+            form.non_field_errors(), ["The values that the page showed are not valid. Reload the page and try again."]
+        )
 
 
 class TestLeasesSearchFormSubnetCombobox(SimpleTestCase):

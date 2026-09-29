@@ -11,7 +11,6 @@ from utilities.views import register_model_view
 
 from .. import config_write, forms, server_configuration, tables
 from ..constants import Family
-from ..dhcp_options import form_option_fields
 from ..models import Server
 from ..utilities import check_dhcp_enabled
 from ._base import (
@@ -239,23 +238,12 @@ class BaseServerSharedNetworkEditView(_KeaChangeMixin, ConditionalLoginRequiredM
             configuration.diagnostics,
             messages.ERROR if not configuration.available else messages.WARNING,
         )
-        network = next((network for network in configuration.shared_networks if network.name == network_name), None)
-
-        if not configuration.shared_networks_complete or network is None or not network.complete:
+        shown = server_configuration.shown_shared_network(configuration, network_name)
+        if shown is None:
             messages.error(request, f"Shared network '{network_name}' not found or could not be retrieved.")
             return redirect(self._success_url(server))
 
-        option_fields = form_option_fields(network.options, self.dhcp_version)
-        initial: dict[str, Any] = {
-            "name": network_name,
-            "description": network.description or "",
-            "interface": network.interface or "",
-            "relay_addresses": ", ".join(str(address) for address in network.relay_addresses),
-            "dns_servers": option_fields.get("dns_servers", ""),
-            "ntp_servers": option_fields.get("ntp_servers", ""),
-        }
-
-        form = forms.SharedNetworkEditForm(initial=initial)
+        form = forms.SharedNetworkEditForm(initial=forms.SharedNetworkEditForm.initial_for(network_name, shown))
         return render(
             request,
             "netbox_kea/server_shared_network_edit.html",
@@ -287,11 +275,11 @@ class BaseServerSharedNetworkEditView(_KeaChangeMixin, ConditionalLoginRequiredM
                 },
             )
 
-        edit = form.to_edit()
+        edit, shown = form.to_edit(), form.shown()
         _run_config_change(
             request,
             f"Shared network '{network_name}' updated.",
-            lambda: config_write.edit_shared_network(server, self.dhcp_version, network_name, edit),
+            lambda: config_write.edit_shared_network(server, self.dhcp_version, network_name, edit, shown=shown),
         )
         return redirect(self._success_url(server))
 
