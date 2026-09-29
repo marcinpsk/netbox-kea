@@ -60,6 +60,14 @@ _LEASE6 = {
 _RESV4 = {"ip-address": "10.0.0.100", "hw-address": "11:22:33:44:55:66", "hostname": "reserved1", "subnet-id": 1}
 
 
+def _set_sync_config(**fields) -> None:
+    """Change fields of the SyncConfig row that the migrations create."""
+    config = SyncConfig.get()
+    for name, value in fields.items():
+        setattr(config, name, value)
+    config.save()
+
+
 def _make_job() -> MagicMock:
     """Create a minimal mock Job object for JobRunner.__init__."""
     mock_job = MagicMock()  # mock-ok: NetBox job-runner stand-in
@@ -276,16 +284,12 @@ class TestKeaIpamSyncJobRun(TestCase):
 
     def test_creates_reserved_ip_from_reservation(self):
         """Reservation sync creates an IPAddress with status='reserved'."""
-        from netbox_kea.models import SyncConfig
-
-        SyncConfig.objects.create(
-            pk=1,
+        _set_sync_config(
             interval_minutes=5,
             sync_leases_enabled=False,
             sync_reservations_enabled=True,
             sync_prefixes_enabled=False,
             sync_ip_ranges_enabled=False,
-            backfill_applied=True,
         )
         self._make_db_server(sync_leases_enabled=False)
         with _patch_kea(reservations=[_RESV4]):
@@ -346,16 +350,12 @@ class TestKeaIpamSyncJobRun(TestCase):
 
     def test_skips_leases_when_sync_leases_disabled(self):
         """sync_leases_enabled=False → no IPAddress from lease created."""
-        from netbox_kea.models import SyncConfig
-
-        SyncConfig.objects.create(
-            pk=1,
+        _set_sync_config(
             interval_minutes=5,
             sync_leases_enabled=False,
             sync_reservations_enabled=False,
             sync_prefixes_enabled=False,
             sync_ip_ranges_enabled=False,
-            backfill_applied=True,
         )
         self._make_db_server()
         with _patch_kea(leases4=[_LEASE4]):
@@ -366,16 +366,12 @@ class TestKeaIpamSyncJobRun(TestCase):
 
     def test_skips_reservations_when_sync_reservations_disabled(self):
         """sync_reservations_enabled=False → no reserved IPAddress created."""
-        from netbox_kea.models import SyncConfig
-
-        SyncConfig.objects.create(
-            pk=1,
+        _set_sync_config(
             interval_minutes=5,
             sync_leases_enabled=True,
             sync_reservations_enabled=False,
             sync_prefixes_enabled=False,
             sync_ip_ranges_enabled=False,
-            backfill_applied=True,
         )
         self._make_db_server()
         with _patch_kea(leases4=[], reservations=[_RESV4]):
@@ -1045,9 +1041,7 @@ class TestKeaIpamSyncJobKillSwitches(TestCase):
 
     def test_global_kill_switch_creates_no_ips(self):
         """SyncConfig.sync_enabled=False → no IPs synced, no Kea calls made."""
-        from netbox_kea.models import SyncConfig
-
-        SyncConfig.objects.create(pk=1, interval_minutes=5, sync_enabled=False, backfill_applied=True)
+        _set_sync_config(interval_minutes=5, sync_enabled=False)
         self._make_db_server()
         with _patch_kea(leases4=[_LEASE4]):
             self._run()
@@ -1097,9 +1091,7 @@ class TestKeaIpamSyncJobKillSwitches(TestCase):
 
     def test_summary_written_on_global_kill_switch(self):
         """job.data['summary'] is an empty list even when kill-switch aborts the run."""
-        from netbox_kea.models import SyncConfig
-
-        SyncConfig.objects.create(pk=1, interval_minutes=5, sync_enabled=False, backfill_applied=True)
+        _set_sync_config(interval_minutes=5, sync_enabled=False)
         mock_job = _make_job()
         KeaIpamSyncJob(mock_job).run()
         self.assertIn("summary", mock_job.data)
@@ -1108,16 +1100,12 @@ class TestKeaIpamSyncJobKillSwitches(TestCase):
 
     def test_job_data_summary_written_when_data_is_none(self):
         """job.data['summary'] is written even when job.data starts as None."""
-        from netbox_kea.models import SyncConfig
-
-        SyncConfig.objects.create(
-            pk=1,
+        _set_sync_config(
             interval_minutes=5,
             sync_leases_enabled=False,
             sync_reservations_enabled=False,
             sync_prefixes_enabled=False,
             sync_ip_ranges_enabled=False,
-            backfill_applied=True,
         )
         mock_job = _make_job()
         mock_job.data = None

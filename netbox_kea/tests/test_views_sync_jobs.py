@@ -11,7 +11,7 @@ from django.urls import reverse
 from django.utils import timezone
 
 from netbox_kea.models import SyncConfig
-from netbox_kea.tests.utils import _PLUGINS_CONFIG, User, _make_db_server
+from netbox_kea.tests.utils import _PLUGINS_CONFIG, User, _get_with_writes, _make_db_server
 
 _MAKE_JOB_NO_DATA = object()  # sentinel: caller did not pass data at all
 
@@ -107,6 +107,26 @@ class TestSyncJobsView(TestCase):
         response = self.client.get(reverse("plugins:netbox_kea:sync_jobs"))
         self.assertEqual(response.status_code, 302)
         self.assertIn("/login/", response["Location"])
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestSyncPagesWriteNothingOnGet(TestCase):
+    """A GET of a sync page reads the migrated SyncConfig row and writes no row."""
+
+    def setUp(self):
+        self.client.force_login(User.objects.create_superuser("readonly", "r@r.com", "pass"))
+        self.server = _make_db_server()
+
+    def test_sync_jobs_get_writes_no_row(self):
+        response, writes = _get_with_writes(self.client, reverse("plugins:netbox_kea:sync_jobs"))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(writes, [])
+
+    def test_server_sync_status_get_writes_no_row(self):
+        url = reverse("plugins:netbox_kea:server_sync_status", args=[self.server.pk])
+        response, writes = _get_with_writes(self.client, url)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(writes, [])
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
