@@ -2004,7 +2004,7 @@ class TestJournalHelperEdgeCases(_ViewTestBase):
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestHTMXExceptionHandler(_ViewTestBase):
-    """Lines 731-736: exception during HTMX partial rendering returns error partial."""
+    """An exception during the HTMX lease fetch renders the error partial."""
 
     _SUBNETS4 = _subnet_list(4, [{"id": 1, "subnet": "10.0.0.0/24"}])
 
@@ -2031,7 +2031,7 @@ class TestHTMXExceptionHandler(_ViewTestBase):
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestLeaseEditGet(_ViewTestBase):
-    """Lines 894-896, 899-900, 910: lease edit GET error paths."""
+    """Lease edit GET: Kea errors, a missing lease, and the v6 DUID."""
 
     def test_get_kea_exception_redirects(self):
         """KeaException in lease4 GET redirects to leases page."""
@@ -2049,7 +2049,7 @@ class TestLeaseEditGet(_ViewTestBase):
         self.assertEqual(response.status_code, 302)
 
     def test_get_v6_lease_includes_duid(self):
-        """v6 lease GET includes duid in form initial (line 910)."""
+        """v6 lease GET includes duid in form initial."""
         server6 = _make_db_server(name="kea6-only", ca_url="https://kea6.example.com", dhcp4=False, dhcp6=True)
         url = reverse("plugins:netbox_kea:server_lease6_edit", args=[server6.pk, "2001:db8::1"])
         with _lease_stub(
@@ -2077,7 +2077,7 @@ class TestLeaseEditGet(_ViewTestBase):
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestLeaseEditPostInvalidForm(_ViewTestBase):
-    """Line 931: lease edit POST with invalid form re-renders with 200."""
+    """Lease edit POST with an invalid form re-renders with 200."""
 
     def test_post_invalid_form_rerenders(self):
         url = reverse("plugins:netbox_kea:server_lease4_edit", args=[self.server.pk, "10.0.0.1"])
@@ -2095,7 +2095,7 @@ class TestLeaseEditPostInvalidForm(_ViewTestBase):
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestLeaseAddGenericException(_ViewTestBase):
-    """Lines 1056-1058: generic exception on lease_add re-renders form."""
+    """A transport error on lease add re-renders the form."""
 
     def test_generic_exception_rerenders_form(self):
         url = reverse("plugins:netbox_kea:server_lease4_add", args=[self.server.pk])
@@ -2123,7 +2123,7 @@ class TestLeaseAddGenericException(_ViewTestBase):
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestFetchLeasesFromServer(_ViewTestBase):
-    """Lines 3423-3452: _fetch_leases_from_server with various search branches."""
+    """_fetch_leases_from_server with each search selector."""
 
     def _call(self, by, q="aa:bb:cc:dd:ee:ff", version=4, resp=None):
         from netbox_kea.views.combined import _fetch_leases_from_server
@@ -2187,7 +2187,7 @@ class TestFetchLeasesFromServer(_ViewTestBase):
                 _fetch_leases_from_server(self.server, "ghost", constants.BY_HOSTNAME, 4)
 
     def test_by_subnet_id(self):
-        """Lines 3432-3433: BY_SUBNET_ID branch sets command_suffix='-all' and subnets arg."""
+        """The BY_SUBNET_ID selector fetches the leases of one Subnet."""
         from netbox_kea import constants
 
         resp = [{"result": 0, "arguments": {"leases": [{"ip-address": "10.0.0.1", "valid-lft": 3600, "state": 0}]}}]
@@ -2227,7 +2227,7 @@ class TestFetchLeasesFromServer(_ViewTestBase):
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestFetchAllLeasesFromServer(_ViewTestBase):
-    """Lines 3497-3509: _fetch_all_leases_from_server pagination and truncation."""
+    """_fetch_all_leases_from_server pagination and truncation, through KeaClient.lease_get_all."""
 
     def _run(self, responses, max_leases=1000):
         from netbox_kea.views.combined import _fetch_all_leases_from_server
@@ -2239,7 +2239,7 @@ class TestFetchAllLeasesFromServer(_ViewTestBase):
             return _fetch_all_leases_from_server(self.server, version=4, max_leases=max_leases)
 
     def test_result_3_stops_loop(self):
-        """Line 3497: result=3 breaks the pagination loop."""
+        """result=3 breaks the pagination loop."""
         leases, truncated = self._run([[{"result": 3, "arguments": None}]])
         self.assertEqual(leases, [])
         self.assertFalse(truncated)
@@ -2250,7 +2250,7 @@ class TestFetchAllLeasesFromServer(_ViewTestBase):
             self._run([[{"result": 0, "arguments": None}]])
 
     def test_truncation_at_max(self):
-        """Lines 3504-3506: truncates when max_leases exceeded."""
+        """Truncates when max_leases is exceeded."""
         page = [
             {
                 "result": 0,
@@ -2268,7 +2268,7 @@ class TestFetchAllLeasesFromServer(_ViewTestBase):
         self.assertEqual(len(leases), 1)
 
     def test_final_page_no_cursor_update(self):
-        """Lines 3507: count < per_page → loop ends without updating cursor."""
+        """count < per_page → loop ends without updating cursor."""
         page = [
             {
                 "result": 0,
@@ -2280,7 +2280,7 @@ class TestFetchAllLeasesFromServer(_ViewTestBase):
         self.assertEqual(len(leases), 1)
 
     def test_multi_page_cursor_updated(self):
-        """Line 3509: cursor advances when count == per_page (250)."""
+        """Cursor advances when count == per_page (250)."""
         big_page = [{"ip-address": f"10.0.{i // 256}.{i % 256}", "valid-lft": 3600, "state": 0} for i in range(250)]
         last_page = [{"ip-address": "10.3.255.1", "valid-lft": 3600, "state": 0}]
         responses = [
@@ -2299,13 +2299,13 @@ class TestFetchAllLeasesFromServer(_ViewTestBase):
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestLeaseBulkImportEdgeCases(_ViewTestBase):
-    """Lines 4599, 4617-4619, 4641-4643: lease CSV import edge cases."""
+    """Lease CSV import: invalid form, parse error, and per-row errors."""
 
     def _url(self):
         return reverse("plugins:netbox_kea:server_lease4_bulk_import", args=[self.server.pk])
 
     def test_post_no_file_rerenders(self):
-        """Line 4599: POST without csv_file → invalid form → 200."""
+        """POST without csv_file → invalid form → 200."""
         response = self.client.post(self._url(), {})
         self.assertEqual(response.status_code, 200)
 
@@ -2331,7 +2331,7 @@ class TestLeaseBulkImportEdgeCases(_ViewTestBase):
 
     @patch("netbox_kea.views.sync_views.parse_lease_csv", autospec=True)
     def test_parse_error_shows_form_error(self, mock_parse):
-        """Lines 4617-4619: ValueError from parse_lease_csv adds generic form error (no raw exception text)."""
+        """ValueError from parse_lease_csv adds generic form error (no raw exception text)."""
         import io
 
         mock_parse.side_effect = ValueError("bad column")
@@ -2418,7 +2418,7 @@ class TestGetLeasesCoverage(_ViewTestBase):
             view.get_leases(client, "test_query", "not_a_valid_by")
 
     def test_null_args_from_lease_get_raises_runtime_error(self):
-        """Line 535: lease-get returns arguments=None → RuntimeError (caught by HTMX handler)."""
+        """lease-get returns arguments=None → RuntimeError (caught by HTMX handler)."""
         subnets = _subnet_list(4, [])
         with _lease_stub({"subnet4-list": subnets, "lease4-get": {"result": 0, "arguments": None}}):
             response = self.client.get(
@@ -2431,7 +2431,7 @@ class TestGetLeasesCoverage(_ViewTestBase):
 
 
 # ---------------------------------------------------------------------------
-# get_export — invalid form (lines 563-564) + export_all null args (line 618)
+# get_export — invalid form + get_export_all null args
 # ---------------------------------------------------------------------------
 
 
@@ -2443,13 +2443,13 @@ class TestGetExportCoverage(_ViewTestBase):
         return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
 
     def test_export_with_invalid_form_redirects(self):
-        """Lines 563-564: invalid form for export → messages.warning + redirect."""
+        """Invalid form for export → messages.warning + redirect."""
         # Pass an invalid 'by' value (not in choices) to force form.is_valid() == False
         response = self.client.get(self._url(), {"export": "1", "by": "INVALID_VALUE", "q": "test"})
         self.assertIn(response.status_code, [200, 302])
 
     def test_export_all_null_args_returns_csv(self):
-        """Line 618: export_all lease-get-page returns arguments=None → break → empty CSV."""
+        """export_all: lease-get-page returns arguments=None → empty CSV."""
         with _lease_stub({"lease4-get-page": {"result": 0, "arguments": None}}):
             response = self.client.get(self._url(), {"export_all": "1"})
         # Should return CSV even when args is None (empty export)
@@ -2457,13 +2457,13 @@ class TestGetExportCoverage(_ViewTestBase):
 
 
 # ---------------------------------------------------------------------------
-# HTMX invalid form (lines 649-650)
+# HTMX invalid form
 # ---------------------------------------------------------------------------
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestHTMXInvalidFormCoverage(_ViewTestBase):
-    """Lines 649-650: HTMX GET with invalid form → renders HTMX partial."""
+    """HTMX GET with invalid form → renders HTMX partial."""
 
     def test_htmx_invalid_form_returns_partial(self):
         """form.is_valid()==False for HTMX → renders server_dhcp_leases_htmx.html."""
@@ -2480,13 +2480,13 @@ class TestHTMXInvalidFormCoverage(_ViewTestBase):
 
 
 # ---------------------------------------------------------------------------
-# Lease6 edit — duid branch (lines 952-953)
+# Lease6 edit — duid branch
 # ---------------------------------------------------------------------------
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestLease6EditDuid(_ViewTestBase):
-    """Lines 952-953: POST lease6 edit with duid → duid added to kwargs."""
+    """POST lease6 edit with duid → lease6-update carries the duid."""
 
     def test_post_with_duid_calls_lease_update(self):
         """duid field in POST → kwargs['duid'] is set and lease_update called."""
@@ -2512,16 +2512,16 @@ class TestLease6EditDuid(_ViewTestBase):
 
 
 # ---------------------------------------------------------------------------
-# _fetch_one — missing subnet_id (line 3561)
+# Lease reservation lookup — missing subnet_id
 # ---------------------------------------------------------------------------
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestFetchOneEmptyLease(_ViewTestBase):
-    """Line 3561: _fetch_one returns early when lease has no subnet_id."""
+    """_reservation_for_lease_worker returns early when the lease has no subnet_id."""
 
     def test_lease_without_subnet_id_skips_reservation_lookup(self):
-        """Lease without subnet-id → _fetch_one returns (ip, None, True) without API call."""
+        """Lease without subnet-id → no reservation lookup is sent to Kea."""
         subnets = _subnet_list(4, [])
         # A lease with ip-address but NO subnet-id → enrichment issues no reservation-get
         # (an empty registry for reservation-get would raise if it were called).
@@ -2536,13 +2536,13 @@ class TestFetchOneEmptyLease(_ViewTestBase):
 
 
 # ---------------------------------------------------------------------------
-# CombinedLeasesView — truncated server (line 4228)
+# Combined leases view — truncated server
 # ---------------------------------------------------------------------------
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestCombinedLeasesTruncated(_ViewTestBase):
-    """Line 4228: _fetch_all_leases_from_server returns was_truncated=True → server name added."""
+    """_fetch_all_leases_from_server returns truncated=True → server name added."""
 
     @patch("netbox_kea.views.combined._fetch_all_leases_from_server", autospec=True)
     def test_truncated_server_name_in_context(self, mock_fetch_all):
@@ -3420,10 +3420,10 @@ class TestLeaseDeletePartialFailure(_ViewTestBase):
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestFetchOneMacValueError(_ViewTestBase):
-    """_fetch_one_mac must return _FETCH_ERROR sentinel when subnet_id is non-numeric.
+    """A lease with a non-numeric subnet_id gets no reservation lookup.
 
-    This is tested via HTMX lease search where the lease has a non-int subnet_id,
-    triggering the ValueError path in _fetch_one_mac.
+    _reservation_for_lease_worker marks the lease indeterminate; the test drives it
+    through an HTMX lease search.
     """
 
     def _htmx_get(self, url, data):
