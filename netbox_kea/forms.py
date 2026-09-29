@@ -1142,10 +1142,12 @@ class SubnetAddForm(_SubnetBaseForm):
         max_value=MAX_SUBNET_ID,
         help_text="Leave blank to use the highest existing subnet ID plus one.",
     )
-    shared_network = forms.ChoiceField(
+    # A free name: config_write checks that the Shared Network exists. The view sets the offered names.
+    shared_network = forms.CharField(
         label="Shared Network",
-        choices=[],
+        widget=forms.Select,
         required=False,
+        strip=False,
         help_text="Assign this subnet to a shared network immediately after creation.",
     )
 
@@ -1171,8 +1173,6 @@ class SubnetEditForm(_ShownValuesForm[SubnetEdit], _SubnetBaseForm):
     The subnet CIDR and ID are immutable. The CIDR, the Shared Network and the values that the page showed are
     hidden fields, so the change acts only on the Subnet that the page showed. All other fields are optional. A blank
     Pool, option or DDNS field removes that value. A blank lifetime or timer keeps the live value.
-
-    ``shared_network`` choices are set dynamically by the view at render time.
     """
 
     subnet_field = "subnet_cidr"
@@ -1220,10 +1220,12 @@ class SubnetEditForm(_ShownValuesForm[SubnetEdit], _SubnetBaseForm):
         min_value=1,
         help_text="Time (seconds) after which client should rebind. Kea parameter: rebind-timer.",
     )
-    shared_network = forms.ChoiceField(
+    # A free name: edit_subnet checks that the Shared Network exists. The view sets the offered names.
+    shared_network = forms.CharField(
         label="Shared Network",
+        widget=forms.Select,
         required=False,
-        choices=[],
+        strip=False,
         help_text="Assign this subnet to a shared network, or leave blank to use the global address pool.",
     )
     # The Shared Network of the Subnet when the page loaded, as Kea names it; blank means none. Not a shown_ copy of

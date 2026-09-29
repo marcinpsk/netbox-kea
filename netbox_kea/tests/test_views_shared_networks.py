@@ -214,7 +214,9 @@ class TestServerSharedNetworks4View(_ViewTestBase):
 
         self.assertContains(server_list, "empty-clients")
         self.assertContains(combined_list, "empty-clients")
-        self.assertIn(("empty-clients", "empty-clients"), subnet_add.context["form"].fields["shared_network"].choices)
+        self.assertIn(
+            ("empty-clients", "empty-clients"), subnet_add.context["form"].fields["shared_network"].widget.choices
+        )
         self.assertEqual(kea.commands().count("config-get"), 1)
 
     def test_incomplete_snapshot_shows_valid_network_and_warning(self):
