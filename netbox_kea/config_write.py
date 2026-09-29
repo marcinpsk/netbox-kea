@@ -71,9 +71,6 @@ _LOCK_CLASS = _int4("netbox_kea.config_write")
 
 
 SUBNET_LIST_UNCONFIRMED = "NetBox could not confirm Kea's Subnet list, so it did not send the change. Try again later."
-SHARED_NETWORKS_UNCONFIRMED = (
-    "NetBox could not confirm Kea's Shared Networks, so it did not send the change. Try again later."
-)
 _READ_UNUSABLE = "Kea did not return a usable reply to the read before the change."
 _CONFIG_TEST_UNUSABLE = "Kea did not return a usable reply to config-test."
 # A live value that the edit form cannot show, so the operator cannot have seen it.
@@ -165,20 +162,18 @@ def add_subnet(
         if application == "unknown":
             diagnostics = (*diagnostics, f"NetBox sent Subnet {identity.subnet_id} ({identity.cidr}).")
         elif shared_network is not None:
-            application, diagnostics = _assign_new_subnet(client, family, identity, shared_network)
+            application, diagnostics = _assign_new_subnet(server, client, family, identity, shared_network)
         persisted = client.persist(family)
         return SubnetAddOutcome(
             application, persisted.persistence, diagnostics + persisted.diagnostics, subnet_id=identity.subnet_id
         )
 
 
-def _require_shared_network(scope: MutationScope, name: str) -> None:
-    """Reject the change unless the configuration read of *scope* shows the Shared Network *name*."""
-    try:
-        present = scope.has_shared_network(name)
-    except CatalogueUnavailable as exc:
-        raise ConfigChangeRejected("not-sent", (SHARED_NETWORKS_UNCONFIRMED,)) from exc
-    if not present:
+def _require_shared_network(client: KeaClient, family: Family, name: str, shown: bool | None) -> None:
+    """Reject the change when Kea has no Shared Network *name*. *shown* is what the scope read shows, None: unknown."""
+    if shown is None:
+        shown = _read_before(lambda: client.shared_network_exists(family, name))
+    if not shown:
         raise ConfigChangeRejected("not-sent", (f"Shared Network '{name}' not found.",))
 
 
@@ -193,18 +188,18 @@ def _create_subnet(
 ) -> tuple[NewSubnetIdentity, Application, tuple[str, ...]]:
     """Send the Subnet add under an identity from a live scope. Retry once when another Subnet took the allocated ID.
 
-    The scope must also show *shared_network*, when one is named.
+    Before that, reject a *shared_network* that Kea does not have.
     """
     with mutation(server, family) as scope:
         if shared_network is not None:
-            _require_shared_network(scope, shared_network)
+            _require_shared_network(client, family, shared_network, scope.has_shared_network(shared_network))
         identity = scope.prepare_creation(cidr, requested_id)
     taken = False
 
     def absent() -> bool:
         # Not live only while no Subnet has the ID and the CIDR that the add sent.
         nonlocal taken
-        current = _subnet_now(client, family, identity.subnet_id)
+        current = _subnet_now(server, family, identity.subnet_id)
         taken = current is not None and current.network != identity.network
         return current is None or taken
 
@@ -229,20 +224,20 @@ def _create_subnet(
 
 
 def _assign_new_subnet(
-    client: KeaClient, family: Family, identity: NewSubnetIdentity, name: str
+    server: Server, client: KeaClient, family: Family, identity: NewSubnetIdentity, name: str
 ) -> tuple[Application, tuple[str, ...]]:
     """Assign the new Subnet to the Shared Network *name*. Delete the Subnet again when the assignment did not apply."""
     subnet_id, network = identity.subnet_id, identity.network
     delete = _Undo(
         text=f"delete Subnet {subnet_id} again",
         send=lambda: client.subnet_del(family, subnet_id),
-        not_live=lambda: _still_there(client, family, subnet_id, network),
-        holds=lambda: _member_of(client, family, subnet_id, network, None),
+        not_live=lambda: _still_there(server, family, subnet_id, network),
+        holds=lambda: _member_of(server, family, subnet_id, network, None),
     )
     assign = _Command(
         text=f"assign it to Shared Network '{name}'",
         send=lambda: client.network_subnet_add(family, name, subnet_id),
-        not_live=lambda: _not_joined(client, family, subnet_id, name),
+        not_live=lambda: _not_joined(server, family, subnet_id, name),
     )
     deleted = (
         f"NetBox added Subnet {subnet_id} ({identity.cidr}), but the assignment to Shared Network '{name}' did not "
@@ -273,15 +268,16 @@ def edit_subnet(
     with _client(server, family) as client, _serialized(client, family):
         with mutation(server, family) as scope:
             subnet = _subnet_as_seen(scope, subnet_id, cidr, membership=True)
-            current = subnet.shared_network.name if subnet.shared_network is not None else None
-            if current != original_network:
-                # Another writer moved the Subnet, so a move to *shared_network* would undo that change.
-                moved = (
-                    f"The Shared Network of Subnet {subnet_id} ({cidr}) changed in Kea. Reload the page and try again."
-                )
-                raise ConfigChangeRejected("not-sent", (moved,))
-            if shared_network is not None and shared_network != current:
-                _require_shared_network(scope, shared_network)
+            target_shown = None if shared_network is None else scope.has_shared_network(shared_network)
+        current = subnet.shared_network.name if subnet.shared_network is not None else None
+        if current != original_network:
+            # Another writer moved the Subnet, so a move to *shared_network* would undo that change.
+            raise ConfigChangeRejected(
+                "not-sent",
+                (f"The Shared Network of Subnet {subnet_id} ({cidr}) changed in Kea. Reload the page and try again.",),
+            )
+        if shared_network is not None and shared_network != current:
+            _require_shared_network(client, family, shared_network, target_shown)
         definition = _read_before(lambda: client.subnet_definition(family, subnet_id))
         if definition.network != subnet.network:
             raise ConfigChangeRejected("not-sent", (subnet_changed(subnet_id, cidr),))
@@ -294,9 +290,9 @@ def edit_subnet(
         moves: list[_Step] = []
         if shared_network != current:
             if current is not None:
-                moves.append(_leave(client, family, subnet, current))
+                moves.append(_leave(server, client, family, subnet, current))
             if shared_network is not None:
-                moves.append(_join(client, family, subnet, shared_network, len(moves) + 1))
+                moves.append(_join(server, client, family, subnet, shared_network, len(moves) + 1))
         update = _Command(
             text=f"update the fields of Subnet {subnet_id}",
             send=lambda: client.subnet_update(definition, edit),
@@ -312,35 +308,35 @@ def edit_subnet(
         return _persisted(client, family, application, diagnostics)
 
 
-def _leave(client: KeaClient, family: Family, subnet: VerifiedSubnet, name: str) -> _Step:
+def _leave(server: Server, client: KeaClient, family: Family, subnet: VerifiedSubnet, name: str) -> _Step:
     """Return step 1 of a move: remove *subnet* from the Shared Network *name*."""
     subnet_id, network = subnet.subnet_id, subnet.network
     return _Step(
         text=f"remove Subnet {subnet_id} from Shared Network '{name}'",
         send=lambda: client.network_subnet_del(family, name, subnet_id),
-        not_live=lambda: _member_of(client, family, subnet_id, network, SharedNetworkMembership(name)),
+        not_live=lambda: _member_of(server, family, subnet_id, network, SharedNetworkMembership(name)),
         undo=_Undo(
             text=f"add Subnet {subnet_id} to Shared Network '{name}' to undo step 1",
             send=lambda: client.network_subnet_add(family, name, subnet_id),
-            not_live=lambda: _not_joined(client, family, subnet_id, name),
-            holds=lambda: _member_of(client, family, subnet_id, network, None),
+            not_live=lambda: _not_joined(server, family, subnet_id, name),
+            holds=lambda: _member_of(server, family, subnet_id, network, None),
         ),
     )
 
 
-def _join(client: KeaClient, family: Family, subnet: VerifiedSubnet, name: str, number: int) -> _Step:
+def _join(server: Server, client: KeaClient, family: Family, subnet: VerifiedSubnet, name: str, number: int) -> _Step:
     """Return step *number* of a move: add *subnet* to the Shared Network *name*."""
     subnet_id, network = subnet.subnet_id, subnet.network
     joined = SharedNetworkMembership(name)
     return _Step(
         text=f"add Subnet {subnet_id} to Shared Network '{name}'",
         send=lambda: client.network_subnet_add(family, name, subnet_id),
-        not_live=lambda: _not_joined(client, family, subnet_id, name),
+        not_live=lambda: _not_joined(server, family, subnet_id, name),
         undo=_Undo(
             text=f"remove Subnet {subnet_id} from Shared Network '{name}' to undo step {number}",
             send=lambda: client.network_subnet_del(family, name, subnet_id),
-            not_live=lambda: _member_of(client, family, subnet_id, network, joined),
-            holds=lambda: _member_of(client, family, subnet_id, network, joined),
+            not_live=lambda: _member_of(server, family, subnet_id, network, joined),
+            holds=lambda: _member_of(server, family, subnet_id, network, joined),
         ),
     )
 
@@ -470,7 +466,7 @@ def delete_subnet(server: Server, family: Family, subnet_id: int, cidr: str) -> 
             client,
             family,
             lambda: client.subnet_del(family, subnet.subnet_id),
-            not_live=lambda: _still_there(client, family, subnet.subnet_id, subnet.network),
+            not_live=lambda: _still_there(server, family, subnet.subnet_id, subnet.network),
         )
         return _persisted(client, family, application, diagnostics)
 
@@ -713,37 +709,33 @@ def _require_pool_state(subnet: VerifiedSubnet, action: PoolAction, pool: Pool) 
     )
 
 
-def _subnet_now(client: KeaClient, family: Family, subnet_id: int) -> VerifiedSubnet | None:
-    """Read the Subnet with *subnet_id* in a fresh Subnet list. Return None when no Subnet has that ID."""
-    return read_identity(client, family).find_by_id(subnet_id)
+def _subnet_now(server: Server, family: Family, subnet_id: int) -> VerifiedSubnet | None:
+    """Read the Subnet with *subnet_id* in a fresh ``subnet{v}-list`` read. Return None when no Subnet has that ID."""
+    return read_identity(server, family).find_by_id(subnet_id)
 
 
-def _still_there(client: KeaClient, family: Family, subnet_id: int, network: IPNetworkValue) -> bool:
-    """Read in a fresh Subnet list whether *subnet_id* still names *network*."""
-    current = _subnet_now(client, family, subnet_id)
+def _still_there(server: Server, family: Family, subnet_id: int, network: IPNetworkValue) -> bool:
+    """Read in a fresh ``subnet{v}-list`` read whether *subnet_id* still names *network*."""
+    current = _subnet_now(server, family, subnet_id)
     return current is not None and current.network == network
 
 
-def _member_now(client: KeaClient, family: Family, subnet_id: int) -> VerifiedSubnet | None:
-    """Read the Subnet with *subnet_id* in a fresh Subnet list that confirms its Shared Network membership."""
-    return read_identity(client, family).find_with_membership(subnet_id)
+def _member_now(server: Server, family: Family, subnet_id: int) -> VerifiedSubnet | None:
+    """Read the Subnet with *subnet_id* in a fresh ``subnet{v}-list`` read that confirms its Shared Network membership."""
+    return read_identity(server, family).find_with_membership(subnet_id)
 
 
 def _member_of(
-    client: KeaClient,
-    family: Family,
-    subnet_id: int,
-    network: IPNetworkValue,
-    membership: SharedNetworkMembership | None,
+    server: Server, family: Family, subnet_id: int, network: IPNetworkValue, membership: SharedNetworkMembership | None
 ) -> bool:
-    """Read in a fresh Subnet list whether *subnet_id* still names *network* and has the Shared Network *membership*."""
-    current = _member_now(client, family, subnet_id)
+    """Read in a fresh ``subnet{v}-list`` read whether *subnet_id* names *network* and has the *membership*."""
+    current = _member_now(server, family, subnet_id)
     return current is not None and current.network == network and current.shared_network == membership
 
 
-def _not_joined(client: KeaClient, family: Family, subnet_id: int, name: str) -> bool:
-    """Read in a fresh Subnet list whether the Subnet with *subnet_id* is outside the Shared Network *name*."""
-    current = _member_now(client, family, subnet_id)
+def _not_joined(server: Server, family: Family, subnet_id: int, name: str) -> bool:
+    """Read in a fresh ``subnet{v}-list`` read whether the Subnet with *subnet_id* is outside the Shared Network *name*."""
+    current = _member_now(server, family, subnet_id)
     return current is None or current.shared_network != SharedNetworkMembership(name)
 
 

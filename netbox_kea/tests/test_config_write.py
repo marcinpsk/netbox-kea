@@ -857,15 +857,32 @@ class SubnetAddTests(TestCase):
 
     def test_a_shared_network_that_the_scope_read_shows_is_found_beside_a_broken_entry(self):
         daemon = self._broken_networks([{"name": "net-a"}, {"name": 5}])
-        outcome, _kea = self._add(daemon, network="net-a")
+        outcome, kea = self._add(daemon, network="net-a")
         self.assertEqual(outcome, SubnetAddOutcome("applied", "persisted", subnet_id=8))
+        self.assertEqual(kea.commands(), [*_scope(4), "subnet4-add", "network4-subnet-add", *_PERSIST])
         self.assertEqual(daemon.members, {8: "net-a"})
 
-    def test_a_shared_network_that_the_scope_read_cannot_confirm_sends_no_add(self):
-        rejection, kea = self._rejection(self._broken_networks([{"name": "net-b"}, {"name": 5}]), network="net-a")
-        self.assertEqual(rejection.reason, "not-sent")
-        self.assertEqual(rejection.diagnostics, (config_write.SHARED_NETWORKS_UNCONFIRMED,))
-        self.assertEqual(kea.commands(), _scope(4))
+    def test_a_scope_read_that_cannot_show_the_shared_network_asks_kea_for_it(self):
+        for label, networks, config_get in (
+            ("broken Shared Network entry", [{"name": "net-b"}, {"name": 5}], None),
+            ("failed config-get", None, {"result": 1, "text": "internal error"}),
+        ):
+            for network, found in (("net-a", True), ("net-c", False)):
+                with self.subTest(label, network=network):
+                    daemon = self._broken_networks(networks) if networks else self._daemon(4)
+                    if config_get is not None:
+                        daemon.script("config-get", config_get)
+                    if found:
+                        outcome, kea = self._add(daemon, network=network)
+                        self.assertEqual(outcome, SubnetAddOutcome("applied", "persisted", subnet_id=8))
+                        after = ["subnet4-add", "network4-subnet-add", *_PERSIST]
+                    else:
+                        rejection, kea = self._rejection(daemon, network=network)
+                        self.assertEqual(rejection.reason, "not-sent")
+                        self.assertEqual(rejection.diagnostics, ("Shared Network 'net-c' not found.",))
+                        after = []
+                    self.assertEqual(kea.commands(), [*_scope(4), "network4-get", *after])
+                    self.assertEqual(kea.bodies("network4-get")[0]["arguments"], {"name": network})
 
     def test_an_identity_that_exists_or_cannot_be_checked_leaves_before_any_change(self):
         taken = [*_EXISTING[4], {"id": 5, "subnet": _NEW[4]}]
@@ -1151,6 +1168,47 @@ class SubnetAddTests(TestCase):
                         *_PERSIST,
                     ],
                 )
+
+    def test_a_check_read_without_the_membership_key_sends_no_undo(self):
+        """Kea 3.2.0 always sends shared-network-name, so a reply without it cannot show that the Subnet has none."""
+        daemon = self._daemon(4)
+        daemon.script("network4-subnet-add", {"result": 1, "text": "subnet is in use"})
+        daemon.script("subnet4-list", RUN, RUN, _subnet_list(4, [*_EXISTING[4], {"id": 8, "subnet": _NEW[4]}]))
+        outcome, kea = self._add(daemon, network="net-a")
+        self.assertEqual(outcome, self._undo_not_read())
+        self.assertNotIn("subnet4-del", kea.commands())
+        self.assertIn(8, daemon.ids())
+
+    def test_a_check_read_that_cannot_show_the_subnet_sends_no_undo(self):
+        new = {"id": 8, "subnet": _NEW[4], "shared-network-name": None}
+        for label, reply in (
+            ("duplicate Subnet ID", _subnet_list(4, [new, {**new, "subnet": "10.0.9.0/24"}])),
+            ("subnets is not a list", {"result": 0, "arguments": {"subnets": new}}),
+            ("no arguments", {"result": 0, "text": "3 IPv4 subnets found"}),
+            ("Subnet is not an object", _subnet_list(4, ["10.0.8.0/24"])),
+            ("reply is not a list", _http_response({"result": 0})),
+        ):
+            with self.subTest(label):
+                daemon = self._daemon(4)
+                daemon.script("network4-subnet-add", {"result": 1, "text": "subnet is in use"})
+                daemon.script("subnet4-list", RUN, RUN, reply)
+                outcome, kea = self._add(daemon, network="net-a")
+                self.assertEqual(outcome, self._undo_not_read())
+                self.assertNotIn("subnet4-del", kea.commands())
+                self.assertIn(8, daemon.ids())
+
+    @staticmethod
+    def _undo_not_read() -> SubnetAddOutcome:
+        return SubnetAddOutcome(
+            "unknown",
+            "persisted",
+            (
+                *_steps(4, "not applied"),
+                "Kea replied: subnet is in use",
+                "Step 3, delete Subnet 8 again: not sent, because NetBox could not read the Subnet again.",
+            ),
+            subnet_id=8,
+        )
 
     def test_an_unknown_membership_before_the_rollback_counts_as_changed(self):
         daemon = self._daemon(4)
@@ -1490,17 +1548,19 @@ class SubnetEditTests(TestCase):
                 self.assertEqual(rejection.diagnostics, ("Shared Network 'gone' not found.",))
                 self.assertEqual(kea.commands(), _scope(version))
 
-    def test_a_target_shared_network_that_the_scope_cannot_confirm_sends_nothing(self):
+    def test_a_target_shared_network_that_the_scope_read_cannot_show_is_read_from_kea(self):
         daemon = self._daemon(4, None)
         networks = [{"name": "office"}, {"name": 5}]
         daemon.script(
             "config-get", _catalogue_responses_for_subnets(4, [_LIVE[4]], shared_networks=networks)["config-get"]
         )
-        rejection, kea = self._rejection(daemon, "lab")
-        self.assertEqual(rejection.reason, "not-sent")
-        self.assertEqual(rejection.diagnostics, (config_write.SHARED_NETWORKS_UNCONFIRMED,))
-        self.assertEqual(kea.commands(), _scope(4))
-        self.assertEqual(daemon.members, {})
+        outcome, kea = self._edit(daemon, "lab")
+        self.assertEqual(outcome, ConfigChangeOutcome("applied", "persisted"))
+        self.assertEqual(
+            kea.commands(),
+            [*_scope(4), "network4-get", "subnet4-get", "network4-subnet-add", "subnet4-update", *_PERSIST],
+        )
+        self.assertEqual(daemon.members, {20: "lab"})
 
     def test_a_subnet_that_changed_before_the_read_of_its_fields_sends_nothing(self):
         def replaced(d):
@@ -1907,6 +1967,30 @@ class SubnetEditTests(TestCase):
             ),
         )
         self.assertEqual(kea.commands()[-6:], ["subnet4-update", "subnet4-get", *_check(4), *_PERSIST])
+        self.assertEqual(daemon.members, {})
+
+    def test_a_check_read_without_the_membership_key_sends_no_undo(self):
+        daemon = self._daemon(4)
+        daemon.script("network4-subnet-add", {"result": 1, "text": "shared network is locked"})
+        daemon.script("subnet4-list", RUN, RUN, _subnet_list(4, [{"id": 20, "subnet": _EDITED[4]}]))
+        outcome, kea = self._edit(daemon, "lab")
+        self.assertEqual(
+            outcome,
+            ConfigChangeOutcome(
+                "unknown",
+                "persisted",
+                (
+                    f"{_LEAVE}: applied.",
+                    f"{_JOIN}: not applied.",
+                    "Kea replied: shared network is locked",
+                    (
+                        "Step 3, add Subnet 20 to Shared Network 'office' to undo step 1: not sent, because NetBox "
+                        "could not read the Subnet again."
+                    ),
+                ),
+            ),
+        )
+        self.assertEqual(self._names(kea, "network4-subnet-add"), ["lab"])
         self.assertEqual(daemon.members, {})
 
     def test_an_unknown_membership_before_an_undo_counts_as_changed(self):
