@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 from dataclasses import dataclass
 from typing import Any
 
@@ -134,6 +135,33 @@ def _form_option_field(option: DHCPOption, version: int) -> str | None:
     if field == "gateway" and "," in option.data:
         return None
     return field
+
+
+class InvalidAddress(ValueError):
+    """An entry of an address list that is not an IP address."""
+
+    def __init__(self, entry: str) -> None:
+        """Keep the *entry* for the message of the form."""
+        super().__init__(f"{entry!r} is not an IP address.")
+        self.entry = entry
+
+
+def address_list(text: str) -> tuple[str, ...]:
+    """Return each address of the comma-separated *text* in its canonical form, without the empty entries.
+
+    Raises:
+        InvalidAddress: For the first entry that is not an IP address.
+
+    """
+    addresses: list[str] = []
+    for entry in (entry.strip() for entry in text.split(",")):
+        if not entry:
+            continue
+        try:
+            addresses.append(str(ipaddress.ip_address(entry)))
+        except ValueError as exc:
+            raise InvalidAddress(entry) from exc
+    return tuple(addresses)
 
 
 def parse_dhcp_option(entry: Any) -> DHCPOption:

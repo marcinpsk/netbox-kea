@@ -106,6 +106,7 @@
           </div>
           {{ form.shown_network }}
           {{ form.shown_network_confirmed }}
+          {% for field in form.shown_fields %}{{ field }}{% endfor %}
 
           <hr>
           <p class="text-muted small">Lease lifetime overrides (leave blank to keep the current value)</p>

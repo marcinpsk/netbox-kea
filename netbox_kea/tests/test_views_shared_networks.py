@@ -42,7 +42,7 @@ from .kea_stub import (
     queued,
     stub_kea,
 )
-from .utils import _PLUGINS_CONFIG, _make_db_server, _ReadModifyWriteMessages, _ViewTestBase
+from .utils import _PLUGINS_CONFIG, _make_db_server, _page_data, _ReadModifyWriteMessages, _ViewTestBase
 
 _CONFIG_OK = {"result": 0}
 
@@ -699,9 +699,8 @@ class TestServerSharedNetwork4EditView(_ViewTestBase):
         )
         with _edit_stub(config) as kea:
             response = self.client.get(self._url())
-            initial = response.context["form"].initial
-            self.assertEqual(initial["dns_servers"], "198.18.0.53")
-            self.client.post(self._url(), self._post_data(description="Renamed", dns_servers=initial["dns_servers"]))
+            self.assertEqual(response.context["form"].initial["dns_servers"], "198.18.0.53")
+            self.client.post(self._url(), {**_page_data(response), "description": "Renamed"})
 
         self.assertEqual(
             _written_sn(kea)["option-data"],
@@ -726,14 +725,7 @@ class TestServerSharedNetwork4EditView(_ViewTestBase):
             {"code": 42, "data": "198.18.0.123, 198.18.0.124", "csv-format": True},
         ]
         with _edit_stub(_sn_config(4, "prod-net", option_data=options)) as kea:
-            response = self.client.get(self._url())
-            initial = response.context["form"].initial
-            post = self.client.post(
-                self._url(),
-                self._post_data(
-                    description="Renamed", dns_servers=initial["dns_servers"], ntp_servers=initial["ntp_servers"]
-                ),
-            )
+            post = self.client.post(self._url(), {**_page_data(self.client.get(self._url())), "description": "Renamed"})
         self.assertEqual(post.status_code, 302)
         self.assertEqual(_written_sn(kea)["option-data"], options)
 
@@ -752,9 +744,8 @@ class TestServerSharedNetwork4EditView(_ViewTestBase):
         option = {"code": 6, "data": "198.18.0.53", "never-send": True}
         with _edit_stub(_sn_config(4, "prod-net", option_data=[option])) as kea:
             response = self.client.get(self._url())
-            initial = response.context["form"].initial
-            self.assertEqual(initial["dns_servers"], "198.18.0.53")
-            self.client.post(self._url(), self._post_data(description="Renamed", dns_servers=initial["dns_servers"]))
+            self.assertEqual(response.context["form"].initial["dns_servers"], "198.18.0.53")
+            self.client.post(self._url(), {**_page_data(response), "description": "Renamed"})
 
         self.assertEqual(_written_sn(kea)["option-data"], [option])
 
@@ -767,7 +758,7 @@ class TestServerSharedNetwork4EditView(_ViewTestBase):
             get = self.client.get(self._url())
             self.assertEqual(get.context["form"].initial["dns_servers"], "198.18.0.53")
             self.assertEqual(get.context["form"].initial["ntp_servers"], "198.18.0.123")
-            post = self.client.post(self._url(), self._post_data(dns_servers="", ntp_servers=""))
+            post = self.client.post(self._url(), {**_page_data(get), "dns_servers": "", "ntp_servers": ""})
         self.assertEqual(post.status_code, 302)
         self.assertEqual(_written_sn(kea)["option-data"], [])
 
@@ -807,6 +798,16 @@ class TestServerSharedNetwork4EditView(_ViewTestBase):
         )
         self.assertEqual(kea.commands(), ["config-get"])
 
+    def test_a_dns_value_that_is_not_an_address_list_refuses_the_edit_form(self):
+        config = _sn_config(4, "prod-net", option_data=[{"code": 6, "data": "ns.example.org"}])
+        with _edit_stub(config):
+            get = self.client.get(self._url())
+        self.assertEqual(get.status_code, 302)
+        self.assertEqual(
+            [str(m) for m in django_messages.get_messages(get.wsgi_request)],
+            ["Shared network 'prod-net' not found or could not be retrieved."],
+        )
+
     def test_post_valid_runs_the_read_modify_write_and_redirects(self):
         """POST with valid data reads the configuration once, under the lock, and redirects."""
         with _edit_stub(_sn_config(4, "prod-net")) as kea:
@@ -825,9 +826,9 @@ class TestServerSharedNetwork4EditView(_ViewTestBase):
         config["arguments"]["Dhcp4"]["shared-networks"][0]["user-context"] = {"comment": "Old", "owner": "noc"}
         for description, expected in (("New", {"comment": "New", "owner": "noc"}), ("", {"owner": "noc"})):
             with self.subTest(description=description), _edit_stub(config) as kea:
-                initial = self.client.get(self._url()).context["form"].initial
-                self.assertEqual(initial["description"], "Old")
-                self.client.post(self._url(), self._post_data(description=description))
+                page = self.client.get(self._url())
+                self.assertEqual(page.context["form"].initial["description"], "Old")
+                self.client.post(self._url(), {**_page_data(page), "description": description})
             self.assertEqual(_written_sn(kea, 4)["user-context"], expected)
 
     def test_a_structured_comment_stays_out_of_the_form_until_a_description_replaces_it(self):
@@ -843,22 +844,22 @@ class TestServerSharedNetwork4EditView(_ViewTestBase):
     def test_a_long_comment_does_not_block_an_unrelated_edit(self):
         comment = "x" * 300
         with _edit_stub(_sn_config(4, "prod-net", description=comment)) as kea:
-            initial = self.client.get(self._url()).context["form"].initial
-            post = self.client.post(self._url(), self._post_data(description=initial["description"], interface="eth1"))
+            post = self.client.post(self._url(), {**_page_data(self.client.get(self._url())), "interface": "eth1"})
         self.assertEqual(post.status_code, 302)
         self.assertEqual(_written_sn(kea, 4)["user-context"], {"comment": comment})
 
     def test_an_unrelated_edit_keeps_a_multiline_comment_the_browser_flattened(self):
         comment = " First line\nSecond line "
         with _edit_stub(_sn_config(4, "prod-net", description=comment)) as kea:
+            page = _page_data(self.client.get(self._url()))
             # A text input drops line breaks; Django strips the rest.
-            post = self.client.post(self._url(), self._post_data(description="First lineSecond line", interface="eth1"))
+            post = self.client.post(self._url(), {**page, "description": "First lineSecond line", "interface": "eth1"})
         self.assertEqual(post.status_code, 302)
         self.assertEqual(_written_sn(kea, 4)["user-context"], {"comment": comment})
 
     def test_clearing_the_only_comment_removes_the_user_context(self):
         with _edit_stub(_sn_config(4, "prod-net", description="Old")) as kea:
-            self.client.post(self._url(), self._post_data(description=""))
+            self.client.post(self._url(), {**_page_data(self.client.get(self._url())), "description": ""})
         self.assertNotIn("user-context", _written_sn(kea, 4))
 
     def test_post_sends_the_config_set_to_dhcp4(self):
@@ -920,6 +921,67 @@ class TestServerSharedNetwork6EditView(_ViewTestBase):
             post = self.client.post(self._url(), {"interface": "", "relay_addresses": "", **initial})
         self.assertEqual(post.status_code, 302)
         self.assertEqual(_written_sn(kea, 6)["option-data"], options)
+
+
+class _RunningConfiguration:
+    """A daemon whose config-get returns the running configuration and whose config-set replaces it."""
+
+    def __init__(self, config_get: dict) -> None:
+        self.config_get = copy.deepcopy(config_get)
+
+    def responses(self) -> dict:
+        return {
+            "config-get": lambda _body: copy.deepcopy(self.config_get),
+            "config-test": _CONFIG_OK,
+            "config-set": self._set,
+            "config-write": _CONFIG_OK,
+        }
+
+    def _set(self, body: dict) -> dict:
+        self.config_get = {"result": 0, "arguments": {**copy.deepcopy(body["arguments"]), "hash": "set"}}
+        return _CONFIG_OK
+
+    def network(self, version: int) -> dict:
+        return self.config_get["arguments"][f"Dhcp{version}"]["shared-networks"][0]
+
+
+_DNS_OPTION = {
+    4: ("domain-name-servers", "192.0.2.53", "192.0.2.54"),
+    6: ("dns-servers", "2001:db8::53", "2001:db8::54"),
+}
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestSharedNetworkEditStaleValues(_ViewTestBase):
+    """Two operators load the same edit page, and each one changes a different field."""
+
+    def test_a_save_from_a_page_that_shows_a_changed_value_is_not_sent(self):
+        for version in (4, 6):
+            name, old, new = _DNS_OPTION[version]
+            daemon = _RunningConfiguration(
+                _sn_config(version, "prod-net", description="Old", option_data=[{"name": name, "data": old}])
+            )
+            url = reverse(f"plugins:netbox_kea:server_shared_network{version}_edit", args=[self.server.pk, "prod-net"])
+            with self.subTest(version=version), stub_kea(daemon.responses()) as kea:
+                self._fresh_client()
+                first = _page_data(self.client.get(url))
+                second = _page_data(self.client.get(url))
+                self.client.post(url, {**first, "description": "New"})
+                response = self.client.post(url, {**second, "dns_servers": new})
+                # The second page still shows the old description, so its save must not write it back.
+                self.assertEqual(daemon.network(version)["user-context"], {"comment": "New"})
+                self.assertEqual(daemon.network(version)["option-data"], [{"name": name, "data": old}])
+                self.assertEqual(len(kea.bodies("config-set")), 1)
+                self.assertEqual(
+                    [(m.level, str(m)) for m in django_messages.get_messages(response.wsgi_request)][-1],
+                    (
+                        django_messages.ERROR,
+                        (
+                            "The change was not sent to Kea. Shared Network 'prod-net' changed in Kea. "
+                            "Reload the page and try again."
+                        ),
+                    ),
+                )
 
 
 # ---------------------------------------------------------------------------
@@ -1059,17 +1121,7 @@ class TestSharedNetworkOptionDataPreservation(_ViewTestBase):
             option_data=[{"name": "domain-name-servers", "data": "8.8.8.8"}, custom_option],
         )
         with _edit_stub(config) as kea:
-            self.client.post(
-                self._url(),
-                {
-                    "name": "prod-net",
-                    "description": "",
-                    "interface": "",
-                    "relay_addresses": "",
-                    "dns_servers": "1.1.1.1",
-                    "ntp_servers": "",
-                },
-            )
+            self.client.post(self._url(), {**_page_data(self.client.get(self._url())), "dns_servers": "1.1.1.1"})
         options = _written_sn(kea, 4)["option-data"]
         option_names = [o["name"] for o in options]
         # The custom non-DNS option must be preserved.
@@ -1081,17 +1133,7 @@ class TestSharedNetworkOptionDataPreservation(_ViewTestBase):
         """Old DNS option from Kea is dropped; only the form-supplied DNS value is written."""
         config = _sn_config(4, "prod-net", option_data=[{"name": "domain-name-servers", "data": "8.8.8.8"}])
         with _edit_stub(config) as kea:
-            self.client.post(
-                self._url(),
-                {
-                    "name": "prod-net",
-                    "description": "",
-                    "interface": "",
-                    "relay_addresses": "",
-                    "dns_servers": "1.1.1.1",
-                    "ntp_servers": "",
-                },
-            )
+            self.client.post(self._url(), {**_page_data(self.client.get(self._url())), "dns_servers": "1.1.1.1"})
         options = _written_sn(kea, 4)["option-data"]
         dns_opts = [o for o in options if o["name"] == "domain-name-servers"]
         # Only one DNS entry must be present (the new value, not the old one).

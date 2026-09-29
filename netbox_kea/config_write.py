@@ -19,6 +19,7 @@ import requests
 from django.db import DatabaseError, OperationalError, connection, transaction
 from urllib3.exceptions import MaxRetryError, NewConnectionError
 
+from . import server_configuration
 from .constants import Family, IPNetworkValue, Persistence
 from .kea import (
     CandidateConfiguration,
@@ -236,15 +237,16 @@ def edit_subnet(
     cidr: str,
     edit: SubnetEdit,
     *,
+    shown: SubnetEdit,
     shown_network: str | None,
     shared_network: str | None,
 ) -> ConfigChangeOutcome:
     """Set the fields of the Subnet with *subnet_id* that the edit form manages, and move it to *shared_network*.
 
-    The operation acts only while that ID names the network *cidr* in the Shared Network *shown_network*: the
-    Subnet that the operator saw. A Shared Network of None means none. The operation removes the Subnet from its
-    Shared Network, adds it to the new one, and then updates the fields. When a step did not apply, it undoes the
-    membership steps before it.
+    The operation acts only while that ID names the network *cidr* with the values *shown* in the Shared Network
+    *shown_network*: the Subnet that the operator saw. A Shared Network of None means none. The operation removes the
+    Subnet from its Shared Network, adds it to the new one, and then updates the fields. When a step did not apply,
+    it undoes the membership steps before it.
     """
     with _client(server, family) as client, _serialized(client, family):
         with mutation(server, family) as scope:
@@ -259,7 +261,8 @@ def edit_subnet(
         if shared_network is not None and shared_network != current:
             _require_shared_network(client, family, shared_network)
         definition = _read_before(lambda: client.subnet_definition(family, subnet_id))
-        if definition.network != subnet.network:
+        # A value that changed after the page showed it would go back to the old value with the update.
+        if definition.network != subnet.network or server_configuration.shown_subnet_definition(definition) != shown:
             raise ConfigChangeRejected("not-sent", (subnet_changed(subnet_id, cidr),))
         moves: list[_Step] = []
         if shared_network != current:
@@ -529,14 +532,26 @@ def delete_option_definition(server: Server, family: Family, code: int, space: s
     )
 
 
-def edit_shared_network(server: Server, family: Family, name: str, edit: SharedNetworkEdit) -> ConfigChangeOutcome:
-    """Set the fields of the Shared Network *name* that the edit form manages."""
-    return _read_modify_write(
-        server,
-        family,
-        lambda candidate: candidate.edit_shared_network(name, edit),
-        missing=f"Shared Network '{name}' not found.",
-    )
+def edit_shared_network(
+    server: Server, family: Family, name: str, edit: SharedNetworkEdit, *, shown: SharedNetworkEdit
+) -> ConfigChangeOutcome:
+    """Set the fields of the Shared Network *name* that the edit form manages.
+
+    The operation acts only while the live values of the Shared Network are *shown*: the values that the operator saw.
+    """
+
+    def change(candidate: CandidateConfiguration) -> None:
+        live = server_configuration.shown_shared_network(
+            server_configuration.candidate_snapshot(server, candidate), name
+        )
+        # The edit refuses a missing Shared Network first. The operation never sends a rejected candidate.
+        candidate.edit_shared_network(name, edit)
+        if live != shown:
+            raise ConfigChangeRejected(
+                "not-sent", (f"Shared Network '{name}' changed in Kea. Reload the page and try again.",)
+            )
+
+    return _read_modify_write(server, family, change, missing=f"Shared Network '{name}' not found.")
 
 
 def _read_modify_write(
