@@ -211,10 +211,10 @@ def django_db_setup(request, django_test_environment, django_db_blocker):
 
     keepdb, teardown_at_end = database_lifecycle(request.config)
     verbosity = request.config.option.verbose
-    post_migrate.connect(_restore_sync_config_row, dispatch_uid="netbox_kea_tests_restore_sync_config_row")
-
     with django_db_blocker.unblock():
         db_cfg = setup_databases(verbosity=verbosity, interactive=False, keepdb=keepdb)
+        # Connected after setup, so on a fresh database only migration 0018 can create the row.
+        post_migrate.connect(_restore_sync_config_row, dispatch_uid="netbox_kea_tests_restore_sync_config_row")
         # Populate the URL resolver now that DB access is unblocked — importing some
         # plugin urlconfs touches the DB, so doing this in pytest_configure raised
         # "Database access not allowed". Runs once per session, before any DB test.

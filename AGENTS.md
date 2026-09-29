@@ -155,7 +155,7 @@ URL request
   `interval_minutes`, `sync_enabled` (global kill-switch), type toggles. Migration 0018
   creates the row from PLUGINS_CONFIG and applies the one-time backfill, so
   `SyncConfig.get()` only reads it. A TransactionTestCase flush deletes the row, and a
-  `post_migrate` receiver in `tests/conftest.py` creates it again with the migration's
+  `post_migrate` receiver in `netbox_kea/tests/conftest.py` creates it again with the migration's
   values. Plain `models.Model` (not a `NetBoxModel`).
 - **`KeaClient`** (`kea.py`): wraps a `requests.Session`. All API calls go through
   `.command(command, service, arguments, check)`, which POSTs JSON to the

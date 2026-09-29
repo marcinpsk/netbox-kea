@@ -201,8 +201,8 @@ All settings are under `PLUGINS_CONFIG["netbox_kea"]`:
 | `sync_ip_ranges_enabled` | `True` | Sync Kea pools to NetBox IPAM as IP Ranges |
 | `sync_max_leases_per_server` | `50000` | Hard cap on leases fetched per server per sync run. Set to `0` for no limit |
 
-`./manage.py migrate` reads `sync_enabled` and the four `sync_*_enabled` toggles once, when it
-creates the Sync Configuration. After that, the **Sync Jobs** page holds these values.
+`./manage.py migrate` reads `sync_interval_minutes`, `sync_enabled` and the four `sync_*_enabled`
+toggles once, when it creates the Sync Configuration. After that, the **Sync Jobs** page holds these values.
 
 Subnet lease searches use `stat-lease4-get` or `stat-lease6-get` before an
 unpaged lease command. Kea statistics can reject a query that is already too
