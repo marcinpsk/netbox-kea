@@ -1207,7 +1207,7 @@ class TestServerSubnet4AddViewSharedNetwork(_ViewTestBase):
 
 
 # ---------------------------------------------------------------------------
-# Tests for _get_network_choices — None/missing arguments handling
+# Subnet edit GET: the Subnet facts prefill the form without a readable Server Configuration
 # ---------------------------------------------------------------------------
 
 
@@ -2738,6 +2738,7 @@ class TestSubnetEditNonCanonicalCidr(_ViewTestBase):
             response = self.client.post(self._url(), {**_shown(), "subnet_cidr": "2001:db8::/64", "shared_network": ""})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["form"].errors["subnet_cidr"], ["Enter an IPv4 Subnet CIDR."])
+        # The re-render of the refused form reads server_configuration.display(), not the form.
         self.assertEqual(kea.commands(), ["config-get"])
 
     def test_a_forged_cidr_cannot_replace_the_live_subnet(self):
@@ -2795,13 +2796,13 @@ class TestSubnetEditFormInitialFields(_ViewTestBase):
 
 
 # ---------------------------------------------------------------------------
-# _get_network_data — unnamed network (no name key) is skipped (line 2913)
+# Subnet edit GET: _offer_networks lists only the named Shared Networks
 # ---------------------------------------------------------------------------
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestGetNetworkDataUnnamedNetwork(_ViewTestBase):
-    """Line 2913: shared-network without a name key is skipped."""
+    """The edit GET offers a named Shared Network when another entry has no name."""
 
     def test_unnamed_network_skipped_in_choices(self):
         """Network with no 'name' key is not added to choices; the named one still appears."""
@@ -2851,13 +2852,13 @@ class TestFetchNetworkNonDictArgs(_ViewTestBase):
 
 
 # ---------------------------------------------------------------------------
-# _get_network_choices — KeaException (lines 2737-2738)
+# Subnet add GET: a failed config-get leaves only the global pool choice
 # ---------------------------------------------------------------------------
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestGetNetworkChoicesKeaException(_ViewTestBase):
-    """Lines 2737-2738: KeaException in _get_network_choices → returns default choice."""
+    """The add GET renders when server_configuration.display() cannot read config-get."""
 
     def test_kea_exception_returns_global_pool_only(self):
         """config-get failing (result 1 → KeaException) → the add form falls back to global-pool only."""
@@ -2906,13 +2907,13 @@ class TestGetInheritedOptionsParseOpts(_ViewTestBase):
 
 
 # ---------------------------------------------------------------------------
-# Subnet add — _get_network_choices error handling
+# Subnet add GET: an unreadable Server Configuration disables the Shared Network field
 # ---------------------------------------------------------------------------
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestSubnetAddNetworkChoicesError(_ViewTestBase):
-    """_get_network_choices error handling in the subnet-add view."""
+    """The add GET disables the Shared Network field and warns when config-get is unusable."""
 
     def _url(self):
         return reverse("plugins:netbox_kea:server_subnet4_add", args=[self.server.pk])
@@ -2934,13 +2935,13 @@ class TestSubnetAddNetworkChoicesError(_ViewTestBase):
 
 
 # ---------------------------------------------------------------------------
-# Subnet edit: _get_network_data error handling
+# Subnet edit: unreadable Shared Networks hide the inherited option hints
 # ---------------------------------------------------------------------------
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestSubnetEditNetworkDataErrors(_ViewTestBase):
-    """_get_network_data must degrade gracefully on transport and parse errors."""
+    """The edit view degrades when the Server Configuration has unreadable Shared Networks."""
 
     _LIVE_SUBNET = {
         "result": 0,
@@ -2977,7 +2978,7 @@ class TestSubnetEditNetworkDataErrors(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["inherited_options"], {})
 
-    def test_null_shared_network_blocks_edit_and_inherited_hints(self):
+    def test_null_shared_network_hides_inherited_hints(self):
         self._assert_unreadable_shared_networks_hide_hints([None])
 
     def test_duplicate_shared_network_subnet_ids_hide_inherited_hints(self):
@@ -3001,7 +3002,7 @@ class TestSubnetEditNetworkDataErrors(_ViewTestBase):
             ]
         )
 
-    def test_null_shared_network_subnet_blocks_edit_and_inherited_hints(self):
+    def test_null_shared_network_subnet_hides_inherited_hints(self):
         self._assert_unreadable_shared_networks_hide_hints([{"name": "clients", "subnet4": [None]}])
 
     def test_invalid_shared_network_member_pool_preserves_unrelated_operations(self):
@@ -3042,12 +3043,12 @@ class TestSubnetEditNetworkDataErrors(_ViewTestBase):
                 messages = list(get_messages(response.wsgi_request))
                 self.assertTrue(any(message.level == django_messages.SUCCESS for message in messages))
 
-    def test_missing_shared_network_subnet_id_blocks_edit_and_inherited_hints(self):
+    def test_missing_shared_network_subnet_id_hides_inherited_hints(self):
         self._assert_unreadable_shared_networks_hide_hints(
             [{"name": "clients", "subnet4": [{"subnet": "198.18.1.0/24"}]}]
         )
 
-    def test_non_scalar_shared_network_subnet_id_blocks_edit_and_inherited_hints(self):
+    def test_non_scalar_shared_network_subnet_id_hides_inherited_hints(self):
         self._assert_unreadable_shared_networks_hide_hints(
             [{"name": "clients", "subnet4": [{"id": [], "subnet": "198.18.1.0/24"}]}]
         )
@@ -3580,7 +3581,7 @@ class TestSubnetListNonDictItems(_ViewTestBase):
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestGetNetworkDataNonDictSubnet(_ViewTestBase):
-    """F10: _get_network_data returns None network when shared-network has non-dict subnet."""
+    """The edit GET survives a Shared Network that holds a non-dict member Subnet."""
 
     def test_edit_loads_with_malformed_subnet_in_shared_network(self):
         """Edit page loads (or redirects) when a shared-network contains non-dict subnet items."""
@@ -3604,7 +3605,7 @@ class TestGetNetworkDataNonDictSubnet(_ViewTestBase):
         url = reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, 42])
         with stub_kea(_edit_responses(4, subnet_get_resp, config_get_resp)):
             response = self.client.get(url)
-        # _get_network_data returns None (malformed) → view still renders or redirects, never 500.
+        # The malformed member makes membership unknown, so the view renders or redirects, never 500.
         self.assertIn(response.status_code, (200, 302))
 
 

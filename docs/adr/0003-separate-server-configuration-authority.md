@@ -105,7 +105,8 @@ creates a Verified Subnet, and only after a declared fact agrees with a `subnet4
 observation.
 
 A Shared Network with no member Subnets is representable. `SharedNetworkMembership` cannot express one, which is
-why `views/subnets.py` reads `config-get` for Shared Network choices today.
+why the Subnet add and edit GET, and the re-render of a refused POST, read the Shared Network choices from
+`config-get`. A valid POST does not read them, because `config_write` checks the named Shared Network under the lock.
 
 ### Snapshot safety
 
