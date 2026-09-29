@@ -72,6 +72,8 @@ _LOCK_CLASS = _int4("netbox_kea.config_write")
 SUBNET_LIST_UNCONFIRMED = "NetBox could not confirm Kea's Subnet list, so it did not send the change. Try again later."
 _READ_UNUSABLE = "Kea did not return a usable reply to the read before the change."
 _CONFIG_TEST_UNUSABLE = "Kea did not return a usable reply to config-test."
+# A live value that the edit form cannot show, so the operator cannot have seen it.
+_UNSHOWABLE = "has a live value that the edit form cannot show."
 
 
 def subnet_changed(subnet_id: int, cidr: str) -> str:
@@ -264,8 +266,10 @@ def edit_subnet(
         if definition.network != subnet.network:
             raise ConfigChangeRejected("not-sent", (subnet_changed(subnet_id, cidr),))
         live = server_configuration.shown_subnet_definition(definition)
+        if live is None:
+            raise ConfigChangeRejected("not-sent", (f"Subnet {subnet_id} ({cidr}) {_UNSHOWABLE}",))
         # A value that changed after the page showed it would go back to the old value with the update.
-        if live is None or live.written_by(edit) != shown.written_by(edit):
+        if live.written_by(edit) != shown.written_by(edit):
             raise ConfigChangeRejected("not-sent", (subnet_changed(subnet_id, cidr),))
         moves: list[_Step] = []
         if shared_network != current:
@@ -549,6 +553,8 @@ def edit_shared_network(
         )
         # The edit refuses a missing Shared Network first. The operation never sends a rejected candidate.
         candidate.edit_shared_network(name, edit)
+        if live is None:
+            raise ConfigChangeRejected("not-sent", (f"Shared Network '{name}' {_UNSHOWABLE}",))
         if live != shown:
             raise ConfigChangeRejected(
                 "not-sent", (f"Shared Network '{name}' changed in Kea. Reload the page and try again.",)
