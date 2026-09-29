@@ -8,6 +8,7 @@ skipping when netbox-branching is not an installed app.
 
 import importlib
 import os
+from collections.abc import Sequence
 
 import pytest
 
@@ -143,7 +144,7 @@ class SuiteConfigurationTest(SimpleTestCase):
         self.assertEqual(settings.PLUGINS[-1], "netbox_branching")
 
 
-def _database_operations(operations: list[Operation]) -> list[Operation]:
+def _database_operations(operations: Sequence[Operation]) -> list[Operation]:
     """Return the operations that reach the database, with each SeparateDatabaseAndState opened."""
     flat: list[Operation] = []
     for operation in operations:
@@ -162,7 +163,7 @@ def _model_name(operation: Operation) -> str | None:
     return None
 
 
-def _writes_only_main_only_plugin_tables(operations: list[Operation]) -> bool:
+def _writes_only_main_only_plugin_tables(operations: Sequence[Operation]) -> bool:
     """Say whether every operation is a model operation on a plugin model that stays in main.
 
     RunPython and RunSQL can write any table, so a migration with either is not decided here.
