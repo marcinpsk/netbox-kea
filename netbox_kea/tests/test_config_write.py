@@ -1583,6 +1583,25 @@ class SubnetEditTests(TestCase):
                     self.assertEqual(len(kea.bodies(f"subnet{v}-update")), 1)
                     self.assertEqual(daemon.subnet(20)[key], 4800)
 
+    def test_two_gateway_entries_send_nothing(self):
+        """A router list and a single router: the form cannot tell which entry it manages."""
+        routers = [{"code": 3, "data": "10.0.20.1,10.0.20.2"}, {"code": 3, "data": "10.0.20.1"}]
+        live = {**_LIVE[4], "option-data": routers}
+        edit = dataclasses.replace(
+            _SHOWN[4], fields=dataclasses.replace(_SHOWN[4].fields, ddns_qualifying_suffix="new.example.org.")
+        )
+        rejection, kea = self._saved_rejection(self._daemon(4, subnets=[live]), edit)
+        self.assertEqual(rejection.reason, "not-sent")
+        self.assertEqual(
+            rejection.diagnostics, (f"Subnet 20 ({_EDITED[4]}) has a live value that the edit form cannot show.",)
+        )
+        self.assertNotIn("subnet4-update", kea.commands())
+
+    def _saved_rejection(self, daemon: SubnetDaemon, edit: SubnetEdit):
+        with stub_kea(daemon.responses()) as kea, self.assertRaises(ConfigChangeRejected) as raised:
+            self._save(daemon.family, edit, _SHOWN[daemon.family])
+        return raised.exception, kea
+
     def test_a_second_save_from_the_same_page_does_not_revert_the_first(self):
         for version in _FAMILIES:
             v = version
@@ -2861,6 +2880,29 @@ class SharedNetworkEditShownValuesTests(TestCase):
                 written = kea.bodies("config-set")[0]["arguments"][f"Dhcp{version}"]["shared-networks"][0]
                 self.assertEqual(written["option-data"], [held[version]])
                 self.assertEqual(written["user-context"], {"comment": "Lab"})
+
+    def test_two_entries_for_one_form_field_are_not_sent(self):
+        """The form cannot tell which of two DNS server entries it manages, so a save must not pick one."""
+        for label, entries in (
+            (
+                "binary, then text",
+                [{"code": 6, "data": "C0000235", "csv-format": False}, {"code": 6, "data": "192.0.2.53"}],
+            ),
+            ("text, then text", [{"code": 6, "data": "192.0.2.1"}, {"code": 6, "data": "192.0.2.53"}]),
+        ):
+            with self.subTest(label):
+                shown = dataclasses.replace(_NETWORK_SHOWN[4], dns_servers=("192.0.2.53",), ntp_servers=())
+                config_get = _with_network(4, **{"option-data": entries})
+                with stub_kea(_rmw_responses(4, config_get=config_get)) as kea:
+                    with self.assertRaises(ConfigChangeRejected) as raised:
+                        config_write.edit_shared_network(
+                            self.server, 4, "net-a", dataclasses.replace(shown, description="Lab"), shown=shown
+                        )
+                self.assertEqual(
+                    (raised.exception.reason, raised.exception.diagnostics),
+                    ("not-sent", ("Kea returned a configuration that NetBox cannot edit safely.",)),
+                )
+                self.assertEqual(kea.commands(), ["config-get"])
 
     def test_a_shared_network_that_the_form_cannot_show_is_not_sent(self):
         for label, change in (

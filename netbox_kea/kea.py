@@ -13,10 +13,11 @@ from . import constants
 from .constants import Family, IPNetworkValue, Persistence
 from .dhcp_options import (
     DHCPOption,
-    FormManagedOption,
     InvalidAddress,
     address_list,
+    form_managed_entry,
     form_managed_options,
+    form_shows,
     merge_option_form_rows,
     parse_dhcp_options,
 )
@@ -331,53 +332,36 @@ def _configured_subnet_id_for_network(
     return None
 
 
-def _managed_option_matcher(version: int, managed: FormManagedOption) -> Callable[[dict[str, Any]], bool]:
-    """Return a predicate for one managed option in the family's default space."""
-
-    def matches(option: dict[str, Any]) -> bool:
-        if option.get("space") not in (None, f"dhcp{version}") or option.get("client-classes"):
-            return False
-        if option.get("code") is not None:
-            return option.get("code") == managed.code
-        return option.get("name") == managed.name
-
-    return matches
-
-
 def _replace_managed_option(
-    options: list[dict[str, Any]],
-    version: int,
-    field: str,
-    data: str | None,
-    *,
-    single_value: bool = False,
+    options: list[dict[str, Any]], version: int, field: str, data: str | None
 ) -> list[dict[str, Any]]:
-    """Set one form-managed option to *data*, or remove it when *data* is empty.
+    """Set the entry that the form field *field* manages to *data*, or remove it when *data* is empty.
 
-    The form edits the value only. Delivery flags stay as they are. An entry the
-    form cannot show (empty data, binary-encoded, or a list where the
-    form holds one value) is kept when the field is empty. Form text is CSV, so a
-    new value drops a csv-format flag that described the old encoding.
+    The form edits the value only. Delivery flags stay as they are. An entry whose value the form cannot show
+    (empty data, binary-encoded, or a router list for the one gateway) is kept when the field is empty. Form text is
+    CSV, so a new value drops a csv-format flag that described the old encoding.
+
+    Raises:
+        MalformedConfiguration: If an entry is not a valid DHCP Option, or more than one entry fits the field.
+
     """
     if data is None:
         return options
-    managed = form_managed_options(version)[field]
-    is_managed = _managed_option_matcher(version, managed)
-    existing = next((option for option in options if is_managed(option)), None)
-    kept = [option for option in options if not is_managed(option)]
+    try:
+        parsed = parse_dhcp_options(options)
+        index = form_managed_entry(parsed, version, field)
+    except ValueError as exc:
+        raise MalformedConfiguration(str(exc)) from exc
+    kept = [option for position, option in enumerate(options) if position != index]
     if data:
-        replacement = dict(existing) if existing else {"name": managed.name}
+        replacement = dict(options[index]) if index is not None else {"name": form_managed_options(version)[field].name}
         unchanged = replacement.get("csv-format") is not False and _same_addresses(data, replacement.get("data"))
         if not unchanged:
             replacement.pop("csv-format", None)
             replacement["data"] = data
         return [*kept, replacement]
-    if existing is not None and (
-        not existing.get("data")
-        or existing.get("csv-format") is False
-        or (single_value and "," in str(existing.get("data", "")))
-    ):
-        return [*kept, existing]
+    if index is not None and (not parsed[index].data or not form_shows(parsed[index], field)):
+        return [*kept, options[index]]
     return kept
 
 
@@ -542,7 +526,7 @@ class SubnetDefinition:
         fields = edit.fields
         options = subnet.get("option-data", [])
         if self.family == 4:
-            options = _replace_managed_option(options, 4, "gateway", fields.gateway, single_value=True)
+            options = _replace_managed_option(options, 4, "gateway", fields.gateway)
         options = _replace_managed_option(options, self.family, "dns_servers", ", ".join(fields.dns_servers))
         subnet["option-data"] = _replace_managed_option(
             options, self.family, "ntp_servers", ", ".join(fields.ntp_servers)
