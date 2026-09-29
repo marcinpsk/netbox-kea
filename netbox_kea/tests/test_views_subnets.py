@@ -65,8 +65,8 @@ _ABSENT_READ_HOOKS = {
 def _shown(network: str = "", **values: str) -> dict[str, str]:
     """Return the hidden fields of an edit page that confirmed the Shared Network *network* and showed *values*."""
     return {
-        "shown_network": network,
-        "shown_network_confirmed": "True",
+        "original_network": network,
+        "original_network_confirmed": "True",
         **{f"shown_{field}": value for field, value in values.items()},
     }
 
@@ -1123,7 +1123,7 @@ class TestServerSubnet4EditViewNetworkAssignment(_ViewTestBase):
         # The form initial value should be net-alpha (selected option)
         self.assertContains(response, "net-alpha")
 
-    def test_post_moves_the_subnet_from_the_shown_network_to_the_chosen_one(self):
+    def test_post_moves_the_subnet_from_the_original_network_to_the_chosen_one(self):
         """The view sends the Shared Network that the page showed and the chosen one; Kea holds the shown one."""
         for current, chosen, deleted, added in (
             (None, "net-alpha", [], ["net-alpha"]),

@@ -1226,15 +1226,16 @@ class SubnetEditForm(_ShownValuesForm[SubnetEdit], _SubnetBaseForm):
         choices=[],
         help_text="Assign this subnet to a shared network, or leave blank to use the global address pool.",
     )
-    # The Shared Network that the page showed; blank means none. Kept exactly as Kea names it.
-    shown_network = forms.CharField(widget=forms.HiddenInput, required=False, strip=False)
+    # The Shared Network of the Subnet when the page loaded, as Kea names it; blank means none. Not a shown_ copy of
+    # shared_network: edit_subnet checks the membership on its own, before the field values.
+    original_network = forms.CharField(widget=forms.HiddenInput, required=False, strip=False)
     # False: the page could not confirm the Shared Network, so the form cannot be saved.
-    shown_network_confirmed = forms.BooleanField(widget=forms.HiddenInput, required=False)
+    original_network_confirmed = forms.BooleanField(widget=forms.HiddenInput, required=False)
 
     field_order = [
         "subnet_cidr",
-        "shown_network",
-        "shown_network_confirmed",
+        "original_network",
+        "original_network_confirmed",
         "shared_network",
         "pools",
         "gateway",
@@ -1284,7 +1285,7 @@ class SubnetEditForm(_ShownValuesForm[SubnetEdit], _SubnetBaseForm):
     def clean(self) -> dict[str, Any] | None:
         """Refuse a page that could not confirm the Shared Network, because a save would guess the membership."""
         cleaned = super().clean()
-        if not self.cleaned_data.get("shown_network_confirmed"):
+        if not self.cleaned_data.get("original_network_confirmed"):
             raise forms.ValidationError(
                 "NetBox could not confirm the Shared Network of this Subnet when it showed the page. "
                 "Reload the page and try again."
