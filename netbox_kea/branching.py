@@ -31,28 +31,15 @@ def active_branch() -> Any:
     return branch_context.get()
 
 
-# Every other on_delete handler writes the referencing row: CASCADE, SET_NULL, SET_DEFAULT, SET(...), DB_*.
-_NON_WRITING_ON_DELETE = (models.PROTECT, models.RESTRICT, models.DO_NOTHING)
-
-
 def is_branchable(model: type[models.Model]) -> bool | None:
-    """Resolve branching support for a plugin model, and defer (None) for every other model.
+    """Keep every netbox_kea model in main (False), and defer (None) for every other model.
 
-    A plugin model is branchable when a concrete foreign key of it writes on delete to a branchable
-    model outside the plugin: a delete of that model in a branch then writes the plugin table, which
-    must exist in the branch schema. netbox-branching also calls this with historical models.
+    A constant, so it cannot raise: netbox-branching treats a raising resolver as no answer and then
+    makes a change-logged model such as Server branchable. Guard 2 in test_branching.py computes the
+    foreign-key rule and fails when a plugin model would need a branch copy. netbox-branching also
+    calls this with historical models.
     """
-    if model._meta.app_label != APP_LABEL:
-        return None
-    from netbox_branching.utilities import supports_branching
-
-    return any(
-        supports_branching(field.related_model)
-        for field in model._meta.concrete_fields
-        if isinstance(field, models.ForeignKey)
-        and field.related_model._meta.app_label != APP_LABEL
-        and field.remote_field.on_delete not in _NON_WRITING_ON_DELETE
-    )
+    return False if model._meta.app_label == APP_LABEL else None
 
 
 def register() -> None:
