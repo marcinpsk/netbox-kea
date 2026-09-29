@@ -13,6 +13,7 @@ from collections.abc import Sequence
 import pytest
 
 from netbox_kea import branching
+from netbox_kea.branching import APP_LABEL
 
 _REQUIRE_BRANCHING = "NETBOX_KEA_REQUIRE_BRANCHING"
 _required = os.environ.get(_REQUIRE_BRANCHING, "")
@@ -43,62 +44,70 @@ from netbox_branching.utilities import activate_branch, supports_branching  # no
 from netbox_kea.models import Server  # noqa: E402
 from netbox_kea.tests.utils import _make_db_server  # noqa: E402
 
-APP_LABEL = "netbox_kea"
 # Changing this set needs a design decision (docs/design/netbox-branching.md).
 BRANCHABLE_MODELS: frozenset[str] = frozenset()
 
-# The on_delete handlers that write the referencing row, stated here apart from the resolver.
-_WRITING_ON_DELETE = (
-    models.CASCADE,
-    models.SET_NULL,
-    models.SET_DEFAULT,
-    models.DB_CASCADE,
-    models.DB_SET_NULL,
-    models.DB_SET_DEFAULT,
-)
+# The on_delete handlers that do not write the referencing row. Every other one does (SET(...) and DB_* too).
+_NON_WRITING_ON_DELETE = (models.PROTECT, models.RESTRICT, models.DO_NOTHING)
 
 
 def _plugin_models() -> list[type[models.Model]]:
     return list(apps.get_app_config(APP_LABEL).get_models())
 
 
-def _writes_on_delete(on_delete) -> bool:
-    if on_delete in _WRITING_ON_DELETE:
-        return True
-    # SET(value) builds a new function for each field; its deconstruct path names it.
-    deconstruct = getattr(on_delete, "deconstruct", None)
-    return deconstruct is not None and deconstruct()[0] == "django.db.models.SET"
-
-
-def _follows_the_rule(model: type[models.Model]) -> bool:
-    """Restate the rule: a concrete foreign key that writes on delete, to a branchable model outside the plugin."""
-    return any(
-        isinstance(field, models.ForeignKey)
-        and field.related_model._meta.app_label != APP_LABEL
-        and _writes_on_delete(field.remote_field.on_delete)
-        and supports_branching(field.related_model)
+def _writing_foreign_keys(model: type[models.Model]) -> list[models.ForeignKey]:
+    return [
+        field
         for field in model._meta.concrete_fields
-    )
+        if isinstance(field, models.ForeignKey) and field.remote_field.on_delete not in _NON_WRITING_ON_DELETE
+    ]
+
+
+def _models_that_need_a_branch_copy() -> dict[str, list[str]]:
+    """Return each plugin model that a delete in a branch writes, with the foreign key path that reaches it.
+
+    A writing foreign key to a branchable model outside the plugin starts a path. A writing foreign
+    key to a plugin model on a path extends it, so the rule is transitive.
+    """
+    paths: dict[str, list[str]] = {}
+    for model in _plugin_models():
+        for field in _writing_foreign_keys(model):
+            target = field.related_model
+            if target._meta.app_label != APP_LABEL and supports_branching(target):
+                paths.setdefault(model._meta.label, [f"{model._meta.label}.{field.name} -> {target._meta.label}"])
+    grown = True
+    while grown:
+        grown = False
+        for model in _plugin_models():
+            if model._meta.label in paths:
+                continue
+            for field in _writing_foreign_keys(model):
+                if (target_path := paths.get(field.related_model._meta.label)) is not None:
+                    paths[model._meta.label] = [f"{model._meta.label}.{field.name}", *target_path]
+                    grown = True
+                    break
+    return paths
 
 
 class BranchabilityPinTest(SimpleTestCase):
-    """Guard 2: netbox-branching agrees with the rule, and the branchable set is the pinned set."""
+    """Guard 2: the rule, computed here only, gives the pinned set, and netbox-branching routes none to a branch."""
 
-    def test_supports_branching_follows_the_rule_for_every_plugin_model(self):
-        for model in _plugin_models():
-            with self.subTest(model=model._meta.label):
-                self.assertEqual(supports_branching(model), _follows_the_rule(model))
-
-    def test_the_branchable_set_is_the_pinned_set(self):
-        branchable = {model._meta.label for model in _plugin_models() if _follows_the_rule(model)}
+    def test_the_models_that_need_a_branch_copy_are_the_pinned_set(self):
+        paths = _models_that_need_a_branch_copy()
 
         self.assertEqual(
-            branchable,
+            set(paths),
             BRANCHABLE_MODELS,
-            "The branchable netbox_kea models changed. This change needs a design decision "
-            "(docs/design/netbox-branching.md): open branches lack the table of a model that becomes "
-            "branchable, and keep a stale copy of a model that stops being branchable.",
+            "The netbox_kea models that a delete in a branch writes changed: "
+            + "; ".join(" -> ".join(path) for path in paths.values())
+            + ". This change needs a design decision (docs/design/netbox-branching.md): the resolver keeps "
+            "every netbox_kea model in main, so open branches lack the table, and the write reaches main.",
         )
+
+    def test_netbox_branching_keeps_every_plugin_model_in_main(self):
+        for model in _plugin_models():
+            with self.subTest(model=model._meta.label):
+                self.assertIs(supports_branching(model), False)
 
     def test_the_rule_reads_every_plugin_model(self):
         self.assertEqual(
@@ -120,14 +129,14 @@ class ResolverTest(SimpleTestCase):
         self.assertFalse(branching.is_branchable(Server))
         self.assertFalse(supports_branching(Server))
 
-    def test_a_historical_server_with_a_set_null_vrf_is_branchable(self):
-        # Branch migrate hands the resolver historical models. Before 0017, sync_vrf was SET_NULL.
+    def test_the_resolver_keeps_a_historical_server_in_main(self):
+        # Branch migrate hands the resolver historical models. At 0016, sync_vrf was still SET_NULL.
         state = MigrationLoader(None, ignore_no_migrations=True).project_state(
             (APP_LABEL, "0016_charfield_blank_not_null")
         )
         historical_server = state.apps.get_model(APP_LABEL, "Server")
 
-        self.assertTrue(branching.is_branchable(historical_server))
+        self.assertIs(branching.is_branchable(historical_server), False)
 
     def test_the_active_branch_is_the_branching_context(self):
         branch = Branch(name="context only")
@@ -179,7 +188,7 @@ def _writes_only_main_only_plugin_tables(operations: Sequence[Operation]) -> boo
                 f"{operation!r} names {APP_LABEL}.{name}, which is not a live model. "
                 "Decide fake_on_branch by hand, and teach this guard the case."
             ) from exc
-        if branching.is_branchable(model):
+        if supports_branching(model):
             return False
     return True
 
