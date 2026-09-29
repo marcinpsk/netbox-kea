@@ -1115,46 +1115,52 @@ class TestKeaIpamSyncJobKillSwitches(TestCase):
         mock_job.save.assert_called_once_with(update_fields=["data"])
 
 
-class TestConfigureSyncJobInterval(SimpleTestCase):
-    """Tests for NetBoxKeaConfig._configure_sync_job_interval()."""
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestSyncIntervalFromSyncConfig(TestCase):
+    """The stored SyncConfig.interval_minutes sets every periodic schedule; PLUGINS_CONFIG does not."""
 
-    def test_interval_override_logs_warning_on_failure(self):
-        """When any exception occurs inside _configure_sync_job_interval, a WARNING is logged."""
+    def _db_job(self, *, interval: int | None):
+        import uuid
 
-        from django.apps import apps
+        from core.models import Job
+        from django.utils import timezone
 
-        cfg = apps.get_app_config("netbox_kea")
+        return Job.objects.create(
+            name=KeaIpamSyncJob.name,
+            status="scheduled" if interval else "pending",
+            scheduled=timezone.now() if interval else None,
+            interval=interval,
+            job_id=uuid.uuid4(),
+        )
 
-        # Removing netbox_kea.jobs from sys.modules causes 'from .jobs import KeaIpamSyncJob'
-        # to raise ImportError, which triggers the except block and the logger.warning call.
-        with patch.dict("sys.modules", {"netbox_kea.jobs": None}):
-            with self.assertLogs("netbox_kea", level="WARNING") as cm:
-                cfg._configure_sync_job_interval()
+    def _successors(self, job):
+        from core.models import Job
 
-        self.assertTrue(any("Failed to apply netbox_kea sync interval override" in msg for msg in cm.output))
+        return Job.objects.filter(name=KeaIpamSyncJob.name).exclude(pk=job.pk)
 
-    def test_interval_set_from_plugins_config_no_db_query(self):
-        """PLUGINS_CONFIG.sync_interval_minutes seeds the registry without hitting the DB."""
-        from django.apps import apps
-        from netbox.registry import registry
+    def test_enqueue_once_schedules_the_stored_interval(self):
+        """The rqworker passes the registry interval; the Job gets the stored one."""
+        from core.models import Job
 
-        from netbox_kea.jobs import KeaIpamSyncJob
+        _set_sync_config(interval_minutes=17)
+        KeaIpamSyncJob.enqueue_once(interval=5)
+        self.assertEqual(list(Job.objects.filter(name=KeaIpamSyncJob.name).values_list("interval", flat=True)), [17])
 
-        cfg = apps.get_app_config("netbox_kea")
+    def test_periodic_run_schedules_its_successor_with_the_stored_interval(self):
+        """An interval saved after the job was scheduled applies to the next successor."""
+        _set_sync_config(interval_minutes=23, sync_enabled=False)
+        job = self._db_job(interval=5)
+        KeaIpamSyncJob.handle(job)
+        self.assertEqual(list(self._successors(job).values_list("interval", flat=True)), [23])
 
-        # Ensure the job is in the registry so we can check the interval update.
-        registry["system_jobs"].setdefault(KeaIpamSyncJob, {"interval": 999})
-        original_interval = registry["system_jobs"][KeaIpamSyncJob]["interval"]
-
-        try:
-            with override_settings(PLUGINS_CONFIG={"netbox_kea": {"sync_interval_minutes": 17}}):
-                # No DB access should occur — if it does, it raises OperationalError in the
-                # SimpleTestCase (no DB) and the test would fail with a DB error rather than pass.
-                cfg._configure_sync_job_interval()
-
-            self.assertEqual(registry["system_jobs"][KeaIpamSyncJob]["interval"], 17)
-        finally:
-            registry["system_jobs"][KeaIpamSyncJob]["interval"] = original_interval
+    def test_one_off_run_stays_one_off(self):
+        """A Sync Now job has no interval, so it gets none and schedules no successor."""
+        _set_sync_config(interval_minutes=23, sync_enabled=False)
+        job = self._db_job(interval=None)
+        KeaIpamSyncJob.handle(job)
+        job.refresh_from_db()
+        self.assertIsNone(job.interval)
+        self.assertFalse(self._successors(job).exists())
 
 
 class TestGetPluginConfig(SimpleTestCase):
