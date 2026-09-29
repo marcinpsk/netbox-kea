@@ -261,8 +261,11 @@ def edit_subnet(
         if shared_network is not None and shared_network != current:
             _require_shared_network(client, family, shared_network)
         definition = _read_before(lambda: client.subnet_definition(family, subnet_id))
+        if definition.network != subnet.network:
+            raise ConfigChangeRejected("not-sent", (subnet_changed(subnet_id, cidr),))
+        live = server_configuration.shown_subnet_definition(definition)
         # A value that changed after the page showed it would go back to the old value with the update.
-        if definition.network != subnet.network or server_configuration.shown_subnet_definition(definition) != shown:
+        if live is None or live.written_by(edit) != shown.written_by(edit):
             raise ConfigChangeRejected("not-sent", (subnet_changed(subnet_id, cidr),))
         moves: list[_Step] = []
         if shared_network != current:
