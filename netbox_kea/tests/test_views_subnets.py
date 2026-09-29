@@ -919,6 +919,26 @@ class TestServerSubnet4EditView(_ViewTestBase):
         "arguments": {"subnet4": [{"id": 42, "subnet": "10.0.0.0/24", "pools": [], "option-data": []}]},
     }
 
+    def test_two_inherited_entries_for_one_field_show_no_hint(self):
+        """The page cannot tell which of two global router entries a Subnet inherits, so it names neither."""
+        config = {
+            "result": 0,
+            "arguments": {
+                "Dhcp4": {
+                    "option-data": [
+                        {"code": 3, "data": "10.0.0.1"},
+                        {"code": 3, "data": "10.0.0.2"},
+                        {"name": "domain-name-servers", "data": "8.8.8.8"},
+                    ],
+                    "shared-networks": [],
+                }
+            },
+        }
+        with self._get_stub(subnet=self._SUBNET4_NO_OPTS, config=config):
+            response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["inherited_options"], {})
+
     def test_get_passes_inherited_dns_from_global_config(self):
         """F5: When subnet has no DNS set, inherited_options contains global DNS."""
         config_with_global_dns = {
