@@ -7,7 +7,6 @@ from __future__ import annotations
 import logging
 from collections import defaultdict
 
-from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.contrib.contenttypes.models import ContentType
@@ -27,11 +26,6 @@ from ..models import Server, SyncConfig
 logger = logging.getLogger(__name__)
 
 _JOB_HISTORY_COUNT = 5  # rows shown in the per-server tab mini-table
-
-
-def _configured_default_interval() -> int:
-    """Return the sync interval from PLUGINS_CONFIG, falling back to 5."""
-    return settings.PLUGINS_CONFIG.get("netbox_kea", {}).get("sync_interval_minutes", 5)
 
 
 def get_recent_jobs_for_servers(
@@ -158,7 +152,7 @@ class SyncJobsView(LoginRequiredMixin, View):
 
     def get(self, request):
         """Render the sync jobs overview page with config form and server table."""
-        sync_cfg = SyncConfig.get(default_interval=_configured_default_interval())
+        sync_cfg = SyncConfig.get()
         form = forms.SyncConfigForm(
             initial={
                 "interval_minutes": sync_cfg.interval_minutes,
@@ -191,7 +185,7 @@ class SyncJobsView(LoginRequiredMixin, View):
         form = forms.SyncConfigForm(request.POST)
         if form.is_valid():
             try:
-                sync_cfg = SyncConfig.get(default_interval=_configured_default_interval())
+                sync_cfg = SyncConfig.get()
                 sync_cfg.interval_minutes = form.cleaned_data["interval_minutes"]
                 sync_cfg.sync_enabled = form.cleaned_data["sync_enabled"]
                 sync_cfg.sync_leases_enabled = form.cleaned_data["sync_leases_enabled"]
@@ -255,7 +249,7 @@ class ServerSyncStatusView(generic.ObjectView):
         latest = recent_jobs[0] if recent_jobs else None
 
         jobs_list_url = reverse("core:job_list") + f"?object_type=netbox_kea.server&object_id={instance.pk}"
-        sync_cfg = SyncConfig.get(default_interval=_configured_default_interval())
+        sync_cfg = SyncConfig.get()
         return {
             "recent_jobs": recent_jobs,
             "latest_job": latest,

@@ -6,15 +6,21 @@ Import from this module instead of duplicating scaffold code in each test file.
 """
 
 import re
+from typing import TYPE_CHECKING
 
 import requests
 from django.contrib import messages as django_messages
 from django.contrib.auth import get_user_model
+from django.db import connection
 from django.test import Client, TestCase, override_settings
+from django.test.utils import CaptureQueriesContext
 
 from netbox_kea.models import Server
 
 from .kea_stub import stub_kea
+
+if TYPE_CHECKING:
+    from django.test.client import _MonkeyPatchedWSGIResponse
 
 # Minimal PLUGINS_CONFIG for tests that do not exercise the Subnet lease-query guard.
 _PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30, "lease_query_max_unpaged_leases": 0}}
@@ -44,6 +50,19 @@ def _make_db_server(**kwargs) -> Server:
     }
     defaults.update(kwargs)
     return Server.objects.create(**defaults)
+
+
+_WRITE_VERBS = ("INSERT", "UPDATE", "DELETE")
+
+
+def _get_with_writes(client: Client, url: str) -> tuple["_MonkeyPatchedWSGIResponse", list[str]]:
+    """GET ``url`` and return the response with each INSERT, UPDATE or DELETE statement it ran."""
+    with CaptureQueriesContext(connection) as captured:
+        response = client.get(url)
+    writes = [
+        query["sql"] for query in captured.captured_queries if query["sql"].lstrip().upper().startswith(_WRITE_VERBS)
+    ]
+    return response, writes
 
 
 def _page_data(response) -> dict[str, str]:
