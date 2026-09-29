@@ -501,6 +501,21 @@ class SubnetEdit:
     renew_timer: int | None
     rebind_timer: int | None
 
+    def written_by(self, edit: "SubnetEdit") -> "SubnetEdit":
+        """Return these values with None for each lifetime and timer that *edit* keeps, because it cannot change them."""
+
+        def written(value: int | None, new: int | None) -> int | None:
+            return None if new is None else value
+
+        return SubnetEdit(
+            fields=self.fields,
+            valid_lifetime=written(self.valid_lifetime, edit.valid_lifetime),
+            min_valid_lifetime=written(self.min_valid_lifetime, edit.min_valid_lifetime),
+            max_valid_lifetime=written(self.max_valid_lifetime, edit.max_valid_lifetime),
+            renew_timer=written(self.renew_timer, edit.renew_timer),
+            rebind_timer=written(self.rebind_timer, edit.rebind_timer),
+        )
+
 
 @dataclass(frozen=True)
 class SubnetDefinition:
