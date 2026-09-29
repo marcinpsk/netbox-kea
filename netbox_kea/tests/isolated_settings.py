@@ -29,7 +29,11 @@ os.environ["REDIS_CACHE_DATABASE"] = str(_cache_redis_database)
 from netbox import configuration as _netbox_configuration  # noqa: E402
 
 _configured_plugins = set(getattr(_netbox_configuration, "PLUGINS", []))
-_plugins = ["netbox_kea", *(plugin for plugin in ("netbox_dhcp",) if plugin in _configured_plugins)]
+# netbox-branching must be the last plugin.
+_plugins = [
+    "netbox_kea",
+    *(plugin for plugin in ("netbox_dhcp", "netbox_branching") if plugin in _configured_plugins),
+]
 _netbox_configuration.PLUGINS = _plugins
 _configured_plugins_config = dict(getattr(_netbox_configuration, "PLUGINS_CONFIG", {}))
 _plugins_config = {
