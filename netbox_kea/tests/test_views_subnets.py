@@ -1983,6 +1983,33 @@ class TestSubnetEditMessages(_ViewTestBase):
             ),
         )
 
+    def test_a_save_of_a_subnet_that_kea_holds_in_another_text_form_applies(self):
+        """The page shows canonical values, and they still match the live text under the lock."""
+        dns = {"code": 6, "data": "10.0.0.53 ,10.0.0.54", "csv-format": True}
+        daemon = SubnetDaemon(
+            4,
+            [{"id": 42, "subnet": "10.0.0.5/24", "pools": [{"pool": "10.0.0.16/28"}], "option-data": [dns]}],
+            networks=("alpha",),
+            members={42: "alpha"},
+        )
+        url = reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, 42])
+        with stub_kea({**_ABSENT_READ_HOOKS, **daemon.responses()}) as kea:
+            page = self.client.get(url)
+            self.assertEqual(
+                (page.context["form"]["pools"].value(), page.context["form"]["dns_servers"].value()),
+                ("10.0.0.16-10.0.0.31", "10.0.0.53, 10.0.0.54"),
+            )
+            response = self.client.post(url, {**_page_data(page), "ddns_qualifying_suffix": "example.org."})
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            [(m.level, str(m)) for m in get_messages(response.wsgi_request)],
+            [(django_messages.SUCCESS, "Subnet 42 (10.0.0.5/24) updated.")],
+        )
+        (body,) = kea.bodies("subnet4-update")
+        sent = body["arguments"]["subnet4"][0]
+        self.assertEqual((sent["subnet"], sent["option-data"]), ("10.0.0.5/24", [dns]))
+        self.assertEqual(sent["ddns-qualifying-suffix"], "example.org.")
+
     def test_a_page_that_could_not_confirm_the_membership_sends_nothing(self):
         """The page preselects no Shared Network, so a save of the fields must not take the Subnet out of it."""
         daemon = self._daemon()
