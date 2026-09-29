@@ -418,6 +418,8 @@ resort, reserved for true external boundaries you cannot run locally.
   `ntp_servers` and relay addresses gives canonical addresses), so a copy of a field
   cleans the same way. A change form that refuses stale values inherits
   `_ShownValuesForm` and names its managed fields once, in `shown_names`.
+  `dhcp_options.form_managed_entry` picks the one DHCP Option entry that a form field
+  manages, for the display and for the save. Two fitting entries refuse the form.
 - **API URL naming**: the serializer's `HyperlinkedIdentityField` uses
   `view_name="plugins-api:netbox_kea-api:server-detail"` — `plugins-api:` prefix and
   `-api:` namespace suffix are NetBox conventions.

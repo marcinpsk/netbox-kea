@@ -15,7 +15,7 @@ from utilities.views import register_model_view
 
 from .. import config_write, forms, server_configuration, tables
 from ..constants import Family
-from ..dhcp_options import form_option_fields
+from ..dhcp_options import AmbiguousFormOption, DHCPOption, form_option_fields
 from ..kea import KeaException, subnet_network
 from ..models import Server
 from ..pools import Pool, addresses_in_pools, parse_pool
@@ -380,6 +380,15 @@ def _network_choices(snapshot: server_configuration.ServerConfigurationSnapshot)
     return [("", "— (global pool) —"), *((network.name, network.name) for network in snapshot.shared_networks)]
 
 
+def _hint_values(options: tuple[DHCPOption, ...], family: Family) -> dict[str, str]:
+    """Return the inherited value of each form field. A field with two fitting entries shows no hint."""
+    try:
+        return form_option_fields(options, family)
+    except AmbiguousFormOption:
+        logger.warning("Two inherited DHCP Option entries fit one Subnet form field, so the page shows no hint")
+        return {}
+
+
 def _inherited_subnet_options(
     snapshot: server_configuration.ServerConfigurationSnapshot,
     current_network: str,
@@ -388,14 +397,14 @@ def _inherited_subnet_options(
     """Return option hints not overridden by the Subnet form."""
     inherited = {
         field: {"value": value, "source": "global"}
-        for field, value in form_option_fields(snapshot.global_options, snapshot.family).items()
+        for field, value in _hint_values(snapshot.global_options, snapshot.family).items()
     }
     network = next((network for network in snapshot.shared_networks if network.name == current_network), None)
     if network is not None:
         inherited.update(
             {
                 field: {"value": value, "source": f"shared-network: {current_network}"}
-                for field, value in form_option_fields(network.options, snapshot.family).items()
+                for field, value in _hint_values(network.options, snapshot.family).items()
             }
         )
     return {field: hint for field, hint in inherited.items() if not form_values.get(field)}
