@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -105,36 +106,54 @@ def form_managed_options(version: int) -> dict[str, FormManagedOption]:
     return {option.field: option for option in _FORM_MANAGED_OPTIONS[version]}
 
 
-def form_option_fields(options: tuple[DHCPOption, ...], version: int) -> dict[str, str]:
-    """Return the data of each DHCP Option that a Subnet or Shared Network form field shows, keyed by form field."""
-    fields: dict[str, str] = {}
-    for option in options:
-        field = _form_option_field(option, version)
-        if field is not None:
-            fields[field] = option.data
-    return fields
+class AmbiguousFormOption(ValueError):
+    """More than one DHCP Option entry fits one form field, so the form cannot tell which entry it manages."""
 
 
-def _form_option_field(option: DHCPOption, version: int) -> str | None:
-    """Return the form field a default-space option maps to, by code first.
+def form_managed_entry(options: Sequence[DHCPOption], version: int, field: str) -> int | None:
+    """Return the index of the entry that the form field *field* manages, or None when no entry fits.
 
-    Class-tagged and binary-encoded entries are not shown: the form has no
-    field for a tag and no way to enter binary data.
+    The entry is in the default space, has no class tag, and has the code of the field (or its name, without a
+    code). The display and the save both select the entry here, so they cannot manage different entries.
+
+    Raises:
+        AmbiguousFormOption: If more than one entry fits.
+
     """
-    if option.space not in (None, f"dhcp{version}") or option.client_classes or option.csv_format is False:
-        return None
-    field = next(
-        (
-            managed.field
-            for managed in form_managed_options(version).values()
-            if (managed.code == option.code if option.code is not None else managed.name == option.name)
-        ),
-        None,
-    )
-    # The gateway field holds one address; a router array has no form representation.
-    if field == "gateway" and "," in option.data:
-        return None
-    return field
+    managed = form_managed_options(version)[field]
+    fits = [
+        index
+        for index, option in enumerate(options)
+        if option.space in (None, f"dhcp{version}")
+        and not option.client_classes
+        and (option.code == managed.code if option.code is not None else option.name == managed.name)
+    ]
+    if len(fits) > 1:
+        raise AmbiguousFormOption(f"More than one DHCP Option entry fits the {field} field.")
+    return fits[0] if fits else None
+
+
+def form_shows(option: DHCPOption, field: str) -> bool:
+    """Return whether the form field *field* can show the data of its entry *option*.
+
+    The form has no way to enter binary data, and the gateway field holds one address, not a router list.
+    """
+    return option.csv_format is not False and not (field == "gateway" and "," in option.data)
+
+
+def form_option_fields(options: Sequence[DHCPOption], version: int) -> dict[str, str]:
+    """Return the data that each Subnet or Shared Network form field shows, keyed by form field.
+
+    Raises:
+        AmbiguousFormOption: If more than one entry fits a field.
+
+    """
+    fields: dict[str, str] = {}
+    for field in form_managed_options(version):
+        index = form_managed_entry(options, version, field)
+        if index is not None and form_shows(options[index], field):
+            fields[field] = options[index].data
+    return fields
 
 
 class InvalidAddress(ValueError):
