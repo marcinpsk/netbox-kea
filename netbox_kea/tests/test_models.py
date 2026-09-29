@@ -14,11 +14,15 @@ from urllib.parse import urlparse
 import requests
 from django.apps import apps
 from django.conf import settings
+from django.contrib import messages as django_messages
+from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ValidationError
 from django.core.management import call_command
 from django.db import IntegrityError, transaction
+from django.db.models import ProtectedError
 from django.test import SimpleTestCase, TestCase, TransactionTestCase, override_settings
+from django.urls import reverse
 from netbox.models import NetBoxModel
 
 import netbox_kea
@@ -1112,3 +1116,53 @@ class TestNoModelAdvertisesDocsItDoesNotShip(SimpleTestCase):
         models = [m for m in apps.get_app_config("netbox_kea").get_models() if issubclass(m, NetBoxModel)]
 
         self.assertIn(Server, models)
+
+
+class TestSyncVrfProtectsTheVrf(TestCase):
+    """A VRF that a Server syncs into cannot be deleted while the Server uses it (ADR 0007).
+
+    With netbox-branching, a SET_NULL here would null main's Server row from a branch.
+    """
+
+    def setUp(self):
+        from ipam.models import VRF
+        from rest_framework.test import APIClient
+
+        self.vrf = VRF.objects.create(name="sync target")
+        self.server = _make_db_server(sync_vrf=self.vrf)
+        self.user = get_user_model().objects.create_superuser(username="vrf-admin", password="unused")
+        self.api_client = APIClient()
+        self.api_client.force_authenticate(user=self.user)
+
+    def _assert_unchanged(self):
+        from ipam.models import VRF
+
+        self.assertTrue(VRF.objects.filter(pk=self.vrf.pk).exists(), "the VRF was deleted")
+        self.server.refresh_from_db()
+        self.assertEqual(self.server.sync_vrf_id, self.vrf.pk)
+
+    def test_the_orm_delete_raises_protected_error(self):
+        with self.assertRaises(ProtectedError) as refused:
+            self.vrf.delete()
+
+        self.assertEqual(list(refused.exception.protected_objects), [self.server])
+        self._assert_unchanged()
+
+    def test_the_vrf_delete_view_shows_the_server_that_protects_it(self):
+        self.client.force_login(self.user)
+
+        response = self.client.post(reverse("ipam:vrf_delete", kwargs={"pk": self.vrf.pk}), {"confirm": True})
+
+        self.assertRedirects(response, self.vrf.get_absolute_url(), fetch_redirect_response=False)
+        shown = [str(message) for message in django_messages.get_messages(response.wsgi_request)]
+        self.assertEqual(len(shown), 1, shown)
+        self.assertIn(f"Unable to delete <strong>{self.vrf}</strong>", shown[0])
+        self.assertIn(self.server.get_absolute_url(), shown[0])
+        self._assert_unchanged()
+
+    def test_the_vrf_delete_api_answers_409(self):
+        response = self.api_client.delete(reverse("ipam-api:vrf-detail", kwargs={"pk": self.vrf.pk}))
+
+        self.assertEqual(response.status_code, 409, response.content)
+        self.assertIn(f"{self.server} ({self.server.pk})", response.json()["detail"])
+        self._assert_unchanged()
