@@ -218,8 +218,8 @@ rollback never undoes it. Both operations run their steps through `_run_steps` i
 Subnet edit and Shared Network edit also take the values that the page showed (`shown`, the type of the edit),
 and send nothing while a live value differs, because a save writes back every field that the form shows. One
 function maps the live facts to those values for the GET and for the check under the lock:
-`server_configuration.shown_subnet` and `shown_shared_network`. The form cleans each hidden `shown_` field
-with the cleaner of its visible field, so a value that Kea writes in another text form is not a change.
+`server_configuration.shown_subnet` and `shown_shared_network`. `_ShownValuesForm` builds each hidden `shown_`
+field as a copy of its visible field, so a value that Kea writes in another text form is not a change.
 
 A read-modify-write operation holds the lock from its `config-get` to the end of the
 persist step. `KeaClient` sends each command (`config_candidate`, `config_test`,
@@ -413,9 +413,11 @@ resort, reserved for true external boundaries you cannot run locally.
 - **Kea option aliases**: DNS options can be `domain-name-servers` or `dns-servers`;
   NTP can be `ntp-servers` or `sntp-servers`. Search both alias tuples.
 - **Forms**: lease search forms inherit `BaseLeasesSarchForm` (the typo is
-  intentional/existing); inner `Meta.ip_version` drives validation. CSV form fields
-  (`dns_servers`, `ntp_servers`) need `clean_<field>` methods that split on commas,
-  strip, drop empties, and rejoin.
+  intentional/existing); inner `Meta.ip_version` drives validation. The Subnet and
+  Shared Network forms clean in the field class (`_AddressListField` for `dns_servers`,
+  `ntp_servers` and relay addresses gives canonical addresses), so a copy of a field
+  cleans the same way. A change form that refuses stale values inherits
+  `_ShownValuesForm` and names its managed fields once, in `shown_names`.
 - **API URL naming**: the serializer's `HyperlinkedIdentityField` uses
   `view_name="plugins-api:netbox_kea-api:server-detail"` — `plugins-api:` prefix and
   `-api:` namespace suffix are NetBox conventions.
