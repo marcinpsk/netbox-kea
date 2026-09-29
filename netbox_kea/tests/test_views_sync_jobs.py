@@ -92,15 +92,15 @@ class TestSyncJobsView(TestCase):
         # form re-rendered with errors
         self.assertFalse(response.context["form"].is_valid())
 
-    def test_post_db_error_shows_error_message(self):
-        """SyncConfig DB failure returns generic error without leaking exception details."""
-        from django.db import DatabaseError
-
+    def test_post_without_syncconfig_row_raises(self):
+        """A missing row is a server error, not a message that hides it."""
+        SyncConfig.objects.all().delete()
         url = reverse("plugins:netbox_kea:sync_jobs")
-        with patch("netbox_kea.views.sync_jobs.SyncConfig", autospec=True) as MockConfig:
-            MockConfig.get.side_effect = DatabaseError("db is broken")
-            response = self.client.post(url, {"interval_minutes": 10, "sync_enabled": True}, follow=True)
-        self.assertContains(response, "internal error")
+        with self.assertRaises(SyncConfig.DoesNotExist):
+            self.client.post(url, {"interval_minutes": 10, "sync_enabled": True})
+        self.assertFalse(SyncConfig.objects.exists())
+        response = self.client.get(reverse("plugins:netbox_kea:server_list"))
+        self.assertEqual(list(response.context["messages"]), [])
 
     def test_get_without_login_redirects(self):
         self.client.logout()
