@@ -9,6 +9,10 @@ import django.db.models.deletion
 from django.db import migrations, models
 
 
+# netbox_kea tables stay in main, so branch migrate fakes this migration (ADR 0007).
+fake_on_branch = True
+
+
 class Migration(migrations.Migration):
     dependencies = [
         ("netbox_kea", "0016_charfield_blank_not_null"),
