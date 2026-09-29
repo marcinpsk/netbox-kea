@@ -203,7 +203,7 @@ sends nothing unless its `MutationScope` returns a Verified Subnet with both.
 
 Subnet add is the first multi-step change: `add_subnet` adds the Subnet and then assigns it to
 a Shared Network. When the assignment does not apply, it deletes the Subnet again, but only
-while a fresh scope shows the Subnet with the sent ID and CIDR and no Shared Network. The
+while a fresh Subnet list shows the Subnet with the sent ID and CIDR and no Shared Network. The
 persist step runs once, at the end. In tests, `SubnetDaemon` in `kea_stub.py` holds Subnets
 and Shared Networks, so a test can script a Kea failure or a change by another writer.
 
@@ -212,8 +212,13 @@ and then updates the fields, because Kea refuses to add a Subnet that is already
 Network. It also takes the Shared Network that the page showed, and sends nothing while the
 scope shows another one; a page that could not confirm the membership cannot save. When a step
 does not apply, the operation undoes the applied membership steps, newest first, each only while
-a fresh scope shows the membership that the step set. The field update is the last step, so a
+a fresh Subnet list shows the membership that the step set. The field update is the last step, so a
 rollback never undoes it. Both operations run their steps through `_run_steps` in `config_write`.
+
+A check after a step reads only what it compares, while the operation holds the lock: identity and
+membership come from one `subnet{v}-list` (`subnet_catalogue.read_identity`), not from a full scope with
+`config-get`. The target Shared Network of a move or an assignment comes from the configuration read of the
+operation's own scope (`MutationScope.has_shared_network`), not from `network{v}-get`.
 
 Subnet edit and Shared Network edit also take the values that the page showed (`shown`, the type of the edit),
 and send nothing while a live value differs, because a save writes back every field that the form shows. One
