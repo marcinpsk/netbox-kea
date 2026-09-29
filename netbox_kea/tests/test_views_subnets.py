@@ -67,6 +67,7 @@ def _shown(network: str = "", **values: str) -> dict[str, str]:
     return {
         "original_network": network,
         "original_network_confirmed": "True",
+        "shared_networks_complete": "True",
         **{f"shown_{field}": value for field, value in values.items()},
     }
 
@@ -1546,7 +1547,19 @@ _SUBNET_ADD_POST = {
     "dns_servers": "",
     "ntp_servers": "",
     "shared_network": "",
+    "shared_networks_complete": "True",
 }
+# The Shared Network list of the page was incomplete, so the page cannot choose a Shared Network.
+_NETWORKS_NOT_LOADED = (
+    "NetBox could not load the Shared Networks from Kea when it showed the page. Reload the page and try again."
+)
+_BLANK_NETWORK = "Enter a Shared Network name, or choose none."
+
+
+def _incomplete_networks(*members: dict) -> dict:
+    """Return a config-get reply whose Shared Network list is incomplete; *members* are Subnets of 'alpha'."""
+    networks = [{"name": "alpha", "subnet4": list(members)}, None]
+    return {"result": 0, "arguments": {"Dhcp4": {"subnet4": [], "shared-networks": networks}}}
 
 
 _INVALID_SERVER_SETTINGS = (
@@ -1770,6 +1783,68 @@ class TestSubnetAddMessages(_ViewTestBase):
         self.assertEqual(commands, ["network4-get", "config-get"])
         self.assertContains(response, '<option value="gamma" selected>gamma</option>', html=True)
         self.assertContains(response, '<option value="alpha">alpha</option>', html=True)
+
+    def test_a_page_without_the_shared_network_list_adds_nothing(self):
+        """The page disables the select, and a browser posts no disabled field: the save must not pick no network."""
+        daemon = self._daemon()
+        daemon.script("config-get", _incomplete_networks())
+        url = reverse("plugins:netbox_kea:server_subnet4_add", args=[self.server.pk])
+        with stub_kea({**_ABSENT_READ_HOOKS, **daemon.responses()}) as kea:
+            page = self.client.get(url)
+            self.assertTrue(page.context["form"].fields["shared_network"].disabled)
+            data = {**_page_data(page), "subnet": "10.2.0.0/24"}
+            data.pop("shared_network")
+            response = self.client.post(url, data)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, _NETWORKS_NOT_LOADED)
+        self.assertNotIn("subnet4-add", kea.commands())
+        self.assertEqual(daemon.ids(), [3])
+
+    def test_a_form_shown_again_without_the_shared_network_list_adds_nothing(self):
+        daemon = self._daemon()
+        # The read that shows the refused form again returns an incomplete Shared Network list.
+        daemon.script("config-get", _incomplete_networks())
+        url = reverse("plugins:netbox_kea:server_subnet4_add", args=[self.server.pk])
+        with stub_kea({**_ABSENT_READ_HOOKS, **daemon.responses()}) as kea:
+            refused = self.client.post(url, {**_SUBNET_ADD_POST, "ntp_servers": "ntp.example.com"})
+            self.assertTrue(refused.context["form"].fields["shared_network"].disabled)
+            data = {**_page_data(refused), "ntp_servers": ""}
+            data.pop("shared_network")
+            response = self.client.post(url, data)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, _NETWORKS_NOT_LOADED)
+        self.assertNotIn("subnet4-add", kea.commands())
+
+    def test_a_form_shown_again_shows_an_unavailable_configuration_as_an_error(self):
+        daemon = self._daemon()
+        daemon.script("config-get", {"result": 1, "text": "config-get failed"})
+        response, messages, _ = self._post(daemon, ntp_servers="ntp.example.com")
+        self.assertEqual(response.status_code, 200)
+        unavailable = [level for level, text in messages if "configuration facts are unavailable" in text]
+        self.assertEqual(unavailable, [django_messages.ERROR])
+
+    def test_a_blank_shared_network_name_is_a_form_error(self):
+        response, _, commands = self._post(self._daemon(), shared_network=" ")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["form"].errors["shared_network"], [_BLANK_NETWORK])
+        # Only the read that shows the refused form again.
+        self.assertEqual(commands, ["config-get"])
+
+    def test_a_shared_network_that_the_cached_list_does_not_hold_stays_selectable(self):
+        """The cached snapshot can miss a Shared Network that Kea has. config_write, not the cache, decides."""
+        daemon = self._daemon()
+        url = reverse("plugins:netbox_kea:server_subnet4_add", args=[self.server.pk])
+        with stub_kea({**_ABSENT_READ_HOOKS, **daemon.responses()}) as kea:
+            page = self.client.get(url)
+            daemon.networks.append("beta")
+            data = {**_page_data(page), "subnet": "10.2.0.0/24", "shared_network": "beta"}
+            cached = len(kea.commands())
+            refused = self.client.post(url, {**data, "ntp_servers": "ntp.example.com"})
+            self.assertEqual(kea.commands()[cached:], [])
+            added = self.client.post(url, data)
+        self.assertContains(refused, '<option value="beta" selected>beta</option>', html=True)
+        self.assertEqual(added.status_code, 302)
+        self.assertEqual(daemon.members, {4: "beta"})
 
     def test_not_sent_after_a_refused_connection(self):
         refused = _refused_connection()
@@ -2059,6 +2134,29 @@ class TestSubnetEditMessages(_ViewTestBase):
         )
         self.assertEqual(kea.commands()[shown:], ["config-get"])
         self.assertEqual(daemon.members, {42: "alpha"})
+
+    def test_a_page_without_the_shared_network_list_sends_nothing(self):
+        daemon = self._daemon()
+        member = {"id": 42, "subnet": "10.0.0.0/24", "pools": [], "option-data": []}
+        # The two configuration reads of the GET return an incomplete Shared Network list.
+        daemon.script("config-get", _incomplete_networks(member), _incomplete_networks(member))
+        url = reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, 42])
+        with stub_kea({**_ABSENT_READ_HOOKS, **daemon.responses()}) as kea:
+            page = self.client.get(url)
+            self.assertEqual(page.context["form"].initial["original_network"], "alpha")
+            data = {**_page_data(page), "valid_lft": "7200"}
+            data.pop("shared_network")
+            response = self.client.post(url, data)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, _NETWORKS_NOT_LOADED)
+        self.assertNotIn("subnet4-update", kea.commands())
+        self.assertEqual(daemon.members, {42: "alpha"})
+
+    def test_a_blank_shared_network_name_is_a_form_error(self):
+        response, _, commands = self._post(self._daemon(), shared_network=" ")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["form"].errors["shared_network"], [_BLANK_NETWORK])
+        self.assertEqual(commands, ["config-get"])
 
     def test_not_sent_after_a_refused_connection(self):
         refused = _refused_connection()
@@ -2804,8 +2902,8 @@ class TestSubnetEditFormInitialFields(_ViewTestBase):
 class TestGetNetworkDataUnnamedNetwork(_ViewTestBase):
     """The edit GET offers a named Shared Network when another entry has no name."""
 
-    def test_unnamed_network_skipped_in_choices(self):
-        """Network with no 'name' key is not added to choices; the named one still appears."""
+    def test_unnamed_network_leaves_no_choice(self):
+        """A Shared Network without a name makes the list incomplete, so the page offers no Shared Network."""
         config_resp = {
             "result": 0,
             "arguments": {
@@ -2826,7 +2924,9 @@ class TestGetNetworkDataUnnamedNetwork(_ViewTestBase):
         with stub_kea(_edit_responses(4, subnet_resp, config_resp)):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "valid-net")
+        self.assertTrue(response.context["form"].fields["shared_network"].disabled)
+        self.assertNotContains(response, "valid-net")
+        self.assertContains(response, "Could not load shared networks from Kea. Retry later.")
 
 
 # ---------------------------------------------------------------------------
@@ -3033,7 +3133,11 @@ class TestSubnetEditNetworkDataErrors(_ViewTestBase):
                 )
             )
         for url, data, command in (
-            (add_url, {"subnet": "198.18.2.0/24", "shared_network": ""}, "subnet4-add"),
+            (
+                add_url,
+                {"subnet": "198.18.2.0/24", "shared_network": "", "shared_networks_complete": "True"},
+                "subnet4-add",
+            ),
             (edit_url, {**_shown(), "subnet_cidr": "198.18.0.0/24", "shared_network": ""}, "subnet4-update"),
         ):
             with self.subTest(operation=command), stub_kea(responses) as kea:

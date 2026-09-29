@@ -116,6 +116,7 @@ class TestSubnetPickerViews(_ViewTestBase):
                 {
                     "subnet": "198.18.2.0/24",
                     "subnet_id": "2",
+                    "shared_networks_complete": "True",
                     "pools": "",
                     "gateway": "",
                     "dns_servers": "",
