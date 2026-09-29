@@ -32,6 +32,8 @@ from netbox_kea.reservations import MAX_IDENTITY_LENGTH
 from netbox_kea.tests.kea_stub import stub_kea
 from netbox_kea.tests.utils import _make_db_server
 
+_SEED = importlib.import_module("netbox_kea.migrations.0018_seed_syncconfig")
+
 _VERSION_OK = {"result": 0, "arguments": {"version": "2.5.0"}}
 
 # Default PLUGINS_CONFIG used across model tests so we don't need full NetBox config.
@@ -662,8 +664,8 @@ class TestSyncConfig(TestCase):
     def test_get_reads_the_migrated_row_and_writes_nothing(self):
         with self.assertNumQueries(1):
             cfg = SyncConfig.get()
-        self.assertEqual(cfg.pk, 1)
-        self.assertEqual(cfg.interval_minutes, SyncConfig.objects.get(pk=1).interval_minutes)
+        expected = _SEED.configured_values()
+        self.assertEqual({name: getattr(cfg, name) for name in expected}, expected)
 
     def test_get_returns_the_stored_values(self):
         SyncConfig.objects.filter(pk=1).update(interval_minutes=10, sync_enabled=False)
@@ -1120,7 +1122,14 @@ class TestSyncConfigSeedMigration(_MigrationTestCase):
     """The migration creates the SyncConfig row and applies the backfill, so a GET only reads it."""
 
     _BEFORE = ("netbox_kea", "0017_alter_server_sync_vrf")
-    _TOGGLES = ("sync_leases_enabled", "sync_reservations_enabled", "sync_prefixes_enabled", "sync_ip_ranges_enabled")
+    _TOGGLES = _SEED.TYPE_TOGGLES
+    #: The type toggles that _CONFIG gives a new row or a row whose backfill has not run.
+    _CONFIGURED_TOGGLES = {
+        "sync_leases_enabled": False,
+        "sync_reservations_enabled": True,
+        "sync_prefixes_enabled": True,
+        "sync_ip_ranges_enabled": False,
+    }
     _CONFIG = {
         "netbox_kea": {
             "kea_timeout": 30,
@@ -1157,16 +1166,12 @@ class TestSyncConfigSeedMigration(_MigrationTestCase):
 
     def _assert_sync_pages_write_nothing(self):
         from netbox_kea.tests.utils import _PLUGINS_CONFIG as VIEW_PLUGINS_CONFIG
-        from netbox_kea.tests.utils import _get_with_writes
+        from netbox_kea.tests.utils import _get_with_writes, _sync_page_urls
 
         server = _make_db_server(name="seed-upgrade")
         self.client.force_login(get_user_model().objects.create_superuser("seed", "seed@example.com", "pass"))
-        urls = (
-            reverse("plugins:netbox_kea:sync_jobs"),
-            reverse("plugins:netbox_kea:server_sync_status", args=[server.pk]),
-        )
         with override_settings(PLUGINS_CONFIG=VIEW_PLUGINS_CONFIG):
-            for url in urls:
+            for url in _sync_page_urls(server):
                 with self.subTest(url=url):
                     response, writes = _get_with_writes(self.client, url)
                     self.assertEqual(response.status_code, 200)
@@ -1180,15 +1185,7 @@ class TestSyncConfigSeedMigration(_MigrationTestCase):
 
         self.assertEqual(cfg.interval_minutes, 17)
         self.assertFalse(cfg.sync_enabled)
-        self.assertEqual(
-            {name: getattr(cfg, name) for name in self._TOGGLES},
-            {
-                "sync_leases_enabled": False,
-                "sync_reservations_enabled": True,
-                "sync_prefixes_enabled": True,
-                "sync_ip_ranges_enabled": False,
-            },
-        )
+        self.assertEqual({name: getattr(cfg, name) for name in self._TOGGLES}, self._CONFIGURED_TOGGLES)
         self._assert_sync_pages_write_nothing()
 
     def test_upgrade_applies_the_backfill_that_has_not_run(self):
@@ -1203,15 +1200,7 @@ class TestSyncConfigSeedMigration(_MigrationTestCase):
         # The backfill changes only the type toggles that PLUGINS_CONFIG disables.
         self.assertEqual(cfg.interval_minutes, 9)
         self.assertTrue(cfg.sync_enabled)
-        self.assertEqual(
-            {name: getattr(cfg, name) for name in self._TOGGLES},
-            {
-                "sync_leases_enabled": False,
-                "sync_reservations_enabled": True,
-                "sync_prefixes_enabled": True,
-                "sync_ip_ranges_enabled": False,
-            },
-        )
+        self.assertEqual({name: getattr(cfg, name) for name in self._TOGGLES}, self._CONFIGURED_TOGGLES)
         self._assert_sync_pages_write_nothing()
 
     def test_upgrade_keeps_a_row_whose_backfill_has_run(self):
