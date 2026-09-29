@@ -863,6 +863,42 @@ class MutationScope(AbstractContextManager["MutationScope"]):
             raise CatalogueUnavailable(message)
 
 
+@dataclass(frozen=True)
+class IdentityRead:
+    """One live Subnet list: the identity and Shared Network membership of each Subnet, without configuration facts."""
+
+    subnets: tuple[VerifiedSubnet, ...]
+    complete: bool
+
+    def find_by_id(self, subnet_id: int) -> VerifiedSubnet | None:
+        """Return the Subnet with *subnet_id*, or None when the complete list shows that it is absent."""
+        subnet = next((subnet for subnet in self.subnets if subnet.subnet_id == subnet_id), None)
+        if subnet is None and not self.complete:
+            raise CatalogueUnavailable("Subnet absence cannot be confirmed from an incomplete identity observation.")
+        return subnet
+
+    def find_with_membership(self, subnet_id: int) -> VerifiedSubnet | None:
+        """Return the Subnet with *subnet_id* as ``find_by_id`` does. Only a complete list shows its membership."""
+        if not self.complete:
+            raise CatalogueUnavailable("Shared Network membership cannot be confirmed from an incomplete observation.")
+        return self.find_by_id(subnet_id)
+
+
+def read_identity(client: KeaClient, family: int) -> IdentityRead:
+    """Send one ``subnet{v}-list`` through *client*, for a check after a change. It uses no cache."""
+    observation = _read_identity(client, _validate_family(family))
+    subnets = tuple(
+        VerifiedSubnet(
+            identity=fact.identity,
+            declared_cidr=fact.declared_cidr,
+            configuration=None,
+            shared_network=_membership(fact.shared_network_name),
+        )
+        for fact in observation.facts
+    )
+    return IdentityRead(subnets, observation.complete)
+
+
 def mutation(server: Server, family: int) -> MutationScope:
     """Open a live mutation scope and invalidate the interactive cache around it."""
     return MutationScope(server, _validate_family(family))
