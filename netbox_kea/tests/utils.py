@@ -14,6 +14,7 @@ from django.contrib.auth import get_user_model
 from django.db import connection
 from django.test import Client, TestCase, override_settings
 from django.test.utils import CaptureQueriesContext
+from django.urls import reverse
 
 from netbox_kea.models import Server
 
@@ -53,6 +54,14 @@ def _make_db_server(**kwargs) -> Server:
 
 
 _WRITE_VERBS = ("INSERT", "UPDATE", "DELETE")
+
+
+def _sync_page_urls(server: Server) -> tuple[str, str]:
+    """Return the two sync pages that read SyncConfig: the Sync Jobs page and the Server's Sync tab."""
+    return (
+        reverse("plugins:netbox_kea:sync_jobs"),
+        reverse("plugins:netbox_kea:server_sync_status", args=[server.pk]),
+    )
 
 
 def _get_with_writes(client: Client, url: str) -> tuple["_MonkeyPatchedWSGIResponse", list[str]]:
