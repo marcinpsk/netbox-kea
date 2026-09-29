@@ -804,7 +804,12 @@ class TestSubnetEditForm(SimpleTestCase):
     def _form(self, **kwargs):
         from netbox_kea.forms import SubnetEditForm
 
-        data = {"subnet_cidr": "10.0.0.0/24", "original_network_confirmed": "True", **kwargs}
+        data = {
+            "subnet_cidr": "10.0.0.0/24",
+            "original_network_confirmed": "True",
+            "shared_networks_complete": "True",
+            **kwargs,
+        }
         return SubnetEditForm(data=data)
 
     def test_valid_minimal_form_no_optional_fields(self):
@@ -1151,7 +1156,12 @@ class TestSubnetEditFormTimers(SimpleTestCase):
     def _form(self, **kwargs):
         from netbox_kea.forms import SubnetEditForm
 
-        data = {"subnet_cidr": "10.0.0.0/24", "original_network_confirmed": "True", **kwargs}
+        data = {
+            "subnet_cidr": "10.0.0.0/24",
+            "original_network_confirmed": "True",
+            "shared_networks_complete": "True",
+            **kwargs,
+        }
         return SubnetEditForm(data=data)
 
     def test_form_has_renew_timer_field(self):
@@ -1197,7 +1207,7 @@ class TestSubnetEditFormTimers(SimpleTestCase):
 
 
 class TestSubnetAddFormSharedNetwork(SimpleTestCase):
-    """SubnetAddForm must expose a shared_network ChoiceField."""
+    """SubnetAddForm takes the Shared Network as a free name; config_write checks that it exists."""
 
     def test_form_has_shared_network_field(self):
         """SubnetAddForm exposes a shared_network field."""
@@ -1216,9 +1226,46 @@ class TestSubnetAddFormSharedNetwork(SimpleTestCase):
         """Form is valid when shared_network is omitted (empty)."""
         from netbox_kea.forms import SubnetAddForm
 
-        form = SubnetAddForm(data={"subnet": "10.0.0.0/24", "shared_network": ""})
+        form = SubnetAddForm(data={"subnet": "10.0.0.0/24", "shared_network": "", "shared_networks_complete": "True"})
         self.assertTrue(form.is_valid(), form.errors)
         self.assertNotIn("shared_network", form.errors)
+
+    def test_a_name_that_no_list_offers_is_valid_as_posted(self):
+        from netbox_kea.forms import SubnetAddForm
+
+        data = {"subnet": "10.0.0.0/24", "shared_network": " clients", "shared_networks_complete": "True"}
+        form = SubnetAddForm(data=data)
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["shared_network"], " clients")
+
+    def test_a_name_of_only_white_space_is_refused(self):
+        from netbox_kea.forms import SubnetAddForm
+
+        data = {"subnet": "10.0.0.0/24", "shared_network": " ", "shared_networks_complete": "True"}
+        form = SubnetAddForm(data=data)
+        self.assertFalse(form.is_valid())
+        self.assertEqual(form.errors["shared_network"], ["Enter a Shared Network name, or choose none."])
+
+    def test_a_page_without_the_shared_network_list_cannot_be_saved(self):
+        """A disabled select posts no name, so the form must not read the missing name as no Shared Network."""
+        from netbox_kea.forms import SubnetAddForm, SubnetEditForm
+
+        forms = (
+            SubnetAddForm(data={"subnet": "10.0.0.0/24"}),
+            SubnetEditForm(data={"subnet_cidr": "10.0.0.0/24", "original_network_confirmed": "True"}),
+        )
+        for form in forms:
+            with self.subTest(form=type(form).__name__):
+                self.assertFalse(form.is_valid())
+                self.assertEqual(
+                    form.non_field_errors(),
+                    [
+                        (
+                            "NetBox could not load the Shared Networks from Kea when it showed the page. "
+                            "Reload the page and try again."
+                        )
+                    ],
+                )
 
 
 class TestSubnetAddFormAddressFamily(SimpleTestCase):
@@ -1227,7 +1274,7 @@ class TestSubnetAddFormAddressFamily(SimpleTestCase):
     def _form(self, **overrides):
         from netbox_kea.forms import SubnetAddForm
 
-        data = {"subnet": "192.0.2.0/24", "shared_network": ""}
+        data = {"subnet": "192.0.2.0/24", "shared_network": "", "shared_networks_complete": "True"}
         data.update(overrides)
         return SubnetAddForm(data=data)
 
@@ -1252,7 +1299,7 @@ class TestSubnetEditFormAddressFamily(SimpleTestCase):
     def _form(self, **overrides):
         from netbox_kea.forms import SubnetEditForm
 
-        data = {"subnet_cidr": "192.0.2.0/24", "original_network_confirmed": "True"}
+        data = {"subnet_cidr": "192.0.2.0/24", "original_network_confirmed": "True", "shared_networks_complete": "True"}
         data.update(overrides)
         return SubnetEditForm(data=data)
 
@@ -1300,7 +1347,7 @@ class TestSubnetEditFormAddressFamily(SimpleTestCase):
         self.assertTrue(form.is_valid(), form.errors)
         self.assertEqual(form.cleaned_data["subnet_cidr"], "10.0.0.5/24")
 
-        add = SubnetAddForm(data={"subnet": "10.0.0.5/24", "shared_network": ""})
+        add = SubnetAddForm(data={"subnet": "10.0.0.5/24", "shared_network": "", "shared_networks_complete": "True"})
         self.assertFalse(add.is_valid())
         self.assertIn("subnet", add.errors)
 
