@@ -136,8 +136,9 @@ back the steps that applied, newest first. Before it undoes a step, it reads the
 the state that this operation wrote. Otherwise another writer changed the target, so the module leaves it and does
 not roll back earlier steps either.
 
-A check read sends no `config-get`, so its Subnet is verified by `subnet{v}-list` alone. An entry without
-`shared-network-name` shows no membership, because Kea 3.2.0 always sends that key (`null` for none).
+A check read sends no `config-get`, so its Subnet is verified by `subnet{v}-list` alone. Kea 3.2.0 always sends
+`shared-network-name` in that entry, with `null` for no Shared Network. An entry without the key leaves the membership
+unknown, so the check cannot confirm the target, and the module does not send the undo.
 
 - Every undo succeeds: nothing that this operation wrote is live, and the operation raises the rejection.
 - An undo fails, or a target changed: the operation returns `application="unknown"` with a diagnostic that names
