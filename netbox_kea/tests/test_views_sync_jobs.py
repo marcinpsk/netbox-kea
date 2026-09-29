@@ -70,20 +70,20 @@ class TestSyncJobsView(TestCase):
 
     def test_post_saves_new_interval(self):
         url = reverse("plugins:netbox_kea:sync_jobs")
-        with patch("netbox_kea.views.sync_jobs.KeaIpamSyncJob", autospec=True):
-            response = self.client.post(url, {"interval_minutes": 10, "sync_enabled": True}, follow=True)
+        response = self.client.post(url, {"interval_minutes": 10, "sync_enabled": True}, follow=True)
         self.assertEqual(response.status_code, 200)
-        cfg = SyncConfig.get()
-        self.assertEqual(cfg.interval_minutes, 10)
+        self.assertEqual(SyncConfig.get().interval_minutes, 10)
+        self.assertContains(response, "A new interval applies after the next scheduled run.")
 
-    def test_post_updates_registry_interval(self):
-        url = reverse("plugins:netbox_kea:sync_jobs")
+    def test_post_does_not_touch_the_job_registry(self):
+        """Only the rqworker reads the registry, so the web process must not write it."""
+        from netbox.registry import registry
+
         from netbox_kea.jobs import KeaIpamSyncJob
 
-        fake_registry = {"system_jobs": {KeaIpamSyncJob: {"interval": 5}}}
-        with patch("netbox.registry.registry", fake_registry):
-            self.client.post(url, {"interval_minutes": 15, "sync_enabled": True})
-        self.assertEqual(fake_registry["system_jobs"][KeaIpamSyncJob]["interval"], 15)
+        before = dict(registry["system_jobs"][KeaIpamSyncJob])
+        self.client.post(reverse("plugins:netbox_kea:sync_jobs"), {"interval_minutes": 15, "sync_enabled": True})
+        self.assertEqual(registry["system_jobs"][KeaIpamSyncJob], before)
 
     def test_post_invalid_interval_shows_error(self):
         url = reverse("plugins:netbox_kea:sync_jobs")
