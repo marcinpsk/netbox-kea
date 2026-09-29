@@ -103,6 +103,11 @@ the integration job executes.
   `QUERY_COUNT_NETBOX_VERSION` in `netbox_kea/tests/conftest.py`, because
   `netbox_kea/tests/query_counts.json` describes that release only (see "Query-count
   baselines"). Bump the constant, the CI `ref`, and the baselines in one change.
+- **Branching job**: the unit-test NetBox release with netbox-branching 1.2.1 and netbox-plugin-dhcp 0.2.0.
+  It runs `test_branching.py` with `NETBOX_KEA_REQUIRE_BRANCHING=1`, so the module fails
+  instead of skipping when netbox-branching is absent. `netbox_kea/branching.py` is the only
+  module that imports `netbox_branching` (ADR 0007, `docs/design/netbox-branching.md`).
+  Every migration sets `fake_on_branch`; guard 4 in `test_branching.py` checks the value.
 - **Compatibility matrix**: runs the integration suite (`test_setup.sh`) against
   NetBox v4.3 (floor), v4.7 (ceiling), and the dev snapshot (allowed to fail).
 - Playwright traces on failure are uploaded as artifacts.
@@ -142,7 +147,7 @@ URL request
   config: `ca_url` (default/fallback endpoint), optional per-protocol `dhcp4_url` /
   `dhcp6_url` (dual-URL mode), CA and per-protocol credentials, TLS fields
   (`ssl_verify`, `ca_file_path`, `client_cert_path`, `client_key_path`),
-  `has_control_agent`, per-server IPAM sync toggles, `sync_vrf` (FK to `ipam.VRF`;
+  `has_control_agent`, per-server IPAM sync toggles, `sync_vrf` (`PROTECT` FK to `ipam.VRF`;
   blank = global table), and `persist_config`. `clean()` runs a **live
   `version-get` connectivity check** per enabled service before saving.
   `get_client(version=4|6|None)` returns a protocol-aware `KeaClient`.
