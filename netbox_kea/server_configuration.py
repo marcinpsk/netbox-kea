@@ -14,7 +14,7 @@ from django.utils import timezone
 
 from . import constants
 from .constants import Family, IPAddressValue, IPNetworkValue
-from .dhcp_options import DHCPOption, address_list, form_option_fields, parse_dhcp_option
+from .dhcp_options import DHCPOption, InvalidAddress, address_list, form_option_fields, parse_dhcp_option
 from .kea import (
     CandidateConfiguration,
     KeaException,
@@ -518,7 +518,7 @@ def shown_subnet(configuration: SubnetConfiguration, family: Family) -> SubnetEd
             ntp_servers=address_list(options.get("ntp_servers", "")),
             ddns_qualifying_suffix=(settings.ddns_qualifying_suffix or "").strip(),
         )
-    except ValueError:
+    except InvalidAddress:
         logger.warning("A DHCP Option of a Subnet holds a value that the edit form cannot show", exc_info=True)
         return None
     return SubnetEdit(
@@ -557,7 +557,7 @@ def shown_shared_network(snapshot: ServerConfigurationSnapshot, name: str) -> Sh
             dns_servers=address_list(options.get("dns_servers", "")),
             ntp_servers=address_list(options.get("ntp_servers", "")),
         )
-    except ValueError:
+    except InvalidAddress:
         logger.warning(
             "A DHCP Option of Shared Network %r holds a value that the edit form cannot show", name, exc_info=True
         )

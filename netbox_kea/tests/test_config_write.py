@@ -1553,7 +1553,7 @@ class SubnetEditTests(TestCase):
                 self.assertEqual(rejection.reason, "not-sent")
                 self.assertEqual(
                     rejection.diagnostics,
-                    (f"Subnet 20 ({_EDITED[version]}) changed in Kea. Reload the page and try again.",),
+                    (f"Subnet 20 ({_EDITED[version]}) has a live value that the edit form cannot show.",),
                 )
                 self.assertEqual(kea.commands(), [*_scope(version), f"subnet{version}-get"])
 
@@ -2024,7 +2024,7 @@ class SubnetEditPoolTests(TestCase):
                 sent = self._sent(version, self._live(version, [{"pool": prefix, **_POOL_KEYS}]), (text,), (text,))
                 self.assertEqual(sent["pools"], [{"pool": text, **_POOL_KEYS}])
 
-    def test_a_live_pool_entry_that_does_not_parse_is_a_changed_subnet(self):
+    def test_a_live_pool_entry_that_does_not_parse_is_not_sent(self):
         """The form cannot show such a Subnet, so a save from any page would drop the Pool."""
         live = self._live(4, [{"pool": _KEPT_POOL[4]}, {"pool": "not a pool", **_POOL_KEYS}])
         daemon = SubnetDaemon(4, [live], networks=("office",), members={})
@@ -2042,7 +2042,8 @@ class SubnetEditPoolTests(TestCase):
             )
         self.assertEqual(raised.exception.reason, "not-sent")
         self.assertEqual(
-            raised.exception.diagnostics, (f"Subnet 20 ({_EDITED[4]}) changed in Kea. Reload the page and try again.",)
+            raised.exception.diagnostics,
+            (f"Subnet 20 ({_EDITED[4]}) has a live value that the edit form cannot show.",),
         )
         self.assertEqual(kea.commands(), [*_scope(4), "subnet4-get"])
         self.assertEqual(daemon.subnet(20), live)
@@ -2849,7 +2850,7 @@ class SharedNetworkEditShownValuesTests(TestCase):
             with self.subTest(label):
                 rejection, commands = self._rejection(4, **change)
                 self.assertEqual(
-                    rejection.diagnostics, ("Shared Network 'net-a' changed in Kea. Reload the page and try again.",)
+                    rejection.diagnostics, ("Shared Network 'net-a' has a live value that the edit form cannot show.",)
                 )
                 self.assertEqual(commands, ["config-get"])
 
