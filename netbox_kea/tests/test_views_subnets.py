@@ -957,7 +957,7 @@ class TestServerSubnet4EditView(_ViewTestBase):
         self.assertEqual(inherited["dns_servers"]["value"], "8.8.8.8")
         self.assertEqual(inherited["dns_servers"]["source"], "global")
 
-    def test_get_inherited_options_empty_when_kea_config_fails(self):
+    def test_inherited_subnet_options_empty_when_kea_config_fails(self):
         """Subnet facts prefill the form without unavailable inherited options."""
         with self._get_stub(subnet=_SUBNET4_GET_FULL[0], config={"result": 1, "text": "err"}):
             response = self.client.get(self._url())
@@ -965,7 +965,7 @@ class TestServerSubnet4EditView(_ViewTestBase):
         self.assertEqual(response.context["inherited_options"], {})
         self.assertContains(response, "this form cannot be saved")
 
-    def test_get_inherited_options_excludes_field_already_set_in_subnet(self):
+    def test_inherited_subnet_options_excludes_field_already_set_in_subnet(self):
         """F5: Fields already set in the subnet itself are excluded from inherited_options."""
         # _SUBNET4_GET_FULL has domain-name-servers: 8.8.8.8 in option-data
         config_with_global_dns = {
@@ -981,7 +981,7 @@ class TestServerSubnet4EditView(_ViewTestBase):
         # dns_servers is already set by subnet — should NOT appear as inherited
         self.assertNotIn("dns_servers", inherited)
 
-    def test_get_inherited_options_prefers_shared_network_over_global(self):
+    def test_inherited_subnet_options_prefers_shared_network_over_global(self):
         """F5: Shared-network option-data overrides global in inherited_options."""
         config_shared_net = {
             "result": 0,
