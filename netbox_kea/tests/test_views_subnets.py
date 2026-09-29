@@ -1654,7 +1654,6 @@ class TestSubnetAddMessages(_ViewTestBase):
         self.assertEqual(
             commands,
             [
-                "network4-get",
                 "subnet4-list",
                 "config-get",
                 "subnet4-add",
@@ -1780,7 +1779,7 @@ class TestSubnetAddMessages(_ViewTestBase):
             messages, [(django_messages.ERROR, "The change was not sent to Kea. Shared Network 'gamma' not found.")]
         )
         # The config-get after the rejection fills the choices of the form that the page shows again.
-        self.assertEqual(commands, ["network4-get", "config-get"])
+        self.assertEqual(commands, ["subnet4-list", "config-get", "config-get"])
         self.assertContains(response, '<option value="gamma" selected>gamma</option>', html=True)
         self.assertContains(response, '<option value="alpha">alpha</option>', html=True)
 
@@ -1904,7 +1903,6 @@ class TestSubnetEditMessages(_ViewTestBase):
             commands,
             [
                 *_SCOPE,
-                "network4-get",
                 "subnet4-get",
                 "network4-subnet-del",
                 "network4-subnet-add",
@@ -2024,7 +2022,7 @@ class TestSubnetEditMessages(_ViewTestBase):
             messages, [(django_messages.ERROR, "The change was not sent to Kea. Shared Network 'gamma' not found.")]
         )
         # The last config-get fills the choices of the form that the page shows again.
-        self.assertEqual(commands, [*_SCOPE, "network4-get", "config-get"])
+        self.assertEqual(commands, [*_SCOPE, "config-get"])
         self.assertEqual(daemon.members, {42: "alpha"})
         self.assertContains(response, '<option value="gamma" selected>gamma</option>', html=True)
         self.assertContains(response, '<option value="beta">beta</option>', html=True)
