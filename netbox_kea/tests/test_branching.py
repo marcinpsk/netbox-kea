@@ -6,6 +6,7 @@ The CI branching job sets NETBOX_KEA_REQUIRE_BRANCHING=1, so this module fails i
 skipping when netbox-branching is not an installed app.
 """
 
+import importlib
 import os
 
 import pytest
@@ -26,7 +27,10 @@ from django.apps import apps  # noqa: E402
 from django.conf import settings  # noqa: E402
 from django.core.management import call_command  # noqa: E402
 from django.db import connection, models  # noqa: E402
+from django.db.migrations import RunPython, RunSQL, SeparateDatabaseAndState  # noqa: E402
 from django.db.migrations.loader import MigrationLoader  # noqa: E402
+from django.db.migrations.operations.base import Operation  # noqa: E402
+from django.db.migrations.operations.models import ModelOperation  # noqa: E402
 from django.db.models import ProtectedError  # noqa: E402
 from django.test import SimpleTestCase, TransactionTestCase  # noqa: E402
 from ipam.models import VRF  # noqa: E402
@@ -137,6 +141,94 @@ class SuiteConfigurationTest(SimpleTestCase):
 
     def test_netbox_branching_is_the_last_plugin(self):
         self.assertEqual(settings.PLUGINS[-1], "netbox_branching")
+
+
+def _database_operations(operations: list[Operation]) -> list[Operation]:
+    """Return the operations that reach the database, with each SeparateDatabaseAndState opened."""
+    flat: list[Operation] = []
+    for operation in operations:
+        if isinstance(operation, SeparateDatabaseAndState):
+            flat.extend(_database_operations(operation.database_operations))
+        else:
+            flat.append(operation)
+    return flat
+
+
+def _model_name(operation: Operation) -> str | None:
+    if hasattr(operation, "model_name"):
+        return operation.model_name
+    if isinstance(operation, ModelOperation):
+        return operation.name
+    return None
+
+
+def _writes_only_main_only_plugin_tables(operations: list[Operation]) -> bool:
+    """Say whether every operation is a model operation on a plugin model that stays in main.
+
+    RunPython and RunSQL can write any table, so a migration with either is not decided here.
+    """
+    for operation in _database_operations(operations):
+        name = _model_name(operation)
+        if name is None:
+            return False
+        try:
+            model = apps.get_model(APP_LABEL, name)
+        except LookupError as exc:
+            raise AssertionError(
+                f"{operation!r} names {APP_LABEL}.{name}, which is not a live model. "
+                "Decide fake_on_branch by hand, and teach this guard the case."
+            ) from exc
+        if branching.is_branchable(model):
+            return False
+    return True
+
+
+class MigrationFakeOnBranchTest(SimpleTestCase):
+    """Guard 4: branch migrate runs each plugin migration only where the design says so."""
+
+    def _migrations(self):
+        loader = MigrationLoader(None, ignore_no_migrations=True)
+        migrations = [migration for (app, _), migration in loader.disk_migrations.items() if app == APP_LABEL]
+        self.assertIn("0001_initial", {migration.name for migration in migrations}, "the guard reads no migration")
+        return sorted(migrations, key=lambda migration: migration.name)
+
+    def _declared(self, migration):
+        # netbox-branching reads the module attribute, not the Migration class.
+        module = importlib.import_module(f"{APP_LABEL}.migrations.{migration.name}")
+        return getattr(module, "fake_on_branch", None)
+
+    def test_a_migration_that_runs_code_declares_fake_on_branch(self):
+        code = (RunPython, RunSQL, SeparateDatabaseAndState)
+        for migration in self._migrations():
+            if not any(isinstance(operation, code) for operation in migration.operations):
+                continue
+            with self.subTest(migration=migration.name):
+                self.assertIsInstance(
+                    self._declared(migration),
+                    bool,
+                    f"{migration.name} runs RunPython, RunSQL or SeparateDatabaseAndState. Set the module "
+                    "attribute fake_on_branch to True or False: netbox-branching cannot tell what it writes.",
+                )
+
+    def test_a_migration_that_writes_only_main_only_plugin_tables_is_faked_on_branch(self):
+        for migration in self._migrations():
+            if not _writes_only_main_only_plugin_tables(migration.operations):
+                continue
+            with self.subTest(migration=migration.name):
+                self.assertIs(
+                    self._declared(migration),
+                    True,
+                    f"{migration.name} changes only netbox_kea tables that stay in main. Set the module "
+                    "attribute fake_on_branch = True, or branch migrate runs it through the branch connection.",
+                )
+
+    def test_netbox_branching_fakes_every_plugin_migration(self):
+        # The private decision function of branch migrate: it reads the module attribute first.
+        from netbox_branching.models.branches import _fake_for_branch
+
+        for migration in self._migrations():
+            with self.subTest(migration=migration.name):
+                self.assertIs(_fake_for_branch(migration), True)
 
 
 def _provisioned_branch(test: TransactionTestCase, name: str) -> Branch:
