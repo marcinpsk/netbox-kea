@@ -1041,6 +1041,40 @@ def test_serial_django_suite_is_rejected():
     assert "requires pytest-xdist" in result.stdout + result.stderr
 
 
+def test_a_dotted_coverage_source_is_rejected():
+    """Refuse --cov=<package>.<module>, which leaves a second copy of the psycopg error classes."""
+    probe = REPOSITORY_ROOT / "netbox_kea" / "tests" / "test_parallel_test_setup.py"
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = os.pathsep.join(str(Path(entry or Path.cwd()).resolve()) for entry in sys.path)
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        environment["COVERAGE_FILE"] = str(Path(temporary_directory) / ".coverage")
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                str(probe),
+                "--collect-only",
+                "-q",
+                "-p",
+                "no:django",
+                "-n",
+                "1",
+                "--cov=netbox_kea.config_write",
+                "--cov-report=",
+            ],
+            cwd=REPOSITORY_ROOT,
+            capture_output=True,
+            check=False,
+            env=environment,
+            text=True,
+            timeout=60,
+        )
+
+    assert result.returncode == 4
+    assert "--cov=netbox_kea.config_write names a module" in result.stdout + result.stderr
+
+
 def test_dhcp_plugin_ci_uses_xdist():
     """Keep the DHCP plugin job on exactly one xdist worker, not merely on a count."""
     workflow = (REPOSITORY_ROOT / ".github" / "workflows" / "ci.yml").read_text()
