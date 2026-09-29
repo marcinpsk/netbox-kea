@@ -11,6 +11,7 @@ from utilities.views import register_model_view
 
 from .. import config_write, forms, server_configuration, tables
 from ..constants import Family
+from ..dhcp_options import form_option_fields
 from ..models import Server
 from ..utilities import check_dhcp_enabled
 from ._base import (
@@ -19,7 +20,6 @@ from ._base import (
     _KeaChangeMixin,
     _run_config_change,
     _shared_network_row,
-    _subnet_option_fields,
 )
 from .subnets import _SUBNETS_TAB, subnets_nav_context
 
@@ -245,7 +245,7 @@ class BaseServerSharedNetworkEditView(_KeaChangeMixin, ConditionalLoginRequiredM
             messages.error(request, f"Shared network '{network_name}' not found or could not be retrieved.")
             return redirect(self._success_url(server))
 
-        option_fields = _subnet_option_fields(network.options, self.dhcp_version)
+        option_fields = form_option_fields(network.options, self.dhcp_version)
         initial: dict[str, Any] = {
             "name": network_name,
             "description": network.description or "",

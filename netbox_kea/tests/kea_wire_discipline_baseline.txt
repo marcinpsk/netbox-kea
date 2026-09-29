@@ -31,7 +31,6 @@ tables.py::<module>	1
 utilities.py::parse_lease_csv	18
 utilities.py::parse_subnet_stats	7
 views/_base.py::_enrich_subnet_statistics	2
-views/_base.py::_form_option_field	1
 views/_base.py::_option_payload	3
 views/dhcp_control.py::_BaseServerDHCPDisableView.post	1
 views/dhcp_control.py::_BaseServerDHCPEnableView.post	1
