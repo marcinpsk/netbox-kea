@@ -375,9 +375,16 @@ class ServerSubnet6PoolDeleteView(_BasePoolDeleteView):
 # ---------------------------------------------------------------------------
 
 
-def _network_choices(snapshot: server_configuration.ServerConfigurationSnapshot) -> list[tuple[str, str]]:
-    """Return declared Shared Networks, including those without members."""
-    return [("", "— (global pool) —"), *((network.name, network.name) for network in snapshot.shared_networks)]
+def _offer_networks(
+    form: forms.SubnetAddForm | forms.SubnetEditForm, snapshot: server_configuration.ServerConfigurationSnapshot
+) -> None:
+    """Offer the declared Shared Networks, including those without members, and the name that the form holds."""
+    choices = [("", "— (global pool) —"), *((network.name, network.name) for network in snapshot.shared_networks)]
+    # The snapshot can be stale, so the name that the operator chose stays selectable.
+    held = form.data.get("shared_network", "")
+    if held and held not in {name for name, _ in choices}:
+        choices.append((held, held))
+    form.fields["shared_network"].widget.choices = choices
 
 
 def _hint_values(options: tuple[DHCPOption, ...], family: Family) -> dict[str, str]:
@@ -441,34 +448,30 @@ class _BaseSubnetAddView(_KeaChangeMixin, generic.ObjectView):
             request, configuration.diagnostics, messages.WARNING if configuration.available else messages.ERROR
         )
         if configuration.shared_networks_complete:
-            form.fields["shared_network"].choices = _network_choices(configuration)
+            _offer_networks(form, configuration)
         else:
             messages.warning(request, "Could not load shared networks from Kea — retry later.")
-            form.fields["shared_network"].choices = [("", "— failed to load networks —")]
+            form.fields["shared_network"].widget.choices = [("", "— failed to load networks —")]
             form.fields["shared_network"].disabled = True
+        return self._render(request, server, form)
+
+    def _render_post(self, request: HttpRequest, server: Server, form: forms.SubnetAddForm) -> HttpResponse:
+        """Show the submitted form again, with the Shared Networks of the cached configuration."""
+        configuration = server_configuration.display(server, self.dhcp_version)
+        _diagnostic_messages(request, configuration.diagnostics, messages.WARNING)
+        _offer_networks(form, configuration)
         return self._render(request, server, form)
 
     def post(self, request: HttpRequest, pk: int) -> HttpResponse:
         server = self.get_object(pk=pk)
-        configuration = server_configuration.for_verification(server, self.dhcp_version)
-        network_choices = _network_choices(configuration)
-        _diagnostic_messages(request, configuration.diagnostics, messages.WARNING)
-        if not configuration.shared_networks_complete:
-            form = forms.SubnetAddForm(request.POST)
-            form.fields["shared_network"].choices = [("", "— (global pool) —")]
-            form.fields["shared_network"].disabled = True
-            form.add_error(None, "Could not load shared networks from Kea. Please try again.")
-            return self._render(request, server, form)
-
         form = forms.SubnetAddForm(request.POST)
-        form.fields["shared_network"].choices = network_choices
         if not form.is_valid():
-            return self._render(request, server, form)
+            return self._render_post(request, server, form)
         cd = form.cleaned_data
         cidr: str = cd["subnet"]
         if ipaddress.ip_network(cidr).version != self.dhcp_version:
             form.add_error("subnet", f"Enter an IPv{self.dhcp_version} Subnet CIDR.")
-            return self._render(request, server, form)
+            return self._render_post(request, server, form)
         shared_network: str | None = cd["shared_network"] or None
         fields = form.to_fields()
 
@@ -486,10 +489,10 @@ class _BaseSubnetAddView(_KeaChangeMixin, generic.ObjectView):
             )
         except SubnetIdentityConflict as exc:
             form.add_error("subnet" if exc.part == "network" else "subnet_id", str(exc))
-            return self._render(request, server, form)
+            return self._render_post(request, server, form)
         except SubnetIdExhausted as exc:
             form.add_error("subnet_id", str(exc))
-            return self._render(request, server, form)
+            return self._render_post(request, server, form)
         except CatalogueUnavailable:
             logger.warning("Subnet add blocked: incomplete Subnet identity for server %s", pk, exc_info=True)
             form.add_error(
@@ -497,10 +500,10 @@ class _BaseSubnetAddView(_KeaChangeMixin, generic.ObjectView):
                 "Kea did not return a complete Subnet list, so the new Subnet identity cannot be checked. "
                 "No Subnet was created. Make sure the subnet_cmds hook library is loaded, then try again.",
             )
-            return self._render(request, server, form)
+            return self._render_post(request, server, form)
         if outcome is None:
             # A rejected change is not live, so the form keeps the input for another try.
-            return self._render(request, server, form)
+            return self._render_post(request, server, form)
         return redirect(self._subnets_url(pk))
 
 
@@ -574,7 +577,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
             "original_network_confirmed": membership_confirmed,
         }
         form = forms.SubnetEditForm(initial=initial)
-        form.fields["shared_network"].choices = _network_choices(configuration)
+        _offer_networks(form, configuration)
         inherited_options = (
             _inherited_subnet_options(configuration, display_network, initial)
             if configured_target is not None and configuration.shared_networks_complete
@@ -601,9 +604,11 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
         server: Server,
         subnet_id: int,
         form: forms.SubnetEditForm,
-        configuration: server_configuration.ServerConfigurationSnapshot,
     ) -> HttpResponse:
-        """Show the submitted form again, with the inherited option hints of the chosen Shared Network."""
+        """Show the submitted form again, with the Shared Networks and option hints of the cached configuration."""
+        configuration = server_configuration.display(server, self.dhcp_version)
+        _diagnostic_messages(request, configuration.diagnostics, messages.WARNING)
+        _offer_networks(form, configuration)
         submitted = {name: value for name, value in form.data.items() if name in form.fields}
         inherited_options = (
             _inherited_subnet_options(configuration, form.data.get("shared_network", ""), submitted)
@@ -627,25 +632,14 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
 
     def post(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         server = self.get_object(pk=pk)
-        # The form reads the Shared Networks for its choices; config_write checks the membership that the page showed.
-        configuration = server_configuration.for_verification(server, self.dhcp_version)
-        _diagnostic_messages(request, configuration.diagnostics, messages.WARNING)
         form = forms.SubnetEditForm(request.POST)
-        complete = configuration.shared_networks_complete
-        form.fields["shared_network"].choices = (
-            _network_choices(configuration) if complete else [("", "— failed to load networks —")]
-        )
-        if not complete:
-            form.fields["shared_network"].disabled = True
-            form.add_error(None, "Could not load shared networks from Kea. Please try again.")
-            return self._render_post(request, server, subnet_id, form, configuration)
         if not form.is_valid():
-            return self._render_post(request, server, subnet_id, form, configuration)
+            return self._render_post(request, server, subnet_id, form)
         cd = form.cleaned_data
         cidr: str = cd["subnet_cidr"]
         if ipaddress.ip_network(cidr, strict=False).version != self.dhcp_version:
             form.add_error("subnet_cidr", f"Enter an IPv{self.dhcp_version} Subnet CIDR.")
-            return self._render_post(request, server, subnet_id, form, configuration)
+            return self._render_post(request, server, subnet_id, form)
         edit, shown = form.to_edit(), form.shown()
         outcome = _run_config_change(
             request,
@@ -663,7 +657,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
         )
         if outcome is None:
             # A rejected change is not live, so the form keeps the input for another try.
-            return self._render_post(request, server, subnet_id, form, configuration)
+            return self._render_post(request, server, subnet_id, form)
         return redirect(self._subnets_url(pk))
 
 
