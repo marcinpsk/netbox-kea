@@ -1293,6 +1293,7 @@ _UPDATED = {
     },
 }
 _DNS_CODE = {4: 6, 6: 23}
+_NEW_DNS = {4: ("192.0.2.54",), 6: ("2001:db8::54",)}
 _LEAVE = "Step 1, remove Subnet 20 from Shared Network 'office'"
 _JOIN = "Step 2, add Subnet 20 to Shared Network 'lab'"
 _UPDATE = "Step 3, update the fields of Subnet 20"
@@ -1487,6 +1488,18 @@ class SubnetEditTests(TestCase):
 
     def test_a_value_that_changed_after_the_page_was_shown_sends_nothing(self):
         """Another writer changed a field that the page showed, so the update would write the old value back."""
+        # The edit writes every lifetime and timer, so the update would revert a change of each one.
+        writes_all = {
+            v: dataclasses.replace(
+                _SUBNET_EDIT[v],
+                valid_lifetime=7200,
+                min_valid_lifetime=60,
+                max_valid_lifetime=9000,
+                renew_timer=600,
+                rebind_timer=1200,
+            )
+            for v in _FAMILIES
+        }
         for version in _FAMILIES:
             v = version
             options = _LIVE[v]["option-data"]
@@ -1511,7 +1524,18 @@ class SubnetEditTests(TestCase):
                 with self.subTest(version=v, field=field):
                     changed = {**_LIVE[v], **change}
                     daemon = self._daemon(v, subnets=[changed])
-                    rejection, kea = self._rejection(daemon, "lab")
+                    with stub_kea(daemon.responses()) as kea, self.assertRaises(ConfigChangeRejected) as raised:
+                        config_write.edit_subnet(
+                            self.server,
+                            v,
+                            20,
+                            _EDITED[v],
+                            writes_all[v],
+                            shown=_SHOWN[v],
+                            shown_network="office",
+                            shared_network="lab",
+                        )
+                    rejection = raised.exception
                     self.assertEqual(rejection.reason, "not-sent")
                     self.assertEqual(
                         rejection.diagnostics,
@@ -1532,6 +1556,32 @@ class SubnetEditTests(TestCase):
                     (f"Subnet 20 ({_EDITED[version]}) changed in Kea. Reload the page and try again.",),
                 )
                 self.assertEqual(kea.commands(), [*_scope(version), f"subnet{version}-get"])
+
+    def test_a_lifetime_that_the_save_keeps_is_not_compared(self):
+        """A blank lifetime or timer keeps the live value, so another writer's value there cannot go back."""
+        for version in _FAMILIES:
+            v = version
+            dns_only = dataclasses.replace(
+                _SHOWN[v],
+                fields=dataclasses.replace(_SHOWN[v].fields, dns_servers=_NEW_DNS[v]),
+                valid_lifetime=None,
+            )
+            for key, attribute in (
+                ("valid-lifetime", "valid_lifetime"),
+                ("min-valid-lifetime", "min_valid_lifetime"),
+                ("max-valid-lifetime", "max_valid_lifetime"),
+                ("renew-timer", "renew_timer"),
+                ("rebind-timer", "rebind_timer"),
+            ):
+                with self.subTest(version=v, field=key):
+                    # The page showed no value there, and then another writer set one.
+                    shown = dataclasses.replace(_SHOWN[v], **{attribute: None})
+                    daemon = self._daemon(v, subnets=[{**_LIVE[v], key: 4800}])
+                    with stub_kea(daemon.responses()) as kea:
+                        outcome = self._save(v, dns_only, shown)
+                    self.assertEqual(outcome, ConfigChangeOutcome("applied", "persisted"))
+                    self.assertEqual(len(kea.bodies(f"subnet{v}-update")), 1)
+                    self.assertEqual(daemon.subnet(20)[key], 4800)
 
     def test_a_second_save_from_the_same_page_does_not_revert_the_first(self):
         for version in _FAMILIES:
