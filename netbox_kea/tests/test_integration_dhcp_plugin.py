@@ -79,6 +79,7 @@ def _reservation_snapshot(conf: dict, version: Family, hosts: list[dict] | None 
             declared_cidr=entry["subnet"],
             configuration=None,
             shared_network=None,
+            membership_known=False,
         )
         for entry in entries
         if isinstance(entry, dict) and entry.get("id") is not None and entry.get("subnet")
