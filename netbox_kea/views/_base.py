@@ -15,7 +15,7 @@ from netbox.tables import BaseTable
 
 from ..config_write import ConfigChangeOutcome, ConfigChangeRejected, RejectionReason
 from ..constants import Family
-from ..dhcp_options import DHCPOption, form_managed_options
+from ..dhcp_options import DHCPOption
 from ..kea import KeaException
 from ..models import Server
 from ..server_configuration import Diagnostic, SharedNetwork
@@ -218,35 +218,3 @@ def _enrich_subnet_statistics(rows: list[dict[str, Any]], server: Server, versio
                 row.update(stats[row["id"]])
     except (KeaException, requests.RequestException, KeyError, ValueError, TypeError, RuntimeError):
         logger.debug("stat_cmds hook unavailable or failed", exc_info=True)
-
-
-def _form_option_field(option: DHCPOption, version: Family) -> str | None:
-    """Return the form field a default-space option maps to, by code first.
-
-    Class-tagged and binary-encoded entries are not shown: the form has no
-    field for a tag and no way to enter binary data.
-    """
-    if option.space not in (None, f"dhcp{version}") or option.client_classes or option.csv_format is False:
-        return None
-    field = next(
-        (
-            managed.field
-            for managed in form_managed_options(version).values()
-            if (managed.code == option.code if option.code is not None else managed.name == option.name)
-        ),
-        None,
-    )
-    # The gateway field holds one address; a router array has no form representation.
-    if field == "gateway" and "," in option.data:
-        return None
-    return field
-
-
-def _subnet_option_fields(options: tuple[DHCPOption, ...], version: Family) -> dict[str, str]:
-    """Project DHCP Option values onto the Subnet form fields."""
-    fields: dict[str, str] = {}
-    for option in options:
-        field = _form_option_field(option, version)
-        if field is not None:
-            fields[field] = option.data
-    return fields
