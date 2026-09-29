@@ -561,8 +561,8 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
             "subnet_cidr": subnet_cidr,
             **forms.SubnetEditForm.initial_for(shown),
             "shared_network": display_network,
-            "shown_network": display_network,
-            "shown_network_confirmed": membership_confirmed,
+            "original_network": display_network,
+            "original_network_confirmed": membership_confirmed,
         }
         form = forms.SubnetEditForm(initial=initial)
         form.fields["shared_network"].choices = _network_choices(configuration)
@@ -648,7 +648,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
                 cidr,
                 edit,
                 shown=shown,
-                shown_network=cd["shown_network"] or None,
+                original_network=cd["original_network"] or None,
                 shared_network=cd["shared_network"] or None,
             ),
         )

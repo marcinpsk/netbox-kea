@@ -240,13 +240,13 @@ def edit_subnet(
     edit: SubnetEdit,
     *,
     shown: SubnetEdit,
-    shown_network: str | None,
+    original_network: str | None,
     shared_network: str | None,
 ) -> ConfigChangeOutcome:
     """Set the fields of the Subnet with *subnet_id* that the edit form manages, and move it to *shared_network*.
 
     The operation acts only while that ID names the network *cidr* with the values *shown* in the Shared Network
-    *shown_network*: the Subnet that the operator saw. A Shared Network of None means none. The operation removes the
+    *original_network*: the Subnet that the operator saw. A Shared Network of None means none. The operation removes the
     Subnet from its Shared Network, adds it to the new one, and then updates the fields. When a step did not apply,
     it undoes the membership steps before it.
     """
@@ -254,7 +254,7 @@ def edit_subnet(
         with mutation(server, family) as scope:
             subnet = _subnet_as_seen(scope, subnet_id, cidr, membership=True)
         current = subnet.shared_network.name if subnet.shared_network is not None else None
-        if current != shown_network:
+        if current != original_network:
             # Another writer moved the Subnet, so a move to *shared_network* would undo that change.
             raise ConfigChangeRejected(
                 "not-sent",
