@@ -205,7 +205,8 @@ class Server(JobsMixin, NetBoxModel):
     )
     sync_vrf = models.ForeignKey(
         to="ipam.VRF",
-        on_delete=models.SET_NULL,
+        # PROTECT, not SET_NULL: from a branch, SET_NULL would null main's row (ADR 0007).
+        on_delete=models.PROTECT,
         null=True,
         blank=True,
         related_name="+",
