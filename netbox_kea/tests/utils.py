@@ -46,6 +46,16 @@ def _make_db_server(**kwargs) -> Server:
     return Server.objects.create(**defaults)
 
 
+def _page_data(response) -> dict[str, str]:
+    """Return the data that a browser posts for the form of *response*: each field that the page rendered."""
+    form, page = response.context["form"], response.content.decode()
+    return {
+        name: "" if form[name].value() is None else str(form[name].value())
+        for name in form.fields
+        if f'name="{form[name].html_name}"' in page
+    }
+
+
 def _kea_command_side_effect(cmd, service=None, arguments=None, check=None):
     """Return a plausible Kea API response for each command type."""
     if cmd == "status-get":

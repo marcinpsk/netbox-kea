@@ -215,6 +215,12 @@ does not apply, the operation undoes the applied membership steps, newest first,
 a fresh scope shows the membership that the step set. The field update is the last step, so a
 rollback never undoes it. Both operations run their steps through `_run_steps` in `config_write`.
 
+Subnet edit and Shared Network edit also take the values that the page showed (`shown`, the type of the edit),
+and send nothing while a live value differs, because a save writes back every field that the form shows. One
+function maps the live facts to those values for the GET and for the check under the lock:
+`server_configuration.shown_subnet` and `shown_shared_network`. The form cleans each hidden `shown_` field
+with the cleaner of its visible field, so a value that Kea writes in another text form is not a change.
+
 A read-modify-write operation holds the lock from its `config-get` to the end of the
 persist step. `KeaClient` sends each command (`config_candidate`, `config_test`,
 `config_set`); `CandidateConfiguration` in `kea.py` edits the raw configuration in place,
