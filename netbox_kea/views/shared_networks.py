@@ -243,7 +243,9 @@ class BaseServerSharedNetworkEditView(_KeaChangeMixin, ConditionalLoginRequiredM
             messages.error(request, f"Shared network '{network_name}' not found or could not be retrieved.")
             return redirect(self._success_url(server))
 
-        form = forms.SharedNetworkEditForm(initial=forms.SharedNetworkEditForm.initial_for(network_name, shown))
+        form = forms.SharedNetworkEditForm(
+            initial={"name": network_name, **forms.SharedNetworkEditForm.initial_for(shown)}
+        )
         return render(
             request,
             "netbox_kea/server_shared_network_edit.html",
