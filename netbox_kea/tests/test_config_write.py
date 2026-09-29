@@ -2842,6 +2842,26 @@ class SharedNetworkEditShownValuesTests(TestCase):
                 self.assertEqual(outcome, ConfigChangeOutcome("applied", "persisted"))
                 self.assertEqual(kea.commands(), ["config-get", "config-test", "config-set", *_PERSIST])
 
+    def test_an_unrelated_save_keeps_the_option_text_that_kea_holds(self):
+        """The form shows canonical addresses, so an unchanged value must not rewrite Kea's text or its flags."""
+        held = {
+            4: {"name": "domain-name-servers", "data": "192.0.2.53 ,192.0.2.54", "csv-format": True},
+            6: {"name": "dns-servers", "data": "2001:DB8::0053, 2001:db8:0::54", "csv-format": True},
+        }
+        dns = {4: ("192.0.2.53", "192.0.2.54"), 6: ("2001:db8::53", "2001:db8::54")}
+        for version in (4, 6):
+            with self.subTest(version=version):
+                shown = dataclasses.replace(_NETWORK_SHOWN[version], dns_servers=dns[version], ntp_servers=())
+                config_get = _with_network(version, **{"option-data": [held[version]]})
+                with stub_kea(_rmw_responses(version, config_get=config_get)) as kea:
+                    outcome = config_write.edit_shared_network(
+                        self.server, version, "net-a", dataclasses.replace(shown, description="Lab"), shown=shown
+                    )
+                self.assertEqual(outcome, ConfigChangeOutcome("applied", "persisted"))
+                written = kea.bodies("config-set")[0]["arguments"][f"Dhcp{version}"]["shared-networks"][0]
+                self.assertEqual(written["option-data"], [held[version]])
+                self.assertEqual(written["user-context"], {"comment": "Lab"})
+
     def test_a_shared_network_that_the_form_cannot_show_is_not_sent(self):
         for label, change in (
             ("a DNS server value that is not an address", {"option-data": [{"code": 6, "data": "ns.example.org"}]}),
