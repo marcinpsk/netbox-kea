@@ -1524,19 +1524,19 @@ class KeaClient:
             raise RuntimeError(f"subnet{version}-get returned Subnet {subnet_id} with a malformed option-data list.")
         return SubnetDefinition(version, subnet_id, network, json.dumps(entry, sort_keys=True))
 
-    def subnet_update(self, definition: SubnetDefinition, edit: SubnetEdit) -> None:
-        """Send one ``subnet{v}-update`` of *definition* with the fields of *edit*. It does not persist.
+    def subnet_update(self, family: Family, subnet: dict[str, Any]) -> None:
+        """Send one ``subnet{v}-update`` of *subnet*, as ``SubnetDefinition.edited`` built it. It does not persist.
 
-        ``subnet{v}-update`` replaces the whole Subnet, so the update sends every field that the read returned.
+        ``subnet{v}-update`` replaces the whole Subnet, so *subnet* holds every field that the read returned.
 
         Raises:
             KeaException: If Kea returns a failure result.
             RuntimeError: If the reply is malformed.
 
         """
-        command = f"subnet{definition.family}-update"
-        service = f"dhcp{definition.family}"
-        arguments = {f"subnet{definition.family}": [definition.edited(edit)]}
+        command = f"subnet{family}-update"
+        service = f"dhcp{family}"
+        arguments = {f"subnet{family}": [subnet]}
         response = self._config_mutation_command(command, service, arguments, check=None)
         _one_reply(command, service, response)
 
