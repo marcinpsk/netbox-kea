@@ -182,6 +182,21 @@ def test_catalogue_responses_shape():
     assert with_networks["config-get"]["arguments"]["Dhcp4"]["shared-networks"] == shared_networks
 
 
+def test_a_member_of_an_unknown_shared_network_fails_loudly():
+    """Kea refuses such a Subnet, and ``config-get`` would drop it while the Subnet list keeps it."""
+    from netbox_kea.tests.kea_stub import SubnetDaemon, _catalogue_responses_for_subnets
+
+    with pytest.raises(AssertionError, match=r"\{7: 'missing'\}"):
+        _catalogue_responses_for_subnets(
+            4, [{"id": 7, "subnet": "10.0.7.0/24"}], shared_networks=[{"name": "office"}], members={7: "missing"}
+        )
+
+    daemon = SubnetDaemon(4, networks=("office",))
+    daemon.add({"id": 7, "subnet": "10.0.7.0/24"}, network="missing")
+    with pytest.raises(AssertionError, match=r"\{7: 'missing'\}"):
+        daemon.responses()["config-get"]({})
+
+
 @pytest.mark.parametrize(
     ("host", "family"),
     (

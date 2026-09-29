@@ -438,6 +438,10 @@ def _catalogue_responses_for_subnets(
     networks = list(shared_networks)
     if members is not None:
         key = f"subnet{version}"
+        names = {network["name"] for network in networks}
+        orphans = {sid: name for sid, name in members.items() if name not in names}
+        if orphans:
+            raise AssertionError(f"Subnets {orphans} name a Shared Network that the stub does not hold")
         listed = [{**subnet, "shared-network-name": members.get(subnet["id"])} for subnet in subnets]
         networks = [
             {**network, key: [s for s in subnets if members.get(s["id"]) == network["name"]]} for network in networks
