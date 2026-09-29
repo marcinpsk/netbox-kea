@@ -9,7 +9,10 @@ behaviour instead.
 
 from __future__ import annotations
 
+import ast
+import io
 import re
+import tokenize
 from pathlib import Path
 
 import pytest
@@ -17,16 +20,23 @@ import pytest
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 SCANNED_TREES = ("netbox_kea", "tests", "scripts")
 # A one-digit number is a line of inline test data, never a cited source line.
-SOURCE_LINE_REFERENCE = re.compile(r"\b[Ll]ines?\s+~?\d{2,}\b|\bL\d{3,}\b")
+SOURCE_LINE_REFERENCE = re.compile(r"\b[Ll]ines?\s+~?\d{2,}\b|\bL\d{3,}\b|\b[\w./-]+\.py:\d{2,}\b")
 
 
 def _references(text: str, name: str) -> list[str]:
-    """Return ``name:line: text`` for each source-line reference in *text*."""
-    return [
-        f"{name}:{number}: {line.strip()}"
-        for number, line in enumerate(text.splitlines(), start=1)
-        if SOURCE_LINE_REFERENCE.search(line)
-    ]
+    """Return ``name:line: text`` for each source-line reference in a comment or docstring of *text*."""
+    lines = text.splitlines()
+    found: set[int] = {
+        token.start[0]
+        for token in tokenize.generate_tokens(io.StringIO(text).readline)
+        if token.type == tokenize.COMMENT and SOURCE_LINE_REFERENCE.search(token.string)
+    }
+    # A bare string statement is a docstring, or documents the attribute above it.
+    for node in ast.walk(ast.parse(text)):
+        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+            span = range(node.lineno, (node.end_lineno or node.lineno) + 1)
+            found.update(number for number in span if SOURCE_LINE_REFERENCE.search(lines[number - 1]))
+    return [f"{name}:{number}: {lines[number - 1].strip()}" for number in sorted(found)]
 
 
 def _scanned_files() -> list[Path]:
@@ -47,6 +57,8 @@ def _scanned_files() -> list[Path]:
         "# ── 1. config-get returns non-dict arguments (~lines 92-99) ──",
         "# and test the explicit guard at line 944-945.",
         "# see L1234 in kea.py",
+        "# see kea.py:123",
+        "# see netbox_kea/views/subnets.py:1042-1050",
     ],
 )
 def test_the_pattern_matches_a_source_line_reference(text: str) -> None:
@@ -73,6 +85,21 @@ def test_the_scan_reports_the_file_and_line_of_each_reference() -> None:
     text = "x = 1\n# see lines 10-12\ny = 2  # (line 40)\n"
 
     assert _references(text, "a.py") == ["a.py:2: # see lines 10-12", "a.py:3: y = 2  # (line 40)"]
+
+
+def test_the_scan_reports_each_line_of_a_docstring() -> None:
+    text = 'def f():\n    """Do it.\n\n    See line 931.\n    """\n'
+
+    assert _references(text, "a.py") == ["a.py:4: See line 931."]
+
+
+def test_the_scan_ignores_a_reference_in_an_ordinary_string() -> None:
+    text = (
+        'message = "Error at line 100"\n'
+        'assert str(v) == "sub/test_x.py:12: unapproved MagicMock()"  # the reported location\n'
+    )
+
+    assert _references(text, "a.py") == []
 
 
 def test_the_scan_covers_the_production_code_and_both_test_suites() -> None:
