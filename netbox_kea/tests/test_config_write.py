@@ -1336,7 +1336,7 @@ class SubnetEditTests(TestCase):
             _EDITED[daemon.family],
             _SUBNET_EDIT[daemon.family],
             shown=_SHOWN[daemon.family],
-            shown_network=daemon.members.get(20),
+            original_network=daemon.members.get(20),
             shared_network=network,
         )
 
@@ -1453,7 +1453,7 @@ class SubnetEditTests(TestCase):
                             _EDITED[version],
                             _SUBNET_EDIT[version],
                             shown=_SHOWN[version],
-                            shown_network=shown,
+                            original_network=shown,
                             shared_network=target,
                         )
                     self.assertEqual(raised.exception.reason, "not-sent")
@@ -1532,7 +1532,7 @@ class SubnetEditTests(TestCase):
                             _EDITED[v],
                             writes_all[v],
                             shown=_SHOWN[v],
-                            shown_network="office",
+                            original_network="office",
                             shared_network="lab",
                         )
                     rejection = raised.exception
@@ -1612,7 +1612,7 @@ class SubnetEditTests(TestCase):
             _EDITED[version],
             edit,
             shown=shown,
-            shown_network="office",
+            original_network="office",
             shared_network="office",
         )
 
@@ -1970,7 +1970,7 @@ class SubnetEditPoolTests(TestCase):
                 _EDITED[version],
                 edit,
                 shown=shown,
-                shown_network=None,
+                original_network=None,
                 shared_network=None,
             )
         self.assertEqual(outcome, ConfigChangeOutcome("applied", "persisted"))
@@ -2037,7 +2037,7 @@ class SubnetEditPoolTests(TestCase):
                 _NTP_ONLY_EDIT[4],
                 # Every shown value equals the live value, except the Pool that the form cannot show.
                 shown=_SHOWN[4],
-                shown_network=None,
+                original_network=None,
                 shared_network=None,
             )
         self.assertEqual(raised.exception.reason, "not-sent")
