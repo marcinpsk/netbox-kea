@@ -152,10 +152,11 @@ URL request
   `version-get` connectivity check** per enabled service before saving.
   `get_client(version=4|6|None)` returns a protocol-aware `KeaClient`.
 - **`SyncConfig` model** (`models.py`): singleton (pk=1) for global sync settings —
-  `interval_minutes`, `sync_enabled` (global kill-switch), type toggles,
-  `backfill_applied`. `SyncConfig.get(default_interval)` handles first-boot creation
-  and a one-time PLUGINS_CONFIG backfill; once `backfill_applied=True` it never
-  overrides UI changes. Plain `models.Model` (not a `NetBoxModel`).
+  `interval_minutes`, `sync_enabled` (global kill-switch), type toggles. Migration 0018
+  creates the row from PLUGINS_CONFIG and applies the one-time backfill, so
+  `SyncConfig.get()` only reads it. A TransactionTestCase flush deletes the row, and a
+  `post_migrate` receiver in `tests/conftest.py` creates it again with the migration's
+  values. Plain `models.Model` (not a `NetBoxModel`).
 - **`KeaClient`** (`kea.py`): wraps a `requests.Session`. All API calls go through
   `.command(command, service, arguments, check)`, which POSTs JSON to the
   **configured endpoint URL** (`self.url` — the daemon's `/` control socket, or a
