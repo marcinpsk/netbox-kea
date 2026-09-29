@@ -761,7 +761,7 @@ class TestSubnetCatalogue(TestCase):
         self.assertIn("configuration-changed-during-retry", {item.code for item in snapshot.diagnostics})
 
     def test_an_identity_entry_without_the_membership_key_takes_the_membership_from_the_configuration(self):
-        """Kea 3.2.0 always sends shared-network-name, so an entry without it shows no membership."""
+        """Without shared-network-name the membership is unknown, so only a configuration read can show it."""
         identities = _identity(4, [{"id": 1, "subnet": "198.18.1.0/24"}])
         member = {"name": "access-a", "subnet4": [{"id": 1, "subnet": "198.18.1.0/24"}]}
         for label, configuration, membership in (
