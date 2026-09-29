@@ -266,6 +266,22 @@ Without netbox-branching every guard is a no-op and behaviour does not change, e
   (`NBB/__init__.py:133`), and netbox-branching must be listed last, so the resolver is in place
   before any routing decision.
 
+#### Implementation note (2026-09-29, increment 1)
+
+Increment 1 changed how the resolver is built. The contract did not change. `is_branchable(model)`
+returns `False` for every netbox_kea model, historical models included, and `None` for every other
+model. It evaluates no rule at run time. The reasons:
+
+- `supports_branching()` catches any exception from a resolver, logs it, and falls back to the
+  `ChangeLoggingMixin` check (`NBB/utilities.py`, `supports_branching`). A resolver that raises
+  therefore makes `Server` branchable. That fails open.
+- The foreign-key rule must be transitive. `KeaDhcpLink.server` is `CASCADE` to `Server`, so if
+  `Server` needed a branch copy, `KeaDhcpLink` would need one too.
+
+Guard 2 is now the only place that computes the rule, transitively, from the live models. It fails,
+and names the foreign-key path, when a plugin model would need a branch copy. It also asserts that
+`supports_branching()` is `False` for every plugin model.
+
 ### Sinks
 
 - **Kea transport.** `KeaClient.command()` takes a `KeaCommand` enum member and a target,
