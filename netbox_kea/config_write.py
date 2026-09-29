@@ -70,6 +70,9 @@ _LOCK_CLASS = _int4("netbox_kea.config_write")
 
 
 SUBNET_LIST_UNCONFIRMED = "NetBox could not confirm Kea's Subnet list, so it did not send the change. Try again later."
+SHARED_NETWORKS_UNCONFIRMED = (
+    "NetBox could not confirm Kea's Shared Networks, so it did not send the change. Try again later."
+)
 _READ_UNUSABLE = "Kea did not return a usable reply to the read before the change."
 _CONFIG_TEST_UNUSABLE = "Kea did not return a usable reply to config-test."
 # A live value that the edit form cannot show, so the operator cannot have seen it.
@@ -155,9 +158,9 @@ def add_subnet(
 
     """
     with _client(server, family) as client, _serialized(client, family):
-        if shared_network is not None:
-            _require_shared_network(client, family, shared_network)
-        identity, application, diagnostics = _create_subnet(server, client, family, cidr, subnet_id, fields)
+        identity, application, diagnostics = _create_subnet(
+            server, client, family, cidr, subnet_id, fields, shared_network
+        )
         if application == "unknown":
             diagnostics = (*diagnostics, f"NetBox sent Subnet {identity.subnet_id} ({identity.cidr}).")
         elif shared_network is not None:
@@ -168,16 +171,32 @@ def add_subnet(
         )
 
 
-def _require_shared_network(client: KeaClient, family: Family, name: str) -> None:
-    if not _read_before(lambda: client.shared_network_exists(family, name)):
+def _require_shared_network(scope: MutationScope, name: str) -> None:
+    """Reject the change unless the configuration read of *scope* shows the Shared Network *name*."""
+    try:
+        present = scope.has_shared_network(name)
+    except CatalogueUnavailable as exc:
+        raise ConfigChangeRejected("not-sent", (SHARED_NETWORKS_UNCONFIRMED,)) from exc
+    if not present:
         raise ConfigChangeRejected("not-sent", (f"Shared Network '{name}' not found.",))
 
 
 def _create_subnet(
-    server: Server, client: KeaClient, family: Family, cidr: str, requested_id: int | None, fields: SubnetFields
+    server: Server,
+    client: KeaClient,
+    family: Family,
+    cidr: str,
+    requested_id: int | None,
+    fields: SubnetFields,
+    shared_network: str | None,
 ) -> tuple[NewSubnetIdentity, Application, tuple[str, ...]]:
-    """Send the Subnet add under an identity from a live scope. Retry once when another Subnet took the allocated ID."""
+    """Send the Subnet add under an identity from a live scope. Retry once when another Subnet took the allocated ID.
+
+    The scope must also show *shared_network*, when one is named.
+    """
     with mutation(server, family) as scope:
+        if shared_network is not None:
+            _require_shared_network(scope, shared_network)
         identity = scope.prepare_creation(cidr, requested_id)
     taken = False
 
@@ -253,15 +272,15 @@ def edit_subnet(
     with _client(server, family) as client, _serialized(client, family):
         with mutation(server, family) as scope:
             subnet = _subnet_as_seen(scope, subnet_id, cidr, membership=True)
-        current = subnet.shared_network.name if subnet.shared_network is not None else None
-        if current != original_network:
-            # Another writer moved the Subnet, so a move to *shared_network* would undo that change.
-            raise ConfigChangeRejected(
-                "not-sent",
-                (f"The Shared Network of Subnet {subnet_id} ({cidr}) changed in Kea. Reload the page and try again.",),
-            )
-        if shared_network is not None and shared_network != current:
-            _require_shared_network(client, family, shared_network)
+            current = subnet.shared_network.name if subnet.shared_network is not None else None
+            if current != original_network:
+                # Another writer moved the Subnet, so a move to *shared_network* would undo that change.
+                moved = (
+                    f"The Shared Network of Subnet {subnet_id} ({cidr}) changed in Kea. Reload the page and try again."
+                )
+                raise ConfigChangeRejected("not-sent", (moved,))
+            if shared_network is not None and shared_network != current:
+                _require_shared_network(scope, shared_network)
         definition = _read_before(lambda: client.subnet_definition(family, subnet_id))
         if definition.network != subnet.network:
             raise ConfigChangeRejected("not-sent", (subnet_changed(subnet_id, cidr),))
