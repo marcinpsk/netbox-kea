@@ -854,6 +854,22 @@ class TestSubnetEditForm(SimpleTestCase):
         )
         self.assertEqual((form.to_edit(), form.shown()), (expected, expected))
 
+    def test_each_hidden_copy_is_its_field_with_a_hidden_widget_and_no_input_limits(self):
+        from django.forms import HiddenInput
+
+        from netbox_kea.forms import SharedNetworkEditForm, SubnetEditForm
+
+        for form in (SubnetEditForm(), SharedNetworkEditForm()):
+            for name in form.shown_names:
+                with self.subTest(form=type(form).__name__, field=name):
+                    hidden = form.fields[f"shown_{name}"]
+                    self.assertIs(type(hidden), type(form.fields[name]))
+                    self.assertIsInstance(hidden.widget, HiddenInput)
+                    self.assertEqual((hidden.required, hidden.validators), (False, []))
+        # A live 0 and a long value are what Kea holds, so the hidden copies accept them.
+        form = self._form(shown_valid_lft="0", shown_ddns_qualifying_suffix="x" * 300)
+        self.assertTrue(form.is_valid(), form.errors)
+
     def test_a_shown_value_that_does_not_clean_refuses_the_form(self):
         for field, value in (("shown_pools", "10.1.0.0/28"), ("shown_gateway", "gw"), ("shown_valid_lft", "x")):
             with self.subTest(field=field):
