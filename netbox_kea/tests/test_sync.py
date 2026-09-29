@@ -1084,7 +1084,7 @@ class TestSyncMacAddressErrors(TestCase):
 
 
 class TestFindPrefixLengthPostgresPath(TestCase):
-    """find_prefix_length: PostgreSQL-native lookup success path (lines 56-57)."""
+    """find_prefix_length: PostgreSQL-native lookup success path."""
 
     def test_postgresql_path_returns_prefix_length(self):
         """When the net_contains filter returns a prefix, return its length."""
@@ -1103,7 +1103,7 @@ class TestFindPrefixLengthPostgresPath(TestCase):
 
 
 class TestFindPrefixLengthSQLiteException(TestCase):
-    """find_prefix_length: exception in SQLite fallback loop is skipped (lines 68-69)."""
+    """find_prefix_length: exception in SQLite fallback loop is skipped."""
 
     def test_exception_in_sqlite_loop_is_ignored(self):
         """When IPNetwork parsing raises inside the loop, the exception is caught and we continue."""
@@ -1128,7 +1128,7 @@ class TestFindPrefixLengthSQLiteException(TestCase):
 
 
 class TestSyncMacAddressImportErrors(TestCase):
-    """_sync_mac_address: ImportError for dcim.models and netaddr (lines 270-271, 274-276)."""
+    """_sync_mac_address: ImportError for dcim.models and netaddr."""
 
     def test_dcim_import_error_returns_silently(self):
         """When dcim.models cannot be imported, _sync_mac_address returns without raising."""

@@ -2314,7 +2314,7 @@ class TestSubnetEditPostExceptions(_ViewTestBase):
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestSubnetListViewEdgeCases(_ViewTestBase):
-    """Lines 1110, 1173, 1181: subnet view null config, export, HTMX."""
+    """Subnet list view: null config, CSV export, and the HTMX partial."""
 
     def _url(self):
         return reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
@@ -2605,7 +2605,7 @@ class TestSubnetAndPoolChangesRequireTheVerifiedSubnet(_ViewTestBase):
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestSubnetDeleteExceptionPaths(_ViewTestBase):
-    """Lines 3177-3178, 3203-3205: subnet delete GET exception and POST generic."""
+    """Subnet delete GET when the configuration read fails."""
 
     def _url(self, subnet_id=42):
         return reverse("plugins:netbox_kea:server_subnet4_delete", args=[self.server.pk, subnet_id])
@@ -2626,7 +2626,7 @@ class TestSubnetDeleteExceptionPaths(_ViewTestBase):
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestFetchSubnetsFromServer(_ViewTestBase):
-    """Lines 3807-3855: _fetch_subnets_from_server edge cases."""
+    """_fetch_subnets_from_server edge cases, through the combined Subnets view."""
 
     def _run(self, responses):
         """Render the combined Subnet table through its public HTTP view."""
@@ -2782,7 +2782,7 @@ class TestFetchSubnetsFromServer(_ViewTestBase):
 
 
 # ---------------------------------------------------------------------------
-# Subnet edit — _form_initial with ntp/dns + lease time fields
+# Subnet edit — initial ntp/dns + lease time fields
 # ---------------------------------------------------------------------------
 
 
@@ -2854,13 +2854,13 @@ class TestSubnetEditNonCanonicalCidr(_ViewTestBase):
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestSubnetEditFormInitialFields(_ViewTestBase):
-    """Lines 2937-2938, 2944, 2946: _form_initial parses ntp/dns + lease time fields."""
+    """SubnetEditForm.initial_for fills the NTP and lease time fields."""
 
     def _url(self, subnet_id=42):
         return reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, subnet_id])
 
     def test_get_populates_ntp_and_lease_times(self):
-        """_form_initial picks up ntp-servers, min-valid-lft, max-valid-lft, renew/rebind-timer."""
+        """The edit GET fills ntp-servers, min-valid-lft, max-valid-lft, renew/rebind-timer."""
         subnet_resp = {
             "result": 0,
             "arguments": {
@@ -2969,13 +2969,13 @@ class TestGetNetworkChoicesKeaException(_ViewTestBase):
 
 
 # ---------------------------------------------------------------------------
-# _get_inherited_options._parse_opts — "routers" and "ntp-servers" (lines 2974, 2977-2978)
+# _inherited_subnet_options — global "routers" and "ntp-servers"
 # ---------------------------------------------------------------------------
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestGetInheritedOptionsParseOpts(_ViewTestBase):
-    """Lines 2974, 2977-2978: _parse_opts handles 'routers' and 'ntp-servers' entries."""
+    """_inherited_subnet_options shows global 'routers' and 'ntp-servers' as hints."""
 
     def test_global_options_routers_and_ntp_servers_inherited(self):
         """GET subnet4_edit with global routers + ntp-servers → inherited_options populated."""
@@ -3714,13 +3714,13 @@ class TestGetNetworkDataNonDictSubnet(_ViewTestBase):
 
 
 # ---------------------------------------------------------------------------
-# Coverage gap tests — _subnet_to_row, config-get edge cases, stats, pool overlap
+# Coverage gap tests — Subnet rows, config-get edge cases, stats, pool overlap
 # ---------------------------------------------------------------------------
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestSubnetViewCoverageGaps(_ViewTestBase):
-    """Tests targeting specific uncovered lines in views/subnets.py."""
+    """Edge cases of the Subnet list, edit, and pool add views."""
 
     def _subnets4_url(self):
         return reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
@@ -3737,7 +3737,7 @@ class TestSubnetViewCoverageGaps(_ViewTestBase):
         base.update(overrides)
         return stub_kea({**_ABSENT_READ_HOOKS, **base})
 
-    # ── 1. config-get returns non-dict arguments (~lines 92-99) ──────────
+    # ── 1. config-get returns non-dict arguments ──────────
 
     def test_config_get_non_dict_arguments_returns_empty_subnets(self):
         """config-get returning arguments='not-a-dict' logs a warning and returns 200 with no subnets."""
@@ -3753,7 +3753,7 @@ class TestSubnetViewCoverageGaps(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(response.context["table"].data), 0)
 
-    # ── 2. Stats enrichment exception paths (~lines 130-134) ─────────────
+    # ── 2. Stats enrichment exception paths ─────────────
 
     def test_stats_value_error_still_renders_subnets(self):
         """When stat-lease4-get raises ValueError, subnets render without utilisation."""
@@ -3786,7 +3786,7 @@ class TestSubnetViewCoverageGaps(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(response.context["table"].data), 1)
 
-    # ── 3. _subnet_to_row with non-scalar ID (~lines 56-58) ─────────────
+    # ── 3. Subnet with a non-scalar ID ─────────────
 
     def test_subnet_with_list_id_is_skipped(self):
         """Subnet with id=[1,2,3] must be skipped (non-scalar ID)."""
@@ -3828,7 +3828,7 @@ class TestSubnetViewCoverageGaps(_ViewTestBase):
         self.assertEqual(len(table.data), 1)
         self.assertEqual(next(iter(table.data))["id"], 5)
 
-    # ── 4. _subnet_to_row with malformed CIDR (~lines 60-62) ────────────
+    # ── 4. Subnet with a malformed CIDR ────────────
 
     def test_subnet_with_malformed_cidr_is_skipped(self):
         """Subnet with subnet='not-a-cidr' must be skipped and logged."""
@@ -3878,7 +3878,7 @@ class TestSubnetViewCoverageGaps(_ViewTestBase):
         self.assertContains(response, _INVALID_SERVER_SETTINGS)
         self.assertEqual(kea.commands(), [])
 
-    # ── 6. Pool add with reservation overlap warning (~lines 204-257) ────
+    # ── 6. Pool add with reservation overlap warning ────
 
     def _pool_add_url(self):
         return reverse("plugins:netbox_kea:server_subnet4_pool_add", args=[self.server.pk, 42])
