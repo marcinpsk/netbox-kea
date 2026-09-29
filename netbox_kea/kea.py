@@ -403,6 +403,11 @@ def shared_network_description(network: dict[str, Any]) -> str | None:
     return comment if isinstance(comment, str) else None
 
 
+def description_as_shown(text: str) -> str:
+    """Return *text* as a text input shows it and Django cleans it: without line breaks and outer spaces."""
+    return text.replace("\r", "").replace("\n", "").strip()
+
+
 def _set_shared_network_description(network: dict[str, Any], description: str) -> None:
     """Write *description* as ``user-context.comment`` and keep every other user-context key.
 
@@ -413,7 +418,7 @@ def _set_shared_network_description(network: dict[str, Any], description: str) -
         existing = shared_network_description(network)
     except ValueError as exc:
         raise MalformedConfiguration(str(exc)) from exc
-    if existing is not None and description == existing.replace("\r", "").replace("\n", "").strip():
+    if existing is not None and description == description_as_shown(existing):
         return
     context = dict(network.get("user-context") or {})
     if description:
@@ -454,7 +459,10 @@ def _config_options(container: dict[str, Any], service: str) -> list[dict[str, A
 
 @dataclass(frozen=True)
 class SharedNetworkEdit:
-    """The Shared Network fields that the edit form manages. An empty value removes the field."""
+    """The Shared Network fields that the edit form manages. An empty value removes the field.
+
+    The values that the form showed have the same type, so that an operation can compare them with the live values.
+    """
 
     description: str
     interface: str
@@ -482,7 +490,8 @@ class SubnetFields:
 class SubnetEdit:
     """The Subnet fields that the edit form manages: the *fields* of both forms, the lifetimes and the timers.
 
-    A lifetime or a timer of None keeps the live value.
+    A lifetime or a timer of None keeps the live value. The values that the form showed have the same type, and there
+    None is a value that Kea does not set.
     """
 
     fields: SubnetFields

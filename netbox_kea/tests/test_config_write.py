@@ -1233,6 +1233,37 @@ _SUBNET_EDIT = {
         rebind_timer=None,
     ),
 }
+# The values that the edit form shows for _LIVE.
+_SHOWN = {
+    4: SubnetEdit(
+        fields=SubnetFields(
+            pools=("10.0.20.10-10.0.20.20",),
+            gateway="10.0.20.1",
+            dns_servers=(),
+            ntp_servers=(),
+            ddns_qualifying_suffix="old.example.org.",
+        ),
+        valid_lifetime=3600,
+        min_valid_lifetime=None,
+        max_valid_lifetime=None,
+        renew_timer=None,
+        rebind_timer=None,
+    ),
+    6: SubnetEdit(
+        fields=SubnetFields(
+            pools=("2001:db8:20::100-2001:db8:20::1ff",),
+            gateway="",
+            dns_servers=("2001:db8::53",),
+            ntp_servers=(),
+            ddns_qualifying_suffix="",
+        ),
+        valid_lifetime=3600,
+        min_valid_lifetime=None,
+        max_valid_lifetime=None,
+        renew_timer=None,
+        rebind_timer=None,
+    ),
+}
 # The update keeps every field that the form does not manage, and drops the read-only metadata.
 _UPDATED = {
     4: {
@@ -1261,6 +1292,7 @@ _UPDATED = {
         "ddns-qualifying-suffix": "v6.example.org.",
     },
 }
+_DNS_CODE = {4: 6, 6: 23}
 _LEAVE = "Step 1, remove Subnet 20 from Shared Network 'office'"
 _JOIN = "Step 2, add Subnet 20 to Shared Network 'lab'"
 _UPDATE = "Step 3, update the fields of Subnet 20"
@@ -1302,6 +1334,7 @@ class SubnetEditTests(TestCase):
             20,
             _EDITED[daemon.family],
             _SUBNET_EDIT[daemon.family],
+            shown=_SHOWN[daemon.family],
             shown_network=daemon.members.get(20),
             shared_network=network,
         )
@@ -1418,6 +1451,7 @@ class SubnetEditTests(TestCase):
                             20,
                             _EDITED[version],
                             _SUBNET_EDIT[version],
+                            shown=_SHOWN[version],
                             shown_network=shown,
                             shared_network=target,
                         )
@@ -1450,6 +1484,121 @@ class SubnetEditTests(TestCase):
                 self.assertEqual(rejection.reason, "not-sent")
                 self.assertEqual(rejection.diagnostics, (diagnostic,))
                 self.assertEqual(kea.commands(), [*_scope(4), "network4-get", "subnet4-get"])
+
+    def test_a_value_that_changed_after_the_page_was_shown_sends_nothing(self):
+        """Another writer changed a field that the page showed, so the update would write the old value back."""
+        for version in _FAMILIES:
+            v = version
+            options = _LIVE[v]["option-data"]
+            dns = {
+                4: [*options, {"name": "domain-name-servers", "data": "192.0.2.53"}],
+                6: [{**options[0], "data": "2001:db8::99"}, options[1]],
+            }
+            changes = {
+                "pools": {"pools": []},
+                "dns servers": {"option-data": dns[v]},
+                "ntp servers": {"option-data": [*options, {"name": _NTP_OPTION[v], "data": _NEW_NTP[v][0]}]},
+                "ddns qualifying suffix": {"ddns-qualifying-suffix": "new.example.org."},
+                "valid lifetime": {"valid-lifetime": 7200},
+                "min valid lifetime": {"min-valid-lifetime": 60},
+                "max valid lifetime": {"max-valid-lifetime": 9000},
+                "renew timer": {"renew-timer": 900},
+                "rebind timer": {"rebind-timer": 1800},
+            }
+            if v == 4:
+                changes["gateway"] = {"option-data": [{"name": "routers", "data": "10.0.20.2"}, options[1]]}
+            for field, change in changes.items():
+                with self.subTest(version=v, field=field):
+                    changed = {**_LIVE[v], **change}
+                    daemon = self._daemon(v, subnets=[changed])
+                    rejection, kea = self._rejection(daemon, "lab")
+                    self.assertEqual(rejection.reason, "not-sent")
+                    self.assertEqual(
+                        rejection.diagnostics,
+                        (f"Subnet 20 ({_EDITED[v]}) changed in Kea. Reload the page and try again.",),
+                    )
+                    self.assertEqual(kea.commands(), [*_scope(v), f"network{v}-get", f"subnet{v}-get"])
+                    self.assertEqual((daemon.subnet(20), daemon.members), (changed, {20: "office"}))
+
+    def test_a_subnet_that_the_form_cannot_show_sends_nothing(self):
+        for version in _FAMILIES:
+            with self.subTest(version=version):
+                # A DNS server option that holds a name: the form shows only addresses.
+                unshowable = {**_LIVE[version], "option-data": [{"code": _DNS_CODE[version], "data": "ns.example.org"}]}
+                rejection, kea = self._rejection(self._daemon(version, subnets=[unshowable]), "office")
+                self.assertEqual(rejection.reason, "not-sent")
+                self.assertEqual(
+                    rejection.diagnostics,
+                    (f"Subnet 20 ({_EDITED[version]}) changed in Kea. Reload the page and try again.",),
+                )
+                self.assertEqual(kea.commands(), [*_scope(version), f"subnet{version}-get"])
+
+    def test_a_second_save_from_the_same_page_does_not_revert_the_first(self):
+        for version in _FAMILIES:
+            v = version
+            shown = _SHOWN[v]
+            first = dataclasses.replace(
+                shown, fields=dataclasses.replace(shown.fields, ddns_qualifying_suffix="first.example.org.")
+            )
+            with self.subTest(version=v):
+                daemon = self._daemon(v)
+                with stub_kea(daemon.responses()) as kea:
+                    # Both operators saw the same page, and each one changes a different field.
+                    outcome = self._save(v, first, shown)
+                    with self.assertRaises(ConfigChangeRejected) as raised:
+                        self._save(v, dataclasses.replace(shown, valid_lifetime=7200), shown)
+                self.assertEqual(outcome, ConfigChangeOutcome("applied", "persisted"))
+                self.assertEqual(raised.exception.reason, "not-sent")
+                self.assertEqual(daemon.subnet(20)["ddns-qualifying-suffix"], "first.example.org.")
+                self.assertEqual(daemon.subnet(20)["valid-lifetime"], 3600)
+                self.assertEqual(kea.commands().count(f"subnet{v}-update"), 1)
+
+    def _save(self, version: Family, edit: SubnetEdit, shown: SubnetEdit) -> ConfigChangeOutcome:
+        """Save Subnet 20 in Shared Network 'office' from a page that showed *shown*."""
+        return config_write.edit_subnet(
+            self.server,
+            version,
+            20,
+            _EDITED[version],
+            edit,
+            shown=shown,
+            shown_network="office",
+            shared_network="office",
+        )
+
+    def test_a_value_that_kea_returns_in_another_text_form_is_not_a_change(self):
+        echoed = {
+            4: {
+                "id": 20,
+                "subnet": "10.0.20.1/24",
+                "pools": [{"pool": "10.0.20.16/28"}],
+                "option-data": [
+                    {"name": "routers", "data": " 10.0.20.1"},
+                    {"code": 6, "data": "192.0.2.53 ,192.0.2.54"},
+                ],
+                "ddns-qualifying-suffix": " example.org. ",
+            },
+            6: {
+                "id": 20,
+                "subnet": "2001:db8:20::1/64",
+                "pools": [{"pool": "2001:db8:20::100 - 2001:db8:20::1ff"}],
+                "option-data": [{"name": "dns-servers", "data": "2001:DB8::0053, 2001:db8:0::54"}],
+            },
+        }
+        shown = {
+            4: SubnetFields(("10.0.20.16-10.0.20.31",), "10.0.20.1", ("192.0.2.53", "192.0.2.54"), (), "example.org."),
+            6: SubnetFields(("2001:db8:20::100-2001:db8:20::1ff",), "", ("2001:db8::53", "2001:db8::54"), (), ""),
+        }
+        for version in _FAMILIES:
+            with self.subTest(version=version):
+                daemon = self._daemon(version, subnets=[echoed[version]])
+                with stub_kea(daemon.responses()) as kea:
+                    outcome = self._save(
+                        version, _SUBNET_EDIT[version], SubnetEdit(shown[version], None, None, None, None, None)
+                    )
+                self.assertEqual(outcome, ConfigChangeOutcome("applied", "persisted"))
+                self.assertEqual(len(kea.bodies(f"subnet{version}-update")), 1)
+                self.assertEqual(daemon.subnet(20)["subnet"], echoed[version]["subnet"])
 
     def test_a_rejected_first_step_raises_the_rejection_without_a_rollback(self):
         for label, command, network, reads in (
@@ -1752,14 +1901,27 @@ class SubnetEditPoolTests(TestCase):
     def setUp(self):
         self.server = _make_db_server()
 
-    def _sent(self, version: Family, live: dict, pools: tuple[str, ...]) -> dict:
-        """Save Subnet 20 from *live* with *pools* and a new NTP server, and return the Subnet that the update sent."""
+    def _sent(self, version: Family, live: dict, pools: tuple[str, ...], shown_pools: tuple[str, ...]) -> dict:
+        """Save Subnet 20 from *live* with *pools* and a new NTP server, and return the Subnet that the update sent.
+
+        *shown_pools* are the Pools of *live* as the form shows them.
+        """
         edit = _NTP_ONLY_EDIT[version]
         edit = dataclasses.replace(edit, fields=dataclasses.replace(edit.fields, pools=pools))
+        shown = dataclasses.replace(
+            _SHOWN[version], fields=dataclasses.replace(_SHOWN[version].fields, pools=shown_pools)
+        )
         daemon = SubnetDaemon(version, [live], networks=("office",), members={})
         with stub_kea(daemon.responses()) as kea:
             outcome = config_write.edit_subnet(
-                self.server, version, 20, _EDITED[version], edit, shown_network=None, shared_network=None
+                self.server,
+                version,
+                20,
+                _EDITED[version],
+                edit,
+                shown=shown,
+                shown_network=None,
+                shared_network=None,
             )
         self.assertEqual(outcome, ConfigChangeOutcome("applied", "persisted"))
         (body,) = kea.bodies(f"subnet{version}-update")
@@ -1774,7 +1936,7 @@ class SubnetEditPoolTests(TestCase):
             with self.subTest(version=version):
                 pool = {"pool": _KEPT_POOL[version], "pool-id": 7, **_POOL_KEYS}
                 live = self._live(version, [pool])
-                sent = self._sent(version, live, (_KEPT_POOL[version],))
+                sent = self._sent(version, live, (_KEPT_POOL[version],), (_KEPT_POOL[version],))
                 self.assertEqual(sent["pools"], [pool])
                 # The save changes only the NTP server: every other field equals the live Subnet.
                 ntp = [option for option in sent["option-data"] if option["name"] == _NTP_OPTION[version]]
@@ -1789,28 +1951,56 @@ class SubnetEditPoolTests(TestCase):
             kept = {"pool": _KEPT_POOL[version], **_POOL_KEYS}
             other = {"pool": _OTHER_POOL[version], "client-classes": ["voip"]}
             with self.subTest(version=version, change="add"):
-                sent = self._sent(version, self._live(version, [kept]), (_KEPT_POOL[version], _OTHER_POOL[version]))
+                sent = self._sent(
+                    version,
+                    self._live(version, [kept]),
+                    (_KEPT_POOL[version], _OTHER_POOL[version]),
+                    (_KEPT_POOL[version],),
+                )
                 self.assertEqual(sent["pools"], [kept, {"pool": _OTHER_POOL[version]}])
             with self.subTest(version=version, change="remove"):
-                sent = self._sent(version, self._live(version, [kept, other]), (_OTHER_POOL[version],))
+                sent = self._sent(
+                    version,
+                    self._live(version, [kept, other]),
+                    (_OTHER_POOL[version],),
+                    (_KEPT_POOL[version], _OTHER_POOL[version]),
+                )
                 self.assertEqual(sent["pools"], [other])
 
     def test_a_live_prefix_pool_matches_the_same_range_in_the_form(self):
         for version in _FAMILIES:
             prefix, text = _PREFIX_POOL[version]
             with self.subTest(version=version):
-                sent = self._sent(version, self._live(version, [{"pool": prefix, **_POOL_KEYS}]), (text,))
+                sent = self._sent(version, self._live(version, [{"pool": prefix, **_POOL_KEYS}]), (text,), (text,))
                 self.assertEqual(sent["pools"], [{"pool": text, **_POOL_KEYS}])
 
-    def test_a_live_pool_entry_that_does_not_parse_is_never_matched(self):
-        live = self._live(4, [_KEPT_POOL[4], {"pool": "not a pool", **_POOL_KEYS}])
-        sent = self._sent(4, live, (_KEPT_POOL[4],))
-        self.assertEqual(sent["pools"], [{"pool": _KEPT_POOL[4]}])
+    def test_a_live_pool_entry_that_does_not_parse_is_a_changed_subnet(self):
+        """The form cannot show such a Subnet, so a save from any page would drop the Pool."""
+        live = self._live(4, [{"pool": _KEPT_POOL[4]}, {"pool": "not a pool", **_POOL_KEYS}])
+        daemon = SubnetDaemon(4, [live], networks=("office",), members={})
+        with stub_kea(daemon.responses()) as kea, self.assertRaises(ConfigChangeRejected) as raised:
+            config_write.edit_subnet(
+                self.server,
+                4,
+                20,
+                _EDITED[4],
+                _NTP_ONLY_EDIT[4],
+                # Every shown value equals the live value, except the Pool that the form cannot show.
+                shown=_SHOWN[4],
+                shown_network=None,
+                shared_network=None,
+            )
+        self.assertEqual(raised.exception.reason, "not-sent")
+        self.assertEqual(
+            raised.exception.diagnostics, (f"Subnet 20 ({_EDITED[4]}) changed in Kea. Reload the page and try again.",)
+        )
+        self.assertEqual(kea.commands(), [*_scope(4), "subnet4-get"])
+        self.assertEqual(daemon.subnet(20), live)
 
     def test_the_update_keeps_the_prefix_delegation_pools(self):
         pd_pools = [{"prefix": "2001:db8:8000::", "prefix-len": 48, "delegated-len": 56, "client-classes": ["cpe"]}]
         live = {**self._live(6, [{"pool": _KEPT_POOL[6]}]), "pd-pools": pd_pools}
-        sent = self._sent(6, live, (_OTHER_POOL[6],))
+        sent = self._sent(6, live, (_OTHER_POOL[6],), (_KEPT_POOL[6],))
         self.assertEqual(sent["pd-pools"], pd_pools)
         self.assertEqual(sent["pools"], [{"pool": _OTHER_POOL[6]}])
 
@@ -2086,6 +2276,8 @@ _EDIT = {
     4: SharedNetworkEdit("Office", "eth1", ("192.0.2.1",), ("192.0.2.53",), ()),
     6: SharedNetworkEdit("Office", "eth1", ("2001:db8::1",), ("2001:db8::53",), ()),
 }
+# The values that the edit form shows for a Shared Network without managed fields.
+_BLANK = SharedNetworkEdit("", "", (), (), ())
 
 
 def _running(version: int, **daemon) -> dict:
@@ -2174,7 +2366,7 @@ class ReadModifyWriteTests(TestCase):
                 delete_definition,
             ),
             "edit_shared_network": (
-                lambda: config_write.edit_shared_network(self.server, version, "net-a", _EDIT[version]),
+                lambda: config_write.edit_shared_network(self.server, version, "net-a", _EDIT[version], shown=_BLANK),
                 shared_network,
             ),
         }
@@ -2222,7 +2414,9 @@ class ReadModifyWriteTests(TestCase):
         network = running["arguments"]["Dhcp4"]["shared-networks"][0]
         network.update({"interface": "eth0", "relay": {"ip-addresses": ["192.0.2.1"]}})
         with stub_kea(_rmw_responses(4, config_get=running)) as kea:
-            config_write.edit_shared_network(self.server, 4, "net-a", SharedNetworkEdit("", "", (), (), ()))
+            config_write.edit_shared_network(
+                self.server, 4, "net-a", _BLANK, shown=SharedNetworkEdit("", "eth0", ("192.0.2.1",), (), ())
+            )
         written = kea.bodies("config-set")[0]["arguments"]["Dhcp4"]["shared-networks"][0]
         self.assertNotIn("interface", written)
         self.assertNotIn("relay", written)
@@ -2313,7 +2507,7 @@ class ReadModifyWriteTests(TestCase):
                 "Option Definition 200 in space 'vendor-4491' not found.",
             ),
             (
-                lambda: config_write.edit_shared_network(self.server, 4, "net-b", _EDIT[4]),
+                lambda: config_write.edit_shared_network(self.server, 4, "net-b", _EDIT[4], shown=_BLANK),
                 "Shared Network 'net-b' not found.",
             ),
         )
@@ -2511,6 +2705,105 @@ class ReadModifyWriteTests(TestCase):
         self.assertEqual(rejection.reason, "invalid-client-configuration")
 
 
+# The values that the edit form shows for the Shared Network of _with_network, and the options that hold them.
+_NETWORK_SHOWN = {
+    4: SharedNetworkEdit("Office", "eth1", ("192.0.2.1",), ("192.0.2.53",), ("192.0.2.123",)),
+    6: SharedNetworkEdit("Office", "eth1", ("2001:db8::1",), ("2001:db8::53",), ("2001:db8::123",)),
+}
+_NETWORK_OPTIONS = {
+    4: [{"name": "domain-name-servers", "data": "192.0.2.53"}, {"name": "ntp-servers", "data": "192.0.2.123"}],
+    6: [{"name": "dns-servers", "data": "2001:db8::53"}, {"name": "sntp-servers", "data": "2001:db8::123"}],
+}
+
+
+def _with_network(version: int, **fields) -> dict:
+    """A config-get reply whose Shared Network net-a holds the values of _NETWORK_SHOWN, with *fields* over them."""
+    network = {
+        "name": "net-a",
+        f"subnet{version}": [],
+        "user-context": {"comment": "Office"},
+        "interface": "eth1",
+        "relay": {"ip-addresses": list(_NETWORK_SHOWN[version].relay_addresses)},
+        "option-data": copy.deepcopy(_NETWORK_OPTIONS[version]),
+        **fields,
+    }
+    return _running(version, **{"shared-networks": [network]})
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class SharedNetworkEditShownValuesTests(TestCase):
+    """A Shared Network edit acts only while the live values are the values that the page showed."""
+
+    def setUp(self):
+        self.server = _make_db_server()
+
+    def _edit(self, version: Family, **change):
+        """Save net-a from a page that showed _NETWORK_SHOWN, while Kea holds those values with *change* over them."""
+        with stub_kea(_rmw_responses(version, config_get=_with_network(version, **change))) as kea:
+            outcome = config_write.edit_shared_network(
+                self.server, version, "net-a", _EDIT[version], shown=_NETWORK_SHOWN[version]
+            )
+        return outcome, kea
+
+    def _rejection(self, version: Family, **change):
+        """Return the rejection of the save that _edit makes, and the commands that reached Kea."""
+        with stub_kea(_rmw_responses(version, config_get=_with_network(version, **change))) as kea:
+            with self.assertRaises(ConfigChangeRejected) as raised:
+                config_write.edit_shared_network(
+                    self.server, version, "net-a", _EDIT[version], shown=_NETWORK_SHOWN[version]
+                )
+        return raised.exception, kea.commands()
+
+    def test_a_value_that_changed_after_the_page_was_shown_is_not_sent(self):
+        changed = ("not-sent", ("Shared Network 'net-a' changed in Kea. Reload the page and try again.",))
+        for version in (4, 6):
+            dns, ntp = _NETWORK_OPTIONS[version]
+            other = {4: "192.0.2.9", 6: "2001:db8::9"}[version]
+            for field, change in {
+                "description": {"user-context": {"comment": "Lab"}},
+                "interface": {"interface": "eth2"},
+                "relay addresses": {"relay": {"ip-addresses": [other]}},
+                "dns servers": {"option-data": [{**dns, "data": other}, ntp]},
+                "ntp servers": {"option-data": [dns]},
+            }.items():
+                with self.subTest(version=version, field=field):
+                    rejection, commands = self._rejection(version, **change)
+                    self.assertEqual((rejection.reason, rejection.diagnostics), changed)
+                    self.assertEqual(commands, ["config-get"])
+
+    def test_a_value_that_kea_returns_in_another_text_form_is_not_a_change(self):
+        echoed = {
+            4: {
+                "user-context": {"comment": " Office\n"},
+                "option-data": [
+                    {"code": 6, "data": " 192.0.2.53 "},
+                    {"name": "ntp-servers", "data": "192.0.2.123,", "csv-format": True},
+                ],
+            },
+            6: {
+                "relay": {"ip-addresses": ["2001:DB8::0001"]},
+                "option-data": [{"name": "dns-servers", "data": "2001:db8:0::53"}, _NETWORK_OPTIONS[6][1]],
+            },
+        }
+        for version in (4, 6):
+            with self.subTest(version=version):
+                outcome, kea = self._edit(version, **echoed[version])
+                self.assertEqual(outcome, ConfigChangeOutcome("applied", "persisted"))
+                self.assertEqual(kea.commands(), ["config-get", "config-test", "config-set", *_PERSIST])
+
+    def test_a_shared_network_that_the_form_cannot_show_is_not_sent(self):
+        for label, change in (
+            ("a DNS server value that is not an address", {"option-data": [{"code": 6, "data": "ns.example.org"}]}),
+            ("a relay address of the other family", {"relay": {"ip-addresses": ["2001:db8::1"]}}),
+        ):
+            with self.subTest(label):
+                rejection, commands = self._rejection(4, **change)
+                self.assertEqual(
+                    rejection.diagnostics, ("Shared Network 'net-a' changed in Kea. Reload the page and try again.",)
+                )
+                self.assertEqual(commands, ["config-get"])
+
+
 class _StatefulKea:
     """A Kea whose config-get returns the running configuration and whose config-set replaces it.
 
@@ -2639,6 +2932,27 @@ class ConcurrentReadModifyWriteTests(TransactionTestCase):
         # The second form still shows the old DNS value, so saving it would revert the first change.
         self.assertIsInstance(self.results["second"], DHCPOptionConflict)
         self.assertEqual(running.running["Dhcp4"]["option-data"], [{**options[0], "data": "192.0.2.54"}, options[1]])
+        self.assertEqual(kea.commands(), ["config-get", "config-test", "config-set", *_PERSIST, "config-get"])
+
+    def test_two_shared_network_edits_of_different_fields_do_not_revert_each_other(self):
+        running = _StatefulKea(4, copy.deepcopy(_with_network(4)["arguments"]["Dhcp4"]))
+        shown = _NETWORK_SHOWN[4]
+        # Both forms come from the same GET: the first changes the description, the second the DNS servers.
+        kea = self._race(
+            running,
+            lambda: config_write.edit_shared_network(
+                self.server, 4, "net-a", dataclasses.replace(shown, description="Lab"), shown=shown
+            ),
+            lambda: config_write.edit_shared_network(
+                self.server, 4, "net-a", dataclasses.replace(shown, dns_servers=("192.0.2.54",)), shown=shown
+            ),
+        )
+        self.assertEqual(self.results["first"], ConfigChangeOutcome("applied", "persisted"))
+        self.assertIsInstance(self.results["second"], ConfigChangeRejected)
+        self.assertEqual(self.results["second"].reason, "not-sent")
+        network = running.running["Dhcp4"]["shared-networks"][0]
+        self.assertEqual(network["user-context"], {"comment": "Lab"})
+        self.assertEqual(network["option-data"], _NETWORK_OPTIONS[4])
         self.assertEqual(kea.commands(), ["config-get", "config-test", "config-set", *_PERSIST, "config-get"])
 
     def test_a_server_and_a_subnet_option_change_are_both_live(self):
