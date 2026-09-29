@@ -178,7 +178,7 @@ class SyncJobsView(LoginRequiredMixin, View):
         )
 
     def post(self, request):
-        """Process SyncConfig form submission and re-schedule the background job."""
+        """Save the SyncConfig form; the job reads the new values on its next run."""
         if not request.user.has_perm("netbox_kea.change_syncconfig"):
             return HttpResponseForbidden()
 
@@ -209,14 +209,7 @@ class SyncJobsView(LoginRequiredMixin, View):
                         "allowed_server_pks": allowed_server_pks,
                     },
                 )
-            try:
-                from netbox.registry import registry
-
-                if KeaIpamSyncJob in registry["system_jobs"]:
-                    registry["system_jobs"][KeaIpamSyncJob]["interval"] = sync_cfg.interval_minutes
-            except Exception:
-                logger.exception("Could not update KeaIpamSyncJob interval in registry after config change")
-            messages.success(request, "Sync configuration saved.")
+            messages.success(request, "Sync configuration saved. A new interval applies after the next scheduled run.")
             return HttpResponseRedirect(reverse("plugins:netbox_kea:sync_jobs"))
 
         servers = list(Server.objects.restrict(request.user, "view").order_by("name"))

@@ -174,9 +174,10 @@ URL request
 - **`jobs.py`**: `KeaIpamSyncJob` (`@system_job`). Iterates all `Server` objects,
   runs subnet/lease/reservation/prefix/range sync phases, writes a per-server
   summary to the job log.
-- **`__init__.py`**: `ready()` calls `_configure_sync_job_interval()` (patches the
-  in-memory RQ registry from PLUGINS_CONFIG — no DB access, safe at image build).
-  Ghost-job healing runs inside `KeaIpamSyncJob.enqueue_once()`, not `ready()`.
+- **Sync interval**: `SyncConfig.interval_minutes` is the only runtime source.
+  `KeaIpamSyncJob.enqueue_once()` (rqworker startup) and each periodic `run()` read it;
+  PLUGINS_CONFIG `sync_interval_minutes` only seeds the row in migration 0018.
+  Ghost-job healing also runs inside `enqueue_once()`, not `ready()`.
 - **REST API** (`api/`): `NetBoxModelViewSet` + `NetBoxModelSerializer` — only the
   `Server` model is exposed. All password fields are write-only.
 - **GraphQL** (`graphql.py`): a strawberry-django `ServerType` + `Query`

@@ -6,14 +6,14 @@ Registers periodic Kea→NetBox IPAM sync jobs using NetBox's built-in
 ``JobRunner`` / ``@system_job`` infrastructure so they run automatically via
 ``manage.py rqworker`` without any external scheduler.
 
-The default sync interval is 5 minutes and can be overridden via
-``PLUGINS_CONFIG["netbox_kea"]["sync_interval_minutes"]`` — the plugin's
-``ready()`` hook patches the registry entry at startup.
+The sync interval comes from ``SyncConfig.interval_minutes``, which the Sync Jobs
+page edits. ``enqueue_once`` and each periodic run read it, so a saved value
+applies after the next scheduled run.
 
 Configuration knobs (all under ``PLUGINS_CONFIG["netbox_kea"]``):
 
 ``sync_interval_minutes`` (int, default 5)
-    How often the sync job runs in minutes.
+    Seeds ``SyncConfig.interval_minutes`` when migration 0018 creates the row.
 
 ``sync_leases_enabled`` (bool, default True)
     Sync active Kea leases to NetBox IPAM (status=active).
@@ -48,7 +48,7 @@ from .sync import DuplicateNetBoxRowsError
 
 logger = logging.getLogger(__name__)
 
-# Default interval (minutes).  Can be overridden at startup via ready().
+# NetBox requires a registry interval; enqueue_once replaces it with SyncConfig.interval_minutes.
 _DEFAULT_INTERVAL = 5
 
 
@@ -555,11 +555,15 @@ class KeaIpamSyncJob(JobRunner):
         during app initialization" warning.
 
         We clean ghost records first, then delegate to the stock
-        ``enqueue_once`` so it can create a fresh schedule.  ``*args``/``**kwargs``
-        are forwarded verbatim to insulate against signature drift across NetBox
-        versions.
+        ``enqueue_once`` so it can create a fresh schedule.  The ``interval``
+        kwarg is replaced with ``SyncConfig.interval_minutes``; other
+        ``*args``/``**kwargs`` are forwarded verbatim to insulate against
+        signature drift across NetBox versions.
         """
+        from .models import SyncConfig
+
         cls._heal_ghost_scheduled_jobs()
+        kwargs["interval"] = SyncConfig.get().interval_minutes
         return super().enqueue_once(*args, **kwargs)
 
     @classmethod
@@ -636,6 +640,9 @@ class KeaIpamSyncJob(JobRunner):
         summary: list[dict] = []
         try:
             sync_cfg = SyncConfig.get()
+            if self.job.interval:
+                # handle() schedules the successor with job.interval after run() returns.
+                self.job.interval = sync_cfg.interval_minutes
             if not sync_cfg.sync_enabled:
                 self.logger.info("Global sync kill-switch is active (SyncConfig.sync_enabled=False) — skipping.")
                 return
