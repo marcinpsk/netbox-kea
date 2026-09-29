@@ -150,6 +150,9 @@ class CatalogueSnapshot:
     consistent: bool
     configuration_hash: str | None
     subnet_cmds_available: bool = True
+    # The names of the Shared Networks that the configuration read shows, and whether it shows every one.
+    shared_network_names: frozenset[str] = frozenset()
+    shared_networks_complete: bool = False
 
     def _display_subnets(self) -> tuple[VerifiedSubnet | ConfiguredSubnet, ...]:
         return (*self.subnets, *self.configured_subnets)
@@ -247,6 +250,8 @@ class _ConfigurationObservation:
     configuration_hash: str | None = None
     quarantined_ids: frozenset[int] = frozenset()
     quarantined_networks: frozenset[IPNetworkValue] = frozenset()
+    shared_network_names: frozenset[str] = frozenset()
+    shared_networks_complete: bool = False
 
 
 def _validate_family(family: int) -> Family:
@@ -458,6 +463,8 @@ def _configuration_observation(snapshot: server_configuration.ServerConfiguratio
         configuration_hash=snapshot.configuration_hash,
         quarantined_ids=frozenset(ids),
         quarantined_networks=frozenset(networks),
+        shared_network_names=frozenset(network.name for network in snapshot.shared_networks),
+        shared_networks_complete=snapshot.shared_networks_complete,
     )
 
 
@@ -698,6 +705,8 @@ def _reconcile(
         consistent=consistent,
         configuration_hash=configuration.configuration_hash,
         subnet_cmds_available=identity.subnet_cmds_available,
+        shared_network_names=configuration.shared_network_names,
+        shared_networks_complete=configuration.shared_networks_complete,
     )
 
 
@@ -815,6 +824,15 @@ class MutationScope(AbstractContextManager["MutationScope"]):
             return subnet
         self._require_complete_identity("Subnet absence cannot be confirmed from an incomplete identity observation.")
         return None
+
+    def has_shared_network(self, name: str) -> bool:
+        """Return whether Kea has the Shared Network *name*, or raise CatalogueUnavailable when the read cannot show it."""
+        snapshot = self._require_snapshot()
+        if name in snapshot.shared_network_names:
+            return True
+        if not snapshot.shared_networks_complete:
+            raise CatalogueUnavailable("Shared Network absence cannot be confirmed from an incomplete observation.")
+        return False
 
     def prepare_creation(self, cidr: str, subnet_id: int | None = None) -> NewSubnetIdentity:
         """Return a live-confirmed identity that is available for creation."""
