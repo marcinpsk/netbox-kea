@@ -287,6 +287,13 @@ def edit_subnet(
         # A value that changed after the page showed it would go back to the old value with the update.
         if live.written_by(edit) != shown.written_by(edit):
             raise ConfigChangeRejected("not-sent", (subnet_changed(subnet_id, cidr),))
+        try:
+            edited = definition.edited(edit)
+        except MalformedConfiguration as exc:
+            logger.warning("The Subnet that Kea returned cannot be edited", exc_info=True)
+            raise ConfigChangeRejected(
+                "not-sent", ("Kea returned a configuration that NetBox cannot edit safely.",)
+            ) from exc
         moves: list[_Step] = []
         if shared_network != current:
             if current is not None:
@@ -295,7 +302,7 @@ def edit_subnet(
                 moves.append(_join(server, client, family, subnet, shared_network, len(moves) + 1))
         update = _Command(
             text=f"update the fields of Subnet {subnet_id}",
-            send=lambda: client.subnet_update(definition, edit),
+            send=lambda: client.subnet_update(family, edited),
             # Not live while a fresh read returns the Subnet that the update started from.
             not_live=lambda: client.subnet_definition(family, subnet_id) == definition,
         )
