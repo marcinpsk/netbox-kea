@@ -27,6 +27,7 @@ from .kea import KeaException, lease_fields
 from .models import IPAMOwnershipLink, IPAMOwnershipSource, next_confirmation_number
 from .sync import (
     _KEA_DESC_PREFIX,
+    StaleCleanupMode,
     _apply_ip_fields,
     _apply_ip_mask,
     _compute_ip_status,
@@ -44,8 +45,6 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 R = TypeVar("R")
-
-STALE_CLEANUP_MODES = ("remove", "deprecate", "none")
 
 # How many row failures of one reconcile call the log names; the error count stays exact.
 _ROW_ERROR_LOG_LIMIT = 10
@@ -131,8 +130,6 @@ def reconcile(server: Server, family: Family, phases: Sequence[LeasePhase]) -> S
     branch.
     """
     mode = _get_stale_cleanup_mode()
-    if mode not in STALE_CLEANUP_MODES:
-        raise ValueError(f"stale_ip_cleanup must be one of {', '.join(STALE_CLEANUP_MODES)}, not {mode!r}")
     report = SyncReport()
     cutoffs = [_claim_leases(server, family, phase, report) for phase in phases]
     for cutoff in cutoffs:
@@ -362,7 +359,9 @@ class _StaleLink:
     address: str
 
 
-def _remove_stale_lease_links(server: Server, family: Family, cutoff: int, mode: str, report: SyncReport) -> None:
+def _remove_stale_lease_links(
+    server: Server, family: Family, cutoff: int, mode: StaleCleanupMode, report: SyncReport
+) -> None:
     """Remove the links of a complete phase that no run confirmed since *cutoff*; the last link follows *mode*."""
     candidates = [
         _StaleLink(pk, ip_pk, vrf_id, _host(address))
@@ -390,7 +389,7 @@ def _remove_stale_lease_links(server: Server, family: Family, cutoff: int, mode:
             report.conflicts.add(stale.address)
 
 
-def _remove_stale_link(stale: _StaleLink, cutoff: int, mode: str, referenced: set[int]) -> str:
+def _remove_stale_link(stale: _StaleLink, cutoff: int, mode: StaleCleanupMode, referenced: set[int]) -> str:
     """Decide one stale link under the identity lock and the row lock of its object."""
     _lock_identity(stale.vrf_id, stale.address)
     ip = IPAddress.objects.select_for_update().filter(pk=stale.ip_pk).first()

@@ -1023,27 +1023,54 @@ class TestNetboxDnsAvailable(TestCase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+@override_settings(PLUGINS_CONFIG={"netbox_kea": {"kea_timeout": 30, "stale_ip_cleanup": "unknown"}})
 class TestCleanupStaleIpsUnknownMode(TestCase):
-    """_cleanup_stale_ips with an unrecognised mode logs and returns 0."""
+    """An unknown stale_ip_cleanup mode fails the old cleanup and the reconciliation the same way."""
 
     _HOSTNAME = "moving-device.example.com"
     _OLD_IP = "10.30.0.11"
-    _KEA_DESC = "Synced from Kea DHCP lease"
+    _NEW_IP = "10.30.0.99"
+    _MESSAGE = "stale_ip_cleanup must be one of remove, deprecate, none, not 'unknown'"
 
-    def test_unknown_mode_returns_zero_and_does_not_delete(self):
+    def setUp(self):
         from ipam.models import IPAddress as NbIP
 
-        from netbox_kea.sync import _cleanup_stale_ips
-
-        NbIP.objects.create(
+        self.old = NbIP.objects.create(
             address=f"{self._OLD_IP}/32",
             status="dhcp",
             dns_name=self._HOSTNAME,
-            description=self._KEA_DESC,
+            description="Synced from Kea DHCP lease",
         )
-        count = _cleanup_stale_ips("10.30.0.99", self._HOSTNAME, mode="unknown")
-        self.assertEqual(count, 0)
-        self.assertTrue(NbIP.objects.filter(address__net_host=self._OLD_IP).exists())
+
+    def test_the_lease_sync_raises_and_keeps_the_stale_ip(self):
+        from ipam.models import IPAddress as NbIP
+
+        from netbox_kea.sync import sync_lease_to_netbox
+
+        with self.assertRaisesMessage(ValueError, self._MESSAGE):
+            sync_lease_to_netbox({"ip-address": self._NEW_IP, "hostname": self._HOSTNAME, "subnet-id": 1})
+        self.assertTrue(NbIP.objects.filter(pk=self.old.pk).exists())
+
+    def test_the_batch_cleanup_raises(self):
+        from netbox_kea.sync import cleanup_stale_ips_batch
+
+        with self.assertRaisesMessage(ValueError, self._MESSAGE):
+            cleanup_stale_ips_batch([{"ip-address": self._NEW_IP, "hostname": self._HOSTNAME}])
+
+    def test_a_direct_call_with_an_unknown_mode_raises(self):
+        from netbox_kea.sync import _cleanup_stale_ips
+
+        with self.assertRaisesMessage(ValueError, self._MESSAGE):
+            _cleanup_stale_ips(self._NEW_IP, self._HOSTNAME, mode="unknown")
+
+    def test_the_reconciliation_raises_with_the_same_message(self):
+        from netbox_kea.ipam_reconciliation import LeasePhase, reconcile
+
+        from .utils import _make_db_server
+
+        phase = LeasePhase(max_leases=None, subnet_prefix_lengths={}, reservation_addresses=None)
+        with self.assertRaisesMessage(ValueError, self._MESSAGE):
+            reconcile(_make_db_server(name="owner"), 4, [phase])
 
 
 # ─────────────────────────────────────────────────────────────────────────────

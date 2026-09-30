@@ -214,7 +214,7 @@ All settings are under `PLUGINS_CONFIG["netbox_kea"]`:
 |---|---|---|
 | `kea_timeout` | `30` | HTTP request timeout in seconds for Kea API calls |
 | `lease_query_max_unpaged_leases` | `1000` | Reject an unpaged Subnet lease query when its Kea statistics count exceeds this limit. Set to `0` to disable this safety check |
-| `stale_ip_cleanup` | `"remove"` | What to do with stale IPs after sync: `"remove"` (delete), `"deprecate"` (set status=deprecated), `"none"` (skip) |
+| `stale_ip_cleanup` | `"remove"` | What to do with stale IPs after sync: `"remove"` (delete), `"deprecate"` (set status=deprecated), `"none"` (skip). Any other value fails the sync with an error |
 | `sync_interval_minutes` | `5` | Initial interval of the background sync job (minutes). Edit it later on the **Sync Jobs** page |
 | `sync_leases_enabled` | `True` | Sync active DHCP leases to NetBox IPAM |
 | `sync_reservations_enabled` | `True` | Sync Kea reservations to NetBox IPAM |

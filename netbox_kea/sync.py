@@ -21,7 +21,7 @@ import logging
 from collections.abc import Iterable
 from dataclasses import dataclass
 from functools import cached_property
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal, cast, get_args
 
 from .reservations import (
     GlobalReservationScope,
@@ -261,15 +261,23 @@ def _update_mac_description(mac_obj: object, hostname: str) -> bool:
     return False
 
 
-def _get_stale_cleanup_mode() -> str:
-    """Return the configured stale IP cleanup mode from PLUGINS_CONFIG.
+StaleCleanupMode = Literal["remove", "deprecate", "none"]
+STALE_CLEANUP_MODES: tuple[StaleCleanupMode, ...] = get_args(StaleCleanupMode)
 
-    Supported values: ``"remove"`` (default), ``"deprecate"``, ``"none"``.
-    """
+
+def _stale_cleanup_mode(value: str) -> StaleCleanupMode:
+    """Return *value* as a stale cleanup mode, or raise ValueError when it is not one."""
+    if value not in STALE_CLEANUP_MODES:
+        raise ValueError(f"stale_ip_cleanup must be one of {', '.join(STALE_CLEANUP_MODES)}, not {value!r}")
+    return cast("StaleCleanupMode", value)
+
+
+def _get_stale_cleanup_mode() -> StaleCleanupMode:
+    """Return the configured stale IP cleanup mode from PLUGINS_CONFIG; ``"remove"`` when it is not set."""
     from django.conf import settings
 
     config = getattr(settings, "PLUGINS_CONFIG", {}).get("netbox_kea", {})
-    return config.get("stale_ip_cleanup", "remove")
+    return _stale_cleanup_mode(config.get("stale_ip_cleanup", "remove"))
 
 
 def _cleanup_stale_ips(
@@ -306,9 +314,10 @@ def _cleanup_stale_ips(
                      full-table scan :func:`dhcp_plugin.sys4_referenced_ip_ids`
                      performs on every call. When ``None`` it is computed on demand.
 
-    Returns the number of IPs cleaned up.
+    Returns the number of IPs cleaned up. Raises ValueError for an unknown *mode*.
 
     """
+    mode = _stale_cleanup_mode(mode)
     if mode == "none" or not hostname:
         return 0
 
@@ -346,11 +355,8 @@ def _cleanup_stale_ips(
 
     if mode == "remove":
         stale_qs.delete()
-    elif mode == "deprecate":
-        stale_qs.update(status="deprecated")
     else:
-        logger.warning("Unknown stale_ip_cleanup mode %r — skipping cleanup", mode)
-        return 0
+        stale_qs.update(status="deprecated")
 
     return count
 
