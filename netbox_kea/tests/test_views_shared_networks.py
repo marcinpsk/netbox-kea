@@ -672,6 +672,11 @@ class TestServerSharedNetwork4EditView(_ViewTestBase):
             response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
 
+    def test_get_help_names_each_command_of_the_change(self):
+        with stub_kea({"config-get": _sn_config(4, "prod-net", option_data=[])}):
+            response = self.client.get(self._url())
+        self._assert_help_names_the_read_modify_write(response)
+
     def test_get_reads_the_live_configuration_even_when_the_display_cache_is_warm(self):
         """The edit form is a read-modify-write prefill, so it must not serve the display cache."""
         responses = _catalogue_responses_for_subnets(
@@ -790,6 +795,7 @@ class TestServerSharedNetwork4EditView(_ViewTestBase):
         with _edit_stub(config) as kea:
             get = self.client.get(self._url())
         self.assertEqual(get.status_code, 302)
+        self.assertEqual(kea.commands(), ["config-get"])
         self._fresh_client()
         with _edit_stub(config) as kea:
             post = self.client.post(self._url(), self._post_data(description="Renamed"))
