@@ -21,8 +21,9 @@ import logging
 from collections.abc import Iterable
 from dataclasses import dataclass
 from functools import cached_property
-from typing import TYPE_CHECKING, Literal, cast, get_args
+from typing import TYPE_CHECKING, cast
 
+from .constants import STALE_CLEANUP_MODES, StaleCleanupMode
 from .reservations import (
     GlobalReservationScope,
     InSubnetReservationScope,
@@ -260,10 +261,6 @@ def _update_mac_description(mac_obj: object, hostname: str) -> bool:
         mac_obj.description = new_desc
         return True
     return False
-
-
-StaleCleanupMode = Literal["remove", "deprecate", "none"]
-STALE_CLEANUP_MODES: tuple[StaleCleanupMode, ...] = get_args(StaleCleanupMode)
 
 
 def _stale_cleanup_mode(value: str) -> StaleCleanupMode:
