@@ -50,9 +50,9 @@ from django.db.migrations.operations.models import ModelOperation  # noqa: E402
 from django.db.models import ProtectedError  # noqa: E402
 from django.db.models.signals import pre_delete, pre_save  # noqa: E402
 from django.test import Client, RequestFactory, SimpleTestCase, TransactionTestCase, override_settings  # noqa: E402
-from django.test.utils import CaptureQueriesContext  # noqa: E402
+from django.test.utils import CaptureQueriesContext, isolate_apps  # noqa: E402
 from django.urls import URLPattern, URLResolver, get_resolver, resolve, reverse  # noqa: E402
-from ipam.models import VRF, IPAddress  # noqa: E402
+from ipam.models import VRF, IPAddress, IPRange, Prefix  # noqa: E402
 from netbox.context_managers import event_tracking  # noqa: E402
 from netbox_branching import utilities as branching_utilities  # noqa: E402
 from netbox_branching.choices import BranchStatusChoices  # noqa: E402
@@ -69,7 +69,13 @@ from netbox_kea.tests.kea_stub import _leases_per_subnet, _res_get, _res_page, _
 from netbox_kea.tests.utils import _WRITE_VERBS, _make_db_server, _refusal_receivers  # noqa: E402
 
 # Changing this set needs a design decision (docs/design/ipam-ownership-branching.md).
-BRANCHABLE_MODELS: frozenset[str] = frozenset({"netbox_kea.IPAMOwnershipLink"})
+EXPOSED_RELATIONS: frozenset[tuple[str, str]] = frozenset(
+    (f"netbox_kea.IPAMOwnershipLink.{key}", "CASCADE") for key in ("ip_address", "prefix", "ip_range")
+)
+_DESIGN_DECISION = (
+    "This change needs a design decision (docs/design/ipam-ownership-branching.md): the resolver keeps every "
+    "netbox_kea model in main, so a delete in a branch that reaches one of these relations writes main's table."
+)
 
 # The on_delete handlers that do not write the referencing row. Every other one does (SET(...) and DB_* too).
 _NON_WRITING_ON_DELETE = (models.PROTECT, models.RESTRICT, models.DO_NOTHING)
@@ -79,54 +85,92 @@ def _plugin_models() -> list[type[models.Model]]:
     return list(apps.get_app_config(APP_LABEL).get_models())
 
 
-def _writing_foreign_keys(model: type[models.Model]) -> list[models.ForeignKey]:
+def _rule_models() -> list[type[models.Model]]:
+    """Return the models that guard 2 reads: every plugin model, the auto-created through models of an M2M too."""
+    return list(apps.get_app_config(APP_LABEL).get_models(include_auto_created=True))
+
+
+def _on_delete_name(field: models.ForeignObject) -> str:
+    handler = field.remote_field.on_delete
+    return getattr(handler, "__name__", repr(handler))
+
+
+def _relation_key(field: models.ForeignObject) -> tuple[str, str]:
+    return f"{field.model._meta.label}.{field.name}", _on_delete_name(field)
+
+
+def _writing_relations(model: type[models.Model]) -> list[models.ForeignObject]:
+    """Return each forward many-to-one or one-to-one relation of *model* whose on_delete writes its row."""
     return [
         field
-        for field in model._meta.concrete_fields
-        if isinstance(field, models.ForeignKey) and field.remote_field.on_delete not in _NON_WRITING_ON_DELETE
+        for field in model._meta.get_fields()
+        if isinstance(field, models.ForeignObject)
+        and not field.auto_created
+        and field.remote_field.on_delete not in _NON_WRITING_ON_DELETE
     ]
 
 
-def _models_that_need_a_branch_copy() -> dict[str, list[str]]:
-    """Return each plugin model that a delete in a branch writes, with the foreign key path that reaches it.
+def _exposed_relations(rule_models: Sequence[type[models.Model]]) -> dict[tuple[str, str], list[str]]:
+    """Return each relation that a delete in a branch reaches, with the relation path that reaches it.
 
-    A writing foreign key to a branchable model outside the plugin starts a path. A writing foreign
-    key to a plugin model on a path extends it, so the rule is transitive.
+    A writing relation to a branchable model outside the plugin is exposed. A writing relation to a plugin
+    model that holds an exposed relation is exposed too, so the rule is transitive.
     """
-    paths: dict[str, list[str]] = {}
-    for model in _plugin_models():
-        for field in _writing_foreign_keys(model):
-            target = field.related_model
-            if target._meta.app_label != APP_LABEL and supports_branching(target):
-                paths.setdefault(model._meta.label, [f"{model._meta.label}.{field.name} -> {target._meta.label}"])
+    exposed: dict[tuple[str, str], list[str]] = {}
+    reached: dict[str, list[str]] = {}
     grown = True
     while grown:
         grown = False
-        for model in _plugin_models():
-            if model._meta.label in paths:
-                continue
-            for field in _writing_foreign_keys(model):
-                if (target_path := paths.get(field.related_model._meta.label)) is not None:
-                    paths[model._meta.label] = [f"{model._meta.label}.{field.name}", *target_path]
-                    grown = True
-                    break
-    return paths
+        for model in rule_models:
+            for field in _writing_relations(model):
+                key, target = _relation_key(field), field.related_model._meta
+                if key in exposed:
+                    continue
+                if target.app_label != APP_LABEL and supports_branching(field.related_model):
+                    path = [f"{key[0]} ({key[1]}) -> {target.label}"]
+                elif target.label in reached:
+                    path = [f"{key[0]} ({key[1]})", *reached[target.label]]
+                else:
+                    continue
+                exposed[key] = path
+                reached.setdefault(model._meta.label, path)
+                grown = True
+    return exposed
+
+
+def _guard_failures(rule_models: Sequence[type[models.Model]], pinned: frozenset[tuple[str, str]]) -> list[str]:
+    """Return why the relations that a delete in a branch reaches do not match the design, or nothing."""
+    exposed = _exposed_relations(rule_models)
+    failures = []
+    if set(exposed) != pinned:
+        failures.append(
+            "The relations that a delete in a branch reaches changed: "
+            + "; ".join(" -> ".join(path) for path in exposed.values())
+            + f". Pinned: {sorted(pinned)}."
+        )
+    receivers = _refusal_receivers(pre_delete)
+    by_key = {_relation_key(field): field for model in rule_models for field in _writing_relations(model)}
+    for key in exposed:
+        field = by_key[key]
+        model = field.model._meta
+        if not (isinstance(field, models.ForeignKey) and field.concrete):
+            failures.append(f"{key[0]} is not a concrete ForeignKey, so no pre_delete receiver refuses it.")
+        if field.remote_field.on_delete is not models.CASCADE:
+            failures.append(f"{key[0]} is {key[1]}, not CASCADE: it writes main's row with no pre_delete signal.")
+        if model.auto_created:
+            failures.append(f"{key[0]} is on the auto-created model {model.label}, which sends no pre_delete signal.")
+        if model.label not in receivers:
+            failures.append(f"{key[0]} is on {model.label}, which has no branch refusal receiver.")
+    return [f"{failure} {_DESIGN_DECISION}" for failure in failures]
 
 
 class BranchabilityPinTest(SimpleTestCase):
-    """Guard 2: the rule, computed here only, gives the pinned set, and netbox-branching routes none to a branch."""
+    """Guard 2: the rule, computed here only, gives the pinned relations, and netbox-branching routes none to a branch."""
 
-    def test_the_models_that_need_a_branch_copy_are_the_pinned_set(self):
-        paths = _models_that_need_a_branch_copy()
+    def test_the_relations_that_a_delete_in_a_branch_reaches_are_the_pinned_set(self):
+        failures = _guard_failures(_rule_models(), EXPOSED_RELATIONS)
 
-        self.assertEqual(
-            set(paths),
-            BRANCHABLE_MODELS,
-            "The netbox_kea models that a delete in a branch writes changed: "
-            + "; ".join(" -> ".join(path) for path in paths.values())
-            + ". This change needs a design decision (docs/design/netbox-branching.md): the resolver keeps "
-            "every netbox_kea model in main, so open branches lack the table, and the write reaches main.",
-        )
+        self.assertEqual(failures, [], "\n".join(failures))
 
     def test_netbox_branching_keeps_every_plugin_model_in_main(self):
         for model in _plugin_models():
@@ -135,9 +179,74 @@ class BranchabilityPinTest(SimpleTestCase):
 
     def test_the_rule_reads_every_plugin_model(self):
         self.assertEqual(
-            {model._meta.label for model in _plugin_models()},
+            {model._meta.label for model in _rule_models()},
             {"netbox_kea.Server", "netbox_kea.SyncConfig", "netbox_kea.KeaDhcpLink", "netbox_kea.IPAMOwnershipLink"},
         )
+
+
+def _ownership_keys() -> dict[str, models.ForeignKey]:
+    return {
+        name: models.ForeignKey(target, on_delete=models.CASCADE, null=True, related_name="+")
+        for name, target in (("ip_address", IPAddress), ("prefix", Prefix), ("ip_range", IPRange))
+    }
+
+
+class BranchabilityGuardProbeTest(SimpleTestCase):
+    """Guard 2 fails for each shape that the design refuses, shown with probe models in an isolated registry."""
+
+    def _probe(self, name: str, **fields: models.Field) -> list[type[models.Model]]:
+        """Define a probe model with *fields* and the refusal receivers, and return it with its through models."""
+        with isolate_apps() as registry:
+            meta = type("Meta", (), {"app_label": APP_LABEL})
+            probe = type(name, (models.Model,), {"__module__": __name__, "Meta": meta, **fields})
+        branching.connect_refusal(probe)
+        for signal in (pre_save, pre_delete):
+            self.addCleanup(signal.disconnect, sender=probe, dispatch_uid=branching.refusal_uid(probe))
+        assert registry is not None, "isolate_apps() as a context manager returns its registry"
+        return list(registry.all_models[APP_LABEL].values())
+
+    def _keys(self, probe: str, *names: str) -> frozenset[tuple[str, str]]:
+        return frozenset((f"{APP_LABEL}.{probe}.{name}", "CASCADE") for name in names)
+
+    def test_a_probe_shaped_like_the_link_passes(self):
+        rule_models = self._probe("LinkShapedProbe", **_ownership_keys())
+
+        self.assertEqual(
+            _guard_failures(rule_models, self._keys("LinkShapedProbe", "ip_address", "prefix", "ip_range")), []
+        )
+
+    def test_an_added_set_null_key_to_a_branchable_model_fails(self):
+        rule_models = self._probe(
+            "SetNullProbe", **_ownership_keys(), vrf=models.ForeignKey(VRF, on_delete=models.SET_NULL, null=True)
+        )
+        pinned = self._keys("SetNullProbe", "ip_address", "prefix", "ip_range")
+
+        changed = _guard_failures(rule_models, pinned)
+        pinned_too = _guard_failures(rule_models, pinned | {(f"{APP_LABEL}.SetNullProbe.vrf", "SET_NULL")})
+
+        self.assertIn("SetNullProbe.vrf (SET_NULL) -> ipam.VRF", "\n".join(changed))
+        self.assertEqual(len(pinned_too), 1, pinned_too)
+        self.assertIn("SetNullProbe.vrf is SET_NULL, not CASCADE", pinned_too[0])
+        self.assertIn("docs/design/ipam-ownership-branching.md", pinned_too[0])
+
+    def test_an_auto_created_many_to_many_through_model_fails(self):
+        rule_models = self._probe("ManyToManyProbe", prefixes=models.ManyToManyField(Prefix, related_name="+"))
+        through = next(model for model in rule_models if model._meta.auto_created)
+        pinned = frozenset({(f"{through._meta.label}.prefix", "CASCADE")})
+
+        failures = "\n".join(_guard_failures(rule_models, pinned))
+
+        self.assertIn(f"on the auto-created model {through._meta.label}", failures)
+
+    def test_a_disconnected_refusal_receiver_on_the_link_fails(self):
+        link = apps.get_model(APP_LABEL, "IPAMOwnershipLink")
+        pre_delete.disconnect(sender=link, dispatch_uid=branching.refusal_uid(link))
+        self.addCleanup(branching.connect_refusal, link)
+
+        failures = _guard_failures(_rule_models(), EXPOSED_RELATIONS)
+
+        self.assertEqual(len(failures), 3, failures)
+        self.assertTrue(all("which has no branch refusal receiver" in failure for failure in failures), failures)
 
 
 class ResolverTest(SimpleTestCase):
