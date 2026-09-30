@@ -9,12 +9,13 @@ from pathlib import Path
 import pytest
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.db.models.signals import pre_delete, pre_save
 from django.test import SimpleTestCase, TestCase
 from django.urls import reverse
 
 from netbox_kea import branching
 from netbox_kea.tests.kea_stub import stub_kea
-from netbox_kea.tests.utils import _make_db_server
+from netbox_kea.tests.utils import _make_db_server, _refusal_receivers
 
 if branching.installed():
     pytest.skip("netbox-branching is an installed app: test_branching.py covers this run", allow_module_level=True)
@@ -28,6 +29,10 @@ class WithoutBranchingTest(SimpleTestCase):
 
     def test_refuse_in_branch_does_nothing(self):
         self.assertIsNone(branching.refuse_in_branch("a test change"))
+
+    def test_no_plugin_row_refusal_is_connected(self):
+        # A pre_delete receiver would turn off Django's fast delete for nothing.
+        self.assertEqual((_refusal_receivers(pre_save), _refusal_receivers(pre_delete)), (set(), set()))
 
     def test_register_does_not_import_netbox_branching(self):
         branching.register()

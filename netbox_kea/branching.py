@@ -9,12 +9,14 @@ module in the plugin that imports ``netbox_branching``.
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from http import HTTPStatus
 from typing import Any
 
 from django.apps import apps
 from django.contrib import messages
 from django.db import models
+from django.db.models.signals import pre_delete, pre_save
 from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import render
 from django.urls import reverse
@@ -58,6 +60,24 @@ def refuse_in_branch(operation: str) -> None:
         raise BranchActive(operation, branch)
 
 
+@dataclass(frozen=True)
+class BranchBinding:
+    """The branch that was active when a Kea client was built. A thread-pool worker does not inherit the context."""
+
+    branch: Any
+
+    def refuse(self, operation: str) -> None:
+        """Raise BranchActive when the bound branch is set, or else when a branch is active now."""
+        branch = self.branch if self.branch is not None else active_branch()
+        if branch is not None:
+            raise BranchActive(operation, branch)
+
+
+def bind() -> BranchBinding:
+    """Bind a Kea client to the branch that is active now, or to none."""
+    return BranchBinding(active_branch())
+
+
 def is_branchable(model: type[models.Model]) -> bool | None:
     """Keep every netbox_kea model in main (False), and defer (None) for every other model.
 
@@ -70,12 +90,32 @@ def is_branchable(model: type[models.Model]) -> bool | None:
 
 
 def register() -> None:
-    """Register the resolver with netbox-branching, from the plugin's ready()."""
+    """Register the resolver with netbox-branching and connect the plugin row receivers, from the plugin's ready()."""
     if not installed():
         return
     from netbox_branching.utilities import register_branching_resolver
 
     register_branching_resolver(is_branchable)
+    connect_branch_refusal()
+
+
+def _refuse_save_in_branch(sender: Any, instance: Any, **kwargs: Any) -> None:
+    refuse_in_branch(f"A save of {sender._meta.label} {instance.pk}")
+
+
+def _refuse_delete_in_branch(sender: Any, instance: Any, **kwargs: Any) -> None:
+    refuse_in_branch(f"A delete of {sender._meta.label} {instance.pk}")
+
+
+def connect_branch_refusal() -> None:
+    """Refuse a save or a delete of every netbox_kea row in a branch: the resolver keeps each model in main.
+
+    A pre_delete receiver disables Django's fast delete, so a queryset delete() reaches it too.
+    """
+    for model in apps.get_app_config(APP_LABEL).get_models():
+        uid = f"{APP_LABEL}.refuse_in_branch.{model._meta.label}"
+        pre_save.connect(_refuse_save_in_branch, sender=model, dispatch_uid=uid)
+        pre_delete.connect(_refuse_delete_in_branch, sender=model, dispatch_uid=uid)
 
 
 def plugin_owned(view_func: Callable[..., Any]) -> bool:

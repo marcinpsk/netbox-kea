@@ -22,7 +22,7 @@ from utilities.views import register_model_view
 
 from ..constants import Family
 from ..integrations import dhcp_plugin
-from ..kea import KeaException
+from ..kea import KeaCommand, KeaException
 from ..mappers.kea_to_dhcp import parse_dhcp_config
 from ..models import Server
 from ..utilities import OptionalViewTab
@@ -74,7 +74,7 @@ def _fetch_config_intent(server: Server, version: Family):
     """
     try:
         client = server.get_client(version=version)
-        resp = client.command("config-get", service=[f"dhcp{version}"])
+        resp = client.command(KeaCommand.CONFIG_GET, version)
         conf = _extract_dhcp_conf(resp, version)
         return parse_dhcp_config(conf, version) if conf is not None else None
     except (KeaException, requests.RequestException, ValueError, RuntimeError):

@@ -108,7 +108,7 @@ On Kea 3.0+ the plugin talks directly to each DHCP daemon's HTTP control socket;
 
 ### netbox-branching
 
-Support for [netbox-branching](https://github.com/netboxlabs/netbox-branching) is partial. CI tests
+In a [netbox-branching](https://github.com/netboxlabs/netbox-branching) branch, the plugin is read-only. CI tests
 NetBox 4.7 with netbox-branching 1.2.1. List `netbox_branching` last in `PLUGINS`.
 
 - Kea servers, sync settings and DHCP plugin links stay in main. A branch has no copy of them, so
@@ -124,8 +124,10 @@ NetBox 4.7 with netbox-branching 1.2.1. List `netbox_branching` last in `PLUGINS
   netbox-branching answers HTTP 400 first when a `_branch` query names a deleted branch, and when
   an API `X-NetBox-Branch` header names a deleted or unusable branch. Select main (`?_branch=`)
   and try again.
-- Code that runs outside a web request (a custom script, for example) is not refused yet. Do not
-  change Kea servers or Kea data from a script in a branch.
+- Code that runs outside a web request (a custom script, for example) is also refused in a branch.
+  A save or a delete of a Kea server, the sync settings or a DHCP plugin link raises
+  `BranchActive`, and so does a Kea command that changes Kea, from a client that
+  `Server.get_client()` returns. The periodic IPAM sync job fails when it runs in a branch.
 - A merge fails, and changes nothing, when the branch deletes a VRF that a Kea server in main now
   syncs into. Clear or change that server's Sync VRF, then merge again.
 

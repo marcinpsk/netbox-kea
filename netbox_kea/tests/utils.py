@@ -56,6 +56,12 @@ def _make_db_server(**kwargs) -> Server:
 _WRITE_VERBS = ("INSERT", "UPDATE", "DELETE")
 
 
+def _refusal_receivers(signal) -> set[str]:
+    """Return the label of each model whose branch refusal receiver *signal* has connected."""
+    prefix = "netbox_kea.refuse_in_branch."
+    return {key[0].removeprefix(prefix) for key, *_rest in signal.receivers if str(key[0]).startswith(prefix)}
+
+
 def _sync_page_urls(server: Server) -> tuple[str, str]:
     """Return the two sync pages that read SyncConfig: the Sync Jobs page and the Server's Sync tab."""
     return (
@@ -82,20 +88,6 @@ def _page_data(response) -> dict[str, str]:
         for name in form.fields
         if f'name="{form[name].html_name}"' in page
     }
-
-
-def _kea_command_side_effect(cmd, service=None, arguments=None, check=None):
-    """Return a plausible Kea API response for each command type."""
-    if cmd == "status-get":
-        return [{"result": 0, "arguments": {"pid": 1234, "uptime": 3600, "reload": 0}}]
-    if cmd == "version-get":
-        return [{"result": 0, "arguments": {"extended": "3.2.0"}}]
-    if cmd == "config-get":
-        # Return minimal Dhcp4/Dhcp6 config so subnet views can parse it.
-        if service and service[0] == "dhcp6":
-            return [{"result": 0, "arguments": {"Dhcp6": {"subnet6": [], "shared-networks": []}}}]
-        return [{"result": 0, "arguments": {"Dhcp4": {"subnet4": [], "shared-networks": []}}}]
-    return [{"result": 0, "arguments": {}}]
 
 
 # ─────────────────────────────────────────────────────────────────────────────

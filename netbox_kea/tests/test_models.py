@@ -26,7 +26,7 @@ from django.urls import reverse
 from netbox.models import NetBoxModel
 
 import netbox_kea
-from netbox_kea.kea import KeaClient
+from netbox_kea.kea import KeaClient, KeaCommand
 from netbox_kea.models import KeaDhcpLink, Server, SyncConfig, _get_kea_timeout, _get_max_unpaged_leases
 from netbox_kea.reservations import MAX_IDENTITY_LENGTH
 from netbox_kea.tests.kea_stub import stub_kea
@@ -277,11 +277,11 @@ class TestGetClientSendService(SimpleTestCase):
     Agent (Kea < 3.0) or a bare daemon socket (Kea 3.0+).
     """
 
-    def _sent_body(self, client, cmd="lease4-get"):
-        """Issue *cmd* through the real client against the HTTP-boundary stub; return the sent body."""
-        with stub_kea({cmd: {"result": 0, "arguments": {}}}) as kea:
-            client.command(cmd, service=["dhcp4"])
-        return kea.bodies(cmd)[0]
+    def _sent_body(self, client):
+        """Send lease4-get through the real client against the HTTP-boundary stub; return the sent body."""
+        with stub_kea({"lease4-get": {"result": 0, "arguments": {}}}) as kea:
+            client.command(KeaCommand.LEASE4_GET, 4)
+        return kea.bodies("lease4-get")[0]
 
     def test_control_agent_sends_service(self):
         # ca_url + has_control_agent → CA endpoint → service is included.

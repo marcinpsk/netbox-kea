@@ -18,7 +18,6 @@ from django.apps import apps
 from django.test import SimpleTestCase, TestCase, override_settings, tag
 from django.utils import timezone
 
-from netbox_kea.kea import KeaClient
 from netbox_kea.mappers.kea_to_dhcp import parse_dhcp_config
 from netbox_kea.reservations import (
     RESERVATION_INVALID_IDENTIFIER,
@@ -29,7 +28,7 @@ from netbox_kea.reservations import (
 )
 from netbox_kea.subnet_catalogue import IdentityOnlyCatalogueSnapshot, SubnetIdentity, VerifiedSubnet
 
-from .kea_stub import _res_page, stub_kea
+from .kea_stub import _res_page, kea_client, stub_kea
 from .utils import _make_db_server
 
 DHCP_PLUGIN = "netbox_dhcp"
@@ -105,7 +104,7 @@ def _reservation_snapshot(conf: dict, version: Family, hosts: list[dict] | None 
         for entry in entries:
             for reservation in entry.get("reservations", []):
                 hosts.append({"subnet-id": int(entry["id"]), **reservation})
-    client = KeaClient(url="http://kea.example.invalid", send_service=False)
+    client = kea_client(url="http://kea.example.invalid", send_service=False)
     with stub_kea({"reservation-get-page": _res_page(hosts)}):
         # Bound the page to the fixture so a larger fixture cannot silently truncate.
         return client.reservation_page(version, catalogue, limit=max(len(hosts), 1))

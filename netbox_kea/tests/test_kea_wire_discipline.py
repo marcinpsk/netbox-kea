@@ -128,30 +128,6 @@ def test_owner_and_follow_up_hyphenated_literals_have_guard_coverage():
     assert not missing, "\n".join(missing)
 
 
-def test_direct_family_command_templates_have_concrete_vocabulary_entries():
-    module = ast.parse((wd.PACKAGE_ROOT / "kea.py").read_text())
-    commands = set()
-    for node in ast.walk(module):
-        if not (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr in {"command", "_config_mutation_command"}
-            and node.args
-        ):
-            continue
-        command = node.args[0]
-        if isinstance(command, ast.Constant) and isinstance(command.value, str):
-            commands.add(command.value)
-        elif isinstance(command, ast.JoinedStr):
-            shape = "".join(
-                value.value if isinstance(value, ast.Constant) and isinstance(value.value, str) else "{}"
-                for value in command.values
-            )
-            if shape.count("{}") == 1:
-                commands.update(shape.format(family) for family in (4, 6))
-    assert commands <= wd.WIRE_COMMANDS
-
-
 def test_production_literal_has_source_location_and_scope():
     hits = wd.scan_source(
         'class View:\n    async def read(self):\n        return row["option-data"]\n', "views/options.py"

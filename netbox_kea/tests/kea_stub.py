@@ -32,7 +32,9 @@ from unittest.mock import patch
 
 import requests
 
+from netbox_kea import branching
 from netbox_kea.constants import Family
+from netbox_kea.kea import KeaClient
 from netbox_kea.reservations import (
     GlobalReservationScope,
     IdentifierType,
@@ -45,6 +47,11 @@ from netbox_kea.reservations import (
 )
 from netbox_kea.subnet_catalogue import SubnetIdentity
 from netbox_kea.tests.kea_wire_discipline import WIRE_COMMANDS
+
+
+def kea_client(url: str, **options: Any) -> KeaClient:
+    """Build a KeaClient with the write guard that ``Server.get_client()`` passes: the branch binding."""
+    return KeaClient(url, write_guard=branching.bind(), **options)
 
 
 def _http_response(payload: Any, status: int = 200, url: str = "") -> requests.Response:

@@ -11,16 +11,21 @@ rules:
     languages: [python]
     severity: ERROR
     message: >-
-      Send config-test, config-set, and config-write through _config_phase_command()
-      so each phase requires one well-formed reply before accepting a result code.
+      Send config-test and config-write through _one_command(), and config-set through
+      _config_mutation_command(), so each phase requires one well-formed reply before
+      accepting a result code.
     paths:
       exclude:
         - "**/tests/**"
     pattern-either:
-      - pattern: $CLIENT.command("=~/^config-(test|set|write)$/", ...)
-      - pattern: $CLIENT.command(..., command="=~/^config-(test|set|write)$/", ...)
-      - pattern: $CLIENT._config_mutation_command("config-set", ...)
-      - pattern: $CLIENT._config_mutation_command(..., command="config-set", ...)
+      - patterns:
+          - pattern-either:
+              - pattern: $CLIENT.command(KeaCommand.$M, ...)
+              - pattern: $CLIENT.command(..., command=KeaCommand.$M, ...)
+          - metavariable-regex:
+              metavariable: $M
+              regex: ^CONFIG_(TEST|SET|WRITE)$
+      - pattern: $CLIENT._one_command(KeaCommand.CONFIG_SET, ...)
 
   - id: kea-sync-hostname-unvalidated
     languages: [python]
@@ -150,8 +155,11 @@ rules:
         - "netbox_kea/kea.py"
     patterns:
       - pattern-either:
-          - pattern: $C.command("=~/^reservation-/", ...)
-          - pattern: $C.command(command="=~/^reservation-/", ...)
+          - pattern: $C.command(KeaCommand.$M, ...)
+          - pattern: $C.command(..., command=KeaCommand.$M, ...)
+      - metavariable-regex:
+          metavariable: $M
+          regex: ^RESERVATION_
 
   - id: kea-config-read-modify-write-without-reader
     languages: [python]
@@ -177,8 +185,8 @@ rules:
             ...
             $S.config_set(...)
       - pattern-either:
-          - pattern: $C.command("config-get", ...)
-          - pattern: $C.command(command="config-get", ...)
+          - pattern: $C.command(KeaCommand.CONFIG_GET, ...)
+          - pattern: $C.command(..., command=KeaCommand.CONFIG_GET, ...)
 
   - id: kea-unsupported-command-inline-check
     languages: [python]
