@@ -159,6 +159,7 @@ URL request
   → config_write.py     (Configuration Changes: typed outcome, advisory lock, persist step)
   → kea.py              (HTTP POST to each daemon's / control socket)
   → sync.py             (bridges Kea data to NetBox IPAM)
+  → ipam_reconciliation.py (IPAM Ownership links, stale cleanup, per-row savepoints; ADR 0006)
   → jobs.py             (KeaIpamSyncJob — periodic background sync)
   → tables.py           (non-model GenericTable renders enriched dicts)
   → template            (django-tables2 + HTMX for pagination)
@@ -200,6 +201,11 @@ URL request
   `sync_reservation_to_netbox()`, `cleanup_stale_ips_batch()` (grouped by
   `(hostname, address_family)`). Raises `DuplicateNetBoxRowsError` when more than one
   NetBox Prefix or IP Range matches one Kea Subnet or Pool.
+- **`ipam_reconciliation.py`**: `reconcile(server, family, phases) -> SyncReport` (ADR 0006). The job's
+  lease phase runs through it: it links each reported IP address in `Server.sync_vrf` under an advisory
+  lock on the identity and a row lock, and a complete phase removes its own stale links. The last link
+  follows `stale_ip_cleanup`. The other callers still use `sync.py` until #209, #210 and #214, and the old
+  cleanup skips every IP address with an ownership link.
 - **`jobs.py`**: `KeaIpamSyncJob` (`@system_job`). Iterates all `Server` objects,
   runs subnet/lease/reservation/prefix/range sync phases, writes a per-server
   summary to the job log.

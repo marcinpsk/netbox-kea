@@ -301,7 +301,7 @@ Each server has optional overrides for the IPAM sync job:
 | `Sync Reservations` (`sync_reservations_enabled`) | `True` | Sync DHCP reservations as NetBox IP Addresses |
 | `Sync Prefixes` (`sync_prefixes_enabled`) | `True` | Sync Kea subnets as NetBox IP Prefixes |
 | `Sync IP Ranges` (`sync_ip_ranges_enabled`) | `True` | Sync Kea pools as NetBox IP Ranges |
-| `Sync VRF` (`sync_vrf`) | None (global routing table) | VRF to assign when syncing Prefixes and IP Ranges. There is no global fallback: leave blank to use the global routing table (no VRF). NetBox refuses to delete a VRF while a server syncs into it |
+| `Sync VRF` (`sync_vrf`) | None (global routing table) | VRF to assign when syncing Prefixes, IP Ranges and lease IP Addresses. There is no global fallback: leave blank to use the global routing table (no VRF). NetBox refuses to delete a VRF while a server syncs into it |
 | `Persist configuration` (`persist_config`) | `True` | Automatically save Kea config after each change via `config-write`. Disable when Kea config is managed externally (e.g. Ansible) |
 
 These fields override the global `PLUGINS_CONFIG` values for that specific server.
@@ -321,7 +321,8 @@ The `Kea IPAM Sync` job runs automatically when `rqworker` is active:
 5. One server failing does not block others
 6. Summary logged per server and in total
 
-Each server's summary reports `created`, `updated`, `errors`, `prefix_errors`, `conflicts` and `skipped`:
+Each server's summary reports `created`, `updated`, `errors`, `prefix_errors`, `conflicts`, `disagreements` and
+`skipped`:
 
 - **skipped** — rows the sync deliberately did not write, chiefly reservations that
   reserve no address. They are not errors and do not fail the job.
@@ -332,6 +333,9 @@ Each server's summary reports `created`, `updated`, `errors`, `prefix_errors`, `
   server, deduplicated per server across the lease and reservation phases. Up to 20 of
   them are named in the summary and the log, so the addresses to look at are visible
   without trawling debug output.
+- **disagreements** — addresses that two Kea servers report with different facts (the
+  hostname or the prefix length). The address keeps its values until the servers agree,
+  or until one of them no longer reports it.
 
 View job history, next scheduled time and logs under **System → Background Jobs → Kea IPAM Sync**.
 
