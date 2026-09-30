@@ -83,8 +83,8 @@ def is_branchable(model: type[models.Model]) -> bool | None:
 
     A constant, so it cannot raise: netbox-branching treats a raising resolver as no answer and then
     makes a change-logged model such as Server branchable. Guard 2 in test_branching.py computes the
-    foreign-key rule and fails when a plugin model would need a branch copy. netbox-branching also
-    calls this with historical models.
+    relations that a delete in a branch reaches, and fails when one is outside the design. netbox-branching
+    also calls this with historical models.
     """
     return False if model._meta.app_label == APP_LABEL else None
 
@@ -107,15 +107,25 @@ def _refuse_delete_in_branch(sender: Any, instance: Any, **kwargs: Any) -> None:
     refuse_in_branch(f"A delete of {sender._meta.label} {instance.pk}")
 
 
-def connect_branch_refusal() -> None:
-    """Refuse a save or a delete of every netbox_kea row in a branch: the resolver keeps each model in main.
+def refusal_uid(model: type[models.Model]) -> str:
+    """Return the dispatch_uid of the branch refusal receivers of *model*."""
+    return f"{APP_LABEL}.refuse_in_branch.{model._meta.label}"
+
+
+def connect_refusal(model: type[models.Model]) -> None:
+    """Refuse a save or a delete of a *model* row in a branch.
 
     A pre_delete receiver disables Django's fast delete, so a queryset delete() reaches it too.
     """
+    uid = refusal_uid(model)
+    pre_save.connect(_refuse_save_in_branch, sender=model, dispatch_uid=uid)
+    pre_delete.connect(_refuse_delete_in_branch, sender=model, dispatch_uid=uid)
+
+
+def connect_branch_refusal() -> None:
+    """Refuse a save or a delete of every netbox_kea row in a branch: the resolver keeps each model in main."""
     for model in apps.get_app_config(APP_LABEL).get_models():
-        uid = f"{APP_LABEL}.refuse_in_branch.{model._meta.label}"
-        pre_save.connect(_refuse_save_in_branch, sender=model, dispatch_uid=uid)
-        pre_delete.connect(_refuse_delete_in_branch, sender=model, dispatch_uid=uid)
+        connect_refusal(model)
 
 
 def plugin_owned(view_func: Callable[..., Any]) -> bool:
