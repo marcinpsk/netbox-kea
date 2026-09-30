@@ -117,8 +117,8 @@ On Kea 3.0+ the plugin talks directly to each DHCP daemon's HTTP control socket;
 In a [netbox-branching](https://github.com/netboxlabs/netbox-branching) branch, the plugin is read-only. CI tests
 NetBox 4.7 with netbox-branching 1.2.1. List `netbox_branching` last in `PLUGINS`.
 
-- Kea servers, sync settings and DHCP plugin links stay in main. A branch has no copy of them, so
-  it shows main's values.
+- Kea servers, sync settings, DHCP plugin links and IPAM ownership links stay in main. A branch has
+  no copy of them, so it shows main's values.
 - Kea data is live, in main and in every branch.
 - In a branch, the plugin refuses every change that comes through its web pages or its REST API,
   before it sends anything to Kea or writes to the database. A page shows HTTP 409 with a link to
@@ -136,6 +136,9 @@ NetBox 4.7 with netbox-branching 1.2.1. List `netbox_branching` last in `PLUGINS
   `Server.get_client()` returns. The periodic IPAM sync job fails when it runs in a branch.
 - A merge fails, and changes nothing, when the branch deletes a VRF that a Kea server in main now
   syncs into. Clear or change that server's Sync VRF, then merge again.
+- In a branch, a delete of an IP address, Prefix or IP Range that a Kea server owns is refused, and
+  so is a delete of a device or virtual machine that holds such an IP address, because the ownership
+  data exists in main only. NetBox shows the refusal as an error message; the REST API answers 400.
 
 **Upgrade with open branches.** Earlier releases let netbox-branching copy the Kea servers table
 into each new branch. Nothing removes that copy: branch sync no longer updates it, and branch
