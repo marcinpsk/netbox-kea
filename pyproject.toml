@@ -10,8 +10,7 @@ requires-python = ">=3.10"
 license = "Apache-2.0"
 license-files = ["LICENSE", "LICENSES/*.txt"]
 authors = [
-  {name = "Devon Mar", email = "devon-mar@users.noreply.github.com"},
-  {name = "Marcin Zieba"},
+  {name = "Marcin Zieba", email = "marcinpsk@gmail.com"},
 ]
 keywords = [
   "netbox",
