@@ -594,9 +594,10 @@ class IPAMOwnershipLink(models.Model):
     confirmation: models.BigIntegerField = models.BigIntegerField(
         help_text="The confirmation sequence number that a run took when it last confirmed the link.",
     )
-    stale: models.BooleanField = models.BooleanField(
-        default=False,
-        help_text="The owner no longer reports the object, and the deprecate mode kept this last link.",
+    stale_mark: models.BigIntegerField = models.BigIntegerField(
+        null=True,
+        blank=True,
+        help_text="The cutoff number of the cleanup that kept this last link as stale; null when it is not stale.",
     )
 
     class Meta:
