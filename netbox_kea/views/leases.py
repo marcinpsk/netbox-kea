@@ -26,6 +26,7 @@ from utilities.views import GetReturnURLMixin, register_model_view
 from .. import constants, forms, subnet_catalogue, tables
 from ..constants import Family
 from ..kea import (
+    LEASE_DEL,
     KeaClient,
     KeaException,
     LeaseQueryGuardError,
@@ -500,12 +501,7 @@ class BaseServerLeasesDeleteView(GetReturnURLMixin, generic.ObjectView, metaclas
 
     def delete_lease(self, client: KeaClient, ip: str) -> None:
         """Issue a lease-del command to Kea for *ip*; silently accepts result 3 (not found)."""
-        client.command(
-            f"lease{self.dhcp_version}-del",
-            arguments={"ip-address": ip},
-            service=[f"dhcp{self.dhcp_version}"],
-            check=(0, 3),
-        )
+        client.command(LEASE_DEL[self.dhcp_version], self.dhcp_version, arguments={"ip-address": ip}, check=(0, 3))
 
     def get(self, request: HttpRequest, **kwargs):
         """Redirect back to the server on GET (this view is POST-only)."""

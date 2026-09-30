@@ -13,7 +13,7 @@ from django.utils import timezone
 
 from . import constants, server_configuration
 from .constants import Family, IPNetworkValue
-from .kea import KeaClient, KeaException, subnet_network
+from .kea import SUBNET_LIST, KeaClient, KeaException, subnet_network
 
 if TYPE_CHECKING:
     from .models import Server
@@ -297,7 +297,7 @@ def _unavailable_configuration(code: str, message: str) -> _ConfigurationObserva
 
 def _read_identity(client: KeaClient, family: Family) -> _IdentityObservation:
     try:
-        response = client.command(f"subnet{family}-list", service=[f"dhcp{family}"], check=(0, 3))
+        response = client.command(SUBNET_LIST[family], family, check=(0, 3))
     except KeaException as exc:
         if exc.unsupported_command:
             return _unavailable_identity(

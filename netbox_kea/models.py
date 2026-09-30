@@ -14,7 +14,7 @@ from netbox.models import NetBoxModel
 from netbox.models.features import JobsMixin
 
 from .constants import Family
-from .kea import KeaClient, KeaException
+from .kea import KeaClient, KeaCommand, KeaException
 from .reservations import MAX_IDENTITY_LENGTH
 
 logger = logging.getLogger(__name__)
@@ -313,7 +313,7 @@ class Server(JobsMixin, NetBoxModel):
 
         if self.dhcp6:
             try:
-                self.get_client(version=6).command("version-get", service=["dhcp6"])
+                self.get_client(version=6).command(KeaCommand.VERSION_GET, 6)
             except KeaException as e:
                 logger.exception("DHCPv6 connectivity check failed during Server.clean()")
                 raise ValidationError({"dhcp6": "Unable to reach the Kea DHCPv6 service."}) from e
@@ -325,7 +325,7 @@ class Server(JobsMixin, NetBoxModel):
                 raise ValidationError({"dhcp6": "Unable to reach the Kea DHCPv6 service."}) from e
         if self.dhcp4:
             try:
-                self.get_client(version=4).command("version-get", service=["dhcp4"])
+                self.get_client(version=4).command(KeaCommand.VERSION_GET, 4)
             except KeaException as e:
                 logger.exception("DHCPv4 connectivity check failed during Server.clean()")
                 raise ValidationError({"dhcp4": "Unable to reach the Kea DHCPv4 service."}) from e

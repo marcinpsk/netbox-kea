@@ -6,17 +6,15 @@
 
 class Client:
     def bad_update(self, version, options):
-        service = f"dhcp{version}"
         # ruleid: kea-config-read-modify-write-without-reader
-        resp = self.command("config-get", service=[service])
+        resp = self.command(KeaCommand.CONFIG_GET, version)
         config = resp[0]["arguments"]
         config.setdefault(f"Dhcp{version}", {})["option-data"] = options
         self.config_set(config)
 
     def bad_update_keyword(self, version, name):
-        service = f"dhcp{version}"
         # ruleid: kea-config-read-modify-write-without-reader
-        resp = self.command(command="config-get", service=[service])
+        resp = self.command(command=KeaCommand.CONFIG_GET, target=version)
         for network in resp[0]["arguments"][f"Dhcp{version}"]["shared-networks"]:
             network["description"] = name
         self.config_set(resp[0]["arguments"])
@@ -28,11 +26,10 @@ class Client:
         self.config_set(candidate)
 
     def config_candidate(self, version):
-        service = f"dhcp{version}"
         # ok: kea-config-read-modify-write-without-reader
-        resp = self.command("config-get", service=[service])
+        resp = self.command(KeaCommand.CONFIG_GET, version)
         return resp[0]["arguments"]
 
     def ok_read_only(self, version):
         # ok: kea-config-read-modify-write-without-reader
-        return self.command("config-get", service=[f"dhcp{version}"])
+        return self.command(KeaCommand.CONFIG_GET, version)
