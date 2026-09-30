@@ -273,4 +273,4 @@ class TestEnqueueOnceWiring(TestCase):
         self.assertIs(result, sentinel)
         # Heal ran before the delegation, and the stored interval replaced the passed one.
         self.assertEqual([c[0] for c in manager.mock_calls], ["heal", "enqueue"])
-        mock_super.assert_called_once_with(interval=11)
+        mock_super.assert_called_once_with(None, None, 11)

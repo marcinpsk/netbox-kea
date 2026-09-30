@@ -1146,6 +1146,14 @@ class TestSyncIntervalFromSyncConfig(TestCase):
         KeaIpamSyncJob.enqueue_once(interval=5)
         self.assertEqual(list(Job.objects.filter(name=KeaIpamSyncJob.name).values_list("interval", flat=True)), [17])
 
+    def test_a_positional_interval_is_replaced_by_the_stored_one(self):
+        """NetBox's signature is (instance, schedule_at, interval), so a positional interval is valid."""
+        from core.models import Job
+
+        _set_sync_config(interval_minutes=17)
+        KeaIpamSyncJob.enqueue_once(None, None, 5)
+        self.assertEqual(list(Job.objects.filter(name=KeaIpamSyncJob.name).values_list("interval", flat=True)), [17])
+
     def test_periodic_run_schedules_its_successor_with_the_stored_interval(self):
         """An interval saved after the job was scheduled applies to the next successor."""
         _set_sync_config(interval_minutes=23, sync_enabled=False)
