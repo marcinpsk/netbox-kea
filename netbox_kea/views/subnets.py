@@ -262,8 +262,11 @@ class _BasePoolAddView(_KeaChangeMixin, generic.ObjectView):
     def get(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         server = self.get_object(pk=pk)
         catalogue, subnet = _displayed_subnet(request, server, self.dhcp_version, subnet_id)
-        initial = {"subnet_cidr": subnet.cidr} if subnet is not None else {}
-        form = forms.PoolAddForm(initial=initial, subnet=subnet, absence_confirmed=catalogue.confirms_absence)
+        if subnet is None:
+            return _unconfirmed_subnet(request, subnet_id, self._subnets_url(pk))
+        form = forms.PoolAddForm(
+            initial={"subnet_cidr": subnet.cidr}, subnet=subnet, absence_confirmed=catalogue.confirms_absence
+        )
         return self._render(request, server, subnet_id, form)
 
     def post(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:

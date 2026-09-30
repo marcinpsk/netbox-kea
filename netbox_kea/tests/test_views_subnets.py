@@ -2540,12 +2540,10 @@ class TestSubnetAndPoolChangesRequireTheVerifiedSubnet(_ViewTestBase):
                     ],
                 )
 
-    def test_a_delete_get_that_cannot_confirm_the_subnet_redirects_with_an_error(self):
+    def test_a_get_that_cannot_confirm_the_subnet_redirects_with_an_error(self):
         failed = {"result": 1, "text": "internal error"}
         unconfirmed = "NetBox could not confirm Subnet 1 in Kea. Reload the Subnets page and try again."
-        for name, url, _data, _command, reads, _confirmed in self._cases():
-            if reads:
-                continue  # The Pool add GET shows the form error instead.
+        for name, url, _data, _command, _reads, _confirmed in self._cases():
             for state, responses in (
                 ("unreadable", _change_responses(_subnet_1(), **{"subnet4-list": failed, "config-get": failed})),
                 ("absent", _change_responses(None)),
