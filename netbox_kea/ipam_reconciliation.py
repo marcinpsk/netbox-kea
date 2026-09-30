@@ -88,6 +88,12 @@ class SyncReport:
     lease_records: list[dict[str, Any]] = field(default_factory=list)
     lease_addresses: set[str] = field(default_factory=set)
 
+    def fail_snapshot(self, what: str, exc: BaseException) -> None:
+        """Count one snapshot that could not be read, which makes the phase incomplete, and log it."""
+        self.errors += 1
+        self.complete = False
+        logger.warning("%s failed: %s", what, exc)
+
     def fail_row(self, what: str, exc: BaseException) -> None:
         """Count one failed row, which makes the phase incomplete, and log the first failures."""
         self.errors += 1
@@ -179,9 +185,7 @@ def _claim_leases(server: Server, family: Family, phase: LeasePhase, report: Syn
         client = server.get_client(version=family)
         collection = client.lease_get_all(version=family, max_leases=phase.max_leases)
     except (KeaException, requests.RequestException, ValueError, RuntimeError) as exc:
-        logger.warning("Server %s (v%s): the lease snapshot failed: %s", server.name, family, exc)
-        report.errors += 1
-        report.complete = False
+        report.fail_snapshot(f"Server {server.name} (v{family}): the lease snapshot", exc)
         return None
     logger.info("Server %s (v%s): fetched %d leases", server.name, family, len(collection.leases))
     if collection.truncated:

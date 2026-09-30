@@ -233,6 +233,21 @@ class LeasePhaseStaleTest(TestCase):
         self.assertTrue(NbIP.objects.filter(pk=ip.pk).exists())
         self.assertEqual(set(_links(ip)), {"owner"})
 
+    @override_settings(PLUGINS_CONFIG=_config("remove"))
+    def test_a_failed_lease_snapshot_counts_one_error_and_keeps_the_stale_links(self):
+        _reconcile(self.server, [_lease(hostname="host")])
+        ip = _row()
+
+        with (
+            stub_kea({"lease4-get-page": {"result": 1, "text": "database unavailable"}}),
+            self.assertLogs("netbox_kea.ipam_reconciliation", "WARNING") as logs,
+        ):
+            report = reconcile(self.server, 4, [_phase()])
+
+        self.assertEqual((report.errors, report.complete), (1, False))
+        self.assertTrue(any("the lease snapshot failed" in line for line in logs.output))
+        self.assertEqual(set(_links(ip)), {"owner"})
+
 
 @override_settings(PLUGINS_CONFIG=_config("deprecate"))
 class LeasePhaseDeprecateTest(TestCase):
