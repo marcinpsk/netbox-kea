@@ -2,11 +2,20 @@
 # SPDX-License-Identifier: Apache-2.0
 """The Kea transport takes a KeaCommand member and a target family, never a string (guard 3, ADR 0007)."""
 
-import pytest
+import ast
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
+import pytest
+from django.test import override_settings
+
+from netbox_kea.branching import BranchActive, BranchBinding
 from netbox_kea.kea import KeaClient, KeaCommand
 from netbox_kea.tests.kea_stub import stub_kea
 from netbox_kea.tests.kea_wire_discipline import WIRE_COMMANDS
+from netbox_kea.tests.utils import _PLUGINS_CONFIG
+
+PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 
 # Written here, independent of the enum: a change to either set needs a review of the branch refusal.
 READ_COMMANDS = frozenset(
@@ -139,3 +148,135 @@ def test_a_target_that_is_not_a_family_is_refused_before_any_send(target):
         client.command(KeaCommand.CONFIG_GET, target)
 
     assert kea.requests == []
+
+
+# The binding keeps what active_branch() returned; the refusal only needs it to be set.
+_BRANCH = "a branch"
+_WRITES = [member for member in KeaCommand if member.kind == "write"]
+
+
+def _bound_client() -> KeaClient:
+    return KeaClient(url="https://kea.example.invalid/", write_guard=BranchBinding(_BRANCH))
+
+
+@pytest.mark.parametrize("command", _WRITES, ids=lambda member: member.value)
+def test_a_branch_bound_client_refuses_every_write_before_any_send(command):
+    with stub_kea({}) as kea, pytest.raises(BranchActive) as refused:
+        _bound_client().command(command, 4)
+
+    assert refused.value.branch == _BRANCH
+    assert kea.requests == []
+
+
+@pytest.mark.parametrize("command", _WRITES, ids=lambda member: member.value)
+def test_a_clone_of_a_branch_bound_client_refuses_every_write_in_a_worker_thread(command):
+    clone = _bound_client().clone()
+    with stub_kea({}) as kea, ThreadPoolExecutor(max_workers=1) as pool:
+        refused = pool.submit(clone.command, command, 4).exception()
+
+    assert isinstance(refused, BranchActive)
+    assert kea.requests == []
+
+
+def test_a_branch_bound_client_sends_a_read():
+    with stub_kea({"config-get": {"result": 0}}) as kea:
+        _bound_client().command(KeaCommand.CONFIG_GET, 4)
+
+    assert kea.commands() == ["config-get"]
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+def test_get_client_on_main_binds_no_branch_and_sends_a_write():
+    from netbox_kea.models import Server
+
+    client = Server(name="main", ca_url="https://kea.example.invalid/").get_client(version=4)
+    with stub_kea({"lease4-del": {"result": 0}}) as kea:
+        client.command(KeaCommand.LEASE4_DEL, 4, arguments={"ip-address": "192.0.2.1"})
+
+    assert client.write_guard == BranchBinding(None)
+    assert client.clone().write_guard is client.write_guard
+    assert kea.commands() == ["lease4-del"]
+
+
+# Guard 3: the only HTTP send, and the only Kea client construction, of the runtime package.
+
+_HTTP_VERBS = frozenset({"get", "post", "put", "patch", "delete", "head", "options", "request", "send"})
+_OTHER_HTTP_MODULES = ("http.client", "httpx", "aiohttp", "pycurl", "socket", "urllib.request", "urllib3")
+
+
+def _runtime_modules() -> list[tuple[str, ast.Module]]:
+    return [
+        (path.relative_to(PACKAGE_ROOT).as_posix(), ast.parse(path.read_text(encoding="utf-8")))
+        for path in sorted(PACKAGE_ROOT.rglob("*.py"))
+        if path.relative_to(PACKAGE_ROOT).parts[0] not in {"tests", "migrations"}
+    ]
+
+
+def _scoped_calls(tree: ast.Module) -> list[tuple[str, ast.Call]]:
+    """Return each call in *tree* with the qualified name of the function or class that holds it."""
+    found: list[tuple[str, ast.Call]] = []
+
+    def visit(node: ast.AST, scope: tuple[str, ...]) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+                visit(child, (*scope, child.name))
+                continue
+            if isinstance(child, ast.Call):
+                found.append((".".join(scope) or "<module>", child))
+            visit(child, scope)
+
+    visit(tree, ())
+    return found
+
+
+def _is_name(node: ast.expr, name: str) -> bool:
+    return (isinstance(node, ast.Name) and node.id == name) or (isinstance(node, ast.Attribute) and node.attr == name)
+
+
+def test_the_runtime_package_has_one_http_send_in_kea_client_command():
+    sends, requests_calls = [], []
+    for rel, tree in _runtime_modules():
+        for scope, call in _scoped_calls(tree):
+            func = call.func
+            if not isinstance(func, ast.Attribute):
+                continue
+            if func.attr in _HTTP_VERBS and _is_name(func.value, "_session"):
+                sends.append(f"{rel}::{scope}")
+            if isinstance(func.value, ast.Name) and func.value.id == "requests":
+                requests_calls.append(f"{rel}::{scope}: requests.{func.attr}")
+
+    assert sends == ["kea.py::KeaClient.command"]
+    assert requests_calls == [
+        "kea.py::KeaClient.__init__: requests.Session",
+        "kea.py::KeaClient.clone: requests.Session",
+    ]
+
+
+def test_the_runtime_package_imports_no_other_http_client():
+    imported = [
+        f"{rel}: {name}"
+        for rel, tree in _runtime_modules()
+        for node in ast.walk(tree)
+        for name in (
+            [alias.name for alias in node.names]
+            if isinstance(node, ast.Import)
+            else [node.module or ""]
+            if isinstance(node, ast.ImportFrom) and node.level == 0
+            else []
+        )
+        if any(name == module or name.startswith(f"{module}.") for module in _OTHER_HTTP_MODULES)
+    ]
+
+    assert imported == ["config_write.py: urllib3.exceptions"]
+
+
+def test_only_server_get_client_builds_a_kea_client_and_it_passes_the_write_guard():
+    builds = [
+        (f"{rel}::{scope}", call)
+        for rel, tree in _runtime_modules()
+        for scope, call in _scoped_calls(tree)
+        if _is_name(call.func, "KeaClient")
+    ]
+
+    assert [site for site, _call in builds] == ["models.py::Server.get_client"]
+    assert "write_guard" in {keyword.arg for keyword in builds[0][1].keywords}

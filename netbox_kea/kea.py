@@ -5,7 +5,7 @@ import logging
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Literal, NamedTuple, TypedDict, cast
+from typing import Any, Literal, NamedTuple, Protocol, TypedDict, cast
 
 import requests
 from requests.models import HTTPBasicAuth
@@ -132,6 +132,13 @@ class KeaCommand(Enum):
     NETWORK6_SUBNET_ADD = "network6-subnet-add", "write"
     NETWORK4_SUBNET_DEL = "network4-subnet-del", "write"
     NETWORK6_SUBNET_DEL = "network6-subnet-del", "write"
+
+
+class WriteGuard(Protocol):
+    """Refuses a write command before it is sent. ``branching.BranchBinding`` refuses one in a branch."""
+
+    def refuse(self, operation: str) -> None:
+        """Raise when *operation* must not change Kea now."""
 
 
 # The member of each family-specific command, by family. Families absent from a mapping have no such command.
@@ -793,6 +800,7 @@ class KeaClient:
         send_service: bool = True,
         max_unpaged_leases: int | None = 1000,
         on_config_change: Callable[[], None] | None = None,
+        write_guard: WriteGuard | None = None,
     ):
         """Initialise a Kea HTTP client session.
 
@@ -819,6 +827,8 @@ class KeaClient:
             on_config_change: Optional callback invoked after Kea's live configuration
                 changes. Cache invalidation failures are logged and do not interrupt
                 persistence of an already-applied change.
+            write_guard: Refuses each write command before it is sent. ``Server.get_client()``
+                passes the branch binding; a client without a guard sends every command.
 
         Raises:
             ValueError: If only one of client_cert/client_key is provided.
@@ -837,6 +847,7 @@ class KeaClient:
         self.send_service = send_service
         self.max_unpaged_leases = max_unpaged_leases
         self._on_config_change = on_config_change
+        self.write_guard = write_guard
 
         self._session = requests.Session()
         if verify is not None:
@@ -869,6 +880,7 @@ class KeaClient:
         Raises:
             TypeError: If *command* is not a KeaCommand member.
             ValueError: If *target* is not 4, 6 or None.
+            BranchActive: If *command* is a write and the write guard refuses it, for example in a branch.
             requests.HTTPError: If the HTTP response status is not 2xx.
             KeaException: If any response result code is not in *check*.
 
@@ -877,6 +889,8 @@ class KeaClient:
             raise TypeError(f"command must be a KeaCommand member, not {type(command).__name__}")
         if target is not None and (isinstance(target, bool) or target not in (4, 6)):
             raise ValueError(f"target must be 4, 6 or None, not {target!r}")
+        if command.kind == "write" and self.write_guard is not None:
+            self.write_guard.refuse(f"Kea command {command.value}")
         body: dict[str, Any] = {"command": command.value}
 
         # Kea 3.2.0+ rejects a service that does not match the daemon that the URL already targets.
@@ -913,6 +927,8 @@ class KeaClient:
         new.send_service = self.send_service
         new.max_unpaged_leases = self.max_unpaged_leases
         new._on_config_change = self._on_config_change
+        # Thread-pool workers do not inherit context variables, so the clone keeps the branch binding.
+        new.write_guard = self.write_guard
         return new
 
     def _notify_config_change(self, family: Family) -> None:

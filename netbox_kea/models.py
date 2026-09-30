@@ -13,6 +13,7 @@ from netbox.constants import CENSOR_TOKEN, CENSOR_TOKEN_CHANGED
 from netbox.models import NetBoxModel
 from netbox.models.features import JobsMixin
 
+from . import branching
 from .constants import Family
 from .kea import KeaClient, KeaCommand, KeaException
 from .reservations import MAX_IDENTITY_LENGTH
@@ -248,6 +249,9 @@ class Server(JobsMixin, NetBoxModel):
         point at a per-protocol Control Agent (Kea < 3.0) or a bare daemon socket
         (Kea 3.0+), so the routing decision follows the flag, not the URL.
 
+        The client is bound to the branch that is active now, so it refuses each Kea write
+        command in a branch, also from a clone in a worker thread (ADR 0007).
+
         Args:
             version: DHCP protocol version (4 or 6). When provided and a protocol-specific
                 URL is configured, that URL and its corresponding per-protocol credentials
@@ -289,6 +293,7 @@ class Server(JobsMixin, NetBoxModel):
             send_service=self.has_control_agent,
             max_unpaged_leases=_get_max_unpaged_leases(),
             on_config_change=on_config_change,
+            write_guard=branching.bind(),
         )
 
     def clean(self) -> None:
