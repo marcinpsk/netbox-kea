@@ -116,7 +116,11 @@ makes it fail instead.
   module that imports `netbox_branching` (ADR 0007, `docs/design/netbox-branching.md`).
   Every migration sets `fake_on_branch`; guard 4 in `test_branching.py` checks the value.
   `BranchRefusalMiddleware` in `branching.py` refuses every unsafe request to a netbox_kea URL
-  callback in a branch, or with an unusable branch selection. Guard 1 in `test_branching.py`
+  callback in a branch, or with an unusable branch selection. Below the middleware, `KeaClient.command()`
+  refuses a `write` member of `KeaCommand` with `BranchActive` (`Server.get_client()` binds the client
+  to the active branch, and `clone()` keeps the binding), `pre_save` and `pre_delete` receivers in
+  `signals.py` refuse a save or a delete of every netbox_kea row, and `KeaIpamSyncJob` fails before
+  any read. Guard 1 in `test_branching.py`
   sends GET, HEAD, OPTIONS, POST, PUT, PATCH and DELETE to every netbox_kea URL in a provisioned
   branch, API action routes included; a new route with a parameter the guard cannot build fails
   by name, so teach `_route_arguments` the object.
