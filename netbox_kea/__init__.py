@@ -13,6 +13,7 @@ class NetBoxKeaConfig(PluginConfig):
     description = "Kea integration for NetBox"
     version = __version__
     base_url = "kea"
+    middleware = ("netbox_kea.branching.BranchRefusalMiddleware",)
     default_settings = {
         "kea_timeout": 30,
         "lease_query_max_unpaged_leases": 1000,
