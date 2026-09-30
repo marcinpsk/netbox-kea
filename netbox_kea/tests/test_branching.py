@@ -12,6 +12,7 @@ import os
 import re
 import uuid
 from collections.abc import Iterator, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from ipaddress import ip_address
@@ -56,7 +57,7 @@ from netbox_branching.models import Branch  # noqa: E402
 from netbox_branching.utilities import activate_branch, supports_branching  # noqa: E402
 from rest_framework.permissions import SAFE_METHODS  # noqa: E402
 
-from netbox_kea.kea import KeaException  # noqa: E402
+from netbox_kea.kea import KeaCommand, KeaException  # noqa: E402
 from netbox_kea.models import Server  # noqa: E402
 from netbox_kea.tests.kea_stub import _leases_per_subnet, _res_get, _res_page, _subnet_stats, stub_kea  # noqa: E402
 from netbox_kea.tests.utils import _WRITE_VERBS, _make_db_server  # noqa: E402
@@ -692,6 +693,52 @@ class BranchActiveResponseTest(TransactionTestCase):
         self.assertEqual(response.content, b"")
         self.assertEqual(response.headers["HX-Refresh"], "true")
         self.assertContains(self.client.get(reverse("plugins:netbox_kea:server_list")), self.text)
+
+
+# Guard 3 in a provisioned branch: the Kea transport.
+
+_KEA_WRITES = [member for member in KeaCommand if member.kind == "write"]
+
+
+class KeaTransportInBranchTest(TransactionTestCase):
+    """A mutating Kea command in a branch raises BranchActive before any send, also from a clone in a thread."""
+
+    def setUp(self):
+        self.server = _make_db_server(name="transport")
+        self.branch = _provisioned_branch(self, "transport")
+
+    def test_a_client_built_in_a_branch_refuses_every_write_also_from_a_clone_in_a_thread(self):
+        with activate_branch(self.branch):
+            client = Server.objects.get(pk=self.server.pk).get_client(version=4)
+
+        # Called on main: the binding refuses, not the context, as in a thread-pool worker.
+        for command in _KEA_WRITES:
+            with self.subTest(command=command.value), stub_kea({}) as kea, ThreadPoolExecutor(1) as pool:
+                with self.assertRaises(branching.BranchActive) as refused:
+                    client.command(command, 4)
+                in_thread = pool.submit(client.clone().command, command, 4).exception()
+
+                self.assertIs(refused.exception.branch, self.branch)
+                self.assertIsInstance(in_thread, branching.BranchActive)
+                self.assertIs(in_thread.branch, self.branch)
+                self.assertEqual(kea.commands(), [])
+
+    def test_a_client_built_on_main_refuses_a_write_while_a_branch_is_active(self):
+        client = self.server.get_client(version=4)
+
+        with stub_kea({"lease4-del": {"result": 0}}) as kea:
+            with activate_branch(self.branch), self.assertRaises(branching.BranchActive):
+                client.command(KeaCommand.LEASE4_DEL, 4, arguments={"ip-address": "192.0.2.1"})
+            self.assertEqual(kea.commands(), [])
+            client.command(KeaCommand.LEASE4_DEL, 4, arguments={"ip-address": "192.0.2.1"})
+
+        self.assertEqual(kea.commands(), ["lease4-del"], "on main the write is sent")
+
+    def test_a_client_built_in_a_branch_sends_a_read(self):
+        with activate_branch(self.branch), stub_kea({"config-get": {"result": 0}}) as kea:
+            self.server.get_client(version=4).command(KeaCommand.CONFIG_GET, 4)
+
+        self.assertEqual(kea.commands(), ["config-get"])
 
 
 # Guard 1: the URL tree.

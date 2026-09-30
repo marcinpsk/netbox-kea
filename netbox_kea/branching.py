@@ -9,6 +9,7 @@ module in the plugin that imports ``netbox_branching``.
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from http import HTTPStatus
 from typing import Any
 
@@ -56,6 +57,24 @@ def refuse_in_branch(operation: str) -> None:
     """Raise BranchActive when a branch is active."""
     if (branch := active_branch()) is not None:
         raise BranchActive(operation, branch)
+
+
+@dataclass(frozen=True)
+class BranchBinding:
+    """The branch that was active when a Kea client was built. A thread-pool worker does not inherit the context."""
+
+    branch: Any
+
+    def refuse(self, operation: str) -> None:
+        """Raise BranchActive when the bound branch is set, or else when a branch is active now."""
+        branch = self.branch if self.branch is not None else active_branch()
+        if branch is not None:
+            raise BranchActive(operation, branch)
+
+
+def bind() -> BranchBinding:
+    """Bind a Kea client to the branch that is active now, or to none."""
+    return BranchBinding(active_branch())
 
 
 def is_branchable(model: type[models.Model]) -> bool | None:
