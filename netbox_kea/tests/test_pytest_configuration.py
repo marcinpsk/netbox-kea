@@ -277,6 +277,7 @@ def _write_ci_configuration(tmp_path, *arguments: str) -> subprocess.CompletedPr
         capture_output=True,
         check=False,
         text=True,
+        timeout=30,
     )
 
 
