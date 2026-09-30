@@ -366,7 +366,7 @@ The sinks follow the design, with these facts from the code:
 | `Server` | No (resolver) | One row per pk: the Kea client and the Redis keys use main's current connection fields; sync never copies censored passwords into a branch |
 | `SyncConfig` | No (plain model) | Global singleton |
 | `KeaDhcpLink` | No (plain model, resolver) | Its only foreign keys go to `Server` (main-only) and `ContentType` (exempt) |
-| ADR 0006 ownership link (future) | Yes, by the rule | `CASCADE` keys to IPAddress, Prefix, IPRange. Its revert and sync behaviour is designed with it; guard 2 blocks it until then |
+| ADR 0006 ownership link | No (resolver) | `CASCADE` keys to IPAddress, Prefix, IPRange. A delete of a linked object in a branch reaches main's link table, and the `pre_delete` receiver refuses it. Merge and revert delete on main, where `CASCADE` removes the links. Design: `docs/design/ipam-ownership-branching.md` |
 
 `Server.sync_vrf` becomes `PROTECT`. A VRF delete, in a branch or in main, is refused while a
 Server syncs into that VRF. Django's collector raises `ProtectedError` during collection, before
@@ -406,9 +406,11 @@ The release ships a migration, so `migrate` refreshes stored `ObjectType.feature
    on either connection. Safe methods: the status the same request gets on main (200 for pages),
    no INSERT, UPDATE or DELETE on either connection, and no refused Kea command. A route whose
    arguments the test cannot build fails by name.
-2. Branchability pin: compute the rule from `_meta` for every plugin model, assert
-   `supports_branching()` agrees, and assert the branchable set equals a pinned empty set. The
-   message says that a change needs a design decision, because open branches lack the table.
+2. Branchability pin: compute, from `_meta` of every plugin model (auto-created ones included),
+   the relations that a delete in a branch reaches, and assert that they equal a pinned set of
+   `(model.field, on_delete)`. Each one must be a concrete `CASCADE` key on a model with the refusal
+   receiver. Assert that `supports_branching()` is `False` for every plugin model. The message says
+   that a change needs a design decision (`docs/design/ipam-ownership-branching.md`).
 3. Kea transport: an AST scan asserts that the runtime package has exactly one HTTP send, inside
    `KeaClient.command()`. A test pins the `read` and `write` members of `KeaCommand` as two
    explicit sets written in the test, independent of the enum, and fails when a member is added,
