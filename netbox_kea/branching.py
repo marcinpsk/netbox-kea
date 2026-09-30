@@ -89,12 +89,15 @@ def is_branchable(model: type[models.Model]) -> bool | None:
 
 
 def register() -> None:
-    """Register the resolver with netbox-branching, from the plugin's ready()."""
+    """Register the resolver with netbox-branching and connect the plugin row receivers, from the plugin's ready()."""
     if not installed():
         return
     from netbox_branching.utilities import register_branching_resolver
 
+    from .signals import connect_branch_refusal
+
     register_branching_resolver(is_branchable)
+    connect_branch_refusal()
 
 
 def plugin_owned(view_func: Callable[..., Any]) -> bool:

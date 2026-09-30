@@ -34,10 +34,11 @@ if not branching.installed():
         raise RuntimeError(f"{_REQUIRE_BRANCHING}=1, but netbox_branching is not an installed app")
     pytest.skip("netbox-branching is not an installed app", allow_module_level=True)
 
-from core.models import ObjectType  # noqa: E402
+from core.models import Job, ObjectType  # noqa: E402
 from django.apps import apps  # noqa: E402
 from django.conf import settings  # noqa: E402
 from django.contrib.auth import get_user_model  # noqa: E402
+from django.contrib.contenttypes.models import ContentType  # noqa: E402
 from django.core.management import call_command  # noqa: E402
 from django.db import connection, connections, models, router  # noqa: E402
 from django.db.migrations import RunPython, RunSQL, SeparateDatabaseAndState  # noqa: E402
@@ -45,6 +46,7 @@ from django.db.migrations.loader import MigrationLoader  # noqa: E402
 from django.db.migrations.operations.base import Operation  # noqa: E402
 from django.db.migrations.operations.models import ModelOperation  # noqa: E402
 from django.db.models import ProtectedError  # noqa: E402
+from django.db.models.signals import pre_delete, pre_save  # noqa: E402
 from django.test import Client, RequestFactory, SimpleTestCase, TransactionTestCase, override_settings  # noqa: E402
 from django.test.utils import CaptureQueriesContext  # noqa: E402
 from django.urls import URLPattern, URLResolver, get_resolver, resolve, reverse  # noqa: E402
@@ -58,9 +60,9 @@ from netbox_branching.utilities import activate_branch, supports_branching  # no
 from rest_framework.permissions import SAFE_METHODS  # noqa: E402
 
 from netbox_kea.kea import KeaCommand, KeaException  # noqa: E402
-from netbox_kea.models import Server  # noqa: E402
+from netbox_kea.models import KeaDhcpLink, Server, SyncConfig  # noqa: E402
 from netbox_kea.tests.kea_stub import _leases_per_subnet, _res_get, _res_page, _subnet_stats, stub_kea  # noqa: E402
-from netbox_kea.tests.utils import _WRITE_VERBS, _make_db_server  # noqa: E402
+from netbox_kea.tests.utils import _WRITE_VERBS, _make_db_server, _refusal_receivers  # noqa: E402
 
 # Changing this set needs a design decision (docs/design/netbox-branching.md).
 BRANCHABLE_MODELS: frozenset[str] = frozenset()
@@ -693,6 +695,96 @@ class BranchActiveResponseTest(TransactionTestCase):
         self.assertEqual(response.content, b"")
         self.assertEqual(response.headers["HX-Refresh"], "true")
         self.assertContains(self.client.get(reverse("plugins:netbox_kea:server_list")), self.text)
+
+
+def _save_with(instance: models.Model, **fields: object) -> None:
+    for name, value in fields.items():
+        setattr(instance, name, value)
+    instance.save()
+
+
+class PluginRowWritesInBranchTest(TransactionTestCase):
+    """A save or a delete of a netbox_kea row in a branch raises BranchActive, and main does not change."""
+
+    def setUp(self):
+        self.server = _make_db_server(name="rows", ca_url=_BEFORE)
+        self.link = KeaDhcpLink.objects.create(
+            server=self.server,
+            family=4,
+            kea_subnet_id=7,
+            object_type=ContentType.objects.get_for_model(VRF),
+            object_id=1,
+        )
+        self.config = SyncConfig.get()
+        self.branch = _provisioned_branch(self, "rows")
+
+    def _main(self) -> tuple:
+        return (
+            list(Server.objects.values_list("pk", "ca_url")),
+            list(KeaDhcpLink.objects.values_list("pk", "kea_subnet_id")),
+            list(SyncConfig.objects.values_list("pk", "interval_minutes")),
+        )
+
+    def test_the_receivers_cover_every_plugin_model(self):
+        labels = {model._meta.label for model in _plugin_models()}
+
+        self.assertEqual(labels, {"netbox_kea.Server", "netbox_kea.SyncConfig", "netbox_kea.KeaDhcpLink"})
+        self.assertEqual((_refusal_receivers(pre_save), _refusal_receivers(pre_delete)), (labels, labels))
+
+    def test_a_save_in_a_branch_is_refused(self):
+        before = self._main()
+        changes = {
+            "server": lambda: _save_with(self.server, ca_url=_AFTER),
+            "link": lambda: _save_with(self.link, kea_subnet_id=8),
+            "sync config": lambda: _save_with(self.config, interval_minutes=9),
+            "new server": lambda: _make_db_server(name="new in branch"),
+            "new link": lambda: KeaDhcpLink.objects.create(
+                server=self.server, family=6, kea_subnet_id=7, object_type=self.link.object_type, object_id=2
+            ),
+        }
+        for label, change in changes.items():
+            with self.subTest(label):
+                with activate_branch(self.branch), self.assertRaises(branching.BranchActive) as refused:
+                    change()
+                self.assertIs(refused.exception.branch, self.branch)
+
+        self.assertEqual(self._main(), before)
+
+    def test_a_delete_in_a_branch_is_refused(self):
+        before = self._main()
+        deletes = {
+            "server": lambda: Server.objects.get(pk=self.server.pk).delete(),
+            "link": lambda: KeaDhcpLink.objects.get(pk=self.link.pk).delete(),
+            "server queryset": lambda: Server.objects.all().delete(),
+            "link queryset": lambda: KeaDhcpLink.objects.all().delete(),
+            "sync config queryset": lambda: SyncConfig.objects.all().delete(),
+        }
+        for label, delete in deletes.items():
+            with self.subTest(label), activate_branch(self.branch), self.assertRaises(branching.BranchActive):
+                delete()
+
+        self.assertEqual(self._main(), before)
+
+    def test_a_server_delete_in_a_branch_keeps_its_jobs(self):
+        job = Job.objects.create(
+            object_type=ContentType.objects.get_for_model(Server),
+            object_id=self.server.pk,
+            name="kept",
+            job_id=uuid.uuid4(),
+        )
+
+        with activate_branch(self.branch), self.assertRaises(branching.BranchActive):
+            Server.objects.get(pk=self.server.pk).delete()
+
+        self.assertTrue(Job.objects.filter(pk=job.pk).exists(), "the refused delete removed the Server's job")
+
+    def test_on_main_a_save_and_a_delete_are_not_refused(self):
+        self.server.ca_url = _AFTER
+        self.server.save()
+        self.link.delete()
+
+        self.assertEqual(Server.objects.get(pk=self.server.pk).ca_url, _AFTER)
+        self.assertFalse(KeaDhcpLink.objects.filter(pk=self.link.pk).exists())
 
 
 # Guard 3 in a provisioned branch: the Kea transport.
