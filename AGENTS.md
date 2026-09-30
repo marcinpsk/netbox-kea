@@ -182,7 +182,9 @@ URL request
   `TypeError`); each member has a `read` or `write` kind. `target` is the `Family` (4 or 6), or
   `None` for the Control Agent itself. A family-specific command comes from a per-family mapping
   in `kea.py`, such as `SUBNET_LIST[family]`; never format a command name. A new member needs an
-  entry in the pinned read or write set of `test_kea_command.py`. Responses are
+  entry in the pinned read or write set of `test_kea_command.py`. `write_guard` is a required
+  keyword argument: `Server.get_client()` passes the branch binding, and unit tests build clients
+  through `kea_stub.kea_client()`, which passes it too. Responses are
   `list[KeaResponse]`; `check_response()` raises `KeaException` if any result code is not in
   `check`. `.clone()` creates a thread-safe copy (fresh `requests.Session`) for
   concurrent lookups. **`send_service`**: `command()` sends the target as the `service`
