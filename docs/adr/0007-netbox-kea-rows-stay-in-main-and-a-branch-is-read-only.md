@@ -23,9 +23,11 @@ With netbox-branching installed and a branch active, the plugin reads and does n
   outside the plugin; the ADR 0006 ownership link will be the first.
 - `Server.sync_vrf` is `PROTECT`, so a VRF delete in a branch cannot null a main row through the
   branch connection's `search_path`.
-- Every write is refused: in plugin middleware (also for an unusable branch selection), in the
-  Kea transport (`KeaClient.command()` takes a `KeaCommand` member with a read or write kind), and
-  in `pre_save`/`pre_delete` receivers on the plugin models.
+- Every write through the plugin is refused: in plugin middleware (also for an unusable branch
+  selection), in the Kea transport (`KeaClient.command()` takes a `KeaCommand` member with a read
+  or write kind), and in `pre_save`/`pre_delete` receivers on the plugin models. Queryset
+  `update()`, `bulk_create()`, `bulk_update()` and raw SQL on plugin models send no model signal,
+  so they are outside this guarantee, as for every non-branchable model in NetBox.
 
 The design, with its evidence, is `docs/design/netbox-branching.md`. Issue #231 tracks the
 implementation in the increments that the design lists. Each refusal applies from the increment
