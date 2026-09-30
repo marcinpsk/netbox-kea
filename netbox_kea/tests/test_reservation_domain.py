@@ -976,6 +976,15 @@ class TestReservationMutation(SimpleTestCase):
         self.assertEqual(kea.bodies("reservation-add")[0]["arguments"]["reservation"], raw)
         self.assertEqual(kea.commands().count("config-write"), 1)
 
+    def test_create_raises_on_an_empty_reply_and_neither_persists_nor_verifies(self):
+        with (
+            stub_kea({**_persistence_responses(4), "reservation-add": []}) as kea,
+            self.assertRaisesMessage(RuntimeError, "reservation-add returned a malformed success response."),
+        ):
+            self.kea.reservation_create(self.reservation, self.catalogue)
+
+        self.assertEqual(kea.commands(), ["reservation-add"])
+
     def _submitted_by_name(self):
         """The Reservation an operator submits: an Option named, with no resolved metadata."""
         return replace(
