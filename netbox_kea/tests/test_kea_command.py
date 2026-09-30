@@ -178,7 +178,7 @@ def test_a_clone_of_a_branch_bound_client_refuses_every_write_in_a_worker_thread
     assert kea.requests == []
 
 
-def test_a_config_mutation_in_a_branch_is_refused_before_the_cache_invalidation():
+def test_a_config_mutation_in_a_branch_is_refused_before_the_cache_invalidation() -> None:
     invalidations: list[str] = []
     client = KeaClient(
         url="https://kea.example.invalid/",
