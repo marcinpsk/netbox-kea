@@ -189,7 +189,7 @@ def _claim_leases(server: Server, family: Family, phase: LeasePhase, report: Syn
     logger.info("Server %s (v%s): fetched %d leases", server.name, family, len(collection.leases))
     if collection.truncated:
         logger.warning(
-            "Server %s (v%s): lease fetch truncated at %d — increase sync_max_leases_per_server",
+            "Server %s (v%s): lease fetch truncated at %d: increase sync_max_leases_per_server",
             server.name,
             family,
             phase.max_leases,
