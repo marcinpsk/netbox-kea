@@ -40,7 +40,7 @@ if TYPE_CHECKING:
 
 # Runtime imports: get_type_hints() resolves this module's annotations, so a
 # TYPE_CHECKING-only Family or DuplicateNetBoxRowsError would raise NameError.
-from . import subnet_catalogue
+from . import branching, subnet_catalogue
 from .constants import Family
 from .reservations import Reservation, ReservationSnapshot
 from .subnet_catalogue import CatalogueUnavailable, CompleteCatalogueSnapshot, VerifiedSubnet
@@ -633,10 +633,18 @@ class KeaIpamSyncJob(JobRunner):
                 exc_info=True,
             )
 
+    def _fail_in_branch(self) -> None:
+        """Raise JobFailed when a branch is active in the worker: the job reads and writes main only."""
+        if (branch := branching.active_branch()) is not None:
+            # NetBox saves the error when it marks the job failed; the job itself writes nothing here.
+            self.job.error = f"Branch {branch} is active in the worker. The Kea IPAM sync runs on main only."
+            raise JobFailed(self.job.error)
+
     def run(self, *args: Any, **kwargs: Any) -> None:
-        """Execute the sync across all servers."""
+        """Execute the sync across all servers. It fails before any read when a branch is active in the worker."""
         from .models import Server, SyncConfig
 
+        self._fail_in_branch()
         summary: list[dict] = []
         try:
             sync_cfg = SyncConfig.get()

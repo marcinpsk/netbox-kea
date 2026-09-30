@@ -34,6 +34,7 @@ if not branching.installed():
         raise RuntimeError(f"{_REQUIRE_BRANCHING}=1, but netbox_branching is not an installed app")
     pytest.skip("netbox-branching is not an installed app", allow_module_level=True)
 
+from core.exceptions import JobFailed  # noqa: E402
 from core.models import Job, ObjectType  # noqa: E402
 from django.apps import apps  # noqa: E402
 from django.conf import settings  # noqa: E402
@@ -59,6 +60,7 @@ from netbox_branching.models import Branch  # noqa: E402
 from netbox_branching.utilities import activate_branch, supports_branching  # noqa: E402
 from rest_framework.permissions import SAFE_METHODS  # noqa: E402
 
+from netbox_kea.jobs import KeaIpamSyncJob  # noqa: E402
 from netbox_kea.kea import KeaCommand, KeaException  # noqa: E402
 from netbox_kea.models import KeaDhcpLink, Server, SyncConfig  # noqa: E402
 from netbox_kea.tests.kea_stub import _leases_per_subnet, _res_get, _res_page, _subnet_stats, stub_kea  # noqa: E402
@@ -785,6 +787,29 @@ class PluginRowWritesInBranchTest(TransactionTestCase):
 
         self.assertEqual(Server.objects.get(pk=self.server.pk).ca_url, _AFTER)
         self.assertFalse(KeaDhcpLink.objects.filter(pk=self.link.pk).exists())
+
+
+class SyncJobInBranchTest(TransactionTestCase):
+    """KeaIpamSyncJob runs on main only: in a branch it fails before any read."""
+
+    def test_the_sync_job_fails_in_a_branch_before_any_query_or_kea_command(self):
+        _make_db_server(name="job")
+        branch = _provisioned_branch(self, "job")
+        job = Job.objects.create(name="Kea IPAM Sync", job_id=uuid.uuid4())
+
+        with activate_branch(branch):
+            alias = router.db_for_write(VRF)
+            with (
+                stub_kea({}) as kea,
+                CaptureQueriesContext(connections["default"]) as on_main,
+                CaptureQueriesContext(connections[alias]) as on_branch,
+                self.assertRaises(JobFailed),
+            ):
+                KeaIpamSyncJob(job).run()
+
+        self.assertEqual(kea.commands(), [])
+        self.assertEqual([query["sql"] for query in (*on_main.captured_queries, *on_branch.captured_queries)], [])
+        self.assertIn(branch.name, job.error)
 
 
 # Guard 3 in a provisioned branch: the Kea transport.
