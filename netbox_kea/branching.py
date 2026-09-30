@@ -20,8 +20,10 @@ from django.db.models.signals import pre_delete, pre_save
 from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import render
 from django.urls import reverse
+from django.utils.html import escape
 from django_htmx.http import HttpResponseClientRedirect, HttpResponseClientRefresh
 from rest_framework.permissions import SAFE_METHODS
+from utilities.exceptions import AbortRequest
 
 APP_LABEL = "netbox_kea"
 BRANCHING_APP_LABEL = "netbox_branching"
@@ -29,15 +31,25 @@ SOURCES_HEADER = "X-NetBox-Kea-Sources"
 # The REST "code" of each refusal.
 BRANCH_WRITE_REFUSED = "branch_write_refused"
 BRANCH_SELECTION_UNUSABLE = "branch_selection_unusable"
+# The model whose delete in a branch means a delete of an object that a Kea Server owns (ADR 0006).
+OWNERSHIP_LINK_LABEL = f"{APP_LABEL}.IPAMOwnershipLink"
 
 
-class BranchActive(Exception):
-    """A plugin change was refused because a branch is active. Not a KeaException, so no Kea handler catches it."""
+class BranchActive(AbortRequest):
+    """A plugin change was refused because a branch is active. Not a KeaException, so no Kea handler catches it.
+
+    An AbortRequest, so a NetBox view rolls back, clears its queued events and shows ``message``. NetBox marks
+    ``message`` safe, so it holds the escaped text.
+    """
 
     def __init__(self, operation: str, branch: Any) -> None:
-        super().__init__(f"{operation} is refused while branch {branch} is active")
+        self.text = f"{operation} is refused. {_refused_text(branch)}"
+        super().__init__(escape(self.text))
         self.operation = operation
         self.branch = branch
+
+    def __str__(self) -> str:
+        return self.text
 
 
 def installed() -> bool:
@@ -107,6 +119,15 @@ def _refuse_delete_in_branch(sender: Any, instance: Any, **kwargs: Any) -> None:
     refuse_in_branch(f"A delete of {sender._meta.label} {instance.pk}")
 
 
+def _refuse_owned_delete_in_branch(sender: Any, instance: Any, **kwargs: Any) -> None:
+    if (branch := active_branch()) is None:
+        return
+    owned = instance.owned_object
+    raise BranchActive(
+        f"A delete of {owned._meta.verbose_name} {owned}, which Kea Server {instance.server} owns,", branch
+    )
+
+
 def refusal_uid(model: type[models.Model]) -> str:
     """Return the dispatch_uid of the branch refusal receivers of *model*."""
     return f"{APP_LABEL}.refuse_in_branch.{model._meta.label}"
@@ -118,8 +139,11 @@ def connect_refusal(model: type[models.Model]) -> None:
     A pre_delete receiver disables Django's fast delete, so a queryset delete() reaches it too.
     """
     uid = refusal_uid(model)
+    owned = model._meta.label == OWNERSHIP_LINK_LABEL
     pre_save.connect(_refuse_save_in_branch, sender=model, dispatch_uid=uid)
-    pre_delete.connect(_refuse_delete_in_branch, sender=model, dispatch_uid=uid)
+    pre_delete.connect(
+        _refuse_owned_delete_in_branch if owned else _refuse_delete_in_branch, sender=model, dispatch_uid=uid
+    )
 
 
 def connect_branch_refusal() -> None:
@@ -151,7 +175,7 @@ def selection_unusable(request: HttpRequest) -> bool:
 
 def _branch_refused_text(branch: Any) -> str:
     return (
-        f"Branch {branch.name} is active. Kea is live and shared by every branch, and netbox-kea data exists "
+        f"Branch {branch} is active. Kea is live and shared by every branch, and netbox-kea data exists "
         "in main only, so netbox-kea refuses changes in a branch. Switch to main to make this change."
     )
 
@@ -160,6 +184,11 @@ _UNUSABLE_TEXT = (
     "The selected branch is not usable: it is unknown, merged, archived or not ready. "
     "netbox-kea refused the change, and nothing changed."
 )
+
+
+def _refused_text(branch: Any) -> str:
+    # netbox-branching 1.2.1 activates its own 400 response as the branch for an unready API branch header.
+    return _UNUSABLE_TEXT if isinstance(branch, HttpResponse) else _branch_refused_text(branch)
 
 
 def _refusal(request: HttpRequest, text: str, code: str, htmx: Callable[[], HttpResponse]) -> HttpResponse:

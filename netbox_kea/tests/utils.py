@@ -55,6 +55,14 @@ def _make_db_server(**kwargs) -> Server:
 
 _WRITE_VERBS = ("INSERT", "UPDATE", "DELETE")
 
+# What NetBox's events pipeline received while a test routes EVENTS_PIPELINE to record_dispatched_events.
+DISPATCHED_EVENTS: list = []
+
+
+def record_dispatched_events(events: list) -> None:
+    """Stand in for NetBox's events pipeline: record each event that a request flushes for dispatch."""
+    DISPATCHED_EVENTS.extend(events)
+
 
 def _refusal_receivers(signal) -> set[str]:
     """Return the label of each model whose branch refusal receiver *signal* has connected."""
