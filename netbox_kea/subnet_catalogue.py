@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 from .server_configuration import (
     Diagnostic,
     Pool,
+    ServerConfigurationSnapshot,
     SubnetConfiguration,
     SubnetSettings,
     invalidate,
@@ -98,8 +99,12 @@ class VerifiedSubnet:
     """A unique Subnet identity with optional full configuration facts."""
 
     identity: SubnetIdentity
+    # Kea's `subnet` text verbatim: Kea keeps host bits and compares this text in the delta commands.
+    declared_cidr: str
     configuration: SubnetConfiguration | None
     shared_network: SharedNetworkMembership | None
+    # False when no source showed the membership, so *shared_network* None does not mean none.
+    membership_known: bool
 
     @property
     def subnet_id(self) -> int:
@@ -169,6 +174,11 @@ class CatalogueSnapshot:
             and (not (self.identity_complete or self.configuration_complete) or not self.consistent)
         )
 
+    @property
+    def confirms_absence(self) -> bool:
+        """Return whether a Subnet that the identity facts do not verify is absent from Kea."""
+        return self.identity_complete and self.consistent
+
     def find_by_id(self, subnet_id: int) -> VerifiedSubnet | ConfiguredSubnet | None:
         """Return the verified or configured Subnet with an exact Kea ID, if present."""
         if isinstance(subnet_id, bool) or not isinstance(subnet_id, int):
@@ -207,6 +217,7 @@ class ConfigurationOnlyCatalogueSnapshot(IncompleteCatalogueSnapshot):
 @dataclass(frozen=True)
 class _IdentityFact:
     identity: SubnetIdentity
+    declared_cidr: str
     shared_network_name: str | None
     membership_complete: bool
 
@@ -324,6 +335,7 @@ def _parse_identity_entries(entries: list[Any], family: Family) -> _IdentityObse
         facts.append(
             _IdentityFact(
                 identity=identity,
+                declared_cidr=entry["subnet"],
                 shared_network_name=shared_network_name,
                 membership_complete=membership_complete,
             )
@@ -345,9 +357,10 @@ def _parse_identity_entries(entries: list[Any], family: Family) -> _IdentityObse
 
 
 def _parse_identity_membership(entry: Any, path: str, diagnostics: list[Diagnostic]) -> tuple[str | None, bool]:
-    if not isinstance(entry, dict):
+    if not isinstance(entry, dict) or "shared-network-name" not in entry:
+        # Kea 3.2.0 sends the key for each Subnet, with null for none.
         return None, False
-    value = entry.get("shared-network-name")
+    value = entry["shared-network-name"]
     if value is None:
         return None, True
     if isinstance(value, str) and value:
@@ -504,17 +517,24 @@ def _disagreement_is_only_collisions(
 
 def _observe_once(
     server: Server, client: KeaClient, family: Family
-) -> tuple[_IdentityObservation, _ConfigurationObservation]:
-    return _read_identity(client, family), _configuration_observation(
-        server_configuration.for_verification(server, family)
-    )
+) -> tuple[_IdentityObservation, ServerConfigurationSnapshot]:
+    return _read_identity(client, family), server_configuration.for_verification(server, family)
 
 
-def _observe(server: Server, family: Family) -> tuple[_IdentityObservation, _ConfigurationObservation, str | None]:
+def _catalogue_client(server: Server, family: Family) -> KeaClient | None:
     try:
-        client = server.get_client(version=family)
+        return server.get_client(version=family)
     except (KeaException, requests.RequestException, ValueError):
         logger.warning("Could not create a Kea client for the Subnet Catalogue", exc_info=True)
+        return None
+
+
+def _observe(
+    server: Server, family: Family
+) -> tuple[_IdentityObservation, _ConfigurationObservation, str | None, ServerConfigurationSnapshot | None]:
+    """Read both sources, once more when they disagree. Also return the configuration snapshot that was read."""
+    client = _catalogue_client(server, family)
+    if client is None:
         return (
             _unavailable_identity("identity-unavailable", "Kea subnet identity facts are unavailable."),
             _unavailable_configuration(
@@ -522,20 +542,29 @@ def _observe(server: Server, family: Family) -> tuple[_IdentityObservation, _Con
                 "Kea Subnet configuration facts are unavailable.",
             ),
             None,
+            None,
         )
 
-    identity, configuration = _observe_once(server, client, family)
+    identity, source = _observe_once(server, client, family)
+    configuration = _configuration_observation(source)
     if not _observations_disagree(identity, configuration):
-        return identity, configuration, None
+        return identity, configuration, None, source
     first_hash = configuration.configuration_hash
-    identity, configuration = _observe_once(server, client, family)
+    identity, source = _observe_once(server, client, family)
+    configuration = _configuration_observation(source)
+    return identity, configuration, _disagreement_after_retry(first_hash, identity, configuration), source
+
+
+def _disagreement_after_retry(
+    first_hash: str | None, identity: _IdentityObservation, configuration: _ConfigurationObservation
+) -> str | None:
     if not _observations_disagree(identity, configuration):
-        return identity, configuration, None
+        return None
     if first_hash and configuration.configuration_hash and first_hash != configuration.configuration_hash:
-        return identity, configuration, "configuration-changed-during-retry"
+        return "configuration-changed-during-retry"
     if _disagreement_is_only_collisions(identity, configuration):
-        return identity, configuration, "catalogue-identity-collision"
-    return identity, configuration, "identity-configuration-disagreement"
+        return "catalogue-identity-collision"
+    return "identity-configuration-disagreement"
 
 
 def _cross_source_conflicts(
@@ -637,16 +666,20 @@ def _reconcile(
             subnets.append(
                 VerifiedSubnet(
                     identity=identity_fact.identity,
+                    declared_cidr=identity_fact.declared_cidr,
                     configuration=configured_fact.configuration,
                     shared_network=_membership(shared_network_name),
+                    membership_known=configured_fact.membership_complete or identity_fact.membership_complete,
                 )
             )
         elif not configuration.available or not configuration.complete or not consistent:
             subnets.append(
                 VerifiedSubnet(
                     identity=identity_fact.identity,
+                    declared_cidr=identity_fact.declared_cidr,
                     configuration=None,
                     shared_network=_membership(identity_fact.shared_network_name),
+                    membership_known=identity_fact.membership_complete,
                 )
             )
 
@@ -712,10 +745,11 @@ def _snapshot_class(
     return IncompleteCatalogueSnapshot
 
 
-def _read_live(server: Server, family: Family) -> CatalogueSnapshot:
+def _read_live(server: Server, family: Family) -> tuple[CatalogueSnapshot, ServerConfigurationSnapshot | None]:
+    """Read a live snapshot, and the configuration snapshot that it came from (None: no client)."""
     _require_persisted_server(server)
-    identity, configuration, disagreement_code = _observe(server, family)
-    return _reconcile(server, family, identity, configuration, disagreement_code)
+    identity, configuration, disagreement_code, source = _observe(server, family)
+    return _reconcile(server, family, identity, configuration, disagreement_code), source
 
 
 def display(server: Server, family: int) -> CatalogueSnapshot:
@@ -726,7 +760,7 @@ def display(server: Server, family: int) -> CatalogueSnapshot:
     cached = cache.get(key)
     if isinstance(cached, CatalogueSnapshot):
         return cached
-    snapshot = _read_live(server, validated_family)
+    snapshot, _source = _read_live(server, validated_family)
     # Cache only settled sources: an absent subnet_cmds hook is settled, a failed read is not.
     identity_settled = snapshot.identity_available or not snapshot.subnet_cmds_available
     if identity_settled and snapshot.configuration_available:
@@ -737,7 +771,7 @@ def display(server: Server, family: int) -> CatalogueSnapshot:
 def for_synchronization(server: Server, family: int) -> CompleteCatalogueSnapshot:
     """Return one live Complete snapshot pinned for a synchronization run."""
     validated_family = _validate_family(family)
-    snapshot = _read_live(server, validated_family)
+    snapshot, _source = _read_live(server, validated_family)
     if not isinstance(snapshot, CompleteCatalogueSnapshot):
         raise CatalogueUnavailable("A complete Subnet Catalogue is required for synchronization.")
     return snapshot
@@ -760,24 +794,10 @@ def _allocate_subnet_id(used_ids: set[int]) -> int:
     return free
 
 
-class MutationScope(AbstractContextManager["MutationScope"]):
-    """One live Subnet identity scope for exact lookup and creation preparation."""
+class _SubnetLookup:
+    """Exact Subnet lookups on one live snapshot, which a Configuration Change can act on."""
 
-    def __init__(self, server: Server, family: Family) -> None:
-        self.server = server
-        self.family = family
-        self.snapshot: CatalogueSnapshot | None = None
-
-    def __enter__(self) -> MutationScope:
-        invalidate(self.server, self.family)
-        self.snapshot = _read_live(self.server, self.family)
-        return self
-
-    def __exit__(self, exc_type, exc_value, traceback) -> None:
-        # Identity facts stop being live confirmation here, so drop them: a caller that
-        # keeps the scope must not decide a mutation on pre-mutation observations.
-        self.snapshot = None
-        invalidate(self.server, self.family)
+    snapshot: CatalogueSnapshot | None
 
     def find_by_id(self, subnet_id: int) -> VerifiedSubnet | None:
         """Return one exact Verified Subnet, or confirm its absence safely."""
@@ -788,6 +808,49 @@ class MutationScope(AbstractContextManager["MutationScope"]):
         self._require_complete_identity("Subnet absence cannot be confirmed from an incomplete identity observation.")
         return None
 
+    def find_with_membership(self, subnet_id: int) -> VerifiedSubnet | None:
+        """Return one exact Verified Subnet whose Shared Network membership is known, or confirm its absence safely.
+
+        Only a complete identity observation shows that a Subnet without a Shared Network has none.
+        """
+        unknown = "Shared Network membership cannot be confirmed from an incomplete observation."
+        self._require_complete_identity(unknown)
+        subnet = self.find_by_id(subnet_id)
+        if subnet is not None and not subnet.membership_known:
+            raise CatalogueUnavailable(unknown)
+        return subnet
+
+    def _require_snapshot(self) -> CatalogueSnapshot:
+        if self.snapshot is None:
+            raise RuntimeError("MutationScope must be entered before use.")
+        return self.snapshot
+
+    def _require_complete_identity(self, message: str) -> None:
+        if not self._require_snapshot().confirms_absence:
+            raise CatalogueUnavailable(message)
+
+
+class MutationScope(_SubnetLookup, AbstractContextManager["MutationScope"]):
+    """One live Subnet identity scope for exact lookup and creation preparation."""
+
+    def __init__(self, server: Server, family: Family) -> None:
+        self.server = server
+        self.family = family
+        self.snapshot: CatalogueSnapshot | None = None
+        self._configuration: ServerConfigurationSnapshot | None = None
+
+    def __enter__(self) -> MutationScope:
+        invalidate(self.server, self.family)
+        self.snapshot, self._configuration = _read_live(self.server, self.family)
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        # Identity facts stop being live confirmation here, so drop them: a caller that
+        # keeps the scope must not decide a mutation on pre-mutation observations.
+        self.snapshot = None
+        self._configuration = None
+        invalidate(self.server, self.family)
+
     def find_by_cidr(self, cidr: str) -> VerifiedSubnet | None:
         """Return one exact Verified Subnet, or confirm its absence safely."""
         snapshot = self._require_snapshot()
@@ -795,6 +858,16 @@ class MutationScope(AbstractContextManager["MutationScope"]):
         if isinstance(subnet, VerifiedSubnet):
             return subnet
         self._require_complete_identity("Subnet absence cannot be confirmed from an incomplete identity observation.")
+        return None
+
+    def has_shared_network(self, name: str) -> bool | None:
+        """Return whether the configuration read of the scope shows the Shared Network *name*. None: it cannot show it."""
+        self._require_snapshot()
+        configuration = self._configuration
+        if configuration is not None and any(network.name == name for network in configuration.shared_networks):
+            return True
+        if configuration is not None and configuration.shared_networks_complete:
+            return False
         return None
 
     def prepare_creation(self, cidr: str, subnet_id: int | None = None) -> NewSubnetIdentity:
@@ -816,15 +889,29 @@ class MutationScope(AbstractContextManager["MutationScope"]):
             raise SubnetIdentityConflict(f"Subnet ID {subnet_id} already exists.", part="subnet_id")
         return NewSubnetIdentity(subnet_id=subnet_id, network=network)
 
-    def _require_snapshot(self) -> CatalogueSnapshot:
-        if self.snapshot is None:
-            raise RuntimeError("MutationScope must be entered before use.")
-        return self.snapshot
 
-    def _require_complete_identity(self, message: str) -> None:
-        snapshot = self._require_snapshot()
-        if not snapshot.identity_complete or not snapshot.consistent:
-            raise CatalogueUnavailable(message)
+# A check read sends no config-get, so its Subnets are verified by the subnet{v}-list read alone.
+_CONFIGURATION_NOT_READ = _ConfigurationObservation(facts=(), diagnostics=(), available=False, complete=False)
+
+
+class IdentityRead(_SubnetLookup):
+    """One live ``subnet{v}-list`` read: the identity and Shared Network membership of each Subnet."""
+
+    def __init__(self, snapshot: CatalogueSnapshot) -> None:
+        self.snapshot = snapshot
+
+
+def read_identity(server: Server, family: int) -> IdentityRead:
+    """Send one ``subnet{v}-list`` read, for a check after a change. It uses no cache and sends no config-get."""
+    validated_family = _validate_family(family)
+    _require_persisted_server(server)
+    client = _catalogue_client(server, validated_family)
+    identity = (
+        _unavailable_identity("identity-unavailable", "Kea subnet identity facts are unavailable.")
+        if client is None
+        else _read_identity(client, validated_family)
+    )
+    return IdentityRead(_reconcile(server, validated_family, identity, _CONFIGURATION_NOT_READ, None))
 
 
 def mutation(server: Server, family: int) -> MutationScope:

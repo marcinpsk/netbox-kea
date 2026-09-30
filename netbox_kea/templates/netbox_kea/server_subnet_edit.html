@@ -104,10 +104,13 @@
             <div class="text-danger small">{{ err }}</div>
             {% endfor %}
           </div>
-          {{ form.current_network }}
+          {{ form.original_network }}
+          {{ form.original_network_confirmed }}
+          {{ form.shared_networks_complete }}
+          {% for field in form.shown_fields %}{{ field }}{% endfor %}
 
           <hr>
-          <p class="text-muted small">Lease lifetime overrides (leave blank to use server defaults)</p>
+          <p class="text-muted small">Lease lifetime overrides (leave blank to keep the current value)</p>
 
           <div class="row">
             <div class="col-md-4 mb-3">

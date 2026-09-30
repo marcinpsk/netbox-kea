@@ -128,6 +128,7 @@ URL request
       combined.py       (cross-server dashboard, leases, reservations, subnets)
       sync_views.py     (per-server IPAM sync UI)
       sync_jobs.py      (jobs tab, periodic sync management, SyncConfig admin)
+  → config_write.py     (Configuration Changes: typed outcome, advisory lock, persist step)
   → kea.py              (HTTP POST to each daemon's / control socket)
   → sync.py             (bridges Kea data to NetBox IPAM)
   → jobs.py             (KeaIpamSyncJob — periodic background sync)
@@ -162,7 +163,8 @@ URL request
   rejects a `service` that does not match the daemon the request lands on.
 - **`sync.py`**: bridges Kea data to NetBox IPAM — `sync_lease_to_netbox()`,
   `sync_reservation_to_netbox()`, `cleanup_stale_ips_batch()` (grouped by
-  `(hostname, address_family)`). Raises `PartialPersistError` on partial failures.
+  `(hostname, address_family)`). Raises `DuplicateNetBoxRowsError` when more than one
+  NetBox Prefix or IP Range matches one Kea Subnet or Pool.
 - **`jobs.py`**: `KeaIpamSyncJob` (`@system_job`). Iterates all `Server` objects,
   runs subnet/lease/reservation/prefix/range sync phases, writes a per-server
   summary to the job log.
@@ -182,18 +184,60 @@ URL request
 
 ```text
 Exception
- └── KeaException                  # base — any non-ok result from Kea
-      ├── KeaConfigTestError       # config-test failed before the mutation; nothing changed
-      ├── PartialPersistError      # mutation is live; config-write failed
-      │    ├── KeaConfigPersistError    # mutation is live; config-test rejected it, so no config-write
-      │    └── AmbiguousConfigSetError  # config-set status is ambiguous
-      └── (generic Kea errors)
+ ├── KeaException                  # base: any non-ok result from Kea
+ └── ConfigChangeRejected          # config_write: the change is not live, with a reason
 ```
 
-**Catch order matters**: always catch the subclasses *before* `KeaException`.
-Order: `AmbiguousConfigSetError` → `PartialPersistError` → `KeaException`.
-`PartialPersistError` means the change is live but not written to disk. It covers
-`KeaConfigPersistError` by type, so do not catch that subclass separately.
+**`config_write` owns every Configuration Change** (ADR 0005). An
+operation returns a `ConfigChangeOutcome` (`applied`/`unknown` and
+`persisted`/`failed`/`not-requested`) or raises `ConfigChangeRejected` with a reason.
+A view runs it through `_run_config_change` in `views/_base.py`, which owns the
+messages, and catches nothing itself. Shared Network add, edit and delete, Subnet add, edit and
+delete, Pool add and delete, Subnet and server DHCP Options, and Option Definition add and
+delete use it. An OpenGrep rule refuses an `except` of `ConfigChangeRejected` in `views/`
+outside `_run_config_change`. A second rule keeps that function in `views/_base.py`, and a third
+refuses a broad `except` around a direct `config_write` call in a view. Only `config_write` operations take the per-daemon advisory
+lock. Reservation mutations call `KeaClient.persist`, but they do not wait for the lock. A Subnet, Pool
+or Subnet DHCP Options operation takes the Subnet ID and the CIDR that the page showed, and
+sends nothing unless its `MutationScope` returns a Verified Subnet with both.
+
+Subnet add is the first multi-step change: `add_subnet` adds the Subnet and then assigns it to
+a Shared Network. When the assignment does not apply, it deletes the Subnet again, but only
+while a fresh `subnet{v}-list` read shows the Subnet with the sent ID and CIDR and no Shared Network. The
+persist step runs once, at the end. In tests, `SubnetDaemon` in `kea_stub.py` holds Subnets
+and Shared Networks, so a test can script a Kea failure or a change by another writer.
+
+Subnet edit (`edit_subnet`) removes the Subnet from its Shared Network, adds it to the new one,
+and then updates the fields, because Kea refuses to add a Subnet that is already in a Shared
+Network. It also takes the Shared Network that the page showed, and sends nothing while the
+scope shows another one; a page that could not confirm the membership cannot save. When a step
+does not apply, the operation undoes the applied membership steps, newest first, each only while
+a fresh `subnet{v}-list` read shows the membership that the step set. The field update is the last step, so a
+rollback never undoes it. Both operations run their steps through `_run_steps` in `config_write`.
+
+A check after a step reads only what it compares, while the operation holds the lock: identity and
+membership come from one `subnet{v}-list` read (`subnet_catalogue.read_identity`), not from a full scope with
+`config-get`. A Pool check still reads a fresh scope. The target Shared Network of a move or an assignment comes
+from the `ServerConfigurationSnapshot` that the operation's own scope read (`MutationScope.has_shared_network`).
+When that read cannot show the Shared Network, the operation sends `network{v}-get` as before.
+
+Subnet edit and Shared Network edit also take the values that the page showed (`shown`, the type of the edit),
+and send nothing while a live value differs, because a save writes back every field that the form shows. One
+function maps the live facts to those values for the GET and for the check under the lock:
+`server_configuration.shown_subnet` and `shown_shared_network`. `_ShownValuesForm` builds each hidden `shown_`
+field as a copy of its visible field, so a value that Kea writes in another text form is not a change.
+
+A read-modify-write operation holds the lock from its `config-get` to the end of the
+persist step. `KeaClient` sends each command (`config_candidate`, `config_test`,
+`config_set`); `CandidateConfiguration` in `kea.py` edits the raw configuration in place,
+because the wire-discipline gate keeps wire literals out of `config_write`. An edit
+raises `MalformedConfiguration` for a configuration that it cannot edit safely, and
+`config_write` catches only that type, so a bug still fails loudly. Any failure result on
+`config-set` is `unknown`, because Kea commits the configuration before the hook
+initialization can fail.
+A stale or renamed DHCP Option row (`DHCPOptionConflict`, `DHCPOptionNameChange`) is not
+a Configuration Change result: it leaves the operation before any command that changes
+the configuration, and the options views show it as a form error.
 
 ## Security & Code Quality Rules
 
@@ -218,7 +262,8 @@ When a rule below has a matching opengrep rule, a violation fails the local hook
   handlers.
 - **Catch `(KeaException, requests.RequestException, ValueError)` consistently** in
   mutation handlers. Split `KeaException` when you need `kea_error_hint(exc)` for
-  hook-related errors (result=2). Always catch `PartialPersistError` first.
+  hook-related errors (result=2). A Configuration Change goes through `_run_config_change`
+  instead (see "Exception hierarchy").
 - **Use `kea_error_hint(exc)` for user-facing Kea error messages** — it maps result
   codes to actionable hints (result=2 → hook library not loaded, etc.).
 - **Guard action URLs/buttons by permission AND lookup state.** Don't offer
@@ -234,6 +279,8 @@ When a rule below has a matching opengrep rule, a violation fails the local hook
   operation never turns into a 500.
 - **DHCPv6 reservations use `ip-addresses` (list), not `ip-address` (string).** Check
   both fields when inspecting reservation data.
+- **Pass `timeout=` to every `subprocess` call**, in the package, `scripts/`, and the tests.
+  A child process that stops responding must fail the caller, not hang it.
 
 ## Testing philosophy
 
@@ -260,6 +307,14 @@ resort, reserved for true external boundaries you cannot run locally.
   outside that file, because Kea rejects unknown keys. When you bump `KEA_VERSION` or
   make the parser read a new field, add the field to `kea-dhcp{4,6}.conf` and run
   `scripts/record_kea_config_get.py` (Docker and curl required).
+- **Kea command names come from a real Kea.** The script also records the
+  `list-commands` reply of each daemon. The coverage configurations load the same hook
+  libraries as `tests/docker/kea_configs/`. `WIRE_COMMANDS` in `kea_wire_discipline.py`
+  is that recorded set, and `stub_kea()` fails a command outside it: registered, sent, or
+  listed in a stubbed `list-commands` reply. Never add a command name by hand. The
+  black-box test `tests/test_kea_commands.py` compares the live harness daemons with the
+  recording in CI. When you change `KEA_VERSION` or the harness hook libraries, run the
+  script again.
 - **Type-check gate.** `scripts/mypy-gate.sh` (+ `test_mypy_gate.py`, a pre-push hook,
   the CI `lint` job) type-checks `netbox_kea/` and fails only on errors that are absent
   from `mypy-baseline.txt`. It exists to catch annotation drift between a producer and
@@ -322,6 +377,8 @@ resort, reserved for true external boundaries you cannot run locally.
   bump the constant, bump the CI `ref`, and re-record in one change.
 - **When fixing a bug, write the failing (red) test first**, confirm it fails against
   the unfixed code, then fix until green.
+- **No source line numbers in comments or docstrings**: name the function or the
+  behaviour. `test_no_source_line_references.py` fails on each "Lines 731-736" or "(line 910)".
 
 ### Unit test seams & patterns
 
@@ -366,9 +423,13 @@ resort, reserved for true external boundaries you cannot run locally.
 - **Kea option aliases**: DNS options can be `domain-name-servers` or `dns-servers`;
   NTP can be `ntp-servers` or `sntp-servers`. Search both alias tuples.
 - **Forms**: lease search forms inherit `BaseLeasesSarchForm` (the typo is
-  intentional/existing); inner `Meta.ip_version` drives validation. CSV form fields
-  (`dns_servers`, `ntp_servers`) need `clean_<field>` methods that split on commas,
-  strip, drop empties, and rejoin.
+  intentional/existing); inner `Meta.ip_version` drives validation. The Subnet and
+  Shared Network forms clean in the field class (`_AddressListField` for `dns_servers`,
+  `ntp_servers` and relay addresses gives canonical addresses), so a copy of a field
+  cleans the same way. A change form that refuses stale values inherits
+  `_ShownValuesForm` and names its managed fields once, in `shown_names`.
+  `dhcp_options.form_managed_entry` picks the one DHCP Option entry that a form field
+  manages, for the display and for the save. Two fitting entries refuse the form.
 - **API URL naming**: the serializer's `HyperlinkedIdentityField` uses
   `view_name="plugins-api:netbox_kea-api:server-detail"` — `plugins-api:` prefix and
   `-api:` namespace suffix are NetBox conventions.
@@ -384,7 +445,7 @@ resort, reserved for true external boundaries you cannot run locally.
   - `lease_cmds` — `lease4/6-get-by-hostname/hw-address/state`, `lease4/6-update/add`
   - `subnet_cmds` — `subnet4/6-list/get/add/update` (alternative to `config-get`)
   - `stat_cmds` — `stat-lease4/6-get` for per-subnet utilization
-- **Pool operations** support both Kea 2.x and 3.x APIs.
+- **Pool operations** use `subnet4/6-delta-add` and `subnet4/6-delta-del` (Kea 2.2+). `subnet_cmds` has no `subnet4/6-pool-add` or `-pool-del` command.
 
 ## Conventions
 

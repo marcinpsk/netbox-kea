@@ -73,7 +73,8 @@ configuration, the request was never sent, or the client configuration is invali
 - A native command can also fail after it changed the configuration: `subnet_cmds` adds or replaces the Subnet
   and then initializes its allocators, and a failure there returns result 1 for a live change. The result alone
   does not separate this from a validation failure, such as a duplicate Subnet ID. So after any other failure
-  result on a native command, the operation reads the target in a fresh scope. When the target shows none of the
+  result on a native command, the operation reads the target again under the lock, after the command: a Subnet
+  check reads a fresh `subnet{v}-list`, and a Pool check reads a fresh scope. When the target shows none of the
   changes that the command requested, the change is not live, and the result is a rejection. That means an object
   that the command creates is absent, and every field that the command changes still holds the value that the
   operation read before it sent the command. Otherwise, or when the read fails, the result is `unknown`.
@@ -88,9 +89,9 @@ Catalogue `MutationScope` themselves. Views do not touch the scope for these wri
 mutation rules of ADR 0001.
 
 - Subnet creation already follows ADR 0001: the view gets the identity from `MutationScope.prepare_creation`,
-  and a rejected allocated ID causes one retry only when the fresh scope of the check above shows that ID is now
-  taken by another Subnet. `add_subnet` takes over that logic from the view. It never reads Kea's error text, and
-  an ID from the operator never causes a retry.
+  and a rejected allocated ID causes one retry only when the fresh `subnet{v}-list` of the check above shows that
+  ID is now taken by another Subnet. `add_subnet` takes over that logic from the view. It never reads Kea's error
+  text, and an ID from the operator never causes a retry.
 - After a lost reply, `add_subnet` returns `unknown` with the ID it sent, and runs no dependent step. A later
   Verified Subnet with the same CIDR and ID does not prove that this request created it, because another writer
   can create the same identity after `prepare_creation`. The lookup by CIDR in `KeaClient.subnet_add` is
@@ -103,7 +104,7 @@ mutation rules of ADR 0001.
 - `add_pool` and `delete_pool` take the same ID and CIDR pair, and a typed `Pool`. The Verified Subnet supplies
   the CIDR for the delta commands, so the separate `subnet-get` lookup goes.
 
-One Pool parser exists: the one in `server_configuration`. The forms use it. A Pool outside its Subnet, or a Pool
+One Pool parser exists: the one in `pools`. The forms use it. A Pool outside its Subnet, or a Pool
 that overlaps an existing Pool of the Verified Subnet, is a form error. When the configuration facts of the
 Subnet are missing, the overlap check does not run, and Kea decides. A Reservation address inside a Pool stays a
 warning, and one domain function computes it for both the Pool and the Reservation forms.
@@ -130,9 +131,14 @@ the end.
 After an `unknown` step, the operation runs no further step and returns `application="unknown"`.
 
 When a later step did not apply, because Kea rejected it or the request was never sent, the module rolls
-back the steps that applied, newest first. Before it undoes a step, it reads the target again in a fresh scope. It
-undoes the step only when the target still holds the state that this operation wrote. Otherwise another writer
-changed the target, so the module leaves it and does not roll back earlier steps either.
+back the steps that applied, newest first. Before it undoes a step, it reads the target again in a fresh
+`subnet{v}-list` under the lock, after the step that it checks. It undoes the step only when the target still holds
+the state that this operation wrote. Otherwise another writer changed the target, so the module leaves it and does
+not roll back earlier steps either.
+
+A check read sends no `config-get`, so its Subnet is verified by `subnet{v}-list` alone. Kea 3.2.0 always sends
+`shared-network-name` in that entry, with `null` for no Shared Network. An entry without the key leaves the membership
+unknown, so the check cannot confirm the target, and the module does not send the undo.
 
 - Every undo succeeds: nothing that this operation wrote is live, and the operation raises the rejection.
 - An undo fails, or a target changed: the operation returns `application="unknown"` with a diagnostic that names

@@ -16,6 +16,7 @@ from netbox_kea.forms import (
     PoolAddForm,
     ServerForm,
     ServerImportForm,
+    SubnetConfirmForm,
 )
 from netbox_kea.models import Server
 from netbox_kea.reservations import ReservationCapabilities, reservation_identifier_types
@@ -803,13 +804,91 @@ class TestSubnetEditForm(SimpleTestCase):
     def _form(self, **kwargs):
         from netbox_kea.forms import SubnetEditForm
 
-        data = {"subnet_cidr": "10.0.0.0/24", **kwargs}
+        data = {
+            "subnet_cidr": "10.0.0.0/24",
+            "original_network_confirmed": "True",
+            "shared_networks_complete": "True",
+            **kwargs,
+        }
         return SubnetEditForm(data=data)
 
     def test_valid_minimal_form_no_optional_fields(self):
         """A form with only subnet_cidr (hidden) and no optional fields is valid."""
         form = self._form()
         self.assertTrue(form.is_valid(), form.errors)
+
+    def test_a_page_that_could_not_confirm_the_shared_network_cannot_be_saved(self):
+        """A missing or false confirmation fails closed, so a save never guesses the membership."""
+        unconfirmed = (
+            "NetBox could not confirm the Shared Network of this Subnet when it showed the page. "
+            "Reload the page and try again."
+        )
+        for value in ("False", ""):
+            with self.subTest(confirmed=value):
+                form = self._form(original_network_confirmed=value)
+                self.assertFalse(form.is_valid())
+                self.assertEqual(form.non_field_errors(), [unconfirmed])
+
+    def test_shown_cleans_each_hidden_copy_the_same_way_as_its_field(self):
+        from netbox_kea.kea import SubnetEdit, SubnetFields
+
+        values = {
+            "pools": " 10.0.0.16/28 \r\n\r\n10.0.0.100 - 10.0.0.110",
+            "gateway": " 10.0.0.1 ",
+            "dns_servers": "10.0.0.53 , 10.0.0.54",
+            "ntp_servers": "",
+            "ddns_qualifying_suffix": " example.org. ",
+            "valid_lft": "3600",
+            "rebind_timer": "",
+        }
+        form = self._form(**values, **{f"shown_{name}": value for name, value in values.items()})
+        self.assertTrue(form.is_valid(), form.errors)
+        expected = SubnetEdit(
+            fields=SubnetFields(
+                pools=("10.0.0.16-10.0.0.31", "10.0.0.100-10.0.0.110"),
+                gateway="10.0.0.1",
+                dns_servers=("10.0.0.53", "10.0.0.54"),
+                ntp_servers=(),
+                ddns_qualifying_suffix="example.org.",
+            ),
+            valid_lifetime=3600,
+            min_valid_lifetime=None,
+            max_valid_lifetime=None,
+            renew_timer=None,
+            rebind_timer=None,
+        )
+        self.assertEqual((form.to_edit(), form.shown()), (expected, expected))
+
+    def test_each_hidden_copy_is_its_field_with_a_hidden_widget_and_no_input_limits(self):
+        from django.forms import HiddenInput
+
+        from netbox_kea.forms import SharedNetworkEditForm, SubnetEditForm
+
+        for form in (SubnetEditForm(), SharedNetworkEditForm()):
+            for name in form.shown_names:
+                with self.subTest(form=type(form).__name__, field=name):
+                    hidden = form.fields[f"shown_{name}"]
+                    self.assertIs(type(hidden), type(form.fields[name]))
+                    self.assertIsInstance(hidden.widget, HiddenInput)
+                    self.assertEqual((hidden.required, hidden.validators), (False, []))
+        # A live 0 and a long value are what Kea holds, so the hidden copies accept them.
+        form = self._form(shown_valid_lft="0", shown_ddns_qualifying_suffix="x" * 300)
+        self.assertTrue(form.is_valid(), form.errors)
+
+    def test_a_shown_value_that_does_not_clean_refuses_the_form(self):
+        for field, value in (("shown_pools", "10.1.0.0/28"), ("shown_gateway", "gw"), ("shown_valid_lft", "x")):
+            with self.subTest(field=field):
+                form = self._form(**{field: value})
+                self.assertFalse(form.is_valid())
+                self.assertEqual(
+                    form.non_field_errors(),
+                    ["The values that the page showed are not valid. Reload the page and try again."],
+                )
+
+    def test_the_original_network_keeps_the_name_as_kea_declares_it(self):
+        form = self._form(original_network=" office ")
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["original_network"], " office ")
 
     def test_valid_form_with_all_fields(self):
         """A fully populated form is valid."""
@@ -842,11 +921,27 @@ class TestSubnetEditForm(SimpleTestCase):
         self.assertFalse(form.is_valid())
         self.assertIn("pools", form.errors)
 
-    def test_pools_cleaned_as_list(self):
-        """clean_pools returns a list of strings, one per non-empty line."""
-        form = self._form(pools="10.0.0.100-10.0.0.150\n10.0.0.200-10.0.0.220\n")
+    def test_pools_cleaned_as_parsed_pools(self):
+        """Each non-empty line becomes one parsed Pool; a CIDR Pool becomes its range."""
+        form = self._form(pools="10.0.0.100-10.0.0.150\n\n 10.0.0.192/27 \n")
         self.assertTrue(form.is_valid(), form.errors)
-        self.assertEqual(form.cleaned_data["pools"], ["10.0.0.100-10.0.0.150", "10.0.0.200-10.0.0.220"])
+        self.assertEqual(
+            [pool.range for pool in form.cleaned_data["pools"]], ["10.0.0.100-10.0.0.150", "10.0.0.192-10.0.0.223"]
+        )
+
+    def test_pools_are_parsed_inside_a_subnet_cidr_with_host_bits(self):
+        form = self._form(subnet_cidr="10.0.0.5/24", pools="10.0.0.100-10.0.0.150")
+        self.assertTrue(form.is_valid(), form.errors)
+
+    def test_a_pool_outside_the_subnet_is_a_pools_error(self):
+        form = self._form(pools="10.0.0.100-10.0.0.150\n10.0.1.0/28")
+        self.assertFalse(form.is_valid())
+        self.assertEqual(form.errors["pools"], ["Pool 10.0.1.0/28 is outside Subnet 10.0.0.0/24."])
+
+    def test_pools_that_overlap_each_other_are_a_pools_error(self):
+        form = self._form(pools="10.0.0.100-10.0.0.150\n10.0.0.128/27")
+        self.assertFalse(form.is_valid())
+        self.assertEqual(form.errors["pools"], ["Pool 10.0.0.128-10.0.0.159 overlaps Pool 10.0.0.100-10.0.0.150."])
 
     def test_dns_servers_cleaned_as_list(self):
         """clean_dns_servers returns a list of IP strings."""
@@ -1061,7 +1156,12 @@ class TestSubnetEditFormTimers(SimpleTestCase):
     def _form(self, **kwargs):
         from netbox_kea.forms import SubnetEditForm
 
-        data = {"subnet_cidr": "10.0.0.0/24", **kwargs}
+        data = {
+            "subnet_cidr": "10.0.0.0/24",
+            "original_network_confirmed": "True",
+            "shared_networks_complete": "True",
+            **kwargs,
+        }
         return SubnetEditForm(data=data)
 
     def test_form_has_renew_timer_field(self):
@@ -1107,7 +1207,7 @@ class TestSubnetEditFormTimers(SimpleTestCase):
 
 
 class TestSubnetAddFormSharedNetwork(SimpleTestCase):
-    """SubnetAddForm must expose a shared_network ChoiceField."""
+    """SubnetAddForm takes the Shared Network as a free name; config_write checks that it exists."""
 
     def test_form_has_shared_network_field(self):
         """SubnetAddForm exposes a shared_network field."""
@@ -1126,9 +1226,46 @@ class TestSubnetAddFormSharedNetwork(SimpleTestCase):
         """Form is valid when shared_network is omitted (empty)."""
         from netbox_kea.forms import SubnetAddForm
 
-        form = SubnetAddForm(data={"subnet": "10.0.0.0/24", "shared_network": ""})
+        form = SubnetAddForm(data={"subnet": "10.0.0.0/24", "shared_network": "", "shared_networks_complete": "True"})
         self.assertTrue(form.is_valid(), form.errors)
         self.assertNotIn("shared_network", form.errors)
+
+    def test_a_name_that_no_list_offers_is_valid_as_posted(self):
+        from netbox_kea.forms import SubnetAddForm
+
+        data = {"subnet": "10.0.0.0/24", "shared_network": " clients", "shared_networks_complete": "True"}
+        form = SubnetAddForm(data=data)
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["shared_network"], " clients")
+
+    def test_a_name_of_only_white_space_is_refused(self):
+        from netbox_kea.forms import SubnetAddForm
+
+        data = {"subnet": "10.0.0.0/24", "shared_network": " ", "shared_networks_complete": "True"}
+        form = SubnetAddForm(data=data)
+        self.assertFalse(form.is_valid())
+        self.assertEqual(form.errors["shared_network"], ["Enter a Shared Network name, or choose none."])
+
+    def test_a_page_without_the_shared_network_list_cannot_be_saved(self):
+        """A disabled select posts no name, so the form must not read the missing name as no Shared Network."""
+        from netbox_kea.forms import SubnetAddForm, SubnetEditForm
+
+        forms = (
+            SubnetAddForm(data={"subnet": "10.0.0.0/24"}),
+            SubnetEditForm(data={"subnet_cidr": "10.0.0.0/24", "original_network_confirmed": "True"}),
+        )
+        for form in forms:
+            with self.subTest(form=type(form).__name__):
+                self.assertFalse(form.is_valid())
+                self.assertEqual(
+                    form.non_field_errors(),
+                    [
+                        (
+                            "NetBox could not load the Shared Networks from Kea when it showed the page. "
+                            "Reload the page and try again."
+                        )
+                    ],
+                )
 
 
 class TestSubnetAddFormAddressFamily(SimpleTestCase):
@@ -1137,7 +1274,7 @@ class TestSubnetAddFormAddressFamily(SimpleTestCase):
     def _form(self, **overrides):
         from netbox_kea.forms import SubnetAddForm
 
-        data = {"subnet": "192.0.2.0/24", "shared_network": ""}
+        data = {"subnet": "192.0.2.0/24", "shared_network": "", "shared_networks_complete": "True"}
         data.update(overrides)
         return SubnetAddForm(data=data)
 
@@ -1162,7 +1299,7 @@ class TestSubnetEditFormAddressFamily(SimpleTestCase):
     def _form(self, **overrides):
         from netbox_kea.forms import SubnetEditForm
 
-        data = {"subnet_cidr": "192.0.2.0/24"}
+        data = {"subnet_cidr": "192.0.2.0/24", "original_network_confirmed": "True", "shared_networks_complete": "True"}
         data.update(overrides)
         return SubnetEditForm(data=data)
 
@@ -1210,7 +1347,7 @@ class TestSubnetEditFormAddressFamily(SimpleTestCase):
         self.assertTrue(form.is_valid(), form.errors)
         self.assertEqual(form.cleaned_data["subnet_cidr"], "10.0.0.5/24")
 
-        add = SubnetAddForm(data={"subnet": "10.0.0.5/24", "shared_network": ""})
+        add = SubnetAddForm(data={"subnet": "10.0.0.5/24", "shared_network": "", "shared_networks_complete": "True"})
         self.assertFalse(add.is_valid())
         self.assertIn("subnet", add.errors)
 
@@ -1274,7 +1411,23 @@ class TestSharedNetworkEditForm(SimpleTestCase):
         """An empty relay_addresses string is accepted (clears relay)."""
         form = self._form(relay_addresses="")
         self.assertTrue(form.is_valid(), form.errors)
-        self.assertEqual(form.cleaned_data["relay_addresses"], "")
+        self.assertEqual(form.cleaned_data["relay_addresses"], [])
+
+    def test_to_edit_applies_one_strip_rule_to_every_address_list(self):
+        from netbox_kea.kea import SharedNetworkEdit
+
+        form = self._form(
+            description=" Office ",
+            interface=" eth1 ",
+            relay_addresses=" 10.0.0.1 , ,10.0.0.2 ",
+            dns_servers=" 8.8.8.8 , , 1.1.1.1",
+            ntp_servers=" , ",
+        )
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(
+            form.to_edit(),
+            SharedNetworkEdit("Office", "eth1", ("10.0.0.1", "10.0.0.2"), ("8.8.8.8", "1.1.1.1"), ()),
+        )
 
     def test_form_has_description_field(self):
         """Form exposes a description field."""
@@ -1305,13 +1458,13 @@ class TestSharedNetworkEditForm(SimpleTestCase):
         """A single valid DNS server IP is accepted and normalized."""
         form = self._form(dns_servers="  8.8.8.8  ")
         self.assertTrue(form.is_valid(), form.errors)
-        self.assertEqual(form.cleaned_data["dns_servers"], "8.8.8.8")
+        self.assertEqual(form.cleaned_data["dns_servers"], ["8.8.8.8"])
 
     def test_valid_multiple_dns_servers(self):
         """Multiple comma-separated DNS server IPs are accepted and normalized."""
         form = self._form(dns_servers="8.8.8.8 , 1.1.1.1")
         self.assertTrue(form.is_valid(), form.errors)
-        self.assertEqual(form.cleaned_data["dns_servers"], "8.8.8.8,1.1.1.1")
+        self.assertEqual(form.cleaned_data["dns_servers"], ["8.8.8.8", "1.1.1.1"])
 
     def test_invalid_dns_server_fails_validation(self):
         """A non-IP value in dns_servers raises a ValidationError."""
@@ -1323,13 +1476,13 @@ class TestSharedNetworkEditForm(SimpleTestCase):
         """A single valid NTP server IP is accepted and normalized."""
         form = self._form(ntp_servers="  10.0.0.1  ")
         self.assertTrue(form.is_valid(), form.errors)
-        self.assertEqual(form.cleaned_data["ntp_servers"], "10.0.0.1")
+        self.assertEqual(form.cleaned_data["ntp_servers"], ["10.0.0.1"])
 
     def test_valid_multiple_ntp_servers(self):
         """Multiple comma-separated NTP server IPs are accepted and normalized."""
         form = self._form(ntp_servers="10.0.0.1 , 10.0.0.2")
         self.assertTrue(form.is_valid(), form.errors)
-        self.assertEqual(form.cleaned_data["ntp_servers"], "10.0.0.1,10.0.0.2")
+        self.assertEqual(form.cleaned_data["ntp_servers"], ["10.0.0.1", "10.0.0.2"])
 
     def test_invalid_ntp_server_fails_validation(self):
         """A non-IP value in ntp_servers raises a ValidationError."""
@@ -1338,10 +1491,32 @@ class TestSharedNetworkEditForm(SimpleTestCase):
         self.assertIn("ntp_servers", form.errors)
 
     def test_relay_addresses_normalized(self):
-        """Relay addresses with extra whitespace are normalized to comma-separated."""
-        form = self._form(relay_addresses="  10.0.0.1 , 10.0.0.2  ")
+        """Relay addresses with extra whitespace are normalized to canonical addresses."""
+        form = self._form(relay_addresses="  10.0.0.1 , 2001:DB8::0001  ")
         self.assertTrue(form.is_valid(), form.errors)
-        self.assertEqual(form.cleaned_data["relay_addresses"], "10.0.0.1,10.0.0.2")
+        self.assertEqual(form.cleaned_data["relay_addresses"], ["10.0.0.1", "2001:db8::1"])
+
+    def test_shown_cleans_each_hidden_copy_the_same_way_as_its_field(self):
+        from netbox_kea.kea import SharedNetworkEdit
+
+        values = {
+            "description": " Office\r\nFloor 2 ",
+            "interface": " eth1 ",
+            "relay_addresses": " 10.0.0.1 , ,2001:DB8::0001 ",
+            "dns_servers": "8.8.8.8,1.1.1.1",
+            "ntp_servers": " , ",
+        }
+        form = self._form(**values, **{f"shown_{name}": value for name, value in values.items()})
+        self.assertTrue(form.is_valid(), form.errors)
+        expected = SharedNetworkEdit("OfficeFloor 2", "eth1", ("10.0.0.1", "2001:db8::1"), ("8.8.8.8", "1.1.1.1"), ())
+        self.assertEqual((form.to_edit(), form.shown()), (expected, expected))
+
+    def test_a_shown_value_that_does_not_clean_refuses_the_form(self):
+        form = self._form(shown_dns_servers="not-an-ip")
+        self.assertFalse(form.is_valid())
+        self.assertEqual(
+            form.non_field_errors(), ["The values that the page showed are not valid. Reload the page and try again."]
+        )
 
 
 class TestLeasesSearchFormSubnetCombobox(SimpleTestCase):
@@ -1524,37 +1699,147 @@ class TestBulkReservationImportForm(SimpleTestCase):
         self.assertTrue(form.is_valid(), form.errors)
 
 
+def _verified_subnet(cidr="10.0.0.0/24", pools=("10.0.0.10-10.0.0.20",), *, configuration=True):
+    """A Verified Subnet 1 with its declared Pools; ``configuration=False`` drops the configuration facts."""
+    import ipaddress
+
+    from netbox_kea.pools import parse_pool
+    from netbox_kea.server_configuration import SubnetConfiguration, SubnetSettings
+    from netbox_kea.subnet_catalogue import SubnetIdentity, VerifiedSubnet
+
+    network = ipaddress.ip_network(cidr)
+    facts = SubnetConfiguration(
+        pools=tuple(parse_pool(pool, network) for pool in pools), options=(), settings=SubnetSettings()
+    )
+    return VerifiedSubnet(
+        identity=SubnetIdentity(subnet_id=1, network=network),
+        declared_cidr=cidr,
+        configuration=facts if configuration else None,
+        shared_network=None,
+        membership_known=True,
+    )
+
+
+def _pool_add_form(*, data, subnet, absence_confirmed=True):
+    return PoolAddForm(data=data, subnet=subnet, absence_confirmed=absence_confirmed)
+
+
 class TestPoolAddForm(SimpleTestCase):
-    """A pool is either a start-end range or a CIDR; both must validate."""
+    """The Pool is parsed inside the Verified Subnet and must not overlap an existing Pool."""
 
-    def test_a_cidr_pool_is_accepted(self):
-        """The CIDR branch called netaddr with a keyword it does not take.
-
-        That raised TypeError, which the branch's `except (AddrFormatError, ValueError)`
-        does not catch, so every CIDR pool reached the user as a server error instead of
-        a validated value.
-        """
-        form = PoolAddForm(data={"pool": "10.0.0.0/28"})
+    def test_a_cidr_pool_parses_to_its_range(self):
+        form = _pool_add_form(data={"subnet_cidr": "10.0.0.0/24", "pool": "10.0.0.64/28"}, subnet=_verified_subnet())
 
         self.assertTrue(form.is_valid(), form.errors)
-        self.assertEqual(form.cleaned_data["pool"], "10.0.0.0/28")
+        self.assertEqual(form.cleaned_data["pool"].range, "10.0.0.64-10.0.0.79")
 
     def test_a_range_pool_is_normalized(self):
-        form = PoolAddForm(data={"pool": " 10.0.0.50 - 10.0.0.99 "})
+        form = _pool_add_form(
+            data={"subnet_cidr": "10.0.0.0/24", "pool": " 10.0.0.50 - 10.0.0.99 "}, subnet=_verified_subnet()
+        )
 
         self.assertTrue(form.is_valid(), form.errors)
-        self.assertEqual(form.cleaned_data["pool"], "10.0.0.50-10.0.0.99")
+        self.assertEqual(form.cleaned_data["pool"].range, "10.0.0.50-10.0.0.99")
 
-    def test_a_malformed_cidr_is_a_validation_error(self):
-        """A bad CIDR must reach the user as a form error, never as a crash."""
-        form = PoolAddForm(data={"pool": "10.0.0.0/99"})
+    def test_invalid_text_is_a_pool_error(self):
+        for value, message in (
+            ("10.0.0.0/99", "Pool 10.0.0.0/99 is not a valid prefix"),
+            ("nonsense", "Pool nonsense must be a range (start-end) or a prefix (CIDR)."),
+            ("10.0.0.50-10.0.0.x", "Pool 10.0.0.50-10.0.0.x has an invalid address"),
+            ("10.0.0.90-10.0.0.80", "Pool 10.0.0.90-10.0.0.80 starts after it ends."),
+        ):
+            with self.subTest(value=value):
+                form = _pool_add_form(data={"subnet_cidr": "10.0.0.0/24", "pool": value}, subnet=_verified_subnet())
+
+                self.assertFalse(form.is_valid())
+                self.assertIn(message, form.errors["pool"][0])
+
+    def test_a_pool_outside_the_subnet_is_a_pool_error(self):
+        form = _pool_add_form(data={"subnet_cidr": "10.0.0.0/24", "pool": "10.0.1.0/28"}, subnet=_verified_subnet())
 
         self.assertFalse(form.is_valid())
-        self.assertIn("Invalid pool CIDR", str(form.errors))
+        self.assertEqual(form.errors["pool"], ["Pool 10.0.1.0/28 is outside Subnet 10.0.0.0/24."])
 
-    def test_a_value_that_is_neither_range_nor_cidr_is_rejected(self):
-        # No "-" and no "/", so neither branch applies and the format message is used.
-        form = PoolAddForm(data={"pool": "nonsense"})
+    def test_an_overlap_with_an_existing_pool_is_a_pool_error(self):
+        form = _pool_add_form(
+            data={"subnet_cidr": "10.0.0.0/24", "pool": "10.0.0.20-10.0.0.30"}, subnet=_verified_subnet()
+        )
 
         self.assertFalse(form.is_valid())
-        self.assertIn("Invalid pool format", str(form.errors))
+        self.assertEqual(form.errors["pool"], ["Pool 10.0.0.20-10.0.0.30 overlaps existing Pool 10.0.0.10-10.0.0.20."])
+
+    def test_missing_configuration_facts_skip_the_overlap_check(self):
+        form = _pool_add_form(
+            data={"subnet_cidr": "10.0.0.0/24", "pool": "10.0.0.20-10.0.0.30"},
+            subnet=_verified_subnet(configuration=False),
+        )
+
+        self.assertTrue(form.is_valid(), form.errors)
+
+    def test_a_subnet_that_is_absent_from_a_complete_observation_is_a_form_error(self):
+        form = _pool_add_form(data={"subnet_cidr": "10.0.0.0/24", "pool": "10.0.0.50-10.0.0.60"}, subnet=None)
+
+        self.assertFalse(form.is_valid())
+        self.assertNotIn("pool", form.errors)
+        self.assertEqual(
+            form.non_field_errors(),
+            ["This Subnet is not in the current Subnet Catalogue. Reload the Subnets page and try again."],
+        )
+
+    def test_a_subnet_missing_from_an_incomplete_observation_never_reads_as_absent(self):
+        form = _pool_add_form(
+            data={"subnet_cidr": "10.0.0.0/24", "pool": "10.0.0.50-10.0.0.60"}, subnet=None, absence_confirmed=False
+        )
+
+        self.assertFalse(form.is_valid())
+        self.assertNotIn("pool", form.errors)
+        self.assertEqual(
+            form.non_field_errors(),
+            ["NetBox could not confirm Kea's Subnet list, so it did not send the change. Try again later."],
+        )
+
+    def test_a_cidr_that_is_not_the_subnet_says_that_the_subnet_changed(self):
+        form = _pool_add_form(
+            data={"subnet_cidr": "10.0.1.0/24", "pool": "10.0.1.50-10.0.1.60"}, subnet=_verified_subnet()
+        )
+
+        self.assertFalse(form.is_valid())
+        self.assertNotIn("pool", form.errors)
+        self.assertEqual(
+            form.non_field_errors(), ["Subnet 1 (10.0.1.0/24) changed in Kea. Reload the page and try again."]
+        )
+
+    def test_a_missing_invalid_or_other_family_cidr_is_a_form_error(self):
+        for cidr in ("", "not-a-cidr", "2001:db8::/64"):
+            with self.subTest(cidr=cidr):
+                form = _pool_add_form(
+                    data={"subnet_cidr": cidr, "pool": "10.0.0.50-10.0.0.60"}, subnet=_verified_subnet()
+                )
+
+                self.assertFalse(form.is_valid())
+                self.assertNotIn("pool", form.errors)
+                self.assertIn("Invalid subnet CIDR", form.non_field_errors()[0])
+
+    def test_the_cidr_that_kea_declares_with_host_bits_names_the_subnet(self):
+        form = _pool_add_form(
+            data={"subnet_cidr": "10.0.0.5/24", "pool": "10.0.0.50-10.0.0.60"}, subnet=_verified_subnet()
+        )
+
+        self.assertTrue(form.is_valid(), form.errors)
+
+
+class TestSubnetConfirmForm(SimpleTestCase):
+    """The hidden CIDR of a Subnet change page must be a CIDR of the family."""
+
+    def test_a_cidr_of_the_family_is_valid_with_host_bits(self):
+        for family, cidr in ((4, " 10.0.0.5/24 "), (6, "2001:db8:1::1/64")):
+            with self.subTest(family=family):
+                form = SubnetConfirmForm(data={"subnet_cidr": cidr}, family=family)
+
+                self.assertTrue(form.is_valid(), form.errors)
+                self.assertEqual(form.cleaned_data["subnet_cidr"], cidr.strip())
+
+    def test_a_missing_invalid_or_other_family_cidr_is_invalid(self):
+        for cidr in ("", "nonsense", "2001:db8::/64"):
+            with self.subTest(cidr=cidr):
+                self.assertFalse(SubnetConfirmForm(data={"subnet_cidr": cidr}, family=4).is_valid())

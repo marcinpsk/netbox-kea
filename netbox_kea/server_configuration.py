@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
+import json
 import logging
 import secrets
 from collections import defaultdict
@@ -13,9 +14,27 @@ from django.utils import timezone
 
 from . import constants
 from .constants import Family, IPAddressValue, IPNetworkValue
-from .dhcp_options import DHCPOption, parse_dhcp_option
-from .kea import KeaException, shared_network_description, subnet_network
+from .dhcp_options import (
+    AmbiguousFormOption,
+    DHCPOption,
+    InvalidAddress,
+    address_list,
+    form_option_fields,
+    parse_dhcp_option,
+)
+from .kea import (
+    CandidateConfiguration,
+    KeaException,
+    SharedNetworkEdit,
+    SubnetDefinition,
+    SubnetEdit,
+    SubnetFields,
+    description_as_shown,
+    shared_network_description,
+    subnet_network,
+)
 from .models import Server
+from .pools import Pool, parse_pool
 from .utilities import kea_error_hint
 
 logger = logging.getLogger(__name__)
@@ -29,19 +48,6 @@ class Diagnostic:
     message: str
     source: str
     path: str = ""
-
-
-@dataclass(frozen=True)
-class Pool:
-    """One normalized inclusive allocation range within a Subnet."""
-
-    start: IPAddressValue
-    end: IPAddressValue
-
-    @property
-    def range(self) -> str:
-        """Return the normalized explicit range text."""
-        return f"{self.start}-{self.end}"
 
 
 @dataclass(frozen=True)
@@ -490,11 +496,89 @@ def subnet_for_display(server: Server, family: int, subnet_id: int) -> DeclaredS
     except (KeaException, OSError, ValueError, RuntimeError, TypeError):
         logger.warning("Subnet display read failed for DHCPv%s", family, exc_info=True)
         return None
-    diagnostics: list[Diagnostic] = []
-    subnet = _parse_configured_fact(entry, validated_family, None, f"subnet{family}", diagnostics)
-    if diagnostics or subnet is None or subnet.declared_subnet_id != subnet_id:
+    subnet = _complete_subnet(entry, validated_family)
+    if subnet is None or subnet.declared_subnet_id != subnet_id:
         return None
     return subnet
+
+
+def _complete_subnet(entry: Any, family: Family) -> DeclaredSubnet | None:
+    """Parse one ``subnet{v}-get`` entry. Return None when a fact of the entry is not valid."""
+    diagnostics: list[Diagnostic] = []
+    subnet = _parse_configured_fact(entry, family, None, f"subnet{family}", diagnostics)
+    return None if diagnostics else subnet
+
+
+def shown_subnet(configuration: SubnetConfiguration, family: Family) -> SubnetEdit | None:
+    """Return the values that the Subnet edit form shows for *configuration*.
+
+    Return None when a DHCP Option that the form shows holds a value that is not an address list, or when more than
+    one entry fits a form field.
+    """
+    settings = configuration.settings
+    try:
+        options = form_option_fields(configuration.options, family)
+        gateway = address_list(options.get("gateway", ""))
+        fields = SubnetFields(
+            pools=tuple(pool.range for pool in configuration.pools),
+            gateway=gateway[0] if gateway else "",
+            dns_servers=address_list(options.get("dns_servers", "")),
+            ntp_servers=address_list(options.get("ntp_servers", "")),
+            ddns_qualifying_suffix=(settings.ddns_qualifying_suffix or "").strip(),
+        )
+    except (InvalidAddress, AmbiguousFormOption):
+        logger.warning(
+            "A DHCP Option of a Subnet has a value or an entry that the edit form cannot show", exc_info=True
+        )
+        return None
+    return SubnetEdit(
+        fields=fields,
+        valid_lifetime=settings.valid_lifetime,
+        min_valid_lifetime=settings.min_valid_lifetime,
+        max_valid_lifetime=settings.max_valid_lifetime,
+        renew_timer=settings.renew_timer,
+        rebind_timer=settings.rebind_timer,
+    )
+
+
+def shown_subnet_definition(definition: SubnetDefinition) -> SubnetEdit | None:
+    """Return the values that the Subnet edit form shows for the Subnet of *definition*.
+
+    Return None when the Subnet has a fact that the form cannot show.
+    """
+    subnet = _complete_subnet(json.loads(definition.entry), definition.family)
+    return None if subnet is None else shown_subnet(subnet.configuration, definition.family)
+
+
+def shown_shared_network(snapshot: ServerConfigurationSnapshot, name: str) -> SharedNetworkEdit | None:
+    """Return the values that the Shared Network edit form shows for the Shared Network *name* in *snapshot*.
+
+    Return None when the snapshot has no Shared Network *name* with facts that the form can show.
+    """
+    network = next((network for network in snapshot.shared_networks if network.name == name), None)
+    if not snapshot.shared_networks_complete or network is None or not network.complete:
+        return None
+    try:
+        options = form_option_fields(network.options, snapshot.family)
+        return SharedNetworkEdit(
+            description=description_as_shown(network.description or ""),
+            interface=(network.interface or "").strip(),
+            relay_addresses=tuple(str(address) for address in network.relay_addresses),
+            dns_servers=address_list(options.get("dns_servers", "")),
+            ntp_servers=address_list(options.get("ntp_servers", "")),
+        )
+    except (InvalidAddress, AmbiguousFormOption):
+        logger.warning(
+            "A DHCP Option of Shared Network %r has a value or an entry that the edit form cannot show",
+            name,
+            exc_info=True,
+        )
+        return None
+
+
+def candidate_snapshot(server: Server, candidate: CandidateConfiguration) -> ServerConfigurationSnapshot:
+    """Return the configuration facts of *candidate*, parsed the same way as a live read."""
+    return _parse_configuration(server, candidate.arguments[f"Dhcp{candidate.family}"], candidate.family, None)
 
 
 def _parse_pools(
@@ -513,36 +597,12 @@ def _parse_pools(
         pool_path = f"{path}.pools[{index}]"
         raw_pool = entry.get("pool") if isinstance(entry, dict) else None
         try:
-            pool = _parse_pool(raw_pool, subnet)
-        except (TypeError, ValueError):
+            pool = parse_pool(raw_pool, subnet)
+        except ValueError:
             diagnostics.append(_diagnostic("invalid-pool", "Kea returned an invalid Pool.", "configuration", pool_path))
             continue
         pools.append(pool)
     return tuple(pools)
-
-
-def _parse_pool(value: Any, subnet: IPNetworkValue) -> Pool:
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError("Pool must be a non-empty string.")
-    value = value.strip()
-    if "/" in value:
-        pool_network = ipaddress.ip_network(value, strict=True)
-        if pool_network.version != subnet.version or not (
-            int(pool_network.network_address) >= int(subnet.network_address)
-            and int(pool_network.broadcast_address) <= int(subnet.broadcast_address)
-        ):
-            raise ValueError("Pool prefix is outside its Subnet.")
-        return Pool(start=pool_network.network_address, end=pool_network.broadcast_address)
-    parts = [part.strip() for part in value.split("-")]
-    if len(parts) != 2 or not all(parts):
-        raise ValueError("Pool range must have two endpoints.")
-    start = ipaddress.ip_address(parts[0])
-    end = ipaddress.ip_address(parts[1])
-    if start.version != subnet.version or end.version != subnet.version:
-        raise ValueError("Pool address family does not match its Subnet.")
-    if int(start) > int(end) or start not in subnet or end not in subnet:
-        raise ValueError("Pool range is outside its Subnet.")
-    return Pool(start=start, end=end)
 
 
 def _parse_options(entries: Any, path: str, diagnostics: list[Diagnostic]) -> tuple[DHCPOption, ...]:

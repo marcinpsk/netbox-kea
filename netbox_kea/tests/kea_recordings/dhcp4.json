@@ -70,6 +70,18 @@
         },
         "hooks-libraries": [
           {
+            "library": "/usr/lib/kea/hooks/libdhcp_pgsql.so"
+          },
+          {
+            "library": "/usr/lib/kea/hooks/libdhcp_lease_cmds.so"
+          },
+          {
+            "library": "/usr/lib/kea/hooks/libdhcp_stat_cmds.so"
+          },
+          {
+            "library": "/usr/lib/kea/hooks/libdhcp_host_cmds.so"
+          },
+          {
             "library": "/usr/lib/kea/hooks/libdhcp_subnet_cmds.so"
           }
         ],
@@ -426,11 +438,232 @@
         "t2-percent": 0.875,
         "valid-lifetime": 4000
       },
-      "hash": "6AF5AB21E12E76FB7E0C4E69B848EBA9A407BB280BD49F172772B95BCAAD9710"
+      "hash": "E39A43186088BBDCDA72CE6B3BE2D0E4240F1FC798DF11E41E9C77A36C8BCCFE"
     },
     "result": 0
   },
   "kea-version": "3.2.0",
+  "list-commands": {
+    "arguments": [
+      "build-report",
+      "config-backend-pull",
+      "config-get",
+      "config-hash-get",
+      "config-reload",
+      "config-set",
+      "config-test",
+      "config-write",
+      "dhcp-disable",
+      "dhcp-enable",
+      "interface-add",
+      "interface-list",
+      "interface-redetect",
+      "kea-lfc-start",
+      "lease4-add",
+      "lease4-del",
+      "lease4-get",
+      "lease4-get-all",
+      "lease4-get-by-client-id",
+      "lease4-get-by-hostname",
+      "lease4-get-by-hw-address",
+      "lease4-get-by-state",
+      "lease4-get-page",
+      "lease4-resend-ddns",
+      "lease4-update",
+      "lease4-wipe",
+      "lease4-write",
+      "lease6-add",
+      "lease6-bulk-apply",
+      "lease6-del",
+      "lease6-get",
+      "lease6-get-all",
+      "lease6-get-by-duid",
+      "lease6-get-by-hostname",
+      "lease6-get-by-hw-address",
+      "lease6-get-by-state",
+      "lease6-get-page",
+      "lease6-resend-ddns",
+      "lease6-update",
+      "lease6-wipe",
+      "lease6-write",
+      "leases-reclaim",
+      "list-commands",
+      "network4-add",
+      "network4-del",
+      "network4-get",
+      "network4-list",
+      "network4-subnet-add",
+      "network4-subnet-del",
+      "network6-add",
+      "network6-del",
+      "network6-get",
+      "network6-list",
+      "network6-subnet-add",
+      "network6-subnet-del",
+      "reservation-add",
+      "reservation-del",
+      "reservation-get",
+      "reservation-get-all",
+      "reservation-get-by-address",
+      "reservation-get-by-hostname",
+      "reservation-get-by-id",
+      "reservation-get-page",
+      "reservation-update",
+      "server-tag-get",
+      "sflq-pool4-del",
+      "sflq-pool4-get-all",
+      "sflq-pool4-get-by-range",
+      "sflq-pool4-get-by-subnet",
+      "sflq-pool4-rebuild",
+      "sflq-pool6-del",
+      "sflq-pool6-get-all",
+      "sflq-pool6-get-by-range",
+      "sflq-pool6-get-by-subnet",
+      "sflq-pool6-rebuild",
+      "shutdown",
+      "stat-lease4-get",
+      "stat-lease6-get",
+      "statistic-get",
+      "statistic-get-all",
+      "statistic-global-get-all",
+      "statistic-remove",
+      "statistic-remove-all",
+      "statistic-reset",
+      "statistic-reset-all",
+      "statistic-sample-age-set",
+      "statistic-sample-age-set-all",
+      "statistic-sample-count-set",
+      "statistic-sample-count-set-all",
+      "status-get",
+      "subnet4-add",
+      "subnet4-del",
+      "subnet4-delta-add",
+      "subnet4-delta-del",
+      "subnet4-get",
+      "subnet4-list",
+      "subnet4-select-test",
+      "subnet4-update",
+      "subnet4o6-select-test",
+      "subnet6-add",
+      "subnet6-del",
+      "subnet6-delta-add",
+      "subnet6-delta-del",
+      "subnet6-get",
+      "subnet6-list",
+      "subnet6-update",
+      "version-get"
+    ],
+    "result": 0
+  },
+  "network4-get": {
+    "absent": {
+      "result": 3,
+      "text": "No 'absent' shared network found"
+    },
+    "present": {
+      "arguments": {
+        "shared-networks": [
+          {
+            "allocator": "iterative",
+            "cache-threshold": 0.25,
+            "calculate-tee-times": false,
+            "interface": "eth0",
+            "max-valid-lifetime": 4000,
+            "min-valid-lifetime": 4000,
+            "name": "office",
+            "option-data": [
+              {
+                "always-send": false,
+                "code": 6,
+                "csv-format": true,
+                "data": "198.51.100.53",
+                "name": "domain-name-servers",
+                "never-send": false,
+                "space": "dhcp4"
+              }
+            ],
+            "rebind-timer": 2000,
+            "relay": {
+              "ip-addresses": [
+                "198.51.100.2",
+                "198.51.100.3"
+              ]
+            },
+            "renew-timer": 1000,
+            "store-extended-info": false,
+            "subnet4": [
+              {
+                "4o6-interface": "",
+                "4o6-interface-id": "",
+                "4o6-subnet": "",
+                "allocator": "iterative",
+                "cache-threshold": 0.25,
+                "calculate-tee-times": false,
+                "id": 20,
+                "max-valid-lifetime": 4000,
+                "min-valid-lifetime": 4000,
+                "option-data": [],
+                "pools": [
+                  {
+                    "option-data": [],
+                    "pool": "198.51.100.10-198.51.100.50"
+                  }
+                ],
+                "rebind-timer": 2000,
+                "relay": {
+                  "ip-addresses": [
+                    "198.51.100.2",
+                    "198.51.100.3"
+                  ]
+                },
+                "renew-timer": 1000,
+                "store-extended-info": false,
+                "subnet": "198.51.100.0/25",
+                "t1-percent": 0.5,
+                "t2-percent": 0.875,
+                "valid-lifetime": 4000
+              },
+              {
+                "4o6-interface": "",
+                "4o6-interface-id": "",
+                "4o6-subnet": "",
+                "allocator": "iterative",
+                "cache-threshold": 0.25,
+                "calculate-tee-times": false,
+                "ddns-qualifying-suffix": "office.example.org.",
+                "id": 21,
+                "max-valid-lifetime": 4000,
+                "min-valid-lifetime": 4000,
+                "option-data": [],
+                "pools": [],
+                "rebind-timer": 2000,
+                "relay": {
+                  "ip-addresses": [
+                    "198.51.100.2",
+                    "198.51.100.3"
+                  ]
+                },
+                "renew-timer": 1000,
+                "store-extended-info": false,
+                "subnet": "198.51.100.128/25",
+                "t1-percent": 0.5,
+                "t2-percent": 0.875,
+                "valid-lifetime": 4000
+              }
+            ],
+            "t1-percent": 0.5,
+            "t2-percent": 0.875,
+            "user-context": {
+              "comment": "Office floors"
+            },
+            "valid-lifetime": 4000
+          }
+        ]
+      },
+      "result": 0,
+      "text": "Info about IPv4 shared network 'office' returned"
+    }
+  },
   "subnet4-list": {
     "arguments": {
       "subnets": [

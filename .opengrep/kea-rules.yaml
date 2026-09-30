@@ -158,9 +158,9 @@ rules:
     severity: ERROR
     message: >-
       Read the live configuration for a read-modify-write through
-      KeaClient._config_for_update(). It validates the config-get reply and the
-      Dhcp4/Dhcp6 block before the mutation reads it, and _config_entries()
-      validates each list the mutation walks. A hand-parsed config-get reply
+      KeaClient.config_candidate(). It validates the config-get reply and the
+      Dhcp4/Dhcp6 block before the edit reads it, and CandidateConfiguration
+      validates each list the edit walks. A hand-parsed config-get reply
       turns a malformed block into an AttributeError and an HTTP 500.
     metadata:
       category: correctness
@@ -175,7 +175,7 @@ rules:
       - pattern-inside: |
           def $F(...):
             ...
-            $S._apply_config(...)
+            $S.config_set(...)
       - pattern-either:
           - pattern: $C.command("config-get", ...)
           - pattern: $C.command(command="config-get", ...)
@@ -267,3 +267,136 @@ rules:
             - pattern: <... Prefix.objects ...>
             - pattern: <... IPRange.objects ...>
             - pattern: <... IPAddress.objects ...>
+
+  - id: kea-config-change-rejection-caught-outside-mapper
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Do not catch ConfigChangeRejected in a view. Run the change through
+      _run_config_change() in views/_base.py, which is the one place that turns an
+      outcome or a rejection into a message (ADR 0005). A second handler gives the
+      same rejection a different message.
+    metadata:
+      category: maintainability
+      confidence: HIGH
+      references:
+        - "docs/adr/0005-configuration-changes-return-a-typed-outcome.md: Presentation"
+    paths:
+      include:
+        - "**/views/**"
+    patterns:
+      # `except (..., $EXC, ...):` also matches `except $EXC:`. With `as`, it matches only a tuple.
+      - pattern-either:
+          - pattern: |
+              try:
+                  ...
+              except (..., $EXC, ...):
+                  ...
+          - pattern: |
+              try:
+                  ...
+              except $EXC as $E:
+                  ...
+          - pattern: |
+              try:
+                  ...
+              except (..., $EXC, ...) as $E:
+                  ...
+      - metavariable-pattern:
+          metavariable: $EXC
+          pattern-either:
+            - pattern: ConfigChangeRejected
+            - pattern: $MODULE.ConfigChangeRejected
+      - pattern-not-inside: |
+          def _run_config_change(...):
+              ...
+      - focus-metavariable: $EXC
+
+  - id: kea-config-change-mapper-outside-base
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Define _run_config_change only in views/_base.py. The rule
+      kea-config-change-rejection-caught-outside-mapper exempts a function by
+      this name, so a second definition in another view would hide its catch of
+      ConfigChangeRejected.
+    metadata:
+      category: maintainability
+      confidence: HIGH
+      references:
+        - "docs/adr/0005-configuration-changes-return-a-typed-outcome.md: Presentation"
+    paths:
+      include:
+        - "**/views/**"
+      exclude:
+        - "**/views/_base.py"
+    pattern: |
+      def _run_config_change(...):
+          ...
+
+  - id: kea-config-change-in-broad-except
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Do not call a config_write operation inside a try whose except catches
+      Exception, BaseException, or everything. That handler also catches
+      ConfigChangeRejected and hides it from _run_config_change() in
+      views/_base.py. Pass the call to _run_config_change() as a lambda, and
+      catch only the errors that you expect.
+    metadata:
+      category: maintainability
+      confidence: HIGH
+      references:
+        - "docs/adr/0005-configuration-changes-return-a-typed-outcome.md: Presentation"
+    paths:
+      include:
+        - "**/views/**"
+    patterns:
+      - pattern-either:
+          - patterns:
+              - pattern-either:
+                  - pattern-inside: |
+                      try:
+                          ...
+                      except (..., $EXC, ...):
+                          ...
+                  - pattern-inside: |
+                      try:
+                          ...
+                      except $EXC as $E:
+                          ...
+                  - pattern-inside: |
+                      try:
+                          ...
+                      except (..., $EXC, ...) as $E:
+                          ...
+              - metavariable-pattern:
+                  metavariable: $EXC
+                  pattern-either:
+                    - pattern: Exception
+                    - pattern: BaseException
+          - pattern-inside: |
+              try:
+                  ...
+              except:
+                  ...
+      - pattern: config_write.$OP(...)
+      # The mapper catches the rejection only when it runs the change: a lambda, not an eager call.
+      - pattern-not-inside: "_run_config_change(..., lambda: ..., ...)"
+
+  - id: subprocess-without-timeout
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Pass timeout= to this subprocess call. Without a timeout, a child process that stops
+      responding blocks the caller with no limit, and a test run or script hangs instead of failing.
+    metadata:
+      category: correctness
+      confidence: HIGH
+    patterns:
+      - pattern-either:
+          - pattern: subprocess.run(...)
+          - pattern: subprocess.call(...)
+          - pattern: subprocess.check_call(...)
+          - pattern: subprocess.check_output(...)
+      - pattern-not: subprocess.$FUNCTION(..., timeout=$SECONDS, ...)

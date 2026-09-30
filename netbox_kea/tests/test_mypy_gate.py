@@ -259,7 +259,7 @@ def _fake_tools(*, mypy_stdout: str, mypy_status: int):
 
 def _run_gate(environment):
     return subprocess.run(
-        [str(GATE)], cwd=REPOSITORY_ROOT, env=environment, capture_output=True, text=True, check=False
+        [str(GATE)], cwd=REPOSITORY_ROOT, env=environment, capture_output=True, text=True, check=False, timeout=30
     )
 
 

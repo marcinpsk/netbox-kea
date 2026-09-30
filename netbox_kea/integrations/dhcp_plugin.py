@@ -61,6 +61,7 @@ from ..mappers.kea_to_dhcp import (
     ServerConfigIntent,
     SubnetIntent,
 )
+from ..pools import parse_pool
 from ..reservations import (
     TRAVERSAL_DIAGNOSTIC_CODES,
     GlobalReservationScope,
@@ -157,8 +158,13 @@ def _ensure_ip_range(pool_str: str, subnet: IPNetworkValue, vrf):
     """
     from ..sync import _POOL_TOO_LARGE, sync_pool_to_netbox_ip_range
 
-    result = sync_pool_to_netbox_ip_range(pool_str, subnet, vrf=vrf)
-    if result is None or result is _POOL_TOO_LARGE:
+    try:
+        pool = parse_pool(pool_str, subnet)
+    except ValueError:
+        logger.debug("Skipping unusable pool %r in subnet %s", pool_str, subnet, exc_info=True)
+        return None
+    result = sync_pool_to_netbox_ip_range(pool, subnet, vrf=vrf)
+    if result is _POOL_TOO_LARGE:
         return None
     range_obj, _created, _updated = result
     range_obj.refresh_from_db()

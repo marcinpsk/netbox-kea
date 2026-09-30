@@ -76,8 +76,10 @@ def _reservation_snapshot(conf: dict, version: Family, hosts: list[dict] | None 
                 subnet_id=int(entry["id"]),
                 network=ipaddress.ip_network(entry["subnet"]),
             ),
+            declared_cidr=entry["subnet"],
             configuration=None,
             shared_network=None,
+            membership_known=False,
         )
         for entry in entries
         if isinstance(entry, dict) and entry.get("id") is not None and entry.get("subnet")
@@ -295,6 +297,36 @@ class DhcpPluginAdapterTest(TestCase):
         self.assertIn("pool 10.96.0.10-10.96.0.20 in 10.96.0.0/24", summary.warnings[0])
         pool = Pool.objects.get()
         self.assertEqual(str(pool.ip_range.start_address), "10.96.0.110/24")
+
+    def test_unusable_pool_is_skipped_and_a_cidr_pool_imports(self):
+        from ipam.models import IPRange
+
+        Pool = apps.get_model(DHCP_PLUGIN, "Pool")
+        conf = {
+            "subnet4": [
+                {
+                    "id": 1,
+                    "subnet": "10.95.0.0/24",
+                    "pools": [{"pool": "10.95.1.10-10.95.1.20"}, {"pool": "bad"}, {"pool": "10.95.0.128/26"}],
+                }
+            ]
+        }
+
+        summary = self.adapter.import_server_config(self.server, parse_dhcp_config(conf, 4))
+
+        self.assertEqual(summary.errors, 0, summary.warnings)
+        self.assertEqual(summary.pools_created, 1)
+        self.assertEqual(
+            summary.warnings,
+            [
+                "pool 10.95.1.10-10.95.1.20 in 10.95.0.0/24: unusable range, skipped",
+                "pool bad in 10.95.0.0/24: unusable range, skipped",
+            ],
+        )
+        self.assertFalse(IPRange.objects.filter(start_address__net_host="10.95.1.10").exists())
+        pool = Pool.objects.get()
+        self.assertEqual(str(pool.ip_range.start_address), "10.95.0.128/24")
+        self.assertEqual(str(pool.ip_range.end_address), "10.95.0.191/24")
 
     # ── deferred reporting ────────────────────────────────────────────────────
 

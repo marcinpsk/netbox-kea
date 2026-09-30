@@ -11,7 +11,7 @@
       <div class="card-body">
         <p>
           Are you sure you want to remove pool <strong>{{ pool }}</strong>
-          from DHCPv{{ dhcp_version }} subnet <strong>{{ subnet_id }}</strong>?
+          from subnet <strong>{{ subnet_cidr }}</strong> (ID {{ subnet_id }})?
         </p>
         <p class="text-danger">
           <i class="mdi mdi-alert-circle-outline"></i>
@@ -20,6 +20,7 @@
         </p>
         <form method="post">
           {% csrf_token %}
+          {{ form.subnet_cidr }}
           <div class="text-end mt-3">
             <a href="{{ return_url }}" class="btn btn-secondary me-2">Cancel</a>
             <button type="submit" class="btn btn-danger">

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ipaddress
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -36,24 +38,30 @@ class DHCPOption:
         return self.match_key, frozenset(self.client_classes)
 
     def form_initial(self) -> dict[str, Any]:
-        """Return editable values and the stable identity of this existing row."""
-        identity: dict[str, Any] = {
+        """Return editable values, and the identity and value that the operator saw for this existing row."""
+        original: dict[str, Any] = {
             key: value
             for key, value in {
                 "space": self.space,
                 "code": self.code,
                 "name": self.name,
+                "data": self.data,
+                "always-send": self.always_send,
             }.items()
             if value is not None
         }
         if self.client_classes:
-            identity["client-classes"] = list(self.client_classes)
+            original["client-classes"] = list(self.client_classes)
         return {
             "name": self.name or "",
             "data": self.data,
             "always_send": bool(self.always_send),
-            "original_option": identity,
+            "original_option": original,
         }
+
+    def same_value(self, other: DHCPOption) -> bool:
+        """Return whether both options send the same data with the same always-send flag."""
+        return (self.data, self.always_send) == (other.data, other.always_send)
 
     def matches_intent(self, intended: DHCPOption, *, exact_space: bool = False) -> bool:
         """Return whether this resolved Option is the target of a submitted intent.
@@ -96,6 +104,83 @@ _FORM_MANAGED_OPTIONS: dict[int, tuple[FormManagedOption, ...]] = {
 def form_managed_options(version: int) -> dict[str, FormManagedOption]:
     """Return the form-edited DHCP Options of one family, keyed by form field."""
     return {option.field: option for option in _FORM_MANAGED_OPTIONS[version]}
+
+
+class AmbiguousFormOption(ValueError):
+    """More than one DHCP Option entry fits one form field, so the form cannot tell which entry it manages."""
+
+
+def form_managed_entry(options: Sequence[DHCPOption], version: int, field: str) -> int | None:
+    """Return the index of the entry that the form field *field* manages, or None when no entry fits.
+
+    The entry is in the default space, has no class tag, and has the code of the field (or its name, without a
+    code). The display and the save both select the entry here, so they cannot manage different entries.
+
+    Raises:
+        AmbiguousFormOption: If more than one entry fits.
+
+    """
+    managed = form_managed_options(version)[field]
+    fits = [
+        index
+        for index, option in enumerate(options)
+        if option.space in (None, f"dhcp{version}")
+        and not option.client_classes
+        and (option.code == managed.code if option.code is not None else option.name == managed.name)
+    ]
+    if len(fits) > 1:
+        raise AmbiguousFormOption(f"More than one DHCP Option entry fits the {field} field.")
+    return fits[0] if fits else None
+
+
+def form_shows(option: DHCPOption, field: str) -> bool:
+    """Return whether the form field *field* can show the data of its entry *option*.
+
+    The form has no way to enter binary data, and the gateway field holds one address, not a router list.
+    """
+    return option.csv_format is not False and not (field == "gateway" and "," in option.data)
+
+
+def form_option_fields(options: Sequence[DHCPOption], version: int) -> dict[str, str]:
+    """Return the data that each Subnet or Shared Network form field shows, keyed by form field.
+
+    Raises:
+        AmbiguousFormOption: If more than one entry fits a field.
+
+    """
+    fields: dict[str, str] = {}
+    for field in form_managed_options(version):
+        index = form_managed_entry(options, version, field)
+        if index is not None and form_shows(options[index], field):
+            fields[field] = options[index].data
+    return fields
+
+
+class InvalidAddress(ValueError):
+    """An entry of an address list that is not an IP address."""
+
+    def __init__(self, entry: str) -> None:
+        """Keep the *entry* for the message of the form."""
+        super().__init__(f"{entry!r} is not an IP address.")
+        self.entry = entry
+
+
+def address_list(text: str) -> tuple[str, ...]:
+    """Return each address of the comma-separated *text* in its canonical form, without the empty entries.
+
+    Raises:
+        InvalidAddress: For the first entry that is not an IP address.
+
+    """
+    addresses: list[str] = []
+    for entry in (entry.strip() for entry in text.split(",")):
+        if not entry:
+            continue
+        try:
+            addresses.append(str(ipaddress.ip_address(entry)))
+        except ValueError as exc:
+            raise InvalidAddress(entry) from exc
+    return tuple(addresses)
 
 
 def parse_dhcp_option(entry: Any) -> DHCPOption:
@@ -147,17 +232,26 @@ def parse_dhcp_options(entries: Any) -> tuple[DHCPOption, ...]:
 
 
 def merge_option_form_rows(rows: list[dict[str, Any]], existing: Any) -> list[dict[str, Any]]:
-    """Merge exposed edits onto fresh raw options selected by their typed identity."""
+    """Merge exposed edits onto fresh raw options selected by their typed identity.
+
+    Raises:
+        DHCPOptionConflict: If a row's option is missing, ambiguous, submitted twice, or has a changed live value.
+        DHCPOptionNameChange: If a row renames a coded DHCP Option.
+
+    """
     parsed = parse_dhcp_options(existing)
     used: set[tuple[tuple[str | None, int | str | None], frozenset[str]]] = set()
     result = []
     for row in rows:
-        identity = row.get("original_option")
-        if identity is not None:
-            key = parse_dhcp_option(identity).assignment_key
+        original = row.get("original_option")
+        if original is not None:
+            seen = parse_dhcp_option(original)
+            key = seen.assignment_key
             matches = [index for index, option in enumerate(parsed) if option.assignment_key == key]
             if len(matches) != 1 or key in used:
                 raise DHCPOptionConflict("An existing DHCP Option is missing, ambiguous, or submitted twice.")
+            if not parsed[matches[0]].same_value(seen):
+                raise DHCPOptionConflict("The live value of a DHCP Option changed. Reload the form before saving.")
             used.add(key)
             option = dict(existing[matches[0]])
         else:

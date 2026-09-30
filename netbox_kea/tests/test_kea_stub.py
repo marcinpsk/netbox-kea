@@ -26,33 +26,33 @@ from netbox_kea.tests.kea_stub import (
 )
 
 
-def _call(stub, command="x"):
+def _call(stub, command="version-get"):
     return stub("https://kea.example.com/api/v1/", json={"command": command}).json()
 
 
 def test_dict_payload_is_wrapped_in_single_entry_list():
     """A dict value is the single ``.json()`` entry (Kea returns a list)."""
-    stub = KeaHttpStub({"x": {"result": 0}})
+    stub = KeaHttpStub({"version-get": {"result": 0}})
     assert _call(stub) == [{"result": 0}]
 
 
 def test_http_boundary_returns_concrete_requests_responses():
     """The real KeaClient decodes a stubbed success and raises on a stubbed HTTP error."""
     client = KeaClient(url="https://kea.example.invalid/")
-    with stub_kea({"x": {"result": 0}}) as stub:
-        assert client.command("x", service=["dhcp4"]) == [{"result": 0}]
+    with stub_kea({"version-get": {"result": 0}}) as stub:
+        assert client.command("version-get", service=["dhcp4"]) == [{"result": 0}]
     assert stub.urls() == ["https://kea.example.invalid/"]
 
     failed = _http_response([{"result": 1}], status=503, url="https://kea.example.invalid/")
-    with stub_kea({"x": failed}), pytest.raises(requests.HTTPError) as error:
-        client.command("x", service=["dhcp4"])
+    with stub_kea({"version-get": failed}), pytest.raises(requests.HTTPError) as error:
+        client.command("version-get", service=["dhcp4"])
     assert error.value.response is failed
 
 
 def test_plain_multi_entry_list_returned_verbatim():
     """A real multi-service response is a list and must NOT be treated as a queue."""
     multi = [{"result": 0}, {"result": 3}]
-    stub = KeaHttpStub({"x": multi})
+    stub = KeaHttpStub({"version-get": multi})
     # Every call returns the full list, unchanged — not truncated to one entry.
     assert _call(stub) == multi
     assert _call(stub) == multi
@@ -60,12 +60,12 @@ def test_plain_multi_entry_list_returned_verbatim():
 
 def test_empty_list_payload_returned_not_indexerror():
     """An empty list is a valid empty payload, not an IndexError."""
-    stub = KeaHttpStub({"x": []})
+    stub = KeaHttpStub({"version-get": []})
     assert _call(stub) == []
 
 
 def test_queued_dispatches_in_order_then_repeats_last():
-    stub = KeaHttpStub({"x": queued({"result": 0}, {"result": 3})})
+    stub = KeaHttpStub({"version-get": queued({"result": 0}, {"result": 3})})
     assert _call(stub) == [{"result": 0}]
     assert _call(stub) == [{"result": 3}]
     assert _call(stub) == [{"result": 3}]  # last response repeats once exhausted
@@ -78,20 +78,44 @@ def test_queued_requires_at_least_one_response():
 
 def test_unregistered_command_raises_assertion_error():
     stub = KeaHttpStub({})
-    with pytest.raises(AssertionError):
-        _call(stub, "not-registered")
+    with pytest.raises(AssertionError, match="no response registered for command 'status-get'"):
+        _call(stub, "status-get")
+
+
+def test_a_command_kea_does_not_have_cannot_be_registered():
+    with pytest.raises(AssertionError, match=r"registers \['subnet4-pool-add'\], which the harness Kea does not have"):
+        KeaHttpStub({"subnet4-pool-add": {"result": 0}, "subnet4-delta-add": {"result": 0}})
+
+
+def test_a_command_kea_does_not_have_cannot_be_sent():
+    stub = KeaHttpStub({})
+    with pytest.raises(AssertionError, match=r"receives \['subnet6-pool-del'\], which the harness Kea does not have"):
+        _call(stub, "subnet6-pool-del")
+
+
+def test_a_list_commands_reply_cannot_advertise_a_command_kea_does_not_have():
+    stub = KeaHttpStub({"list-commands": {"result": 0, "arguments": ["subnet4-delta-add", "subnet4-pool-add"]}})
+    with pytest.raises(AssertionError, match=r"advertises \['subnet4-pool-add'\]"):
+        _call(stub, "list-commands")
+
+
+def test_a_list_commands_response_object_cannot_advertise_a_command_kea_does_not_have():
+    advertised = _http_response([{"result": 0, "arguments": ["subnet4-delta-add", "subnet4-pool-add"]}])
+    stub = KeaHttpStub({"list-commands": advertised})
+    with pytest.raises(AssertionError, match=r"advertises \['subnet4-pool-add'\]"):
+        _call(stub, "list-commands")
 
 
 def test_callable_resolves_against_request_body():
-    stub = KeaHttpStub({"x": lambda body: {"echo": body["command"]}})
-    assert _call(stub) == [{"echo": "x"}]
+    stub = KeaHttpStub({"version-get": lambda body: {"echo": body["command"]}})
+    assert _call(stub) == [{"echo": "version-get"}]
 
 
 def test_urls_records_endpoints_in_order():
     """``urls()`` records each POST endpoint in call order (for dual-URL routing asserts)."""
-    stub = KeaHttpStub({"x": {"result": 0}})
-    stub("http://v4:1", json={"command": "x"})
-    stub("http://v6:2", json={"command": "x"})
+    stub = KeaHttpStub({"version-get": {"result": 0}})
+    stub("http://v4:1", json={"command": "version-get"})
+    stub("http://v6:2", json={"command": "version-get"})
     assert stub.urls() == ["http://v4:1", "http://v6:2"]
 
 
@@ -158,6 +182,21 @@ def test_catalogue_responses_shape():
     assert with_networks["config-get"]["arguments"]["Dhcp4"]["shared-networks"] == shared_networks
 
 
+def test_a_member_of_an_unknown_shared_network_fails_loudly():
+    """Kea refuses such a Subnet, and ``config-get`` would drop it while the Subnet list keeps it."""
+    from netbox_kea.tests.kea_stub import SubnetDaemon, _catalogue_responses_for_subnets
+
+    with pytest.raises(AssertionError, match=r"\{7: 'missing'\}"):
+        _catalogue_responses_for_subnets(
+            4, [{"id": 7, "subnet": "10.0.7.0/24"}], shared_networks=[{"name": "office"}], members={7: "missing"}
+        )
+
+    daemon = SubnetDaemon(4, networks=("office",))
+    daemon.add({"id": 7, "subnet": "10.0.7.0/24"}, network="missing")
+    with pytest.raises(AssertionError, match=r"\{7: 'missing'\}"):
+        daemon.responses()["config-get"]({})
+
+
 @pytest.mark.parametrize(
     ("host", "family"),
     (
@@ -184,26 +223,26 @@ def test_typed_reservation_rejects_a_fixture_without_a_supported_identity(host):
 
 
 def test_exception_value_is_raised():
-    stub = KeaHttpStub({"x": requests.ConnectionError("down")})
+    stub = KeaHttpStub({"version-get": requests.ConnectionError("down")})
     with pytest.raises(requests.ConnectionError):
         _call(stub)
 
 
 def test_callable_returning_exception_is_raised():
-    stub = KeaHttpStub({"x": lambda body: ValueError("bad json")})
+    stub = KeaHttpStub({"version-get": lambda body: ValueError("bad json")})
     with pytest.raises(ValueError):
         _call(stub)
 
 
 def test_concurrent_requests_are_all_recorded():
     """Request recording under the lock loses no entries across worker threads."""
-    stub = KeaHttpStub({"x": {"result": 0}})
+    stub = KeaHttpStub({"version-get": {"result": 0}})
     threads = [threading.Thread(target=_call, args=(stub,)) for _ in range(50)]
     for t in threads:
         t.start()
     for t in threads:
         t.join()
-    assert stub.commands().count("x") == 50
+    assert stub.commands().count("version-get") == 50
 
 
 def test_queue_dispatch_is_thread_safe():
@@ -213,7 +252,7 @@ def test_queue_dispatch_is_thread_safe():
     threads pop the same entry or skip one, so this would flake.
     """
     n = 20
-    stub = KeaHttpStub({"x": queued(*[{"n": i} for i in range(n)])})
+    stub = KeaHttpStub({"version-get": queued(*[{"n": i} for i in range(n)])})
     seen: list[int] = []
     seen_lock = threading.Lock()
 

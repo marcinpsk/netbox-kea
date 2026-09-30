@@ -15,6 +15,7 @@ from netbox_kea.subnet_catalogue import (
     ConfigurationOnlyCatalogueSnapshot,
     IdentityOnlyCatalogueSnapshot,
     IncompleteCatalogueSnapshot,
+    SharedNetworkMembership,
     SubnetIdentityConflict,
     SubnetIdExhausted,
     VerifiedSubnet,
@@ -286,13 +287,12 @@ class TestSubnetCatalogue(TestCase):
             {
                 "subnet4-list": queued(identities, identities),
                 "config-get": queued(before, after),
-                "list-commands": {"result": 0, "arguments": ["subnet4-pool-add"]},
-                "subnet4-pool-add": {"result": 0},
+                "subnet4-delta-add": {"result": 0},
             }
         ) as kea:
             initial = display(self.server, 4)
             display(self.server, 4)
-            self.server.get_client(version=4).pool_add(4, 1, "198.18.1.10 - 198.18.1.20")
+            self.server.get_client(version=4).pool_change(4, "add", 1, "198.18.1.0/24", "198.18.1.10-198.18.1.20")
             refreshed = display(self.server, 4)
 
         self.assertEqual(initial.find_by_id(1).configuration.pools, ())
@@ -314,7 +314,6 @@ class TestSubnetCatalogue(TestCase):
                 }
             ],
         )
-        options = [{"name": "domain-name-servers", "data": "198.18.0.53"}]
 
         with stub_kea(
             {
@@ -325,7 +324,8 @@ class TestSubnetCatalogue(TestCase):
             }
         ) as kea:
             initial = display(self.server, 4)
-            self.server.get_client(version=4).subnet_update_options(4, 1, options)
+            client = self.server.get_client(version=4)
+            client.config_set(client.config_candidate(4))
             refreshed = display(self.server, 4)
 
         self.assertEqual(initial.find_by_id(1).configuration.options, ())
@@ -352,13 +352,12 @@ class TestSubnetCatalogue(TestCase):
             {
                 "subnet4-list": queued(identities, identities),
                 "config-get": queued(before, after),
-                "list-commands": {"result": 0, "arguments": ["subnet4-pool-add"]},
-                "subnet4-pool-add": requests.ReadTimeout("response lost after apply"),
+                "subnet4-delta-add": requests.ReadTimeout("response lost after apply"),
             }
         ):
             initial = display(self.server, 4)
             with self.assertRaises(requests.ReadTimeout):
-                self.server.get_client(version=4).pool_add(4, 1, "198.18.1.10 - 198.18.1.20")
+                self.server.get_client(version=4).pool_change(4, "add", 1, "198.18.1.0/24", "198.18.1.10-198.18.1.20")
             refreshed = display(self.server, 4)
 
         self.assertEqual(initial.find_by_id(1).configuration.pools, ())
@@ -760,6 +759,25 @@ class TestSubnetCatalogue(TestCase):
 
         self.assertFalse(snapshot.consistent)
         self.assertIn("configuration-changed-during-retry", {item.code for item in snapshot.diagnostics})
+
+    def test_an_identity_entry_without_the_membership_key_takes_the_membership_from_the_configuration(self):
+        """Without shared-network-name the membership is unknown, so only a configuration read can show it."""
+        identities = _identity(4, [{"id": 1, "subnet": "198.18.1.0/24"}])
+        member = {"name": "access-a", "subnet4": [{"id": 1, "subnet": "198.18.1.0/24"}]}
+        for label, configuration, membership in (
+            ("configuration read", _config(4, [], shared_networks=[member]), SharedNetworkMembership("access-a")),
+            ("configuration unavailable", _config(4, [], result=1), None),
+        ):
+            with self.subTest(label), stub_kea({"subnet4-list": identities, "config-get": configuration}):
+                snapshot = display(self.server, 4)
+                with mutation(self.server, 4) as scope:
+                    if membership is None:
+                        with self.assertRaisesMessage(CatalogueUnavailable, "membership cannot be confirmed"):
+                            scope.find_with_membership(1)
+                    else:
+                        self.assertEqual(scope.find_with_membership(1).shared_network, membership)
+                # The display keeps the Subnet either way.
+                self.assertEqual(snapshot.find_by_id(1).shared_network, membership)
 
     def test_shared_network_membership_disagreement_quarantines_subnet(self):
         identities = _identity(

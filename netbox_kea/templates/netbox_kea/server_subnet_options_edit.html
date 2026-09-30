@@ -17,12 +17,13 @@
         <p class="text-muted small mb-3">
           <i class="mdi mdi-information-outline" aria-hidden="true"></i>
           This replaces <strong>all</strong> option-data for subnet {{ subnet_id }} using
-          <code>config-get</code> → <code>config-test</code> → <code>config-write</code>.
+          <code>config-get</code> → <code>config-test</code> → <code>config-set</code> → <code>config-write</code>.
           Select Delete to remove an option. Reload this form if the live option list changes.
         </p>
 
         <form method="post" id="options-form">
           {% csrf_token %}
+          {{ form.subnet_cidr }}
           {{ formset.management_form }}
 
           {% if formset.non_form_errors %}

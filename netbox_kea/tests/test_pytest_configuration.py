@@ -232,6 +232,7 @@ def test_ci_configuration_writer_generates_the_requested_plugins(monkeypatch, tm
         capture_output=True,
         check=False,
         text=True,
+        timeout=30,
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
@@ -486,7 +487,10 @@ def test_browser_client_fixtures_close_owned_sessions(monkeypatch, fixture_name,
         harness, "TimeoutSession" if fixture_name == "requests_session" else "KeaClient", TrackingClient
     )
     fixture = getattr(harness, fixture_name).__wrapped__
-    result = fixture(SimpleNamespace(token="test-token")) if fixture_name == "requests_session" else fixture()
+    if fixture_name == "requests_session":
+        result = fixture(SimpleNamespace(token="test-token"))
+    else:
+        result = fixture({4: "http://127.0.0.1:8001", 6: "http://127.0.0.1:8003"})
     if inspect.isgenerator(result):
         next(result)
         assert all(client.close_count == 0 for client in instances)
@@ -1036,6 +1040,40 @@ def test_serial_django_suite_is_rejected():
 
     assert result.returncode == 4
     assert "requires pytest-xdist" in result.stdout + result.stderr
+
+
+def test_a_dotted_coverage_source_is_rejected():
+    """Refuse --cov=<package>.<module>, which leaves a second copy of the psycopg error classes."""
+    probe = REPOSITORY_ROOT / "netbox_kea" / "tests" / "test_parallel_test_setup.py"
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = os.pathsep.join(str(Path(entry or Path.cwd()).resolve()) for entry in sys.path)
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        environment["COVERAGE_FILE"] = str(Path(temporary_directory) / ".coverage")
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                str(probe),
+                "--collect-only",
+                "-q",
+                "-p",
+                "no:django",
+                "-n",
+                "1",
+                "--cov=netbox_kea.config_write",
+                "--cov-report=",
+            ],
+            cwd=REPOSITORY_ROOT,
+            capture_output=True,
+            check=False,
+            env=environment,
+            text=True,
+            timeout=60,
+        )
+
+    assert result.returncode == 4
+    assert "--cov=netbox_kea.config_write names a module" in result.stdout + result.stderr
 
 
 def test_dhcp_plugin_ci_uses_xdist():
@@ -2507,6 +2545,7 @@ def _run_setup_script(sandbox: Path, wheel_names: tuple[str, ...]) -> subprocess
         text=True,
         check=False,
         stdin=subprocess.DEVNULL,
+        timeout=30,
     )
 
 
@@ -2542,6 +2581,7 @@ def test_the_setup_script_stubs_read_their_input():
                 text=True,
                 check=False,
                 stdin=subprocess.DEVNULL,
+                timeout=30,
             )
             assert result.returncode == 0, (
                 f"The {tool} stub left the writer at {result.returncode}. "

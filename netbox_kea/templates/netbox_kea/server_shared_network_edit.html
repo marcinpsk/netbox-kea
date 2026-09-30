@@ -21,6 +21,7 @@
         <form method="post">
           {% csrf_token %}
           {{ form.name }}
+          {% for field in form.shown_fields %}{{ field }}{% endfor %}
 
           {% if form.non_field_errors %}
             <div class="alert alert-danger">

@@ -20,6 +20,7 @@ from ..constants import Family, IPAddressValue
 from ..dhcp_options import DHCPOption
 from ..kea import KeaClient, KeaException
 from ..models import Server
+from ..pools import addresses_in_pools
 from ..reservations import (
     ClearValue,
     InSubnetReservationScope,
@@ -51,7 +52,7 @@ FLEX_ID_DOCUMENTATION_URL = (
 )
 
 
-def _warn_reservation_pool_overlap(
+def _warn_addresses_in_pools(
     request: HttpRequest,
     subnet: VerifiedSubnet,
     addresses: tuple[IPAddressValue, ...],
@@ -66,16 +67,12 @@ def _warn_reservation_pool_overlap(
             "so this Reservation was not checked against its pools.",
         )
         return
-    for address in addresses:
-        pool = next(
-            (pool for pool in subnet.configuration.pools if int(pool.start) <= int(address) <= int(pool.end)), None
+    for address, pool in addresses_in_pools(addresses, subnet.configuration.pools):
+        messages.warning(
+            request,
+            f"IP {address} is within existing pool {pool.range}. "
+            "Kea allows this. Reservations take priority over pool allocation.",
         )
-        if pool is not None:
-            messages.warning(
-                request,
-                f"IP {address} is within existing pool {pool.range}. "
-                "Kea allows this — reservations take priority over pool allocation.",
-            )
 
 
 def _in_subnet_scope(reservation: Reservation) -> InSubnetReservationScope:
@@ -507,7 +504,7 @@ class _ReservationAddView(_ReservationMutationView):
                     hostname=cleaned_data.get("hostname", ""),
                     options=options,
                 )
-            _warn_reservation_pool_overlap(request, subnet, reservation.addresses)
+            _warn_addresses_in_pools(request, subnet, reservation.addresses)
             client = server.get_client(version=self.dhcp_version)
             return client.reservation_create(reservation, catalogue)
 

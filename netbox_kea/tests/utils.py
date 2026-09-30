@@ -7,10 +7,14 @@ Import from this module instead of duplicating scaffold code in each test file.
 
 import re
 
+import requests
+from django.contrib import messages as django_messages
 from django.contrib.auth import get_user_model
-from django.test import TestCase, override_settings
+from django.test import Client, TestCase, override_settings
 
 from netbox_kea.models import Server
+
+from .kea_stub import stub_kea
 
 # Minimal PLUGINS_CONFIG for tests that do not exercise the Subnet lease-query guard.
 _PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30, "lease_query_max_unpaged_leases": 0}}
@@ -40,6 +44,16 @@ def _make_db_server(**kwargs) -> Server:
     }
     defaults.update(kwargs)
     return Server.objects.create(**defaults)
+
+
+def _page_data(response) -> dict[str, str]:
+    """Return the data that a browser posts for the form of *response*: each field that the page rendered."""
+    form, page = response.context["form"], response.content.decode()
+    return {
+        name: "" if form[name].value() is None else str(form[name].value())
+        for name in form.fields
+        if f'name="{form[name].html_name}"' in page
+    }
 
 
 def _kea_command_side_effect(cmd, service=None, arguments=None, check=None):
@@ -73,6 +87,11 @@ class _ViewTestBase(TestCase):
         )
         self.client.force_login(self.user)
         self.server = _make_db_server()
+
+    def _fresh_client(self) -> None:
+        """Log in with a new test client, so no message of an earlier request is still stored."""
+        self.client = Client()
+        self.client.force_login(self.user)
 
     def _assert_no_none_pk_redirect(self, response):
         """Assert that a redirect URL never contains the string ``None`` as a pk."""
@@ -110,3 +129,101 @@ class _ViewTestBase(TestCase):
         kwargs = call_args.kwargs or call_args[1]
         args = call_args.args or call_args[0]
         return kwargs.get("version") or (args[0] if args else None)
+
+
+_UNCONFIRMED = "Kea did not confirm the change. Check the server configuration before retrying."
+
+
+def _read_modify_write_cases(confirmed: str) -> tuple:
+    """Each outcome and rejection of a read-modify-write view: (label, Kea replies, Server fields, the message)."""
+    lost = requests.ReadTimeout("read timed out")
+    restart = "It is live, but it may not survive a Kea restart, because Kea did not save it to disk."
+    return (
+        ("applied, persisted", {}, {}, (django_messages.SUCCESS, confirmed)),
+        ("applied, not requested", {}, {"persist_config": False}, (django_messages.SUCCESS, confirmed)),
+        (
+            "applied, failed",
+            {"config-write": {"result": 1, "text": "Unable to open file"}},
+            {},
+            (django_messages.WARNING, f"{confirmed} {restart} config-write failed: Unable to open file"),
+        ),
+        (
+            "unknown, persisted",
+            {"config-set": lost},
+            {},
+            (django_messages.WARNING, f"{_UNCONFIRMED} Kea's reply to the change was lost or unreadable."),
+        ),
+        (
+            "unknown, failed",
+            {"config-set": lost, "config-write": lost},
+            {},
+            (
+                django_messages.WARNING,
+                (
+                    f"{_UNCONFIRMED} Kea also could not save its running configuration to disk. "
+                    "Kea's reply to the change was lost or unreadable. The reply to config-write was lost or unreadable."
+                ),
+            ),
+        ),
+        (
+            "unknown, not requested",
+            {"config-set": {"result": 1, "text": "hook initialization failed"}},
+            {"persist_config": False},
+            (django_messages.WARNING, f"{_UNCONFIRMED} Kea replied: hook initialization failed"),
+        ),
+        (
+            "config-test rejected",
+            {"config-test": {"result": 1, "text": "subnet overlaps"}},
+            {},
+            (
+                django_messages.ERROR,
+                "Kea's config-test rejected the change, so it was not applied. Kea replied: subnet overlaps",
+            ),
+        ),
+        (
+            "not sent",
+            {"config-test": requests.ConnectionError("https://kea-internal.example.invalid refused")},
+            {},
+            (
+                django_messages.ERROR,
+                "The change was not sent to Kea. Kea did not return a usable reply to config-test.",
+            ),
+        ),
+        (
+            "invalid client configuration",
+            {},
+            {"client_cert_path": "/etc/kea/client.pem"},
+            (
+                django_messages.ERROR,
+                (
+                    "The change was not sent to Kea, because the Server settings are not valid. "
+                    "NetBox could not build a Kea client from the Server connection settings."
+                ),
+            ),
+        ),
+    )
+
+
+class _ReadModifyWriteMessages(_ViewTestBase):
+    """One HTTP POST per Configuration Change outcome and per rejection, for a read-modify-write view."""
+
+    def _assert_one_message_per_case(self, url: str, data: dict, responses: dict, confirmed: str) -> None:
+        original = {"persist_config": self.server.persist_config, "client_cert_path": self.server.client_cert_path}
+        ok = {"result": 0}
+        for label, replies, fields, expected in _read_modify_write_cases(confirmed):
+            with self.subTest(label):
+                self._fresh_client()
+                for field, value in {**original, **fields}.items():
+                    setattr(self.server, field, value)
+                self.server.save()
+                base = {"config-test": ok, "config-set": ok, "config-write": ok, **responses}
+                with stub_kea({**base, **replies}) as kea:
+                    response = self.client.post(url, data)
+                self.assertEqual(response.status_code, 302)
+                sent = [
+                    (message.level, str(message)) for message in django_messages.get_messages(response.wsgi_request)
+                ]
+                self.assertEqual(sent, [expected])
+                applied = label.startswith(("applied", "unknown"))
+                self.assertEqual("config-set" in kea.commands(), applied)
+                self.assertEqual("config-write" in kea.commands(), applied and "not requested" not in label)

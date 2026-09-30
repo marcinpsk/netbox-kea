@@ -1,5 +1,6 @@
+import copy
 import ipaddress
-from typing import Any, cast
+from typing import Any, Generic, TypeVar, cast
 
 from django import forms
 from django.core.exceptions import ValidationError
@@ -11,9 +12,12 @@ from utilities.forms.fields import CSVModelChoiceField, TagFilterField
 from utilities.forms.rendering import FieldSet
 
 from . import constants
-from .constants import Family
-from .dhcp_options import parse_dhcp_option
+from .config_write import SUBNET_LIST_UNCONFIRMED, subnet_changed
+from .constants import Family, IPNetworkValue
+from .dhcp_options import InvalidAddress, address_list, parse_dhcp_option
+from .kea import SharedNetworkEdit, SubnetEdit, SubnetFields, description_as_shown, subnet_network
 from .models import Server
+from .pools import Pool, parse_pool
 from .reservation_transfer import MAX_DOCUMENT_BYTES as MAX_TRANSFER_DOCUMENT_BYTES
 from .reservations import (
     ReservationCapabilities,
@@ -21,19 +25,122 @@ from .reservations import (
     reservation_identifier_choices,
     reservation_identifier_types,
 )
-from .subnet_catalogue import MAX_SUBNET_ID, MIN_SUBNET_ID
-from .utilities import is_hex_string, parse_delegated_prefixes, parse_pool_range
+from .subnet_catalogue import MAX_SUBNET_ID, MIN_SUBNET_ID, VerifiedSubnet
+from .utilities import is_hex_string, parse_delegated_prefixes
 
 
-def _parse_ip_address_list(value: str, error_message: str) -> list[str]:
-    """Split a comma-separated address list and validate each nonempty entry."""
-    entries = [entry.strip() for entry in value.split(",") if entry.strip()]
-    for entry in entries:
+class _AddressListField(forms.CharField):
+    """A comma-separated address list, cleaned to a list of canonical addresses."""
+
+    def __init__(self, *, invalid: str, **kwargs: Any) -> None:
+        """Keep *invalid*, the message for an entry that is not an address, with an ``{entry}`` placeholder."""
+        super().__init__(**kwargs)
+        self.invalid = invalid
+
+    def clean(self, value: Any) -> list[str]:
+        """Return the canonical addresses, and reject an entry that is not an address."""
         try:
-            ipaddress.ip_address(entry)
-        except ValueError as exc:  # noqa: PERF203
-            raise forms.ValidationError(error_message.format(entry=entry)) from exc
-    return entries
+            return list(address_list(super().clean(value)))
+        except InvalidAddress as exc:
+            raise forms.ValidationError(self.invalid.format(entry=exc.entry)) from exc
+
+
+class _GatewayField(forms.CharField):
+    """One gateway address, cleaned to its canonical form. Blank means no gateway."""
+
+    def clean(self, value: Any) -> str:
+        """Return the canonical address, or an empty string."""
+        text = super().clean(value)
+        if not text:
+            return ""
+        try:
+            return str(ipaddress.ip_address(text))
+        except ValueError as exc:
+            raise forms.ValidationError(f"Invalid gateway IP address: {exc}") from exc
+
+
+class _PoolLinesField(forms.CharField):
+    """Pool lines. The form parses them inside the Subnet, because a Pool needs the Subnet network."""
+
+    def clean(self, value: Any) -> list[str]:
+        """Return one entry for each non-empty line."""
+        return [line.strip() for line in super().clean(value).splitlines() if line.strip()]
+
+
+class _DescriptionField(forms.CharField):
+    """A description, cleaned as a text input shows it."""
+
+    def clean(self, value: Any) -> str:
+        """Remove the line breaks, as a text input does."""
+        return description_as_shown(super().clean(value))
+
+
+_INVALID_DNS = "Invalid DNS server IP address: '{entry}'"
+_INVALID_NTP = "Invalid NTP server IP address: '{entry}'"
+_SHOWN = "shown_"
+_SHOWN_INVALID = "The values that the page showed are not valid. Reload the page and try again."
+EditT = TypeVar("EditT")
+
+
+class _ShownValuesForm(forms.Form, Generic[EditT]):
+    """A change form with a hidden ``shown_`` copy of each field in ``shown_names``, with the value that the page showed.
+
+    Each copy is the visible field with a hidden widget, so it cleans the same way. A change acts only while the live
+    values are the shown values.
+    """
+
+    shown_names: tuple[str, ...]
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        """Add the hidden copies."""
+        super().__init__(*args, **kwargs)
+        for name in self.shown_names:
+            self.fields[_SHOWN + name] = _hidden_copy(self.fields[name])
+
+    @staticmethod
+    def edit_from(data: dict[str, Any]) -> EditT:
+        """Return the edit of the cleaned values *data*, keyed by field name."""
+        raise NotImplementedError
+
+    @staticmethod
+    def form_values(edit: EditT) -> dict[str, Any]:
+        """Return the value of each field in ``shown_names`` for *edit*."""
+        raise NotImplementedError
+
+    @classmethod
+    def initial_for(cls, shown: EditT) -> dict[str, Any]:
+        """Return the initial value of each field and of its hidden copy, from the values *shown*."""
+        values = cls.form_values(shown)
+        return {**values, **{_SHOWN + name: values[name] for name in cls.shown_names}}
+
+    @property
+    def shown_fields(self) -> list[forms.BoundField]:
+        """Return the hidden fields with the values that the page showed."""
+        return [self[_SHOWN + name] for name in self.shown_names]
+
+    def clean(self) -> dict[str, Any] | None:
+        """Refuse shown values that do not clean, because an error on a hidden field has no place on the page."""
+        cleaned = super().clean()
+        if any(_SHOWN + name in self.errors for name in self.shown_names):
+            self.add_error(None, _SHOWN_INVALID)
+        return cleaned
+
+    def to_edit(self) -> EditT:
+        """Return the edit of the valid form."""
+        return self.edit_from(self.cleaned_data)
+
+    def shown(self) -> EditT:
+        """Return the values that the page showed, with the type of the edit."""
+        return self.edit_from({name: self.cleaned_data[_SHOWN + name] for name in self.shown_names})
+
+
+def _hidden_copy(field: forms.Field) -> forms.Field:
+    """Return *field* with a hidden widget. It keeps the cleaning, but not the limits for input, such as a minimum."""
+    hidden = copy.deepcopy(field)
+    hidden.required = False
+    hidden.widget = forms.HiddenInput()
+    hidden.validators = []
+    return hidden
 
 
 def _validate_subnet_cidr(value: str, *, strict: bool) -> str:
@@ -811,45 +918,83 @@ class GlobalServer6FilterForm(forms.Form):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def _validate_pool_string(pool: str) -> None:
-    """Validate a single pool string (range or CIDR).
+def _seen_network(value: str, family: Family) -> IPNetworkValue:
+    """Parse the CIDR that a Subnet change page showed. Accept host bits: the page shows the CIDR that Kea declares."""
+    try:
+        return subnet_network(value, family)
+    except ValueError as exc:
+        raise forms.ValidationError(f"Invalid subnet CIDR: {exc}") from exc
 
-    Raises:
-        ValidationError: If the pool string is not a valid IP range or CIDR.
 
-    """
-    if "-" in pool and "/" not in pool:
-        try:
-            parse_pool_range(pool)
-        except (AddrFormatError, ValueError) as exc:
-            raise forms.ValidationError(f"Invalid pool range '{pool}': {exc}") from exc
-    elif "/" in pool:
-        try:
-            parse_pool_range(pool)
-        except (AddrFormatError, ValueError) as exc:
-            raise forms.ValidationError(f"Invalid pool CIDR '{pool}': {exc}") from exc
-    else:
-        raise forms.ValidationError(
-            f"Invalid pool format '{pool}': use range (e.g. 10.0.0.1-10.0.0.50) or CIDR (e.g. 10.0.0.0/28)."
-        )
+class SubnetConfirmForm(forms.Form):
+    """The CIDR that a Subnet change page showed, so that the change reaches only that Subnet."""
+
+    subnet_cidr = forms.CharField(widget=forms.HiddenInput)
+
+    def __init__(self, *args: Any, family: Family, **kwargs: Any) -> None:
+        """Keep the family that the CIDR must match."""
+        super().__init__(*args, **kwargs)
+        self.family = family
+
+    def clean_subnet_cidr(self) -> str:
+        """Require a CIDR of the family."""
+        value: str = self.cleaned_data["subnet_cidr"]
+        _seen_network(value, self.family)
+        return value
 
 
 class PoolAddForm(forms.Form):
-    """Form for adding a DHCP pool to an existing subnet."""
+    """Form for adding a DHCP pool to an existing Verified Subnet."""
 
+    # Not required: a missing value is a non-field error in clean(), which the page shows.
+    subnet_cidr = forms.CharField(required=False, widget=forms.HiddenInput)
     pool = forms.CharField(
         label="Pool",
         help_text=("Pool range (e.g. <code>10.0.0.50-10.0.0.99</code>) or CIDR (e.g. <code>10.0.0.0/28</code>)."),
         max_length=255,
     )
 
-    def clean_pool(self) -> str:  # noqa: D102
-        value = self.cleaned_data["pool"].strip()
-        _validate_pool_string(value)
-        if "-" in value and "/" not in value:
-            start, end = value.split("-", 1)
-            return f"{start.strip()}-{end.strip()}"
-        return value
+    def __init__(self, *args: Any, subnet: VerifiedSubnet | None, absence_confirmed: bool, **kwargs: Any) -> None:
+        """Keep the Verified Subnet that the Pool must fit, and whether a missing Subnet is absent from Kea."""
+        super().__init__(*args, **kwargs)
+        self.subnet = subnet
+        self.absence_confirmed = absence_confirmed
+
+    def clean(self) -> dict[str, Any]:
+        """Require the Subnet that the page showed, then parse the Pool inside it."""
+        cleaned = self.cleaned_data
+        subnet = self._subnet_as_seen(cleaned.get("subnet_cidr", ""))
+        if "pool" in cleaned:
+            try:
+                cleaned["pool"] = self._pool_in(subnet, cleaned["pool"])
+            except forms.ValidationError as exc:
+                self.add_error("pool", exc)
+        return cleaned
+
+    def _subnet_as_seen(self, cidr: str) -> VerifiedSubnet:
+        if self.subnet is None:
+            if self.absence_confirmed:
+                raise forms.ValidationError(
+                    "This Subnet is not in the current Subnet Catalogue. Reload the Subnets page and try again."
+                )
+            raise forms.ValidationError(SUBNET_LIST_UNCONFIRMED)
+        if _seen_network(cidr, self.subnet.network.version) != self.subnet.network:
+            raise forms.ValidationError(subnet_changed(self.subnet.subnet_id, cidr))
+        return self.subnet
+
+    @staticmethod
+    def _pool_in(subnet: VerifiedSubnet, text: str) -> Pool:
+        """Parse the Pool inside *subnet* and reject an overlap with an existing Pool."""
+        try:
+            pool = parse_pool(text, subnet.network)
+        except ValueError as exc:
+            raise forms.ValidationError(str(exc)) from exc
+        # Without configuration facts the existing Pools are unknown, so Kea decides.
+        existing = subnet.configuration.pools if subnet.configuration is not None else ()
+        overlapping = next((other for other in existing if other.overlaps(pool)), None)
+        if overlapping is not None:
+            raise forms.ValidationError(f"Pool {pool.range} overlaps existing Pool {overlapping.range}.")
+        return pool
 
 
 class _SubnetBaseForm(forms.Form):
@@ -859,30 +1004,37 @@ class _SubnetBaseForm(forms.Form):
     """
 
     subnet_field: str
+    shared_network_help: str
 
-    pools = forms.CharField(
+    # A free name: config_write checks that the Shared Network exists. The view sets the offered names.
+    shared_network = forms.CharField(label="Shared Network", widget=forms.Select, required=False, strip=False)
+    # False: the page could not load the Shared Networks, so its disabled select posts no name.
+    shared_networks_complete = forms.BooleanField(widget=forms.HiddenInput, required=False)
+    pools = _PoolLinesField(
         label="Pools",
         required=False,
         widget=forms.Textarea(attrs={"rows": 3}),
         help_text="One pool per line, e.g. <code>10.0.0.100-10.0.0.200</code>",
     )
-    gateway = forms.CharField(
+    gateway = _GatewayField(
         label="Default gateway",
         required=False,
         max_length=50,
         help_text="IP address of the default gateway (option <code>routers</code>).",
     )
-    dns_servers = forms.CharField(
+    dns_servers = _AddressListField(
         label="DNS servers",
         required=False,
         max_length=255,
         help_text="Comma-separated IP addresses.",
+        invalid=_INVALID_DNS,
     )
-    ntp_servers = forms.CharField(
+    ntp_servers = _AddressListField(
         label="NTP servers",
         required=False,
         max_length=255,
         help_text="Comma-separated IP addresses.",
+        invalid=_INVALID_NTP,
     )
     ddns_qualifying_suffix = forms.CharField(
         label="DDNS qualifying suffix",
@@ -891,44 +1043,26 @@ class _SubnetBaseForm(forms.Form):
         help_text="Domain suffix appended to hostnames before sending DDNS updates (e.g. example.com.).",
     )
 
-    def clean_pools(self) -> list[str]:
-        """Validate each pool line and normalise the range separator spacing."""
-        value = self.cleaned_data["pools"].strip()
-        if not value:
-            return []
-        pools = [p.strip() for p in value.splitlines() if p.strip()]
-        normalized = []
-        for pool in pools:
-            _validate_pool_string(pool)
-            if "-" in pool and "/" not in pool:
-                start, end = pool.split("-", 1)
-                normalized.append(f"{start.strip()}-{end.strip()}")
-            else:
-                normalized.append(pool)
-        return normalized
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.fields["shared_network"].help_text = self.shared_network_help
 
-    def clean_gateway(self) -> str:
-        """Validate the gateway is an IP address; blank means no gateway."""
-        value = self.cleaned_data["gateway"].strip()
-        if not value:
-            return ""
-        try:
-            ipaddress.ip_address(value)
-        except ValueError as exc:
-            raise forms.ValidationError(f"Invalid gateway IP address: {exc}") from exc
-        return value
-
-    def clean_dns_servers(self) -> list[str]:
-        """Split the comma-separated list and validate every DNS server address."""
-        return _parse_ip_address_list(self.cleaned_data["dns_servers"], "Invalid DNS server IP address: '{entry}'")
-
-    def clean_ntp_servers(self) -> list[str]:
-        """Split the comma-separated list and validate every NTP server address."""
-        return _parse_ip_address_list(self.cleaned_data["ntp_servers"], "Invalid NTP server IP address: '{entry}'")
+    def clean_shared_network(self) -> str:
+        """Refuse a name of only white space. Keep a real name as Kea holds it."""
+        name: str = self.cleaned_data["shared_network"]
+        if name and not name.strip():
+            raise forms.ValidationError("Enter a Shared Network name, or choose none.")
+        return name
 
     def clean(self) -> dict[str, Any] | None:
-        """Validate that gateway, DNS and NTP servers match the subnet's IP family."""
+        """Refuse a page without the Shared Network list, and match gateway, DNS and NTP servers to the family."""
         cleaned = super().clean()
+        if not self.cleaned_data.get("shared_networks_complete"):
+            self.add_error(
+                None,
+                "NetBox could not load the Shared Networks from Kea when it showed the page. "
+                "Reload the page and try again.",
+            )
         if not cleaned:
             return cleaned
         subnet_str = cleaned.get(self.subnet_field, "")
@@ -937,6 +1071,10 @@ class _SubnetBaseForm(forms.Form):
         except ValueError:
             return cleaned
 
+        # The edit form also has the hidden copy of the Pools that the page showed.
+        for field in ("pools", "shown_pools"):
+            if field in cleaned:
+                self._clean_pools_in(subnet_net, cleaned, field)
         subnet_version = subnet_net.version
 
         gateway = cleaned.get("gateway", "")
@@ -974,11 +1112,46 @@ class _SubnetBaseForm(forms.Form):
 
         return cleaned
 
+    def to_fields(self) -> SubnetFields:
+        """Return the Subnet fields of the valid form."""
+        return _subnet_fields(self.cleaned_data)
+
+    def _clean_pools_in(self, subnet: IPNetworkValue, cleaned: dict[str, Any], field: str) -> None:
+        """Parse each Pool line of *field* inside *subnet*; the Pools must not overlap each other."""
+        pools: list[Pool] = []
+        errors: list[str] = []
+        for line in cleaned[field]:
+            try:
+                pool = parse_pool(line, subnet)
+            except ValueError as exc:
+                errors.append(str(exc))
+                continue
+            overlapping = next((other for other in pools if other.overlaps(pool)), None)
+            if overlapping is not None:
+                errors.append(f"Pool {pool.range} overlaps Pool {overlapping.range}.")
+                continue
+            pools.append(pool)
+        if errors:
+            self.add_error(field, errors)
+            return
+        cleaned[field] = pools
+
+
+def _subnet_fields(data: dict[str, Any]) -> SubnetFields:
+    return SubnetFields(
+        pools=tuple(pool.range for pool in data["pools"]),
+        gateway=data["gateway"],
+        dns_servers=tuple(data["dns_servers"]),
+        ntp_servers=tuple(data["ntp_servers"]),
+        ddns_qualifying_suffix=data["ddns_qualifying_suffix"],
+    )
+
 
 class SubnetAddForm(_SubnetBaseForm):
     """Form for adding a new DHCP subnet to Kea."""
 
     subnet_field = "subnet"
+    shared_network_help = "Assign this subnet to a shared network immediately after creation."
 
     subnet = forms.CharField(
         label="Subnet CIDR",
@@ -992,13 +1165,6 @@ class SubnetAddForm(_SubnetBaseForm):
         max_value=MAX_SUBNET_ID,
         help_text="Leave blank to use the highest existing subnet ID plus one.",
     )
-    shared_network = forms.ChoiceField(
-        label="Shared Network",
-        choices=[],
-        required=False,
-        help_text="Assign this subnet to a shared network immediately after creation.",
-    )
-
     field_order = [
         "subnet",
         "subnet_id",
@@ -1015,18 +1181,28 @@ class SubnetAddForm(_SubnetBaseForm):
         return _validate_subnet_cidr(self.cleaned_data["subnet"], strict=True)
 
 
-class SubnetEditForm(_SubnetBaseForm):
+class SubnetEditForm(_ShownValuesForm[SubnetEdit], _SubnetBaseForm):
     """Form for editing an existing DHCP subnet in Kea.
 
-    The subnet CIDR and ID are immutable — they are passed as a hidden field and
-    used by the view to call ``subnet{v}-update``.  All other fields are optional;
-    leaving a field blank means "clear that option".
-
-    ``shared_network`` choices are set dynamically by the view at render time.
-    ``current_network`` is a hidden field tracking the network before any change.
+    The subnet CIDR and ID are immutable. The CIDR, the Shared Network and the values that the page showed are
+    hidden fields, so the change acts only on the Subnet that the page showed. All other fields are optional. A blank
+    Pool, option or DDNS field removes that value. A blank lifetime or timer keeps the live value.
     """
 
     subnet_field = "subnet_cidr"
+    shared_network_help = "Assign this subnet to a shared network, or leave blank to use the global address pool."
+    shown_names = (
+        "pools",
+        "gateway",
+        "dns_servers",
+        "ntp_servers",
+        "ddns_qualifying_suffix",
+        "valid_lft",
+        "min_valid_lft",
+        "max_valid_lft",
+        "renew_timer",
+        "rebind_timer",
+    )
 
     subnet_cidr = forms.CharField(widget=forms.HiddenInput())
     valid_lft = forms.IntegerField(
@@ -1059,16 +1235,17 @@ class SubnetEditForm(_SubnetBaseForm):
         min_value=1,
         help_text="Time (seconds) after which client should rebind. Kea parameter: rebind-timer.",
     )
-    shared_network = forms.ChoiceField(
-        label="Shared Network",
-        required=False,
-        choices=[],
-        help_text="Assign this subnet to a shared network, or leave blank to use the global address pool.",
-    )
-    current_network = forms.CharField(widget=forms.HiddenInput(), required=False)
+    # The Shared Network of the Subnet when the page loaded, as Kea names it; blank means none. Not a shown_ copy of
+    # shared_network: edit_subnet checks the membership on its own, before the field values.
+    original_network = forms.CharField(widget=forms.HiddenInput, required=False, strip=False)
+    # False: the page could not confirm the Shared Network, so the form cannot be saved.
+    original_network_confirmed = forms.BooleanField(widget=forms.HiddenInput, required=False)
 
     field_order = [
         "subnet_cidr",
+        "original_network",
+        "original_network_confirmed",
+        "shared_networks_complete",
         "shared_network",
         "pools",
         "gateway",
@@ -1080,12 +1257,50 @@ class SubnetEditForm(_SubnetBaseForm):
         "renew_timer",
         "rebind_timer",
         "ddns_qualifying_suffix",
-        "current_network",
     ]
+
+    @staticmethod
+    def edit_from(data: dict[str, Any]) -> SubnetEdit:
+        """Return the Subnet edit of the cleaned values *data*."""
+        return SubnetEdit(
+            fields=_subnet_fields(data),
+            valid_lifetime=data["valid_lft"],
+            min_valid_lifetime=data["min_valid_lft"],
+            max_valid_lifetime=data["max_valid_lft"],
+            renew_timer=data["renew_timer"],
+            rebind_timer=data["rebind_timer"],
+        )
+
+    @staticmethod
+    def form_values(edit: SubnetEdit) -> dict[str, Any]:
+        """Return the value of each managed field for *edit*."""
+        fields = edit.fields
+        return {
+            "pools": "\n".join(fields.pools),
+            "gateway": fields.gateway,
+            "dns_servers": ", ".join(fields.dns_servers),
+            "ntp_servers": ", ".join(fields.ntp_servers),
+            "ddns_qualifying_suffix": fields.ddns_qualifying_suffix,
+            "valid_lft": edit.valid_lifetime,
+            "min_valid_lft": edit.min_valid_lifetime,
+            "max_valid_lft": edit.max_valid_lifetime,
+            "renew_timer": edit.renew_timer,
+            "rebind_timer": edit.rebind_timer,
+        }
 
     def clean_subnet_cidr(self) -> str:
         """Accept host bits here: Kea allows them, so this CIDR is echoed back from its config."""
         return _validate_subnet_cidr(self.cleaned_data["subnet_cidr"], strict=False)
+
+    def clean(self) -> dict[str, Any] | None:
+        """Refuse a page that could not confirm the Shared Network, because a save would guess the membership."""
+        cleaned = super().clean()
+        if not self.cleaned_data.get("original_network_confirmed"):
+            raise forms.ValidationError(
+                "NetBox could not confirm the Shared Network of this Subnet when it showed the page. "
+                "Reload the page and try again."
+            )
+        return cleaned
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1268,7 +1483,7 @@ class SubnetOptionsForm(forms.Form):
 
 
 class ConfigurationOptionsForm(SubnetOptionsForm):
-    """Edit a configuration option while retaining its original identity."""
+    """Edit a configuration option while retaining its original identity and the value that the operator saw."""
 
     original_option = forms.JSONField(required=False, widget=forms.HiddenInput)
 
@@ -1499,50 +1714,63 @@ class SharedNetworkForm(forms.Form):
         return name
 
 
-class SharedNetworkEditForm(forms.Form):
-    """Form for editing an existing Kea shared network (description, interface, relay, options)."""
+class SharedNetworkEditForm(_ShownValuesForm[SharedNetworkEdit]):
+    """Form for editing an existing Kea shared network (description, interface, relay, options).
+
+    Each managed field has a hidden copy with the value that the page showed, so the change acts only while the live
+    values are the values that the operator saw.
+    """
+
+    shown_names = ("description", "interface", "relay_addresses", "dns_servers", "ntp_servers")
 
     name = forms.CharField(widget=forms.HiddenInput())
-    description = forms.CharField(required=False, label="Description")
+    description = _DescriptionField(required=False, label="Description")
     interface = forms.CharField(
         max_length=128,
         required=False,
         label="Interface",
         help_text="Bind this network to a specific server NIC (optional, e.g. eth0).",
     )
-    relay_addresses = forms.CharField(
+    relay_addresses = _AddressListField(
         required=False,
         label="Relay agent addresses",
         help_text="Comma-separated relay agent IP addresses (leave blank to clear).",
+        invalid="'{entry}' is not a valid IP address.",
     )
-    dns_servers = forms.CharField(
+    dns_servers = _AddressListField(
         required=False,
         label="DNS servers",
         help_text="Comma-separated DNS server IP addresses (option 6 / domain-name-servers).",
+        invalid=_INVALID_DNS,
     )
-    ntp_servers = forms.CharField(
+    ntp_servers = _AddressListField(
         required=False,
         label="NTP servers",
         help_text="Comma-separated NTP server addresses (option 42 / ntp-servers).",
+        invalid=_INVALID_NTP,
     )
 
-    def clean_relay_addresses(self) -> str:
-        """Validate each relay IP."""
-        return ",".join(
-            _parse_ip_address_list(self.cleaned_data.get("relay_addresses", ""), "'{entry}' is not a valid IP address.")
+    @staticmethod
+    def edit_from(data: dict[str, Any]) -> SharedNetworkEdit:
+        """Return the Shared Network edit of the cleaned values *data*."""
+        return SharedNetworkEdit(
+            description=data["description"],
+            interface=data["interface"],
+            relay_addresses=tuple(data["relay_addresses"]),
+            dns_servers=tuple(data["dns_servers"]),
+            ntp_servers=tuple(data["ntp_servers"]),
         )
 
-    def clean_dns_servers(self) -> str:
-        """Validate each DNS server IP address."""
-        return ",".join(
-            _parse_ip_address_list(self.cleaned_data.get("dns_servers", ""), "Invalid DNS server IP address: '{entry}'")
-        )
-
-    def clean_ntp_servers(self) -> str:
-        """Validate each NTP server IP address."""
-        return ",".join(
-            _parse_ip_address_list(self.cleaned_data.get("ntp_servers", ""), "Invalid NTP server IP address: '{entry}'")
-        )
+    @staticmethod
+    def form_values(edit: SharedNetworkEdit) -> dict[str, Any]:
+        """Return the value of each managed field for *edit*."""
+        return {
+            "description": edit.description,
+            "interface": edit.interface,
+            "relay_addresses": ", ".join(edit.relay_addresses),
+            "dns_servers": ", ".join(edit.dns_servers),
+            "ntp_servers": ", ".join(edit.ntp_servers),
+        }
 
 
 # ---------------------------------------------------------------------------

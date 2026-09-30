@@ -262,8 +262,7 @@ class ServerDhcpPluginSyncNowView(View):
         try:
             results = run_dhcp_plugin_import(server)
         except (KeaException, requests.RequestException, ValueError):
-            # Expected external-boundary failures (Kea read / validation);
-            # PartialPersistError is a KeaException subclass and lands here too.
+            # Expected external-boundary failures (Kea read / validation).
             logger.exception("DHCP-plugin import failed for server %s (Kea read/validation)", server.name)
             messages.error(request, "An internal error occurred during the DHCP-plugin import.")
             return redirect
