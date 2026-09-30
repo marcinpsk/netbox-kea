@@ -6,6 +6,6 @@ NetBox looks for ``template_extensions`` in this module by default when
 ``PluginConfig.template_extensions`` is ``None``.
 """
 
-from .template_extensions import IPAddressKeaPanel
+from .template_extensions import BranchBanner, IPAddressKeaPanel
 
-template_extensions = [IPAddressKeaPanel]
+template_extensions = [BranchBanner, IPAddressKeaPanel]

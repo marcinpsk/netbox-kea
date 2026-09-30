@@ -114,8 +114,18 @@ NetBox 4.7 with netbox-branching 1.2.1. List `netbox_branching` last in `PLUGINS
 - Kea servers, sync settings and DHCP plugin links stay in main. A branch has no copy of them, so
   it shows main's values.
 - Kea data is live, in main and in every branch.
-- This release does not yet refuse plugin writes while a branch is active. Do not change Kea
-  servers or Kea data in a branch. A later release refuses these writes.
+- In a branch, the plugin refuses every change that comes through its web pages or its REST API,
+  before it sends anything to Kea or writes to the database. A page shows HTTP 409 with a link to
+  main; the REST API answers 409 with the code `branch_write_refused`. Plugin pages show a banner,
+  and plugin and GraphQL responses carry an `X-NetBox-Kea-Sources` header.
+- A change request that still selects a branch that you can no longer use changes nothing. A
+  `_branch` query that names a merged, archived, or not ready branch, and an `active_branch` cookie
+  that names such a branch or a deleted one, get HTTP 409 with the code `branch_selection_unusable`.
+  netbox-branching answers HTTP 400 first when a `_branch` query names a deleted branch, and when
+  an API `X-NetBox-Branch` header names a deleted or unusable branch. Select main (`?_branch=`)
+  and try again.
+- Code that runs outside a web request (a custom script, for example) is not refused yet. Do not
+  change Kea servers or Kea data from a script in a branch.
 - A merge fails, and changes nothing, when the branch deletes a VRF that a Kea server in main now
   syncs into. Clear or change that server's Sync VRF, then merge again.
 
@@ -194,12 +204,16 @@ All settings are under `PLUGINS_CONFIG["netbox_kea"]`:
 | `kea_timeout` | `30` | HTTP request timeout in seconds for Kea API calls |
 | `lease_query_max_unpaged_leases` | `1000` | Reject an unpaged Subnet lease query when its Kea statistics count exceeds this limit. Set to `0` to disable this safety check |
 | `stale_ip_cleanup` | `"remove"` | What to do with stale IPs after sync: `"remove"` (delete), `"deprecate"` (set status=deprecated), `"none"` (skip) |
-| `sync_interval_minutes` | `5` | How often the background sync job runs (minutes). Also editable via NetBox admin → Jobs |
+| `sync_interval_minutes` | `5` | Initial interval of the background sync job (minutes). Edit it later on the **Sync Jobs** page |
 | `sync_leases_enabled` | `True` | Sync active DHCP leases to NetBox IPAM |
 | `sync_reservations_enabled` | `True` | Sync Kea reservations to NetBox IPAM |
 | `sync_prefixes_enabled` | `True` | Sync Kea subnets to NetBox IPAM as IP Prefixes |
 | `sync_ip_ranges_enabled` | `True` | Sync Kea pools to NetBox IPAM as IP Ranges |
 | `sync_max_leases_per_server` | `50000` | Hard cap on leases fetched per server per sync run. Set to `0` for no limit |
+
+`./manage.py migrate` reads `sync_interval_minutes`, `sync_enabled` and the four `sync_*_enabled`
+toggles once, when it creates the Sync Configuration. After that, the **Sync Jobs** page holds these values,
+and a later change to these settings in `PLUGINS_CONFIG` has no effect.
 
 Subnet lease searches use `stat-lease4-get` or `stat-lease6-get` before an
 unpaged lease command. Kea statistics can reject a query that is already too
@@ -310,7 +324,7 @@ Each server's summary reports `created`, `updated`, `errors`, `prefix_errors`, `
 
 View job history, next scheduled time and logs under **System → Background Jobs → Kea IPAM Sync**.
 
-The sync interval can be changed live via the NetBox admin without restarting the worker — edit the `interval` field on the job object.
+To change the sync interval, edit it on the **Sync Jobs** page. You do not need to restart the worker: the new interval applies after the next scheduled run.
 
 ---
 

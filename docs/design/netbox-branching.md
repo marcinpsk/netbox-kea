@@ -282,6 +282,34 @@ Guard 2 is now the only place that computes the rule, transitively, from the liv
 and names the foreign-key path, when a plugin model would need a branch copy. It also asserts that
 `supports_branching()` is `False` for every plugin model.
 
+#### Implementation note (2026-09-30, increment 3)
+
+The middleware follows the contract, with these facts from netbox-branching 1.2.1 at run time:
+
+- An API request whose `X-NetBox-Branch` header names an unready branch does not get NBB's 400.
+  `get_active_branch()` returns its `HttpResponseBadRequest` instead of raising, and the request
+  processor activates that response as the branch, so the first branchable query fails with a 500.
+  For a plugin-owned callback, the middleware returns that 400, whatever the method. A header that
+  names an unknown branch still gets the 400 from NBB's middleware.
+- GraphQL is not a plugin callback, so the same header on a GraphQL request still reaches NBB's own
+  failure: `server_list` answers from main without the sources header, and a branchable field
+  returns a GraphQL error.
+- NBB reads an empty `active_branch` cookie as no branch, so the predicate does too: the cookie
+  counts only when it is not empty.
+- The plugin templates extend five different NetBox templates and share no base. The banner is a
+  `navbar` template extension, the one hook on every page, and it renders only for a plugin-owned
+  callback. The navbar is narrow and NetBox renders it twice, so the banner is a "Kea read-only"
+  button beside netbox-branching's selector; its menu holds the full wording. The 409 page links
+  to the Server list with `?_branch=`, the same target as the HTMX stale-selector refusal.
+- `process_exception` renders `BranchActive` from any view, not only from plugin-owned callbacks.
+- Guard 1 fills each URL pattern itself, because two plugin patterns can share a URL name (#246),
+  and checks that the URL resolves back to the same view. It sends GET, HEAD and OPTIONS, and
+  POST, PUT, PATCH and DELETE, to every plugin URL. Its Kea replies come from `kea_recordings/`; a
+  read may send only the commands that this read-only Kea answers. It found that the format-suffix
+  URLs of the four REST Kea actions (`servers/<pk>/leases4.json` and the like) answer 500 on main,
+  because the action methods take no `format` argument (#245). The guard compares them with main
+  and does not require 200.
+
 ### Sinks
 
 - **Kea transport.** `KeaClient.command()` takes a `KeaCommand` enum member and a target,
@@ -376,15 +404,21 @@ tests skipped. With real provisioning, it covers guards 1 to 4 and:
   databases unchanged and zero Kea commands on a refusal;
 - in a branch, a plugin page, a REST read and a GraphQL `server_list` query carry the sources
   header; the IPAddress panel shows its label; a `core.Job` API read carries no sources header;
-- a browser test (Playwright, the existing `tests/ui` harness), with CSRF enforced, clicks the
-  reservation "Sync all" button in three states: branch active; branch merged elsewhere (stale
-  cookie); page opened through the branch selector (`?_branch=<id>` in the URL) and the branch then
-  deleted; stale cookie with the page's Server deleted in main, with `DEBUG=False`. The recovery
-  cases (`test_stale_selector_redirect_shows_refusal`) also run as a user with `view_server`, a user
-  without it (403 page) and an anonymous user (login page). Each case
-  asserts the visible toast, zero Kea commands during the refused POST, zero
-  mutating Kea commands and unchanged rows over the whole interaction, and, in the two stale cases,
-  a final page on main (the Server list, the 403 page or the login page, by authorization);
+- a browser test (Playwright, `tests/ui/test_branching_refusal.py`) clicks the reservation "Sync
+  all" button in these states: branch active; branch merged elsewhere (stale cookie); page opened
+  through the branch selector (`?_branch=<id>` in the URL) and the branch then deleted; stale cookie
+  with the page's Server deleted in main, with `DEBUG=False`. The recovery cases
+  (`test_stale_selector_redirect_shows_refusal`) also run as a user with `view_server`, a user
+  without it (403 page) and an anonymous user (login page). It runs in its own CI job on the
+  netbox-branching variant of the compose harness (`tests/docker/docker-compose.branching.yml`:
+  NetBox 4.7.0, netbox-branching 1.2.1, `DEBUG=False`). The harness is the real deployment shape,
+  and netbox-branching supports NetBox 4.7 only, so the variant is not in the NetBox matrix. Kea is
+  live there, so each case proves by state that nothing changed: the configuration hash,
+  reservations and leases of both daemons, and the NetBox IP addresses, are the same before and
+  after. The claim of zero Kea commands during the refused POST, reads included, belongs to guard 1
+  and the selector table, which count commands with `kea_stub`. Each case also asserts the visible
+  toast and, in the stale cases, a final page on main (the Server list, the 403 page or the login
+  page, by authorization);
 - a Tag on a Server deleted in a branch: the Server change record is in main's changelog and no
   Server ChangeDiff exists; after merge, main's Server has lost the tag, its other fields
   (credentials included) are unchanged, and the Kea stub recorded nothing;
