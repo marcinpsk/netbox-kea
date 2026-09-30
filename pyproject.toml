@@ -214,6 +214,7 @@ omit = ["*/migrations/*", "*/tests/*"]
 
 [tool.coverage.report]
 show_missing = true
+exclude_also = ["raise NotImplementedError"]
 
 [tool.semantic_release]
 version_toml = ["pyproject.toml:project.version"]
