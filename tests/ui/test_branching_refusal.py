@@ -6,7 +6,7 @@ CI job sets NETBOX_KEA_REQUIRE_BRANCHING=1, and then the module fails instead.
 
 Kea is live here, so the proof that a refused click changed nothing is by state: the configuration
 hash, reservations and leases of both Kea daemons, and the NetBox IP addresses, are the same before
-and after. That the refused request sends no Kea command at all, reads included, is proved in
+the page loads and after the click. The merge helper's Tag and a Server delete are not in that state. That the refused request sends no Kea command at all, reads included, is proved in
 netbox_kea/tests/test_branching.py (guard 1 and the selector table), which counts the commands.
 """
 
@@ -34,7 +34,7 @@ _BRANCH_WAIT_SECONDS = 300
 _REFUSED = "is active. Kea is live and shared by every branch"
 _UNUSABLE = "The selected branch is not usable"
 # NetBox renders the navbar twice (desktop and mobile), and only one copy is visible.
-_BANNER = ".kea-branch-banner"
+_BANNER_SELECTOR = ".kea-branch-banner"
 
 #: What a user needs to open a Server's reservations and to see the Sync all button.
 _SYNC_USER_PERMISSIONS = [
@@ -160,7 +160,7 @@ def _state(
 def _activate(page: Page, plugin_base: str, branch: dict[str, Any]) -> None:
     """Select *branch* the way the branch selector does; netbox-branching then keeps it in a cookie."""
     page.goto(f"{plugin_base}/servers/?_branch={branch['schema_id']}")
-    expect(page.locator(f"{_BANNER}:visible")).to_be_visible()
+    expect(page.locator(f"{_BANNER_SELECTOR}:visible")).to_be_visible()
 
 
 def _reservation_row(page: Page, plugin_base: str, server_id: int, query: str = "") -> Locator:
@@ -203,15 +203,15 @@ def test_sync_all_in_a_branch_is_refused_and_the_page_reloads_in_the_branch(
     page: Page, kea_server, kea_client, branches: _Branches, nb_http: requests.Session, netbox_url: str, plugin_base
 ) -> None:
     branch = branches.create()
+    before = _state(kea_client, nb_http, netbox_url, branch)
     _activate(page, plugin_base, branch)
     row = _reservation_row(page, plugin_base, kea_server.id)
-    before = _state(kea_client, nb_http, netbox_url, branch)
 
     assert _click_sync_all(page, row) == 409
 
     expect(_toast(page, f"Branch {branch['name']} {_REFUSED}")).to_be_visible()
     expect(page).to_have_url(re.compile(rf"/servers/{kea_server.id}/reservations4/$"))
-    expect(page.locator(f"{_BANNER}:visible")).to_be_visible()
+    expect(page.locator(f"{_BANNER_SELECTOR}:visible")).to_be_visible()
     assert _state(kea_client, nb_http, netbox_url, branch) == before
 
 
@@ -219,17 +219,17 @@ def _assert_on_main(page: Page, plugin_base: str) -> None:
     """The stale-selector refusal leaves the user on main's Server list, with the refusal shown."""
     expect(page).to_have_url(f"{plugin_base}/servers/?_branch=")
     expect(_toast(page, _UNUSABLE)).to_be_visible()
-    expect(page.locator(_BANNER)).to_have_count(0)
+    expect(page.locator(_BANNER_SELECTOR)).to_have_count(0)
 
 
 def test_sync_all_after_the_branch_merged_elsewhere_is_refused_and_goes_to_main(
     page: Page, kea_server, kea_client, branches: _Branches, nb_http: requests.Session, netbox_url: str, plugin_base
 ) -> None:
     branch = branches.create()
+    before = _state(kea_client, nb_http, netbox_url)
     _activate(page, plugin_base, branch)
     row = _reservation_row(page, plugin_base, kea_server.id)
     branches.merge(branch)
-    before = _state(kea_client, nb_http, netbox_url)
 
     assert _click_sync_all(page, row) == 409
 
@@ -241,10 +241,10 @@ def test_sync_all_on_a_page_opened_with_a_deleted_branch_is_refused_and_goes_to_
     page: Page, kea_server, kea_client, branches: _Branches, nb_http: requests.Session, netbox_url: str, plugin_base
 ) -> None:
     branch = branches.create()
-    row = _reservation_row(page, plugin_base, kea_server.id, f"?_branch={branch['schema_id']}")
-    expect(page.locator(f"{_BANNER}:visible")).to_be_visible()
-    branches.delete(branch)
     before = _state(kea_client, nb_http, netbox_url)
+    row = _reservation_row(page, plugin_base, kea_server.id, f"?_branch={branch['schema_id']}")
+    expect(page.locator(f"{_BANNER_SELECTOR}:visible")).to_be_visible()
+    branches.delete(branch)
 
     assert _click_sync_all(page, row) == 409
 
@@ -256,11 +256,11 @@ def test_sync_all_with_a_stale_cookie_after_the_server_was_deleted_in_main_goes_
     page: Page, kea_server, kea_client, branches: _Branches, nb_http: requests.Session, netbox_url: str, plugin_base
 ) -> None:
     branch = branches.create()
+    before = _state(kea_client, nb_http, netbox_url)
     _activate(page, plugin_base, branch)
     row = _reservation_row(page, plugin_base, kea_server.id)
     branches.merge(branch)
     kea_server.delete()
-    before = _state(kea_client, nb_http, netbox_url)
 
     assert _click_sync_all(page, row) == 409
 
@@ -287,6 +287,7 @@ def test_stale_selector_redirect_shows_refusal(
     plugin_base,
 ) -> None:
     branch = branches.create()
+    before = _state(kea_client, nb_http, netbox_url)
     _activate(page, plugin_base, branch)
     row = _reservation_row(page, plugin_base, kea_server.id)
     branches.merge(branch)
@@ -301,7 +302,6 @@ def test_stale_selector_redirect_shows_refusal(
         assert server_view.save()
     elif recovery == "anonymous":
         page.context.clear_cookies(name="sessionid")
-    before = _state(kea_client, nb_http, netbox_url)
 
     assert _click_sync_all(page, row) == 409
 
@@ -312,5 +312,5 @@ def test_stale_selector_redirect_shows_refusal(
     if recovery == "without view_server":
         expect(page).to_have_title(re.compile("Access Denied"))
     expect(_toast(page, _UNUSABLE)).to_be_visible()
-    expect(page.locator(_BANNER)).to_have_count(0)
+    expect(page.locator(_BANNER_SELECTOR)).to_have_count(0)
     assert _state(kea_client, nb_http, netbox_url) == before
