@@ -56,6 +56,12 @@ def _make_db_server(**kwargs) -> Server:
 _WRITE_VERBS = ("INSERT", "UPDATE", "DELETE")
 
 
+def _refusal_receivers(signal) -> set[str]:
+    """Return the label of each model whose branch refusal receiver *signal* has connected."""
+    prefix = "netbox_kea.refuse_in_branch."
+    return {key[0].removeprefix(prefix) for key, *_rest in signal.receivers if str(key[0]).startswith(prefix)}
+
+
 def _sync_page_urls(server: Server) -> tuple[str, str]:
     """Return the two sync pages that read SyncConfig: the Sync Jobs page and the Server's Sync tab."""
     return (
