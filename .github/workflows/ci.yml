@@ -305,3 +305,53 @@ jobs:
         if: ${{ always() }}
         run: docker compose logs
         working-directory: ./tests/docker/
+
+  # The integration job's steps on the netbox-branching variant of the harness. netbox-branching
+  # supports NetBox 4.7 only, so this job runs one NetBox release and only the branching browser tests.
+  branching-browser-test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      COMPOSE_FILE: docker-compose.yml:docker-compose.override.yml:docker-compose.branching.yml
+    steps:
+      - *checkout-repository
+      - *setup-uv
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.14"
+
+      - name: Ensure playwright browsers are installed
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list /etc/apt/sources.list.d/google-chrome.sources
+          uv run --native-tls playwright install --with-deps
+
+      - name: Run uv build
+        run: uv build --native-tls
+
+      - name: Run test_setup.sh
+        run: ./tests/test_setup.sh
+        env:
+          NETBOX_CONTAINER_TAG: v4.7.0
+
+      # NETBOX_KEA_REQUIRE_BRANCHING=1 makes the module fail, not skip, without netbox-branching.
+      - name: Run the branching browser tests
+        env:
+          NETBOX_KEA_REQUIRE_BRANCHING: "1"
+        run: |
+          uv run --native-tls pytest tests/ui/test_branching_refusal.py -p no:django --tracing=retain-on-failure -v
+
+      - name: Upload Playwright traces
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        if: ${{ !cancelled() }}
+        with:
+          name: playwright-traces-branching
+          path: test-results/
+          retention-days: 90
+
+      - name: Show Docker logs
+        if: ${{ always() }}
+        run: docker compose logs
+        working-directory: ./tests/docker/
