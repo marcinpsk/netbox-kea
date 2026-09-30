@@ -7,11 +7,14 @@ The tests use the real ORM and a real KeaClient, and stub only requests.Session.
 
 from __future__ import annotations
 
+import threading
+import time
+from collections.abc import Callable
 from contextlib import suppress
 
 from core.exceptions import JobFailed
-from django.db import connection
-from django.test import TestCase, override_settings
+from django.db import connection, connections
+from django.test import TestCase, TransactionTestCase, override_settings
 from ipam.models import VRF
 from ipam.models import IPAddress as NbIP
 
@@ -423,3 +426,155 @@ class LeasePhaseRowFailureTest(TestCase):
 
         self.assertEqual((report.errors, report.complete, report.created), (1, False, 1))
         self.assertEqual([lease["ip-address"] for lease in report.lease_records], ["10.0.0.2"])
+
+
+class _Holder:
+    """A transaction on its own connection that holds the locks its statement takes until it commits."""
+
+    def __init__(self, sql: str, params: list) -> None:
+        self.connection = connections.create_connection("default")
+        self.cursor = self.connection.cursor()
+        self.cursor.execute("BEGIN")
+        self.cursor.execute(sql, params)
+
+    def commit(self) -> None:
+        if self.connection.connection is not None:
+            self.cursor.execute("COMMIT")
+            self.cursor.close()
+            self.connection.close()
+
+
+@override_settings(PLUGINS_CONFIG=_config("remove"))
+class LeasePhaseConcurrencyTest(TransactionTestCase):
+    """Concurrent runs, row locks and operator edits, each on its own connection, in a fixed order."""
+
+    def setUp(self) -> None:
+        self.results: dict[str, object] = {}
+        self.threads: list[threading.Thread] = []
+        self.holders: list[_Holder] = []
+
+    def tearDown(self) -> None:
+        for holder in self.holders:
+            holder.commit()
+        for thread in self.threads:
+            thread.join(timeout=30)
+
+    def _hold(self, sql: str, params: list) -> _Holder:
+        holder = _Holder(sql, params)
+        self.holders.append(holder)
+        return holder
+
+    def _start(self, name: str, work: Callable[[], object]) -> threading.Thread:
+        def run():
+            try:
+                self.results[name] = work()
+            except BaseException as exc:  # noqa: BLE001  the test thread hands every outcome to the test
+                self.results[name] = exc
+            finally:
+                connection.close()
+
+        thread = threading.Thread(target=run, name=name, daemon=True)
+        self.threads.append(thread)
+        thread.start()
+        return thread
+
+    def _join(self) -> None:
+        for thread in self.threads:
+            thread.join(timeout=30)
+            self.assertFalse(thread.is_alive(), f"{thread.name} did not finish")
+
+    def _wait_for_lock_waits(self, count: int) -> None:
+        deadline = time.monotonic() + 30
+        with connection.cursor() as cursor:
+            while time.monotonic() < deadline:
+                cursor.execute(
+                    "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database()"
+                    " AND wait_event_type = 'Lock'"
+                )
+                if cursor.fetchone()[0] >= count:
+                    return
+                time.sleep(0.01)
+        self.fail(f"{count} lock waits never happened; results: {self.results}")
+
+    def _report(self, name: str) -> SyncReport:
+        result = self.results[name]
+        if not isinstance(result, SyncReport):
+            self.fail(f"{name} did not return a report: {result!r}")
+        return result
+
+    def test_two_ha_members_that_run_at_the_same_time_create_one_row(self):
+        first, second = _server("first"), _server("second")
+        # The table lock lets both runs look the address up, but no run insert it, until the test commits.
+        holder = self._hold("LOCK TABLE ipam_ipaddress IN SHARE MODE", [])
+
+        with stub_kea({"lease4-get-page": _lease_page([_lease(hostname="host")])}):
+            for server in (first, second):
+                self._start(server.name, lambda server=server: reconcile(server, 4, [_phase()]))
+            self._wait_for_lock_waits(2)
+            holder.commit()
+            self._join()
+
+        self.assertEqual(NbIP.objects.filter(address__net_host=ADDRESS).count(), 1)
+        self.assertEqual(set(_links(_row())), {"first", "second"})
+        self.assertEqual(sorted(self._report(name).created for name in ("first", "second")), [0, 1])
+
+    def test_a_lock_error_on_one_row_fails_only_that_row(self):
+        server = _server("owner")
+        _reconcile(server, [_lease("10.0.0.1", "one"), _lease("10.0.0.2", "two"), _lease("10.0.0.9", "stale")])
+        self._hold("SELECT id FROM ipam_ipaddress WHERE id = %s FOR UPDATE", [_row("10.0.0.1").pk])
+
+        def run():
+            with connection.cursor() as cursor:
+                cursor.execute("SET lock_timeout = '100ms'")
+            return reconcile(server, 4, [_phase()])
+
+        with stub_kea({"lease4-get-page": _lease_page([_lease("10.0.0.1", "one-b"), _lease("10.0.0.2", "two-b")])}):
+            self._start("run", run)
+            self._join()
+
+        report = self._report("run")
+        self.assertEqual((report.errors, report.complete, report.updated), (1, False, 1))
+        self.assertEqual(_row("10.0.0.1").dns_name, "one")
+        self.assertEqual(_row("10.0.0.2").dns_name, "two-b")
+        self.assertEqual(set(_links(_row("10.0.0.9"))), {"owner"})
+
+    def test_a_link_confirmed_after_the_cutoff_survives_also_when_its_transaction_started_before(self):
+        server = _server("owner")
+        _reconcile(server, [_lease(hostname="host")])
+        ip = _row()
+        holder = self._hold("SELECT id FROM ipam_ipaddress WHERE id = %s FOR UPDATE", [ip.pk])
+
+        def lease_page(body):
+            reported = [_lease(hostname="host")] if threading.current_thread().name == "claim" else []
+            return _lease_page(reported)
+
+        with stub_kea({"lease4-get-page": lease_page}):
+            # The claim takes the identity lock, then waits for the row lock inside its transaction.
+            self._start("claim", lambda: reconcile(server, 4, [_phase()]))
+            self._wait_for_lock_waits(1)
+            # The cleanup takes its cutoff now, reads a snapshot without the lease, and waits for the identity lock.
+            self._start("cleanup", lambda: reconcile(server, 4, [_phase()]))
+            self._wait_for_lock_waits(2)
+            holder.commit()
+            self._join()
+
+        self.assertEqual(self._report("cleanup").removed, 0)
+        self.assertTrue(NbIP.objects.filter(pk=ip.pk).exists())
+        self.assertEqual(set(_links(ip)), {"owner"})
+
+    def test_an_operator_edit_that_removed_the_marker_before_the_row_lock_releases_the_row(self):
+        server = _server("owner")
+        _reconcile(server, [_lease(hostname="host")])
+        ip = _row()
+        operator = self._hold("UPDATE ipam_ipaddress SET description = 'Printer on floor 2' WHERE id = %s", [ip.pk])
+
+        with stub_kea({"lease4-get-page": _lease_page([_lease(hostname="renamed")])}):
+            self._start("run", lambda: reconcile(server, 4, [_phase()]))
+            self._wait_for_lock_waits(1)
+            operator.commit()
+            self._join()
+
+        self.assertEqual(self._report("run").conflicts, {ADDRESS})
+        self.assertEqual(_links(ip), {})
+        row = _row()
+        self.assertEqual((row.description, row.dns_name), ("Printer on floor 2", "host"))
