@@ -814,7 +814,7 @@ class SyncJobInBranchTest(TransactionTestCase):
 
 # Guard 3 in a provisioned branch: the Kea transport.
 
-_KEA_WRITES = [member for member in KeaCommand if member.kind == "write"]
+_KEA_WRITES = [member for member in KeaCommand if member.is_write]
 
 
 class KeaTransportInBranchTest(TransactionTestCase):
