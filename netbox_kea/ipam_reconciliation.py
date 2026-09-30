@@ -21,13 +21,12 @@ from django.db import DatabaseError, connection, transaction
 from django.db.models import F
 from ipam.models import IPAddress
 
-from .constants import Family
+from .constants import Family, StaleCleanupMode
 from .integrations import dhcp_plugin
 from .kea import KeaException, lease_fields
 from .models import IPAMOwnershipLink, IPAMOwnershipSource, next_confirmation_number
 from .sync import (
     _KEA_DESC_PREFIX,
-    StaleCleanupMode,
     _apply_ip_fields,
     _apply_ip_mask,
     _compute_ip_status,

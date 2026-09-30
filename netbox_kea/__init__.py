@@ -1,9 +1,13 @@
 # SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-FileCopyrightText: 2023-2024 Devon Mar <devon-mar@users.noreply.github.com>
 # SPDX-License-Identifier: Apache-2.0
+from typing import Any
+
+from django.core.exceptions import ImproperlyConfigured
 from netbox.plugins import PluginConfig
 
 from . import branching
+from .constants import STALE_CLEANUP_MODES
 
 __version__ = "1.12.0"
 
@@ -30,6 +34,16 @@ class NetBoxKeaConfig(PluginConfig):
         "sync_ip_ranges_enabled": True,
         "sync_max_leases_per_server": 50000,
     }
+
+    @classmethod
+    def validate(cls, user_config: dict[str, Any], netbox_version: str) -> None:
+        """Refuse an unknown ``stale_ip_cleanup`` at startup, before any sync reads it."""
+        super().validate(user_config, netbox_version)
+        mode = user_config.get("stale_ip_cleanup", cls.default_settings["stale_ip_cleanup"])
+        if mode not in STALE_CLEANUP_MODES:
+            raise ImproperlyConfigured(
+                f"netbox_kea: stale_ip_cleanup must be one of {', '.join(STALE_CLEANUP_MODES)}, not {mode!r}"
+            )
 
     def ready(self) -> None:
         """Register the netbox-branching integration after Django is fully initialised."""
