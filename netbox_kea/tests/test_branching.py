@@ -684,6 +684,25 @@ class BranchActiveResponseTest(TransactionTestCase):
 
         self.assertContains(response, self.text, status_code=409)
 
+    def test_a_rest_view_outside_the_plugin_gets_netbox_branchings_400_for_an_unready_branch_header(self):
+        from netbox_kea.tests.branch_refusal_urls import API_OUTSIDE_SAVE_PATH
+
+        # netbox-branching 1.2.1 lets the view run, with its own 400 response as the active branch.
+        server = _make_db_server(name="outside", ca_url=_BEFORE, dhcp6=False)
+        merged = Branch(name="sink merged")
+        merged.save(provision=False)
+        Branch.objects.filter(pk=merged.pk).update(status=BranchStatusChoices.MERGED)
+        url = f"/{API_OUTSIDE_SAVE_PATH}{server.pk}/"
+        self.assertFalse(branching.plugin_owned(resolve(url).func))
+
+        with _writes(self.branch) as writes:
+            response = self.client.post(url, headers={BRANCH_HEADER: merged.schema_id})
+
+        self.assertEqual(response.status_code, 400, response.content[:500])
+        self.assertIn(b"is not ready for use", response.content)
+        self.assertEqual(writes, [])
+        self.assertEqual(Server.objects.get(pk=server.pk).last_updated, server.last_updated)
+
     def test_a_rest_request_gets_the_409_code(self):
         response = self.client.get(self.api, headers={BRANCH_HEADER: self.branch.schema_id})
 
