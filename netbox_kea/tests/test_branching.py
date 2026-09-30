@@ -54,6 +54,7 @@ from netbox_branching.choices import BranchStatusChoices  # noqa: E402
 from netbox_branching.constants import BRANCH_HEADER, COOKIE_NAME, QUERY_PARAM  # noqa: E402
 from netbox_branching.models import Branch  # noqa: E402
 from netbox_branching.utilities import activate_branch, supports_branching  # noqa: E402
+from rest_framework.permissions import SAFE_METHODS  # noqa: E402
 
 from netbox_kea.kea import KeaException  # noqa: E402
 from netbox_kea.models import Server  # noqa: E402
@@ -828,12 +829,6 @@ class _Route:
     def api(self) -> bool:
         return hasattr(self.callback, "actions")
 
-    @property
-    def unsafe_methods(self) -> tuple[str, ...]:
-        if self.api:
-            return tuple(m.upper() for m in self.callback.actions if m.upper() not in branching.SAFE_METHODS)
-        return ("POST",)
-
 
 def _plugin_routes(resolver: URLResolver | None = None, name: str = "", pattern: str = "", parameters=()) -> list:
     """Walk the whole URL tree and return each pattern whose callback module is inside netbox_kea."""
@@ -898,7 +893,7 @@ def _route_query(route: _Route, ip: IPAddress) -> str:
 
 
 def _view(callback) -> object:
-    """Return the view class of a URL callback: two patterns with one path resolve to the first, of the same class."""
+    """Return the view class of a URL callback: two patterns with one path resolve to the first (#246)."""
     return getattr(callback, "view_class", None) or getattr(callback, "cls", None) or callback
 
 
@@ -973,10 +968,11 @@ class UrlTreeGuardTest(TransactionTestCase):
 
         for route in routes:
             url = _route_url(route, server, ip)
-            for method in ("GET", "HEAD", "OPTIONS"):
+            for method in SAFE_METHODS:
                 with self.subTest(route=route.name, url=url, method=method):
                     self._assert_served_as_on_main(route, url, method, user, branch)
-            for method in route.unsafe_methods:
+            # Every unsafe method, also one that the view or the REST action does not accept.
+            for method in _UNSAFE_METHODS:
                 with self.subTest(route=route.name, url=url, method=method):
                     self._assert_refused(route, url, method, user, branch, server)
 
@@ -994,6 +990,7 @@ class UrlTreeGuardTest(TransactionTestCase):
         client, headers = self._client(user, route, None)
         with stub_kea(_recorded_kea()) as kea:
             on_main = client.generic(method, url, headers=headers)
+        # The format-suffix URLs of the REST Kea actions answer 500 on main (#245).
         if method == "GET" and "format" not in route.parameters:
             self.assertEqual(on_main.status_code, _main_get_status(route), f"{url} on main: {kea.commands()}")
 
