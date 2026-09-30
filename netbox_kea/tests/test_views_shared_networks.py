@@ -795,6 +795,7 @@ class TestServerSharedNetwork4EditView(_ViewTestBase):
         with _edit_stub(config) as kea:
             get = self.client.get(self._url())
         self.assertEqual(get.status_code, 302)
+        self.assertEqual(kea.commands(), ["config-get"])
         self._fresh_client()
         with _edit_stub(config) as kea:
             post = self.client.post(self._url(), self._post_data(description="Renamed"))
