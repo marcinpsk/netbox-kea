@@ -326,6 +326,28 @@ The middleware follows the contract, with these facts from netbox-branching 1.2.
   in one transaction (`NB/netbox/models/features.py:513-520`), so the refusal rolls the job
   deletion back.
 
+#### Implementation note (2026-09-30, increment 4)
+
+The sinks follow the design, with these facts from the code:
+
+- `kea.py` imports nothing from Django: the black-box suite imports it on the host through a
+  symlink. So the transport does not import `branching.py`. `KeaClient` takes a write guard, and
+  `Server.get_client()` passes `branching.bind()`, a `BranchBinding` that holds the branch that was
+  active when the client was built. It raises `BranchActive` when that branch is set, or else when a
+  branch is active at call time. `clone()` keeps it. Only `Server.get_client()` builds a `KeaClient`
+  in the runtime package, and guard 3 pins that too, so no runtime client skips the refusal.
+- `register()` connects the model receivers only when netbox-branching is installed, because a
+  `pre_delete` receiver turns off Django's fast delete. They cover every netbox_kea model from the
+  app registry, the set that the resolver keeps in main.
+- The job guard sets `job.error` and raises `JobFailed`. NetBox saves the error when it marks the
+  job failed.
+- The OpenGrep rules that matched command strings now match `KeaCommand` members.
+- The browser-suite harness client takes a wire name and turns it into a member: the unit suite
+  loads `test_workflows.py` standalone, where `KeaCommand` cannot be imported. The state check of
+  the browser branching test reads the configuration hash from `config-get` and the reservations
+  through `reservation-get-page`, because the plugin sends neither `config-hash-get` nor
+  `reservation-get-all`.
+
 ### Model decisions
 
 | Model | Branchable | Reason |
