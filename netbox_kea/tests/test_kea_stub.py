@@ -15,12 +15,13 @@ from pathlib import Path
 import pytest
 import requests
 
-from netbox_kea.kea import KeaClient, KeaCommand
+from netbox_kea.kea import KeaCommand
 from netbox_kea.tests.kea_stub import (
     KeaHttpStub,
     _http_response,
     _reservation_family,
     _typed_reservation,
+    kea_client,
     queued,
     stub_kea,
 )
@@ -38,7 +39,7 @@ def test_dict_payload_is_wrapped_in_single_entry_list():
 
 def test_http_boundary_returns_concrete_requests_responses():
     """The real KeaClient decodes a stubbed success and raises on a stubbed HTTP error."""
-    client = KeaClient(url="https://kea.example.invalid/")
+    client = kea_client(url="https://kea.example.invalid/")
     with stub_kea({"version-get": {"result": 0}}) as stub:
         assert client.command(KeaCommand.VERSION_GET, 4) == [{"result": 0}]
     assert stub.urls() == ["https://kea.example.invalid/"]

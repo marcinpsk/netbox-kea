@@ -790,7 +790,8 @@ class KeaClient:
         send_service: bool = True,
         max_unpaged_leases: int | None = 1000,
         on_config_change: Callable[[], None] | None = None,
-        write_guard: WriteGuard | None = None,
+        *,
+        write_guard: WriteGuard,
     ):
         """Initialise a Kea HTTP client session.
 
@@ -817,8 +818,8 @@ class KeaClient:
             on_config_change: Optional callback invoked after Kea's live configuration
                 changes. Cache invalidation failures are logged and do not interrupt
                 persistence of an already-applied change.
-            write_guard: Refuses each write command before it is sent. ``Server.get_client()``
-                passes the branch binding; a client without a guard sends every command.
+            write_guard: Required. Refuses each write command before it is sent. ``Server.get_client()``
+                passes the branch binding; a caller that passes another guard owns that choice.
 
         Raises:
             ValueError: If only one of client_cert/client_key is provided.
@@ -879,7 +880,7 @@ class KeaClient:
             raise TypeError(f"command must be a KeaCommand member, not {type(command).__name__}")
         if target is not None and (isinstance(target, bool) or target not in (4, 6)):
             raise ValueError(f"target must be 4, 6 or None, not {target!r}")
-        if command.is_write and self.write_guard is not None:
+        if command.is_write:
             self.write_guard.refuse(f"Kea command {command.value}")
         body: dict[str, Any] = {"command": command.value}
 

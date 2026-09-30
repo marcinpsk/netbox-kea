@@ -327,11 +327,17 @@ The middleware follows the contract, with these facts from netbox-branching 1.2.
 The sinks follow the design, with these facts from the code:
 
 - `kea.py` imports nothing from Django: the black-box suite imports it on the host through a
-  symlink. So the transport does not import `branching.py`. `KeaClient` takes a write guard, and
-  `Server.get_client()` passes `branching.bind()`, a `BranchBinding` that holds the branch that was
-  active when the client was built. It raises `BranchActive` when that branch is set, or else when a
-  branch is active at call time. `clone()` keeps it. Only `Server.get_client()` builds a `KeaClient`
-  in the runtime package, and guard 3 pins that too, so no runtime client skips the refusal.
+  symlink. So the transport does not import `branching.py`. Instead, every `KeaClient` must carry a
+  write guard: `write_guard` is a required keyword argument, and `command()` asks it before each
+  write member. `clone()` keeps it.
+- The plugin's own clients come only from `Server.get_client()`, which passes `branching.bind()`, a
+  `BranchBinding` that holds the branch that was active when the client was built. It raises
+  `BranchActive` when that branch is set, or else when a branch is active at call time. Guard 3
+  pins `get_client()` as the only build site in the runtime package, with `branching.bind()` as its
+  guard.
+- A caller outside the plugin that builds its own `KeaClient`, such as a Custom Script, passes its
+  own guard and owns that choice. The contract row for a non-HTTP caller holds for a client from
+  `Server.get_client()`, and for any client whose guard is a `BranchBinding`.
 - `register()` connects the model receivers only when netbox-branching is installed, because a
   `pre_delete` receiver turns off Django's fast delete. They cover every netbox_kea model from the
   app registry, the set that the resolver keeps in main.
