@@ -324,16 +324,16 @@ The `Kea IPAM Sync` job runs automatically when `rqworker` is active:
 Each server's summary reports `created`, `updated`, `errors`, `prefix_errors`, `conflicts`, `disagreements` and
 `skipped`:
 
-- **skipped** — rows the sync deliberately did not write, chiefly reservations that
+- **skipped**: rows the sync deliberately did not write, chiefly reservations that
   reserve no address. They are not errors and do not fail the job.
-- **errors** — rows that failed to sync. Any error fails the job; the per-row reason is
+- **errors**: rows that failed to sync. Any error fails the job; the per-row reason is
   logged at warning level with the server, IP version, subnet id and identifier *type*
   (never the identifier value, which can carry operator data).
-- **conflicts** — addresses already held in NetBox by something other than this Kea
+- **conflicts**: addresses already held in NetBox by something other than this Kea
   server, deduplicated per server across the lease and reservation phases. Up to 20 of
   them are named in the summary and the log, so the addresses to look at are visible
   without trawling debug output.
-- **disagreements** — addresses that two Kea servers report with different facts (the
+- **disagreements**: addresses that two Kea servers report with different facts (the
   hostname or the prefix length). The address keeps its values until the servers agree,
   or until one of them no longer reports it.
 
