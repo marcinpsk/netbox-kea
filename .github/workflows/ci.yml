@@ -93,6 +93,7 @@ jobs:
             --dist loadscope \
             --reuse-db \
             --cov=netbox_kea \
+            --cov-config=${{ github.workspace }}/pyproject.toml \
             --cov-report=xml:${{ github.workspace }}/coverage.xml \
             --no-header -q
 

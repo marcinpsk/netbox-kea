@@ -2914,3 +2914,23 @@ def test_the_floor_import_guard_clears_an_import_the_floor_skips(source):
 def test_the_floor_guard_reads_the_declared_floor():
     """A guard that read no floor would accept anything."""
     assert _declared_python_floor() >= (3, 10)
+
+
+#: The one coverage configuration; CI runs pytest from the NetBox checkout, where coverage.py cannot find it.
+_COVERAGE_CONFIG_OPTION = "--cov-config=${{ github.workspace }}/pyproject.toml"
+
+
+def test_every_ci_coverage_run_reads_the_repository_coverage_config():
+    """Each workflow pytest run that measures coverage must name pyproject.toml as its config."""
+    coverage_commands = []
+    for path in sorted((REPOSITORY_ROOT / ".github" / "workflows").glob("*.yml")):
+        jobs = yaml.safe_load(path.read_text())["jobs"]
+        scripts = (step["run"] for job in jobs.values() for step in job.get("steps", ()) if "run" in step)
+        for script in scripts:
+            coverage_commands += [
+                (path.name, command) for command in _pytest_commands(script) if re.search(r"(?<!\S)--cov[=\s]", command)
+            ]
+
+    assert coverage_commands, "No workflow pytest run passes --cov; this guard would pass without reading anything."
+    for name, command in coverage_commands:
+        assert re.search(rf"(?<!\S){re.escape(_COVERAGE_CONFIG_OPTION)}(?!\S)", command), (name, command)
