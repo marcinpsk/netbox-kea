@@ -39,7 +39,7 @@ class IPAMOwnershipLinkTest(TestCase):
 
                 self.assertEqual(link.owned_object, obj)
                 self.assertIsNone(link.facts)
-                self.assertFalse(link.stale)
+                self.assertIsNone(link.stale_mark)
 
     def test_a_link_without_an_object_is_refused(self):
         self._assert_refused()

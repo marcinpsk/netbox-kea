@@ -29,7 +29,7 @@ class Migration(migrations.Migration):
                 ('source', models.CharField(max_length=16)),
                 ('facts', models.JSONField(blank=True, null=True)),
                 ('confirmation', models.BigIntegerField()),
-                ('stale', models.BooleanField(default=False)),
+                ('stale_mark', models.BigIntegerField(blank=True, null=True)),
                 ('ip_address', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.CASCADE, related_name='kea_ownership_links', to='ipam.ipaddress')),
                 ('ip_range', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.CASCADE, related_name='kea_ownership_links', to='ipam.iprange')),
                 ('prefix', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.CASCADE, related_name='kea_ownership_links', to='ipam.prefix')),
