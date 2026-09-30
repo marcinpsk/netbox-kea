@@ -445,6 +445,11 @@ class TestServerOptionsView(_ViewTestBase):
             response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
 
+    def test_get_help_names_each_command_of_the_change(self):
+        with stub_kea({"config-get": _SERVER_OPTIONS_CONFIG_GET}):
+            response = self.client.get(self._url())
+        self._assert_help_names_the_read_modify_write(response)
+
     def test_get_prefills_existing_options(self):
         """GET pre-populates formset with existing server-level option-data."""
         with stub_kea({"config-get": _SERVER_OPTIONS_CONFIG_GET}):
@@ -500,7 +505,7 @@ class TestServerOptionsView(_ViewTestBase):
             response = self.client.post(self._url(), self._post_data())
         self.assertEqual(response.status_code, 302)
         self._assert_redirect_to_integer_pk(response)
-        self.assertIn("config-set", kea.commands())
+        self.assertEqual(kea.commands(), ["config-get", "config-test", "config-set", *_PERSIST])
 
     def test_post_passes_correct_version(self):
         """POST rewrites the DHCPv4 server-level option-data."""

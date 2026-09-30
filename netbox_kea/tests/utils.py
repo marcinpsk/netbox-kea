@@ -102,6 +102,13 @@ class _ViewTestBase(TestCase):
                 f"Redirect went to bad URL: {response.url}",
             )
 
+    def _assert_help_names_the_read_modify_write(self, response):
+        """Assert that the page names the four commands of the read-modify-write once, in their order."""
+        chain = " → ".join(
+            f"<code>{command}</code>" for command in ("config-get", "config-test", "config-set", "config-write")
+        )
+        self.assertEqual(re.sub(r"\s+", " ", response.content.decode()).count(chain), 1)
+
     def _assert_redirect_to_integer_pk(self, response):
         """Assert that a redirect URL contains an integer server pk."""
         self._assert_no_none_pk_redirect(response)
