@@ -11,6 +11,13 @@ name: CI
 
 permissions: read-all
 
+env:
+  # The NetBox release of the unit-test jobs and of the branching browser job. Keep it equal to
+  # QUERY_COUNT_NETBOX_VERSION in netbox_kea/tests/conftest.py.
+  NETBOX_RELEASE: v4.7.0
+  # The netbox-branching release of the branching jobs; tests/docker/docker-compose.branching.yml reads it.
+  NETBOX_BRANCHING_VERSION: 1.2.1
+
 jobs:
   unit-test:
     runs-on: ubuntu-latest
@@ -50,8 +57,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           repository: netbox-community/netbox
-          # Keep it equal to QUERY_COUNT_NETBOX_VERSION in netbox_kea/tests/conftest.py;
-          ref: v4.7.0
+          ref: ${{ env.NETBOX_RELEASE }}
           path: netbox
           persist-credentials: false
 
@@ -162,7 +168,7 @@ jobs:
             uv pip install --native-tls --system -r /dev/stdin
           uv pip install --native-tls --system -r netbox/requirements.txt
           uv pip install --native-tls --system -e . \
-            "netbox-plugin-dhcp==0.2.0" "netboxlabs-netbox-branching==1.2.1"
+            "netbox-plugin-dhcp==0.2.0" "netboxlabs-netbox-branching==${NETBOX_BRANCHING_VERSION}"
 
       - name: Set up NetBox configuration
         working-directory: netbox/netbox
@@ -262,7 +268,8 @@ jobs:
         with:
           enable-cache: true
 
-      - name: Set up Python
+      - &setup-browser-python
+        name: Set up Python
         id: setup-python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
@@ -273,7 +280,8 @@ jobs:
           # bundled Python, so it is not tied to any matrix leg.
           python-version: "3.14"
 
-      - name: Ensure playwright browsers are installed
+      - &install-playwright
+        name: Ensure playwright browsers are installed
         # --with-deps runs apt-get update, which fails the job on any broken source the
         # runner image carries. Playwright downloads its own Chromium, so Google's Chrome
         # repository is never needed here and its outages must not reach this suite.
@@ -281,7 +289,8 @@ jobs:
           sudo rm -f /etc/apt/sources.list.d/google-chrome.list /etc/apt/sources.list.d/google-chrome.sources
           uv run --native-tls playwright install --with-deps
 
-      - name: Run uv build
+      - &build-wheel
+        name: Run uv build
         run: uv build --native-tls
 
       - name: Run test_setup.sh
@@ -301,7 +310,8 @@ jobs:
           path: test-results/
           retention-days: 90
 
-      - name: Show Docker logs
+      - &show-docker-logs
+        name: Show Docker logs
         if: ${{ always() }}
         run: docker compose logs
         working-directory: ./tests/docker/
@@ -317,24 +327,14 @@ jobs:
     steps:
       - *checkout-repository
       - *setup-uv
-
-      - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
-        with:
-          python-version: "3.14"
-
-      - name: Ensure playwright browsers are installed
-        run: |
-          sudo rm -f /etc/apt/sources.list.d/google-chrome.list /etc/apt/sources.list.d/google-chrome.sources
-          uv run --native-tls playwright install --with-deps
-
-      - name: Run uv build
-        run: uv build --native-tls
+      - *setup-browser-python
+      - *install-playwright
+      - *build-wheel
 
       - name: Run test_setup.sh
         run: ./tests/test_setup.sh
         env:
-          NETBOX_CONTAINER_TAG: v4.7.0
+          NETBOX_CONTAINER_TAG: ${{ env.NETBOX_RELEASE }}
 
       # NETBOX_KEA_REQUIRE_BRANCHING=1 makes the module fail, not skip, without netbox-branching.
       - name: Run the branching browser tests
@@ -351,7 +351,4 @@ jobs:
           path: test-results/
           retention-days: 90
 
-      - name: Show Docker logs
-        if: ${{ always() }}
-        run: docker compose logs
-        working-directory: ./tests/docker/
+      - *show-docker-logs

@@ -739,13 +739,27 @@ def test_branching_job_cannot_pass_with_the_branching_tests_skipped():
     install = next(step["run"] for step in runs if "uv pip install" in step["run"])
     test_step = next(step for step in runs if "pytest" in step["run"])
 
-    assert '"netboxlabs-netbox-branching==1.2.1"' in install
+    assert re.fullmatch(r"\d+\.\d+\.\d+", str(yaml.safe_load(workflow)["env"]["NETBOX_BRANCHING_VERSION"]))
+    assert '"netboxlabs-netbox-branching==${NETBOX_BRANCHING_VERSION}"' in install
     assert '"netbox-plugin-dhcp==0.2.0"' in install
     assert test_step["env"]["NETBOX_KEA_REQUIRE_BRANCHING"] == "1"
     assert "/netbox_kea/tests/test_branching.py " in test_step["run"]
     assert job["permissions"] == {"contents": "read"}
     source = (REPOSITORY_ROOT / "netbox_kea/tests/test_branching.py").read_text()
     assert 'raise RuntimeError(f"{_REQUIRE_BRANCHING}=1, but netbox_branching is not an installed app")' in source
+
+
+def test_the_branching_browser_job_reads_both_pins_from_the_workflow_env():
+    """The job runs the netbox-branching harness variant on the unit-test NetBox release, pinned once each."""
+    workflow = yaml.safe_load((REPOSITORY_ROOT / ".github/workflows/ci.yml").read_text())
+    job = workflow["jobs"]["branching-browser-test"]
+    setup = next(step for step in job["steps"] if step.get("run") == "./tests/test_setup.sh")
+    variant = (REPOSITORY_ROOT / "tests/docker/docker-compose.branching.yml").read_text()
+
+    assert job["env"]["COMPOSE_FILE"].split(":")[-1] == "docker-compose.branching.yml"
+    assert setup["env"]["NETBOX_CONTAINER_TAG"] == "${{ env.NETBOX_RELEASE }}"
+    assert "netboxlabs-netbox-branching==${NETBOX_BRANCHING_VERSION:?" in variant
+    assert "NETBOX_BRANCHING_VERSION" in workflow["env"]
 
 
 def test_worker_settings_are_read_as_whole_tokens():
@@ -1215,15 +1229,19 @@ def test_ci_pins_the_netbox_release_the_query_counts_describe():
     """
     from netbox_kea.tests.conftest import QUERY_COUNT_NETBOX_VERSION
 
-    workflow = (REPOSITORY_ROOT / ".github" / "workflows" / "ci.yml").read_text()
+    workflow = yaml.safe_load((REPOSITORY_ROOT / ".github" / "workflows" / "ci.yml").read_text())
     # Every job that checks NetBox out, so a bump cannot leave one job on an older release.
     checkouts = [
-        section.split("path: netbox", 1)[0] for section in workflow.split("repository: netbox-community/netbox")[1:]
+        step["with"]
+        for job in workflow["jobs"].values()
+        for step in job["steps"]
+        if step.get("with", {}).get("repository") == "netbox-community/netbox"
     ]
 
+    assert workflow["env"]["NETBOX_RELEASE"] == f"v{QUERY_COUNT_NETBOX_VERSION}"
     assert checkouts, "No job checks NetBox out; this guard would pass without reading anything."
     for checkout in checkouts:
-        assert f"ref: v{QUERY_COUNT_NETBOX_VERSION}\n" in checkout, checkout
+        assert checkout["ref"] == "${{ env.NETBOX_RELEASE }}", checkout
 
 
 def test_query_count_assertion_sites_still_exist():
