@@ -519,7 +519,12 @@ class SubnetDefinition:
     entry: str
 
     def edited(self, edit: SubnetEdit) -> dict[str, Any]:
-        """Return the Subnet with the fields of *edit*, and every other field that Kea returned."""
+        """Return the Subnet with the fields of *edit*, and every other field that Kea returned.
+
+        Raises:
+            MalformedConfiguration: If the Subnet has a value that the edit cannot keep or replace safely.
+
+        """
         subnet = json.loads(self.entry)
         # Kea adds a read-only metadata key to some replies, so the update does not send it back.
         subnet.pop("metadata", None)
@@ -550,15 +555,25 @@ class SubnetDefinition:
         return subnet
 
     def _pools_by_range(self, pools: list[Any]) -> dict[str, dict[str, Any]]:
-        """Return each live Pool entry by its range text, so that a kept Pool keeps its Pool-level fields."""
+        """Return each live Pool entry by its range text, so that a kept Pool keeps its Pool-level fields.
+
+        Raises:
+            MalformedConfiguration: If a live Pool entry is not an object or has no range in the Subnet.
+
+        """
         by_range: dict[str, dict[str, Any]] = {}
         for entry in pools:
             if not isinstance(entry, dict):
-                continue
+                raise MalformedConfiguration(
+                    f"subnet{self.family}-get returned a non-object Pool entry for Subnet {self.subnet_id}."
+                )
             try:
                 by_range[parse_pool(entry.get("pool"), self.network).range] = entry
-            except ValueError:
-                continue
+            except ValueError as exc:
+                raise MalformedConfiguration(
+                    f"subnet{self.family}-get returned a malformed Pool {entry.get('pool')!r} for Subnet "
+                    f"{self.subnet_id}."
+                ) from exc
         return by_range
 
 

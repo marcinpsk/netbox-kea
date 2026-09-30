@@ -25,6 +25,7 @@ from netbox_kea.kea import (
     LeaseQueryNotMeasurable,
     LeaseQueryPreflightUnavailable,
     LeaseQueryTooBroad,
+    MalformedConfiguration,
     SubnetEdit,
     SubnetFields,
     check_response,
@@ -1814,6 +1815,20 @@ class TestSubnetUpdate(TestCase):
             self._options(existing, version=6, dns_servers=("2001:4860:4860::8844",)),
             [{"name": "domain-search", "data": "example.com"}, {"name": "dns-servers", "data": "2001:4860:4860::8844"}],
         )
+
+    def test_a_live_pool_entry_that_the_edit_cannot_keep_raises_and_sends_no_update(self):
+        """The update replaces the Pool list, so a skipped live entry would be deleted from Kea."""
+        for label, entry in (
+            ("not an object", "10.0.0.50-10.0.0.99"),
+            ("no range", {"pool": "not a pool"}),
+            ("outside the Subnet", {"pool": "10.0.1.50-10.0.1.99"}),
+        ):
+            live = {"id": 42, "subnet": "10.0.0.0/24", "pools": [{"pool": "10.0.0.10-10.0.0.20"}, entry]}
+            with self.subTest(label), stub_kea({"subnet4-get": _subnet_get_reply(4, live)}) as kea:
+                definition = self.client.subnet_definition(4, 42)
+                with self.assertRaises(MalformedConfiguration):
+                    definition.edited(_edit(pools=("10.0.0.10-10.0.0.20",)))
+                self.assertEqual(kea.commands(), ["subnet4-get"])
 
 
 class TestKeaClientContextManager(TestCase):
