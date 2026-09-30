@@ -13,14 +13,20 @@ from collections.abc import Callable
 from contextlib import suppress
 
 from core.exceptions import JobFailed
-from django.db import connection, connections
+from django.db import connection, connections, transaction
 from django.test import TestCase, TransactionTestCase, override_settings
 from ipam.models import VRF
 from ipam.models import IPAddress as NbIP
 
-from netbox_kea.ipam_reconciliation import LeasePhase, SyncReport, reconcile
+from netbox_kea.ipam_reconciliation import LeasePhase, SyncReport, _lock_identity, reconcile
 from netbox_kea.jobs import KeaIpamSyncJob
-from netbox_kea.models import CONFIRMATION_SEQUENCE, IPAMOwnershipLink, next_confirmation_number
+from netbox_kea.models import (
+    CONFIRMATION_SEQUENCE,
+    IPAMOwnershipLink,
+    IPAMOwnershipSource,
+    next_confirmation_number,
+)
+from netbox_kea.sync import _cleanup_stale_ips
 from netbox_kea.tests.kea_stub import stub_kea
 from netbox_kea.tests.test_jobs import _PLUGINS_CONFIG, _PLUGINS_CONFIG_CLEANUP, _lease_page, _make_job, _patch_kea
 from netbox_kea.tests.utils import _make_db_server
@@ -487,6 +493,8 @@ class LeasePhaseConcurrencyTest(TransactionTestCase):
         deadline = time.monotonic() + 30
         with connection.cursor() as cursor:
             while time.monotonic() < deadline:
+                # Inside a transaction, pg_stat_activity keeps its first snapshot until it is cleared.
+                cursor.execute("SELECT pg_stat_clear_snapshot()")
                 cursor.execute(
                     "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database()"
                     " AND wait_event_type = 'Lock'"
@@ -578,3 +586,27 @@ class LeasePhaseConcurrencyTest(TransactionTestCase):
         self.assertEqual(_links(ip), {})
         row = _row()
         self.assertEqual((row.description, row.dns_name), ("Printer on floor 2", "host"))
+
+    def test_the_old_stale_cleanup_keeps_a_row_that_a_concurrent_run_links_under_the_identity_lock(self):
+        server = _server("owner")
+        ip = NbIP.objects.create(
+            address=f"{ADDRESS}/24", status="dhcp", dns_name="host", description="Synced from Kea DHCP lease"
+        )
+
+        with transaction.atomic():
+            # The test holds the identity lock like a reconcile run, and links the row while the cleanup waits.
+            _lock_identity(None, ADDRESS)
+            self._start("cleanup", lambda: _cleanup_stale_ips("10.0.0.6", "host", mode="remove"))
+            self._wait_for_lock_waits(1)
+            IPAMOwnershipLink.objects.create(
+                server=server,
+                family=4,
+                source=IPAMOwnershipSource.LEASE,
+                ip_address=ip,
+                confirmation=next_confirmation_number(),
+            )
+        self._join()
+
+        self.assertEqual(self.results["cleanup"], 0)
+        self.assertTrue(NbIP.objects.filter(pk=ip.pk).exists())
+        self.assertEqual(set(_links(ip)), {"owner"})
