@@ -295,7 +295,10 @@ def _confirmed_side_effects(
         request=request,
     )
     if result.persistence == "failed":
-        messages.warning(request, "Kea applied the change, but could not persist it to disk.")
+        messages.warning(
+            request,
+            " ".join(("Kea applied the change, but could not persist it to disk.", *result.persistence_diagnostics)),
+        )
     elif result.persistence == "not-requested":
         messages.info(request, "Kea applied the change. Configuration persistence is disabled for this server.")
     if sync_to_netbox and result.intended is not None and not result.intended.addresses:

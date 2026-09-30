@@ -399,7 +399,7 @@ class TestReservationMutationViews(_ViewTestBase):
         self.assertEqual(kea.commands().count("reservation-add"), 1)
         self.assertEqual(kea.commands().count("config-write"), 1)
         self.assertIn(
-            "Kea applied the change, but could not persist it to disk.",
+            "Kea applied the change, but could not persist it to disk. config-write failed: write failed",
             [str(message) for message in get_messages(response.wsgi_request)],
         )
         self.assertEqual(len(received), 1)
