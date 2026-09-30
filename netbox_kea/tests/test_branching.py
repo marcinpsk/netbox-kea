@@ -650,12 +650,12 @@ class BranchActiveResponseTest(TransactionTestCase):
     """The middleware renders BranchActive, which plugin code raises at a change sink, as the 409 of the contract."""
 
     def setUp(self):
-        from netbox_kea.tests.branch_refusal_urls import API_REFUSE_PATH, REFUSE_PATH
+        from netbox_kea.tests.branch_refusal_urls import API_REFUSE_PATH, OUTSIDE_REFUSE_PATH, REFUSE_PATH
 
         self.user = get_user_model().objects.create_superuser("sink-user")
         self.client.force_login(self.user)
         self.branch = _provisioned_branch(self, "sink")
-        self.ui, self.api = f"/{REFUSE_PATH}", f"/{API_REFUSE_PATH}"
+        self.ui, self.api, self.outside = f"/{REFUSE_PATH}", f"/{API_REFUSE_PATH}", f"/{OUTSIDE_REFUSE_PATH}"
         self.text = f"Branch {self.branch.name} is active."
 
     def test_on_main_the_sink_does_not_refuse(self):
@@ -669,11 +669,19 @@ class BranchActiveResponseTest(TransactionTestCase):
         self.assertContains(response, self.text, status_code=409)
         self.assertContains(response, f'href="{branching.main_url()}"', status_code=409)
 
+    def test_a_view_outside_the_plugin_gets_the_409_page_too(self):
+        self.assertFalse(branching.plugin_owned(resolve(self.outside).func))
+        self.client.cookies[COOKIE_NAME] = self.branch.schema_id
+
+        response = self.client.get(self.outside)
+
+        self.assertContains(response, self.text, status_code=409)
+
     def test_a_rest_request_gets_the_409_code(self):
         response = self.client.get(self.api, headers={BRANCH_HEADER: self.branch.schema_id})
 
         self.assertEqual(response.status_code, 409)
-        self.assertEqual(response.json()["code"], "branch_write_refused")
+        self.assertEqual(response.json()["code"], branching.BRANCH_WRITE_REFUSED)
 
     def test_an_htmx_request_reloads_and_shows_the_message(self):
         self.client.cookies[COOKIE_NAME] = self.branch.schema_id
