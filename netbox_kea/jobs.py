@@ -543,7 +543,9 @@ class KeaIpamSyncJob(JobRunner):
         name = "Kea IPAM Sync"
 
     @classmethod
-    def enqueue_once(cls, *args: Any, **kwargs: Any) -> Any:
+    def enqueue_once(
+        cls, instance: Any = None, schedule_at: Any = None, interval: int | None = None, *args: Any, **kwargs: Any
+    ) -> Any:
         """Heal ghost scheduled-job records before delegating to NetBox.
 
         NetBox schedules system jobs by calling ``enqueue_once`` on the job class
@@ -555,16 +557,14 @@ class KeaIpamSyncJob(JobRunner):
         during app initialization" warning.
 
         We clean ghost records first, then delegate to the stock
-        ``enqueue_once`` so it can create a fresh schedule.  The ``interval``
-        kwarg is replaced with ``SyncConfig.interval_minutes``; other
-        ``*args``/``**kwargs`` are forwarded verbatim to insulate against
-        signature drift across NetBox versions.
+        ``enqueue_once`` so it can create a fresh schedule.  The signature is
+        NetBox's, so a positional ``interval`` binds once; ``SyncConfig.interval_minutes``
+        replaces it, and the other arguments are forwarded verbatim.
         """
         from .models import SyncConfig
 
         cls._heal_ghost_scheduled_jobs()
-        kwargs["interval"] = SyncConfig.get().interval_minutes
-        return super().enqueue_once(*args, **kwargs)
+        return super().enqueue_once(instance, schedule_at, SyncConfig.get().interval_minutes, *args, **kwargs)
 
     @classmethod
     def _heal_ghost_scheduled_jobs(cls) -> None:
