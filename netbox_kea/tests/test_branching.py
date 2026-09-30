@@ -7,9 +7,13 @@ skipping when netbox-branching is not an installed app.
 """
 
 import importlib
+import json
 import os
 import uuid
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import ExitStack, contextmanager
+from dataclasses import dataclass
+from urllib.parse import urlencode
 
 import pytest
 
@@ -30,22 +34,27 @@ from django.apps import apps  # noqa: E402
 from django.conf import settings  # noqa: E402
 from django.contrib.auth import get_user_model  # noqa: E402
 from django.core.management import call_command  # noqa: E402
-from django.db import connection, models  # noqa: E402
+from django.db import connection, connections, models, router  # noqa: E402
 from django.db.migrations import RunPython, RunSQL, SeparateDatabaseAndState  # noqa: E402
 from django.db.migrations.loader import MigrationLoader  # noqa: E402
 from django.db.migrations.operations.base import Operation  # noqa: E402
 from django.db.migrations.operations.models import ModelOperation  # noqa: E402
 from django.db.models import ProtectedError  # noqa: E402
-from django.test import RequestFactory, SimpleTestCase, TransactionTestCase  # noqa: E402
-from ipam.models import VRF  # noqa: E402
+from django.test import Client, RequestFactory, SimpleTestCase, TransactionTestCase, override_settings  # noqa: E402
+from django.test.utils import CaptureQueriesContext  # noqa: E402
+from django.urls import reverse  # noqa: E402
+from ipam.models import VRF, IPAddress  # noqa: E402
 from netbox.context_managers import event_tracking  # noqa: E402
 from netbox_branching import utilities as branching_utilities  # noqa: E402
 from netbox_branching.choices import BranchStatusChoices  # noqa: E402
+from netbox_branching.constants import BRANCH_HEADER, COOKIE_NAME, QUERY_PARAM  # noqa: E402
 from netbox_branching.models import Branch  # noqa: E402
 from netbox_branching.utilities import activate_branch, supports_branching  # noqa: E402
 
+from netbox_kea.kea import KeaException  # noqa: E402
 from netbox_kea.models import Server  # noqa: E402
-from netbox_kea.tests.utils import _make_db_server  # noqa: E402
+from netbox_kea.tests.kea_stub import stub_kea  # noqa: E402
+from netbox_kea.tests.utils import _WRITE_VERBS, _make_db_server  # noqa: E402
 
 # Changing this set needs a design decision (docs/design/netbox-branching.md).
 BRANCHABLE_MODELS: frozenset[str] = frozenset()
@@ -147,6 +156,21 @@ class ResolverTest(SimpleTestCase):
         with activate_branch(branch):
             self.assertIs(branching.active_branch(), branch)
         self.assertIsNone(branching.active_branch())
+
+    def test_refuse_in_branch_raises_branch_active_with_the_branch(self):
+        branch = Branch(name="refusal only")
+
+        with activate_branch(branch), self.assertRaises(branching.BranchActive) as refused:
+            branching.refuse_in_branch("a test change")
+
+        self.assertIs(refused.exception.branch, branch)
+        self.assertEqual(refused.exception.operation, "a test change")
+
+    def test_refuse_in_branch_does_nothing_on_main(self):
+        self.assertIsNone(branching.refuse_in_branch("a test change"))
+
+    def test_branch_active_is_not_a_kea_error(self):
+        self.assertFalse(issubclass(branching.BranchActive, KeaException))
 
 
 class SuiteConfigurationTest(SimpleTestCase):
@@ -329,3 +353,269 @@ class ProvisionedBranchTest(TransactionTestCase):
         self.assertTrue(VRF.objects.filter(pk=vrf.pk).exists(), "the merge deleted main's VRF")
         server.refresh_from_db()
         self.assertEqual(server.sync_vrf_id, vrf.pk)
+
+
+# The Server row that each request below tries to change, and the new value it sends.
+_BEFORE, _AFTER = "https://before.example.com", "https://after.example.com"
+_VERSION_OK = {"result": 0, "arguments": {"extended": "3.2.0"}}
+
+
+def _branch_alias(branch: Branch) -> str:
+    """Return the connection alias that netbox-branching routes branchable writes to while *branch* is active."""
+    with activate_branch(branch):
+        return router.db_for_write(VRF)
+
+
+@contextmanager
+def _writes(branch: Branch) -> Iterator[list[str]]:
+    """Collect each INSERT, UPDATE or DELETE statement on main's connection and on the branch connection."""
+    writes: list[str] = []
+    with ExitStack() as stack:
+        captures = [
+            stack.enter_context(CaptureQueriesContext(connections[alias]))
+            for alias in ("default", _branch_alias(branch))
+        ]
+        yield writes
+    writes.extend(
+        query["sql"]
+        for capture in captures
+        for query in capture.captured_queries
+        if query["sql"].lstrip().upper().startswith(_WRITE_VERBS)
+    )
+
+
+def _logged_in_client(user) -> tuple[Client, str]:
+    """Return a client that enforces CSRF like a browser, and the CSRF token that a page on main gave it."""
+    client = Client(enforce_csrf_checks=True)
+    client.force_login(user)
+    client.get(reverse("plugins:netbox_kea:server_list"))
+    return client, client.cookies[settings.CSRF_COOKIE_NAME].value
+
+
+@dataclass(frozen=True)
+class _Selection:
+    """One row of the design's selector table: how a change request selects a branch, and its outcome.
+
+    ``header``, ``query`` and ``cookie`` name a branch state: ready, unready (merged), unknown, or "" (empty).
+    """
+
+    name: str
+    outcome: str
+    api: bool = False
+    htmx: bool = False
+    header: str | None = None
+    query: str | None = None
+    cookie: str | None = None
+    csrf: bool = True
+
+
+_SELECTIONS = (
+    _Selection("UI, no selector", "served"),
+    _Selection("UI, X-NetBox-Branch header naming a ready branch", "served", header="ready"),
+    _Selection("UI, query naming an unknown branch", "nbb-400", query="unknown"),
+    _Selection("UI, query naming an unready branch", "unusable", query="unready"),
+    _Selection("UI, empty query with a stale cookie", "served", query="", cookie="unready"),
+    _Selection("UI, query naming a ready branch", "refused", query="ready"),
+    _Selection("UI, cookie naming an unknown branch", "unusable", cookie="unknown"),
+    _Selection("UI, cookie naming an unready branch", "unusable", cookie="unready"),
+    _Selection("UI, cookie naming a ready branch", "refused", cookie="ready"),
+    _Selection("UI, cookie naming a ready branch, no CSRF token", "csrf-403", cookie="ready", csrf=False),
+    _Selection("HTMX, cookie naming a ready branch", "refused", htmx=True, cookie="ready"),
+    _Selection("HTMX, query naming a ready branch", "refused", htmx=True, query="ready"),
+    _Selection("HTMX, cookie naming an unready branch", "unusable", htmx=True, cookie="unready"),
+    _Selection("HTMX, cookie naming an unknown branch", "unusable", htmx=True, cookie="unknown"),
+    _Selection("HTMX, query naming an unready branch", "unusable", htmx=True, query="unready"),
+    _Selection("API, no selector", "served", api=True),
+    _Selection("API, header naming an unknown branch", "nbb-400", api=True, header="unknown"),
+    _Selection("API, header naming an unready branch", "nbb-400", api=True, header="unready"),
+    _Selection("API, header naming a ready branch", "refused", api=True, header="ready"),
+    _Selection("API, query naming an unknown branch", "nbb-400", api=True, query="unknown"),
+    _Selection("API, query naming an unready branch", "unusable", api=True, query="unready"),
+    _Selection("API, empty query with a stale cookie", "served", api=True, query="", cookie="unready"),
+    _Selection("API, query naming a ready branch", "refused", api=True, query="ready"),
+    _Selection("API, cookie naming an unknown branch", "unusable", api=True, cookie="unknown"),
+    _Selection("API, cookie naming an unready branch", "unusable", api=True, cookie="unready"),
+    _Selection("API, cookie naming a ready branch", "refused", api=True, cookie="ready"),
+)
+
+_REFUSAL_STATUS = {"refused": 409, "unusable": 409, "nbb-400": 400, "csrf-403": 403}
+
+
+class SelectorTableTest(TransactionTestCase):
+    """The design's selector table: a change to a Server row, sent with each branch selection, CSRF enforced."""
+
+    def test_each_selection_has_the_outcome_of_the_design(self):
+        user = get_user_model().objects.create_superuser("selector-user")
+        ready = _provisioned_branch(self, "selector ready")
+        unready = Branch(name="selector merged")
+        unready.save(provision=False)
+        Branch.objects.filter(pk=unready.pk).update(status=BranchStatusChoices.MERGED)
+        schema_ids = {"ready": ready.schema_id, "unready": unready.schema_id, "unknown": "unknown0", "": ""}
+
+        for number, selection in enumerate(_SELECTIONS):
+            with self.subTest(selection.name):
+                server = _make_db_server(name=f"selector-{number}", ca_url=_BEFORE, dhcp6=False)
+                client, token = _logged_in_client(user)
+                if selection.cookie is not None:
+                    client.cookies[COOKIE_NAME] = schema_ids[selection.cookie]
+                headers = {"X-CSRFToken": token} if selection.csrf else {}
+                if selection.header is not None:
+                    headers[BRANCH_HEADER] = schema_ids[selection.header]
+                if selection.htmx:
+                    headers["HX-Request"] = "true"
+                query = "" if selection.query is None else f"?{urlencode({QUERY_PARAM: schema_ids[selection.query]})}"
+
+                with stub_kea({"version-get": _VERSION_OK}) as kea, _writes(ready) as writes:
+                    if selection.api:
+                        response = client.patch(
+                            reverse("plugins-api:netbox_kea-api:server-detail", args=[server.pk]) + query,
+                            data=json.dumps({"ca_url": _AFTER}),
+                            content_type="application/json",
+                            headers=headers,
+                        )
+                    else:
+                        response = client.post(
+                            reverse("plugins:netbox_kea:server_edit", args=[server.pk]) + query,
+                            data={"name": server.name, "ca_url": _AFTER, "dhcp4": True, "ssl_verify": True},
+                            headers=headers,
+                        )
+                server.refresh_from_db()
+
+                if selection.outcome == "served":
+                    self.assertEqual(response.status_code, 200 if selection.api else 302, response.content[:500])
+                    self.assertEqual(server.ca_url, _AFTER)
+                    self.assertIn("version-get", kea.commands())
+                    continue
+                self.assertEqual(response.status_code, _REFUSAL_STATUS[selection.outcome], response.content[:500])
+                self.assertEqual(server.ca_url, _BEFORE)
+                self.assertEqual(kea.commands(), [])
+                self.assertEqual(writes, [])
+                self._assert_the_refusal_says_why(selection, response, client, ready)
+
+    def _assert_the_refusal_says_why(self, selection: _Selection, response, client: Client, ready: Branch) -> None:
+        if selection.outcome == "nbb-400":
+            reason = b"is not ready for use" if selection.header == "unready" else b"Invalid branch identifier"
+            self.assertIn(reason, response.content)
+            return
+        if selection.outcome == "csrf-403":
+            self.assertIn(b"CSRF", response.content)
+            return
+        refused = selection.outcome == "refused"
+        text = f"Branch {ready.name} is active." if refused else "The selected branch is not usable"
+        if selection.api:
+            code = "branch_write_refused" if refused else "branch_selection_unusable"
+            self.assertEqual(response.json()["code"], code)
+            self.assertIn(text, response.json()["detail"])
+        elif selection.htmx:
+            self.assertEqual(response.content, b"")
+            if refused:
+                self.assertEqual(response.headers["HX-Refresh"], "true")
+                page = client.get(reverse("plugins:netbox_kea:server_list"))
+            else:
+                self.assertEqual(response.headers["HX-Redirect"], branching.main_url())
+                page = client.get(response.headers["HX-Redirect"])
+            self.assertContains(page, text)
+        else:
+            self.assertContains(response, text, status_code=409)
+            self.assertContains(response, f'href="{branching.main_url()}"', status_code=409)
+
+
+class _BranchReadTestCase(TransactionTestCase):
+    """A superuser, a Server and an IP address in main, then a provisioned branch."""
+
+    def setUp(self):
+        self.user = get_user_model().objects.create_superuser("branch-reader")
+        self.client.force_login(self.user)
+        self.server = _make_db_server(name="read-in-branch", dhcp6=False)
+        self.ip = IPAddress.objects.create(address="192.0.2.10/24", dns_name="host.example.com")
+        self.branch = _provisioned_branch(self, "reads")
+
+
+class SourcesHeaderTest(_BranchReadTestCase):
+    """In a branch, plugin and GraphQL responses say where the plugin's data comes from; other responses do not."""
+
+    def setUp(self):
+        super().setUp()
+        self.sources = f"kea=live; plugin=main; branch={self.branch.schema_id}"
+
+    def test_a_plugin_page_carries_the_sources_header(self):
+        self.client.cookies[COOKIE_NAME] = self.branch.schema_id
+
+        response = self.client.get(reverse("plugins:netbox_kea:server_list"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers[branching.SOURCES_HEADER], self.sources)
+
+    def test_a_plugin_page_on_main_carries_no_sources_header(self):
+        response = self.client.get(reverse("plugins:netbox_kea:server_list"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn(branching.SOURCES_HEADER, response.headers)
+
+    def test_a_rest_read_carries_the_sources_header(self):
+        response = self.client.get(
+            reverse("plugins-api:netbox_kea-api:server-list"), headers={BRANCH_HEADER: self.branch.schema_id}
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers[branching.SOURCES_HEADER], self.sources)
+        self.assertEqual([row["name"] for row in response.json()["results"]], [self.server.name])
+
+    def test_a_graphql_server_list_query_carries_the_sources_header(self):
+        response = self.client.post(
+            reverse("graphql"),
+            data=json.dumps({"query": "query { server_list { name } }"}),
+            content_type="application/json",
+            headers={BRANCH_HEADER: self.branch.schema_id},
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.headers[branching.SOURCES_HEADER], self.sources)
+        self.assertEqual(response.json()["data"]["server_list"], [{"name": self.server.name}])
+
+    def test_a_core_job_api_read_carries_no_sources_header(self):
+        response = self.client.get(reverse("core-api:job-list"), headers={BRANCH_HEADER: self.branch.schema_id})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn(branching.SOURCES_HEADER, response.headers)
+
+
+@override_settings(ROOT_URLCONF="netbox_kea.tests.branch_refusal_urls")
+class BranchActiveResponseTest(TransactionTestCase):
+    """The middleware renders BranchActive, which plugin code raises at a change sink, as the 409 of the contract."""
+
+    def setUp(self):
+        from netbox_kea.tests.branch_refusal_urls import API_REFUSE_PATH, REFUSE_PATH
+
+        self.user = get_user_model().objects.create_superuser("sink-user")
+        self.client.force_login(self.user)
+        self.branch = _provisioned_branch(self, "sink")
+        self.ui, self.api = f"/{REFUSE_PATH}", f"/{API_REFUSE_PATH}"
+        self.text = f"Branch {self.branch.name} is active."
+
+    def test_on_main_the_sink_does_not_refuse(self):
+        self.assertContains(self.client.get(self.ui), "not refused")
+
+    def test_a_ui_request_gets_the_409_page(self):
+        self.client.cookies[COOKIE_NAME] = self.branch.schema_id
+
+        response = self.client.get(self.ui)
+
+        self.assertContains(response, self.text, status_code=409)
+        self.assertContains(response, f'href="{branching.main_url()}"', status_code=409)
+
+    def test_a_rest_request_gets_the_409_code(self):
+        response = self.client.get(self.api, headers={BRANCH_HEADER: self.branch.schema_id})
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["code"], "branch_write_refused")
+
+    def test_an_htmx_request_reloads_and_shows_the_message(self):
+        self.client.cookies[COOKIE_NAME] = self.branch.schema_id
+
+        response = self.client.get(self.ui, headers={"HX-Request": "true"})
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.content, b"")
+        self.assertEqual(response.headers["HX-Refresh"], "true")
+        self.assertContains(self.client.get(reverse("plugins:netbox_kea:server_list")), self.text)
