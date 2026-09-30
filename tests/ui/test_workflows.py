@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
+# SPDX-FileCopyrightText: 2026 Andrew Backeby <andrew@backeby.eu>
+# SPDX-License-Identifier: Apache-2.0
 """Browser workflow tests: navigation, badge enrichment, and CRUD lifecycles.
 
 They share the ``tests/ui`` harness with ``test_ui.py`` and run against the compose

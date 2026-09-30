@@ -1,3 +1,8 @@
+<!--
+SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
+SPDX-License-Identifier: Apache-2.0
+-->
+
 # Triage labels
 
 The engineering skills use five canonical triage roles. This table maps each role to its GitHub label.

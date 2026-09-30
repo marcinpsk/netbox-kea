@@ -1,3 +1,5 @@
+{# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com> #}
+{# SPDX-License-Identifier: Apache-2.0 #}
 {% with state=record.sync_state %}
 {% if state.code == "synchronized" %}
 <a href="{{ record.netbox_ip_url }}" class="badge text-bg-success text-decoration-none" title="{{ state.synchronized }} of {{ state.total }} addresses synchronized">

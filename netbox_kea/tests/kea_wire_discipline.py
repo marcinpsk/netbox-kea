@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 Marcin Zieba
+# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
 """Keep Kea wire literals inside their owning modules, with budgets for existing debt.
 
@@ -532,7 +532,7 @@ def save_baseline(counts: dict[str, int], path: Path = _BASELINE_PATH) -> None:
     """Write sorted budgets; disappeared sites and reduced counts remain acceptable."""
     # REUSE-IgnoreStart
     header = [
-        "# SPDX-FileCopyrightText: 2026 Marcin Zieba",
+        "# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>",
         "# SPDX-License-Identifier: Apache-2.0",
         "# Kea wire-discipline baseline is the follow-up brief for existing wire debt.",
         "# Entries only leave; counts only decrease. Use --update-baseline to record a decrease.",

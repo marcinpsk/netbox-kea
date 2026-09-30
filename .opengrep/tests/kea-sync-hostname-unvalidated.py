@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 Marcin Zieba
+# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
 
 

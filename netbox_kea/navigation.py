@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
+# SPDX-FileCopyrightText: 2023 Devon Mar <devon-mar@users.noreply.github.com>
+# SPDX-FileCopyrightText: 2023 Lasse Bang Mikkelsen <lbm@lbm.dk>
+# SPDX-License-Identifier: Apache-2.0
 from netbox.plugins import PluginMenu, PluginMenuButton, PluginMenuItem
 
 _items = (

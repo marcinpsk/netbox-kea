@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2023 Devon Mar <devon-mar@users.noreply.github.com>
+# SPDX-License-Identifier: Apache-2.0
 from netbox.api.routers import NetBoxRouter
 
 from . import views

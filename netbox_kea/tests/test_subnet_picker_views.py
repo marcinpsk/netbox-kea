@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
+# SPDX-License-Identifier: Apache-2.0
 """Subnet pickers follow catalogue invalidation across configuration writes."""
 
 from django.contrib import messages

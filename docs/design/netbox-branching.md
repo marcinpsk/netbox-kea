@@ -1,3 +1,8 @@
+<!--
+SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
+SPDX-License-Identifier: Apache-2.0
+-->
+
 # netbox-branching compatibility
 
 This is the design for running netbox-kea with netbox-branching. It applies to NetBox 4.7.0 with
@@ -77,12 +82,12 @@ Models and routing:
 - `SyncConfig` (singleton) and `KeaDhcpLink` are plain `models.Model`, so they stay in main.
   `KeaDhcpLink.server` is `CASCADE` to Server; `sys4_object` is a GenericForeignKey to netbox_dhcp
   rows. Every netbox_dhcp model is a `NetBoxModel` or `PrimaryModel`, so all are branchable.
-- `Server.get_client()` builds the Kea client from the Server row (`models.py:238-291`), and
-  `Server.clean()` sends `version-get` on every create and edit (`models.py:293-336`).
+- `Server.get_client()` builds the Kea client from the Server row (`models.py:241-294`), and
+  `Server.clean()` sends `version-get` on every create and edit (`models.py:296-339`).
 - Only branchable tables are copied into a branch (`NBB/utilities.py:293-317`). Branch tables share
   main's id sequences (`NBB/provisioning.py:346-356`).
 
-Entry points (95 routes, 88 view classes; 44 gated by `_KeaChangeMixin`, `views/_base.py:63-84`):
+Entry points (95 routes, 88 view classes; 44 gated by `_KeaChangeMixin`, `views/_base.py:65-86`):
 
 - Kea writes: lease add, edit, bulk delete and import; subnet wipe; reservation add, edit, delete
   and import; every configuration change through `config_write`; DHCP enable and disable. All are
@@ -92,8 +97,8 @@ Entry points (95 routes, 88 view classes; 44 gated by `_KeaChangeMixin`, `views/
   (netbox_dhcp objects, IPAM rows, `KeaDhcpLink`).
 - No GET handler reaches a Kea write. Two GET handlers write the database: `sync-jobs/` and
   `servers/<pk>/sync_status` call `SyncConfig.get()` (`get_or_create` and a one-time backfill,
-  `models.py:449-480`). Display reads write Redis. One POST only reads: lease bulk delete without
-  `_confirm` renders the confirmation page (`views/leases.py:532-546`).
+  `models.py:452-483`). Display reads write Redis. One POST only reads: lease bulk delete without
+  `_confirm` renders the confirmation page (`views/leases.py:534-548`).
 - REST: one `NetBoxModelViewSet` with four read-only Kea actions. GraphQL: `server` and
   `server_list` queries. One template extension, a read-only panel on IPAddress.
 - Generic bulk views can run as `AsyncViewJob`, which applies request processors, so the branch is
@@ -163,22 +168,22 @@ Which plugin models are branchable:
 These choices had no competing alternative: a `netbox_kea/branching.py` owner; refusal in plugin
 middleware (branch activation runs earlier, in `CoreMiddleware` request processors, and a processor
 cannot refuse, `NB/utilities/request.py:131-142`); a read or write kind on every Kea command,
-checked in `KeaClient.command()` (`kea.py:723-765`, the single HTTP funnel); `KeaIpamSyncJob` stays
+checked in `KeaClient.command()` (`kea.py:727-769`, the single HTTP funnel); `KeaIpamSyncJob` stays
 main-only; `SyncConfig` main-only; the ADR 0006 link model branchable; a CI job with a real
 provisioned branch.
 
 | # | Decision | Chosen | Rejected | Evidence and reason |
 |---|---|---|---|---|
-| D1 | Is `Server` branchable | No: resolver `False`. One row per pk, so the Kea client and the Redis keys always use main's current connection fields | Yes. Branch reads use the branch copy's connection fields. Branch sync is refused when main changed Server create, delete or connection fields; the operator recreates the branch | Server changelogs censor passwords (`models.py:338-358`), so a synced connection edit writes a censored password into the branch copy. Sync selects by branchable type (`NBB/models/branches.py:412-426`), so a main-only Server never syncs. With a branchable Server, any main edit of a Server's connection fields blocks sync of every open branch, and the design needs a cache bypass (D6), sync and merge validators (D8), and a stale-copy policy; a main-only Server needs none of them |
+| D1 | Is `Server` branchable | No: resolver `False`. One row per pk, so the Kea client and the Redis keys always use main's current connection fields | Yes. Branch reads use the branch copy's connection fields. Branch sync is refused when main changed Server create, delete or connection fields; the operator recreates the branch | Server changelogs censor passwords (`models.py:341-361`), so a synced connection edit writes a censored password into the branch copy. Sync selects by branchable type (`NBB/models/branches.py:412-426`), so a main-only Server never syncs. With a branchable Server, any main edit of a Server's connection fields blocks sync of every open branch, and the design needs a cache bypass (D6), sync and merge validators (D8), and a stale-copy policy; a main-only Server needs none of them |
 | D2 | `Server.sync_vrf` | `SET_NULL` to `PROTECT` | Keep `SET_NULL`; make the reverse relation visible so NetBox snapshots the Server before it nulls the key | With Server main-only, a `SET_NULL` cascade from a branch VRF delete runs on the branch connection and resolves `netbox_kea_server` to main, so main changes at once. `PROTECT` raises in `Collector.collect()` before any write or signal. Today a VRF delete silently moves the next sync into the global VRF. **Operator-visible change in main:** a VRF that a Server syncs into can no longer be deleted until the Server stops using it |
 | D3 | `KeaDhcpLink` | Main-only; a link to a deleted target stays until the next import relinks (today's behaviour) | Branchable, plus receivers that delete links when a netbox_dhcp target is deleted | A receiver running in a branch against a main-only table deletes main rows. Branchable links need revert and sync validators (sync writes synthetic DELETEs for them, `branches.py:837-897`). Readers already treat a missing target as absent (`integrations/dhcp_plugin.py:650-654`). The receivers improve main without branching too; they are a follow-up. Reopen if a reader treats a dangling link as a live object |
 | D4 | Refusal seams | Middleware (by HTTP method), the Kea transport, `pre_save`/`pre_delete` receivers on the three plugin models, a job guard | Middleware (by classified operation), view dispatch again for `AsyncViewJob`, REST action guards, guards on every domain write, an AST write-boundary gate | Every plugin HTTP entry, including those that enqueue `AsyncViewJob` or `AsyncAPIJob`, passes plugin middleware first. A job can only be queued by a request that the middleware already let through, so a branch-context plugin job cannot exist. A Custom Script reaches plugin write code without plugin middleware (`NB/extras/jobs.py:398-403`); the transport and the receivers refuse its Kea mutations and plugin instance writes, and the contract lists the rest. Reopen on another caller that reaches plugin write code with a branch active and without plugin middleware |
-| D5 | Read versus write | HTTP method; no exceptions | A classified inventory of every operation | The one read-only POST (lease bulk delete confirmation, `views/leases.py:532-546`) leads only to a delete that is refused anyway. No GET reaches a Kea write |
+| D5 | Read versus write | HTTP method; no exceptions | A classified inventory of every operation | The one read-only POST (lease bulk delete confirmation, `views/leases.py:534-548`) leads only to a delete that is refused anyway. No GET reaches a Kea write |
 | D6 | Redis caches in a branch | Shared; valid because D1 gives one connection per Server | Bypass both caches in a branch | Follows D1 |
 | D7 | `SyncConfig.get()` on GET | A data migration creates the singleton and applies the backfill; `get()` becomes a read | A separate read-only lookup for branches; creation stays in guarded main operations | The rejected shape keeps two paths to one row |
 | D8 | Sync, merge and revert validators | None: no plugin row exists in a branch | Refuse merge, sync and revert for Server create, delete, connection changes, link changes, and deletes of link-target types | Follows D1 and D3 |
 | D9 | `Server.clean()` sends `version-get` | Out of scope, a follow-up | Move the connectivity check out of `clean()` into the form and serializer validation | A Server change record created by a Tag delete in a branch is written to main's changelog: the ObjectChange takes the loaded Server's database through its ContentType foreign key (`NB/netbox/models/features.py:117-127`, `NBB/database.py:49-50`), and NBB records no ChangeDiff for it (`NBB/signal_receivers.py:125-127`). Under D1 no Server change reaches a branch changelog, so no merge replays `Server.clean()` |
-| D10 | Kea client used from a thread pool | The client records the branch state at construction; `clone()` keeps it | Context variable only | Thread-pool workers do not inherit context variables; clones run in pools (`kea.py:768-785`, `views/leases.py:942`) |
+| D10 | Kea client used from a thread pool | The client records the branch state at construction; `clone()` keeps it | Context variable only | Thread-pool workers do not inherit context variables; clones run in pools (`kea.py:772-789`, `views/leases.py:944`) |
 | D11 | Stale branch selection | Refuse with 409 `branch_selection_unusable` | Run the request on main, as for every NetBox view | A stale cookie or unready query runs on main (`NBB/utilities.py:548-597`, `NBB/middleware.py:53-89`), which the "no silent fallback" constraint forbids |
 | D12 | Write controls in the UI | A banner; the IPAddress panel hides its add links | Disable mutation controls | 44 mutation views. Refusal already meets condition 1; disabling controls is a follow-up |
 | D13 | Early Server delete guard | `pre_delete` receiver | At `delete()`, because `JobsMixin.delete()` removes jobs before the collector runs | `JobsMixin.delete()` wraps the job deletion and `super().delete()` in one `atomic(using=...)` (`NB/netbox/models/features.py:513-520`), so a `pre_delete` refusal rolls the job deletion back. Reopen if NetBox removes that transaction |
@@ -230,7 +235,7 @@ Nothing in the target comes from the request. `HX-Refresh` is not used here: the
 carry `?_branch=<id>` for a deleted branch, which NBB answers with 400 (`NBB/utilities.py:566-568`);
 and the originating page can 404 on main, which renders the 404 template and consumes the message
 (`DJ/contrib/messages/storage/base.py:67-72,128-140`) before NBB replaces the 404 with a redirect
-to `/` (`NBB/middleware.py:69-86`). The Server list takes no object id (`K/netbox_kea/urls.py:57`),
+to `/` (`NBB/middleware.py:69-86`). The Server list takes no object id (`K/netbox_kea/urls.py:60`),
 so it cannot 404.
 
 Earlier framework refusals are also outcomes: NBB's 400s above, and Django's CSRF 403, which runs
@@ -314,11 +319,11 @@ The middleware follows the contract, with these facts from netbox-branching 1.2.
 
 - **Kea transport.** `KeaClient.command()` takes a `KeaCommand` enum member and a target,
   `Family | None` (`None` addresses the Control Agent, as `status-get` and `version-get` do today,
-  `K/netbox_kea/views/server.py:150-156`), not a string. A test pins the wire payload of each form. Each member carries a `read` or `write` kind. The call sites that build names today
-  (`kea.py:1426-1427,1723,1981,2006-2007`, `views/leases.py:504`) are refactored to members.
+  `K/netbox_kea/views/server.py:152-158`), not a string. A test pins the wire payload of each form. Each member carries a `read` or `write` kind. The call sites that build names today
+  (`kea.py:1430-1431,1727,1985,2010-2011`, `views/leases.py:506`) are refactored to members.
   `command()` refuses a `write` member when the client is branch-bound or a branch is active. `Server.get_client()` binds the client when a
   branch is active; `clone()` keeps the binding (thread-pool workers do not inherit context
-  variables, and `clone()` copies fields explicitly, `K/netbox_kea/kea.py:768-785`). A string
+  variables, and `clone()` copies fields explicitly, `K/netbox_kea/kea.py:772-789`). A string
   command is a type error (mypy) and a `TypeError` at runtime.
 - **Plugin models.** `pre_save` and `pre_delete` receivers on `Server`, `SyncConfig` and
   `KeaDhcpLink` call `refuse_in_branch()`. A `pre_delete` receiver disables Django's fast delete,
@@ -463,7 +468,7 @@ tests skipped. With real provisioning, it covers guards 1 to 4 and:
 - netbox_dhcp target deletion receivers for `KeaDhcpLink` (D3).
 - Disabling mutation controls in a branch (D12).
 - The reservation edit and delete GET pages invalidate the Redis cache through `MutationScope`
-  (`views/reservation_mutations.py:216-247`); harmless under this design, but a GET should not.
+  (`views/reservation_mutations.py:218-249`); harmless under this design, but a GET should not.
 
 ### Increments
 

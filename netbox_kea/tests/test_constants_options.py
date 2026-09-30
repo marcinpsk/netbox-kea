@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
+# SPDX-License-Identifier: Apache-2.0
 """Tests for the curated standard DHCP option lists used by the option editors."""
 
 from __future__ import annotations
