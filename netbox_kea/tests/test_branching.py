@@ -40,6 +40,7 @@ from django.apps import apps  # noqa: E402
 from django.conf import settings  # noqa: E402
 from django.contrib.auth import get_user_model  # noqa: E402
 from django.contrib.contenttypes.models import ContentType  # noqa: E402
+from django.core.cache import cache  # noqa: E402
 from django.core.management import call_command  # noqa: E402
 from django.db import connection, connections, models, router  # noqa: E402
 from django.db.migrations import RunPython, RunSQL, SeparateDatabaseAndState  # noqa: E402
@@ -60,6 +61,7 @@ from netbox_branching.models import Branch  # noqa: E402
 from netbox_branching.utilities import activate_branch, supports_branching  # noqa: E402
 from rest_framework.permissions import SAFE_METHODS  # noqa: E402
 
+from netbox_kea import server_configuration  # noqa: E402
 from netbox_kea.jobs import KeaIpamSyncJob  # noqa: E402
 from netbox_kea.kea import KeaCommand, KeaException  # noqa: E402
 from netbox_kea.models import KeaDhcpLink, Server, SyncConfig  # noqa: E402
@@ -850,6 +852,16 @@ class KeaTransportInBranchTest(TransactionTestCase):
             client.command(KeaCommand.LEASE4_DEL, 4, arguments={"ip-address": "192.0.2.1"})
 
         self.assertEqual(kea.commands(), ["lease4-del"], "on main the write is sent")
+
+    def test_a_config_mutation_in_a_branch_leaves_the_cache_generation_alone(self):
+        generation_key = server_configuration._generation_key(self.server, 4)
+        generation = server_configuration._cache_generation(self.server, 4)
+
+        with activate_branch(self.branch), stub_kea({}) as kea, self.assertRaises(branching.BranchActive):
+            self.server.get_client(version=4).subnet_del(4, 1)
+
+        self.assertEqual(cache.get(generation_key), generation)
+        self.assertEqual(kea.commands(), [])
 
     def test_a_client_built_in_a_branch_sends_a_read(self):
         with activate_branch(self.branch), stub_kea({"config-get": {"result": 0}}) as kea:

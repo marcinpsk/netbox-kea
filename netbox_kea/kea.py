@@ -895,8 +895,7 @@ class KeaClient:
             raise TypeError(f"command must be a KeaCommand member, not {type(command).__name__}")
         if target is not None and (isinstance(target, bool) or target not in (4, 6)):
             raise ValueError(f"target must be 4, 6 or None, not {target!r}")
-        if command.is_write:
-            self.write_guard.refuse(f"Kea command {command.value}")
+        self._refuse(command)
         body: dict[str, Any] = {"command": command.value}
 
         # Kea 3.2.0+ rejects a service that does not match the daemon that the URL already targets.
@@ -937,6 +936,11 @@ class KeaClient:
         new.write_guard = self.write_guard
         return new
 
+    def _refuse(self, command: KeaCommand) -> None:
+        """Ask the write guard before a write member, before any side effect of sending it."""
+        if command.is_write:
+            self.write_guard.refuse(f"Kea command {command.value}")
+
     def _notify_config_change(self, family: Family) -> None:
         """Notify the owner without interrupting persistence of a live change."""
         if self._on_config_change is None:
@@ -948,6 +952,7 @@ class KeaClient:
 
     def _config_mutation_command(self, command: KeaCommand, family: Family, arguments: dict[str, Any]) -> None:
         """Send one live configuration mutation between invalidation notifications, and require one success reply."""
+        self._refuse(command)
         self._notify_config_change(family)
         try:
             response = self.command(command, family, arguments=arguments, check=None)
