@@ -920,6 +920,37 @@ class TestNetworkSubnetDel(TestCase):
             self.client.network_subnet_del(4, "prod-net", 5)
 
 
+class TestConfigChangeNotification(TestCase):
+    """A failed cache invalidation does not stop a live configuration change or its persist step."""
+
+    def test_a_failing_invalidation_is_logged_and_the_change_is_still_sent_and_persisted(self) -> None:
+        invalidations: list[str] = []
+
+        def fail() -> None:
+            invalidations.append("invalidated")
+            raise ConnectionError("cache unreachable")
+
+        client = kea_client(url="http://kea:8000", on_config_change=fail)
+        responses = {
+            "network4-add": _OK,
+            "config-get": {"result": 0, "arguments": {"Dhcp4": {}}},
+            "config-test": {"result": 0},
+            "config-write": {"result": 0},
+        }
+        with stub_kea(responses) as kea, self.assertLogs("netbox_kea.kea", level="ERROR") as logs:
+            client.network_add(4, "prod-net")
+            persisted = client.persist(4)
+
+        self.assertEqual(kea.commands(), ["network4-add", "config-get", "config-test", "config-write"])
+        self.assertEqual(persisted.persistence, "persisted")
+        self.assertEqual(invalidations, ["invalidated", "invalidated"])
+        self.assertEqual(
+            [record.getMessage() for record in logs.records],
+            ["Configuration changed for DHCPv4, but cache invalidation failed"] * 2,
+        )
+        self.assertTrue(all(record.exc_info for record in logs.records))
+
+
 # ---------------------------------------------------------------------------
 # TestLeaseGetByIp
 # ---------------------------------------------------------------------------
