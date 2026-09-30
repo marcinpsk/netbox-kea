@@ -507,7 +507,7 @@ class SelectorTableTest(TransactionTestCase):
         refused = selection.outcome == "refused"
         text = f"Branch {ready.name} is active." if refused else "The selected branch is not usable"
         if selection.api:
-            code = "branch_write_refused" if refused else "branch_selection_unusable"
+            code = branching.BRANCH_WRITE_REFUSED if refused else branching.BRANCH_SELECTION_UNUSABLE
             self.assertEqual(response.json()["code"], code)
             self.assertIn(text, response.json()["detail"])
         elif selection.htmx:
@@ -985,7 +985,7 @@ class UrlTreeGuardTest(TransactionTestCase):
 
         self.assertEqual(response.status_code, 409, response.content[:300])
         if route.api:
-            self.assertEqual(response.json()["code"], "branch_write_refused")
+            self.assertEqual(response.json()["code"], branching.BRANCH_WRITE_REFUSED)
         else:
             self.assertContains(response, f"Branch {branch.name} is active.", status_code=409)
         self.assertEqual(kea.commands(), [])
