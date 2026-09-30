@@ -9,10 +9,14 @@ skipping when netbox-branching is not an installed app.
 import importlib
 import json
 import os
+import re
 import uuid
 from collections.abc import Iterator, Sequence
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
+from ipaddress import ip_address
+from pathlib import Path
+from typing import Any
 from urllib.parse import urlencode
 
 import pytest
@@ -42,7 +46,7 @@ from django.db.migrations.operations.models import ModelOperation  # noqa: E402
 from django.db.models import ProtectedError  # noqa: E402
 from django.test import Client, RequestFactory, SimpleTestCase, TransactionTestCase, override_settings  # noqa: E402
 from django.test.utils import CaptureQueriesContext  # noqa: E402
-from django.urls import reverse  # noqa: E402
+from django.urls import URLPattern, URLResolver, get_resolver, resolve, reverse  # noqa: E402
 from ipam.models import VRF, IPAddress  # noqa: E402
 from netbox.context_managers import event_tracking  # noqa: E402
 from netbox_branching import utilities as branching_utilities  # noqa: E402
@@ -53,7 +57,7 @@ from netbox_branching.utilities import activate_branch, supports_branching  # no
 
 from netbox_kea.kea import KeaException  # noqa: E402
 from netbox_kea.models import Server  # noqa: E402
-from netbox_kea.tests.kea_stub import stub_kea  # noqa: E402
+from netbox_kea.tests.kea_stub import _leases_per_subnet, _res_get, _res_page, _subnet_stats, stub_kea  # noqa: E402
 from netbox_kea.tests.utils import _WRITE_VERBS, _make_db_server  # noqa: E402
 
 # Changing this set needs a design decision (docs/design/netbox-branching.md).
@@ -652,3 +656,338 @@ class BranchActiveResponseTest(TransactionTestCase):
         self.assertEqual(response.content, b"")
         self.assertEqual(response.headers["HX-Refresh"], "true")
         self.assertContains(self.client.get(reverse("plugins:netbox_kea:server_list")), self.text)
+
+
+# Guard 1: the URL tree.
+
+_RECORDINGS = Path(__file__).with_name("kea_recordings")
+
+
+@dataclass(frozen=True)
+class _KeaObjects:
+    """The Kea objects of one family that the routes name: each exists in the recorded configuration."""
+
+    subnet_id: int
+    pool: str
+    network_name: str
+    option_code: int
+    option_space: str
+    lease: dict
+    reservation: dict
+
+
+_KEA_OBJECTS = {
+    4: _KeaObjects(
+        subnet_id=10,
+        pool="192.0.2.10-192.0.2.20",
+        network_name="office",
+        option_code=224,
+        option_space="dhcp4",
+        lease={
+            "ip-address": "192.0.2.15",
+            "hw-address": "aa:bb:cc:dd:ee:01",
+            "subnet-id": 10,
+            "hostname": "lease4.example.com",
+            "cltt": 1_700_000_000,
+            "valid-lft": 4000,
+            "state": 0,
+        },
+        reservation={"subnet-id": 10, "hw-address": "aa:bb:cc:dd:ee:02", "ip-address": "192.0.2.16", "hostname": "r4"},
+    ),
+    6: _KeaObjects(
+        subnet_id=10,
+        pool="2001:db8:1::10-2001:db8:1::ff",
+        network_name="office",
+        option_code=1000,
+        option_space="dhcp6",
+        lease={
+            "ip-address": "2001:db8:1::15",
+            "duid": "00:01:02:03:04:05",
+            "iaid": 1,
+            "type": "IA_NA",
+            "prefix-len": 128,
+            "subnet-id": 10,
+            "hostname": "lease6.example.com",
+            "cltt": 1_700_000_000,
+            "valid-lft": 4000,
+            "preferred-lft": 3000,
+            "state": 0,
+        },
+        reservation={
+            "subnet-id": 10,
+            "duid": "00:01:02:03:04:06",
+            "ip-addresses": ["2001:db8:1::16"],
+            "hostname": "r6",
+        },
+    ),
+}
+
+
+def _family(body: dict) -> int:
+    (service,) = body.get("service") or ["dhcp4"]
+    return 6 if service == "dhcp6" else 4
+
+
+def _recorded_kea() -> dict:
+    """Return stub_kea responses for the reads that plugin pages send: the recorded configuration, one lease, one
+    reservation. Every command it answers is a read, so a page that sends any other command fails the guard.
+    """
+    recorded = {family: json.loads((_RECORDINGS / f"dhcp{family}.json").read_text()) for family in (4, 6)}
+
+    def config_get(body):
+        return recorded[_family(body)]["config-get"]
+
+    def list_commands(body):
+        return recorded[_family(body)]["list-commands"]
+
+    def reservation_page(body):
+        return _res_page([_KEA_OBJECTS[_family(body)].reservation])
+
+    def reservation_get(body):
+        return _res_get(_KEA_OBJECTS[_family(body)].reservation)
+
+    responses: dict = {
+        "config-get": config_get,
+        "list-commands": list_commands,
+        "status-get": {"result": 0, "arguments": {"pid": 1, "uptime": 3600, "reload": 0}},
+        "version-get": {"result": 0, "text": "3.2.0", "arguments": {"extended": "3.2.0"}},
+        "reservation-get-page": reservation_page,
+        "reservation-get": reservation_get,
+    }
+    for family in (4, 6):
+        objects, replies = _KEA_OBJECTS[family], recorded[family]
+
+        def subnet_get(body, family=family):
+            configuration = recorded[family]["config-get"]["arguments"][f"Dhcp{family}"]
+            key = f"subnet{family}"
+            subnets = [*configuration[key], *(s for n in configuration["shared-networks"] for s in n[key])]
+            found = [s for s in subnets if s["id"] == body["arguments"]["id"]]
+            return {"result": 0, "arguments": {key: found}} if found else {"result": 3}
+
+        def network_get(body, family=family, replies=replies):
+            return replies[f"network{family}-get"]["present" if body["arguments"]["name"] == "office" else "absent"]
+
+        def lease_page(body, objects=objects):
+            # Kea returns the leases after the "from" address.
+            after = ip_address(body["arguments"]["from"]) < ip_address(objects.lease["ip-address"])
+            return {"result": 0, "arguments": {"leases": [objects.lease], "count": 1}} if after else {"result": 3}
+
+        def lease_get(body, objects=objects):
+            found = body["arguments"].get("ip-address") == objects.lease["ip-address"]
+            return {"result": 0, "arguments": objects.lease} if found else {"result": 3}
+
+        responses |= {
+            f"subnet{family}-list": replies[f"subnet{family}-list"],
+            f"subnet{family}-get": subnet_get,
+            f"network{family}-get": network_get,
+            f"lease{family}-get-page": lease_page,
+            f"lease{family}-get": lease_get,
+            f"lease{family}-get-by-state": _leases_per_subnet({objects.subnet_id: [objects.lease]}),
+            f"stat-lease{family}-get": _subnet_stats(family, objects.subnet_id),
+        }
+    return responses
+
+
+@dataclass(frozen=True)
+class _Route:
+    """One URL pattern whose callback is defined inside netbox_kea."""
+
+    name: str
+    pattern: str
+    parameters: tuple[str, ...]
+    callback: Any
+
+    @property
+    def api(self) -> bool:
+        return hasattr(self.callback, "actions")
+
+    @property
+    def unsafe_methods(self) -> tuple[str, ...]:
+        if self.api:
+            return tuple(m.upper() for m in self.callback.actions if m.upper() not in branching.SAFE_METHODS)
+        return ("POST",)
+
+
+def _plugin_routes(resolver: URLResolver | None = None, name: str = "", pattern: str = "", parameters=()) -> list:
+    """Walk the whole URL tree and return each pattern whose callback module is inside netbox_kea."""
+    routes = []
+    for entry in (resolver or get_resolver()).url_patterns:
+        text = pattern + str(entry.pattern)
+        found = (*parameters, *entry.pattern.regex.groupindex)
+        if isinstance(entry, URLResolver):
+            namespace = f"{name}{entry.namespace}:" if entry.namespace else name
+            routes += _plugin_routes(entry, namespace, text, found)
+        elif isinstance(entry, URLPattern) and branching.plugin_owned(entry.callback):
+            routes.append(_Route(f"{name}{entry.name}", text, found, entry.callback))
+    return routes
+
+
+_PARAMETER = re.compile(r"<(?:\w+:)?(\w+)>|\(\?P<(\w+)>[^)]*\)")
+_FAMILY = re.compile(r"[a-z]([46])(?:_|$)")
+
+
+def _route_arguments(route: _Route, server: Server, ip: IPAddress) -> dict[str, object]:
+    """Return a value for each parameter of *route* that names a real object, or fail and name the route."""
+    family = _FAMILY.search(route.name.rsplit(":", 1)[-1])
+    objects = _KEA_OBJECTS[int(family.group(1))] if family else None
+    by_family = {
+        "subnet_id": lambda o: o.subnet_id,
+        "pool": lambda o: o.pool,
+        "network_name": lambda o: o.network_name,
+        "code": lambda o: o.option_code,
+        "space": lambda o: o.option_space,
+        "ip_address": lambda o: o.lease["ip-address"],
+    }
+    arguments: dict[str, object] = {}
+    for parameter in route.parameters:
+        if parameter == "pk":
+            arguments[parameter] = ip.pk if route.name.endswith(":ipaddress_kea_reservations") else server.pk
+        elif parameter == "format":
+            arguments[parameter] = "json"
+        elif parameter in by_family and objects is not None:
+            arguments[parameter] = by_family[parameter](objects)
+        else:
+            raise AssertionError(
+                f"Guard 1 cannot build the argument {parameter!r} of {route.name} ({route.pattern}). "
+                "Teach _route_arguments the object it names, so the guard checks this route."
+            )
+    return arguments
+
+
+def _route_query(route: _Route, ip: IPAddress) -> str:
+    """Return the query string that a page of *route* needs to show a real object."""
+    short = route.name.rsplit(":", 1)[-1]
+    if short.startswith(("server_reservation4_edit", "server_reservation4_delete")):
+        return urlencode({"identifier_type": "hw-address", "identifier": _KEA_OBJECTS[4].reservation["hw-address"]})
+    if short.startswith(("server_reservation6_edit", "server_reservation6_delete")):
+        return urlencode({"identifier_type": "duid", "identifier": _KEA_OBJECTS[6].reservation["duid"]})
+    if short == "reservation_check_ip":
+        return urlencode({"ip": str(ip.address.ip)})
+    if short in ("server-leases4", "server-leases6"):
+        return urlencode({"ip_address": _KEA_OBJECTS[int(short[-1])].lease["ip-address"]})
+    if short in ("server-reservations4", "server-reservations6"):
+        return urlencode({"limit": 100})
+    return ""
+
+
+def _view(callback) -> object:
+    """Return the view class of a URL callback: two patterns with one path resolve to the first, of the same class."""
+    return getattr(callback, "view_class", None) or getattr(callback, "cls", None) or callback
+
+
+def _route_url(route: _Route, server: Server, ip: IPAddress) -> str:
+    """Fill the pattern itself, so a route that shares its name with another is checked too."""
+    arguments = _route_arguments(route, server, ip)
+    path = _PARAMETER.sub(lambda match: str(arguments[match.group(1) or match.group(2)]), route.pattern)
+    url = "/" + path.replace("^", "").replace("$", "").replace("\\.", ".").replace("/?", "")
+    match = resolve(url)
+    if _view(match.func) is not _view(route.callback) or any(
+        str(match.kwargs.get(k)) != str(v) for k, v in arguments.items()
+    ):
+        raise AssertionError(f"Guard 1 built {url} for {route.name} ({route.pattern}), but it resolves elsewhere.")
+    query = _route_query(route, ip)
+    return f"{url}?{query}" if query else url
+
+
+# A page GET that main answers with a redirect: NetBox's bulk views, and the lease delete confirmation.
+_MAIN_GET_REDIRECTS = frozenset(
+    f"plugins:netbox_kea:{name}"
+    for name in ("server_bulk_delete", "server_bulk_edit", "server_leases4_delete", "server_leases6_delete")
+)
+
+
+def _main_get_status(route: _Route) -> int:
+    """Return the status that a GET of *route* gets on main, from the recorded Kea and real objects."""
+    if route.name in _MAIN_GET_REDIRECTS:
+        return 302
+    if not route.api and not hasattr(_view(route.callback), "get"):
+        return 405
+    return 200
+
+
+class UrlTreeBuilderTest(SimpleTestCase):
+    """Guard 1 fails, and names the route, when it cannot build a route's arguments."""
+
+    def _route(self, name: str, pattern: str, parameters: tuple[str, ...]) -> _Route:
+        return _Route(f"plugins:netbox_kea:{name}", pattern, parameters, callback=None)
+
+    def test_an_unknown_parameter_fails_by_name(self):
+        route = self._route("server_widget", "servers/<int:pk>/widgets/<int:widget_id>/", ("pk", "widget_id"))
+
+        with self.assertRaisesMessage(AssertionError, "'widget_id' of plugins:netbox_kea:server_widget"):
+            _route_arguments(route, Server(pk=1), IPAddress(pk=2))
+
+    def test_a_kea_parameter_on_a_route_without_a_family_fails_by_name(self):
+        route = self._route("server_subnet_edit", "servers/<int:pk>/subnets/<int:subnet_id>/", ("pk", "subnet_id"))
+
+        with self.assertRaisesMessage(AssertionError, "'subnet_id' of plugins:netbox_kea:server_subnet_edit"):
+            _route_arguments(route, Server(pk=1), IPAddress(pk=2))
+
+    def test_a_built_url_that_resolves_to_another_view_fails_by_name(self):
+        status = next(route for route in _plugin_routes() if route.name.endswith(":server_status"))
+        # The Server list pattern, with the status view's callback: the URL reaches the list view.
+        route = _Route(status.name, "plugins/kea/servers/", (), status.callback)
+
+        with self.assertRaisesMessage(AssertionError, "for plugins:netbox_kea:server_status"):
+            _route_url(route, Server(pk=1), IPAddress(pk=2))
+
+
+class UrlTreeGuardTest(TransactionTestCase):
+    """Guard 1: in a provisioned branch, every plugin URL refuses a change and serves a read as main does."""
+
+    def test_every_plugin_route_in_a_branch(self):
+        user = get_user_model().objects.create_superuser("url-tree")
+        server = _make_db_server(name="url-tree", dhcp4=True, dhcp6=True, has_control_agent=True)
+        ip = IPAddress.objects.create(address="192.0.2.16/24", dns_name="r4.example.com")
+        ip.refresh_from_db()
+        branch = _provisioned_branch(self, "url tree")
+        routes = _plugin_routes()
+        self.assertTrue(any(route.api for route in routes) and not all(route.api for route in routes), routes)
+
+        for route in routes:
+            url = _route_url(route, server, ip)
+            for method in ("GET", "HEAD", "OPTIONS"):
+                with self.subTest(route=route.name, url=url, method=method):
+                    self._assert_served_as_on_main(route, url, method, user, branch)
+            for method in route.unsafe_methods:
+                with self.subTest(route=route.name, url=url, method=method):
+                    self._assert_refused(route, url, method, user, branch, server)
+
+    def _client(self, user, route: _Route, branch: Branch | None) -> tuple[Client, dict[str, str]]:
+        client = Client(raise_request_exception=False)
+        client.force_login(user)
+        if branch is None:
+            return client, {}
+        if route.api:
+            return client, {BRANCH_HEADER: branch.schema_id}
+        client.cookies[COOKIE_NAME] = branch.schema_id
+        return client, {}
+
+    def _assert_served_as_on_main(self, route: _Route, url: str, method: str, user, branch: Branch) -> None:
+        client, headers = self._client(user, route, None)
+        with stub_kea(_recorded_kea()) as kea:
+            on_main = client.generic(method, url, headers=headers)
+        if method == "GET" and "format" not in route.parameters:
+            self.assertEqual(on_main.status_code, _main_get_status(route), f"{url} on main: {kea.commands()}")
+
+        client, headers = self._client(user, route, branch)
+        with stub_kea(_recorded_kea()) as kea, _writes(branch) as writes:
+            in_branch = client.generic(method, url, headers=headers)
+
+        self.assertEqual(in_branch.status_code, on_main.status_code)
+        self.assertEqual(writes, [])
+        self.assertLessEqual(set(kea.commands()), set(_recorded_kea()), "a read sent a Kea command that is not a read")
+
+    def _assert_refused(self, route: _Route, url: str, method: str, user, branch: Branch, server: Server) -> None:
+        client, headers = self._client(user, route, branch)
+        with stub_kea(_recorded_kea()) as kea, _writes(branch) as writes:
+            response = client.generic(method, url, data="{}", content_type="application/json", headers=headers)
+
+        self.assertEqual(response.status_code, 409, response.content[:300])
+        if route.api:
+            self.assertEqual(response.json()["code"], "branch_write_refused")
+        else:
+            self.assertContains(response, f"Branch {branch.name} is active.", status_code=409)
+        self.assertEqual(kea.commands(), [])
+        self.assertEqual(writes, [])
+        self.assertTrue(Server.objects.filter(pk=server.pk).exists())
