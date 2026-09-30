@@ -580,6 +580,39 @@ class SourcesHeaderTest(_BranchReadTestCase):
         self.assertNotIn(branching.SOURCES_HEADER, response.headers)
 
 
+_BANNER = "netbox-kea refuses changes"
+
+
+class BranchPageTest(_BranchReadTestCase):
+    """In a branch, plugin pages show the banner, and the IPAddress panel offers no reservation add."""
+
+    def test_a_plugin_page_in_a_branch_shows_the_banner(self):
+        self.client.cookies[COOKIE_NAME] = self.branch.schema_id
+
+        response = self.client.get(reverse("plugins:netbox_kea:server_list"))
+
+        self.assertContains(response, _BANNER)
+        self.assertContains(response, f"netbox-branching's routing for branch {self.branch.name}")
+
+    def test_a_plugin_page_on_main_shows_no_banner(self):
+        self.assertNotContains(self.client.get(reverse("plugins:netbox_kea:server_list")), _BANNER)
+
+    def test_the_ipaddress_panel_lists_mains_servers_without_reservation_links(self):
+        page = reverse("ipam:ipaddress", args=[self.ip.pk])
+        add = reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk])
+
+        on_main = self.client.get(page)
+        self.client.cookies[COOKIE_NAME] = self.branch.schema_id
+        in_branch = self.client.get(page)
+
+        self.assertContains(on_main, add)
+        self.assertNotContains(on_main, "Kea servers (main)")
+        self.assertContains(in_branch, "Kea servers (main)")
+        self.assertContains(in_branch, self.server.name)
+        self.assertNotContains(in_branch, add)
+        self.assertNotContains(in_branch, _BANNER, msg_prefix="the banner is for plugin pages only")
+
+
 @override_settings(ROOT_URLCONF="netbox_kea.tests.branch_refusal_urls")
 class BranchActiveResponseTest(TransactionTestCase):
     """The middleware renders BranchActive, which plugin code raises at a change sink, as the 409 of the contract."""
