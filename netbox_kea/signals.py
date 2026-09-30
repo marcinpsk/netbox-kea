@@ -45,40 +45,12 @@ reservation_deleted
 
 The ``before`` and ``after`` values use the immutable typed Reservation domain.
 They do not depend on the route or Kea's raw response shape.
-
-With netbox-branching installed, ``pre_save`` and ``pre_delete`` receivers refuse a change of
-a netbox_kea row while a branch is active (ADR 0007).
 """
 
-from typing import Any
-
-from django.apps import apps
-from django.db.models.signals import pre_delete, pre_save
 from django.dispatch import Signal
-
-from .branching import APP_LABEL, refuse_in_branch
 
 lease_added = Signal()
 leases_deleted = Signal()
 reservation_created = Signal()
 reservation_updated = Signal()
 reservation_deleted = Signal()
-
-
-def _refuse_save_in_branch(sender: Any, instance: Any, **kwargs: Any) -> None:
-    refuse_in_branch(f"A save of {sender._meta.label} {instance.pk}")
-
-
-def _refuse_delete_in_branch(sender: Any, instance: Any, **kwargs: Any) -> None:
-    refuse_in_branch(f"A delete of {sender._meta.label} {instance.pk}")
-
-
-def connect_branch_refusal() -> None:
-    """Refuse a save or a delete of every netbox_kea row in a branch: the resolver keeps each model in main.
-
-    A pre_delete receiver disables Django's fast delete, so a queryset delete() reaches it too.
-    """
-    for model in apps.get_app_config(APP_LABEL).get_models():
-        uid = f"{APP_LABEL}.refuse_in_branch.{model._meta.label}"
-        pre_save.connect(_refuse_save_in_branch, sender=model, dispatch_uid=uid)
-        pre_delete.connect(_refuse_delete_in_branch, sender=model, dispatch_uid=uid)

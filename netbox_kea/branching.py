@@ -16,6 +16,7 @@ from typing import Any
 from django.apps import apps
 from django.contrib import messages
 from django.db import models
+from django.db.models.signals import pre_delete, pre_save
 from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import render
 from django.urls import reverse
@@ -94,10 +95,27 @@ def register() -> None:
         return
     from netbox_branching.utilities import register_branching_resolver
 
-    from .signals import connect_branch_refusal
-
     register_branching_resolver(is_branchable)
     connect_branch_refusal()
+
+
+def _refuse_save_in_branch(sender: Any, instance: Any, **kwargs: Any) -> None:
+    refuse_in_branch(f"A save of {sender._meta.label} {instance.pk}")
+
+
+def _refuse_delete_in_branch(sender: Any, instance: Any, **kwargs: Any) -> None:
+    refuse_in_branch(f"A delete of {sender._meta.label} {instance.pk}")
+
+
+def connect_branch_refusal() -> None:
+    """Refuse a save or a delete of every netbox_kea row in a branch: the resolver keeps each model in main.
+
+    A pre_delete receiver disables Django's fast delete, so a queryset delete() reaches it too.
+    """
+    for model in apps.get_app_config(APP_LABEL).get_models():
+        uid = f"{APP_LABEL}.refuse_in_branch.{model._meta.label}"
+        pre_save.connect(_refuse_save_in_branch, sender=model, dispatch_uid=uid)
+        pre_delete.connect(_refuse_delete_in_branch, sender=model, dispatch_uid=uid)
 
 
 def plugin_owned(view_func: Callable[..., Any]) -> bool:

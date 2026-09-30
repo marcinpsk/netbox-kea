@@ -119,7 +119,7 @@ makes it fail instead.
   callback in a branch, or with an unusable branch selection. Below the middleware, `KeaClient.command()`
   refuses a `write` member of `KeaCommand` with `BranchActive` (`Server.get_client()` binds the client
   to the active branch, and `clone()` keeps the binding), `pre_save` and `pre_delete` receivers in
-  `signals.py` refuse a save or a delete of every netbox_kea row, and `KeaIpamSyncJob` fails before
+  `branching.py` refuse a save or a delete of every netbox_kea row, and `KeaIpamSyncJob` fails before
   any read. Guard 1 in `test_branching.py`
   sends GET, HEAD, OPTIONS, POST, PUT, PATCH and DELETE to every netbox_kea URL in a provisioned
   branch, API action routes included; a new route with a parameter the guard cannot build fails
