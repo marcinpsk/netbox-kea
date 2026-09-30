@@ -177,7 +177,7 @@ URL request
   values. Plain `models.Model` (not a `NetBoxModel`).
 - **`KeaClient`** (`kea.py`): wraps a `requests.Session`. All API calls go through
   `.command(command, target, arguments, check)`, the only HTTP send of the plugin, which POSTs
-  JSON to the **configured endpoint URL** (`self.url` — the daemon's `/` control socket, or a
+  JSON to the **configured endpoint URL** (`self.url`: the daemon's `/` control socket, or a
   Control Agent URL). `command` is a `KeaCommand` member, never a string (a string is a
   `TypeError`); each member has a `read` or `write` kind. `target` is the `Family` (4 or 6), or
   `None` for the Control Agent itself. A family-specific command comes from a per-family mapping
