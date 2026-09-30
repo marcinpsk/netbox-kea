@@ -467,7 +467,7 @@ class TestKeaIpamSyncJobRun(TestCase):
         )
         overflow = {**_LEASE4, "ip-address": "10.0.0.2", "hostname": "host2"}
         with _patch_kea(leases4=[_LEASE4, overflow]):
-            with self.assertLogs("netbox_kea.jobs", level="WARNING") as cm:
+            with self.assertLogs("netbox_kea.ipam_reconciliation", level="WARNING") as cm:
                 self._run()
         self.assertTrue(any("truncated" in msg for msg in cm.output))
         # The overflow lease past the cap was genuinely dropped, not synced.
