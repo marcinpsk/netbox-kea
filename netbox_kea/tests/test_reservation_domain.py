@@ -12,7 +12,7 @@ from django.test import SimpleTestCase
 
 from netbox_kea import kea
 from netbox_kea.dhcp_options import DHCPOption, parse_dhcp_options
-from netbox_kea.kea import KeaClient, KeaCommand
+from netbox_kea.kea import KeaCommand
 from netbox_kea.reservations import (
     MAX_IDENTITY_LENGTH,
     ClearValue,
@@ -43,7 +43,7 @@ from netbox_kea.subnet_catalogue import (
     VerifiedSubnet,
 )
 
-from .kea_stub import _res_get, _res_page, _typed_reservation, queued, stub_kea
+from .kea_stub import _res_get, _res_page, _typed_reservation, kea_client, queued, stub_kea
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
@@ -279,7 +279,7 @@ class TestReservationValues(SimpleTestCase):
 
 class TestReservationPage(SimpleTestCase):
     def setUp(self):
-        self.kea = KeaClient(url="http://kea.example.invalid", send_service=False)
+        self.kea = kea_client(url="http://kea.example.invalid", send_service=False)
 
     def test_quarantines_configured_subnet_without_verified_identity(self):
         catalogue = _catalogue(4, 20, "198.18.0.0/24")
@@ -574,7 +574,7 @@ class TestReservationPage(SimpleTestCase):
 
 class TestReservationExactIdentity(SimpleTestCase):
     def setUp(self):
-        self.kea = KeaClient(url="http://kea.example.invalid", send_service=False)
+        self.kea = kea_client(url="http://kea.example.invalid", send_service=False)
         self.catalogue = _catalogue(4, 20, "198.18.0.0/24")
         self.scope = InSubnetReservationScope(SubnetIdentity(20, ip_network("198.18.0.0/24")))
 
@@ -638,7 +638,7 @@ class TestReservationExactIdentity(SimpleTestCase):
 
 class TestReservationScopedAddress(SimpleTestCase):
     def setUp(self):
-        self.kea = KeaClient(url="http://kea.example.invalid", send_service=False)
+        self.kea = kea_client(url="http://kea.example.invalid", send_service=False)
         self.catalogue = _catalogue(4, 20, "198.18.0.0/24")
         self.scope = InSubnetReservationScope(SubnetIdentity(20, ip_network("198.18.0.0/24")))
 
@@ -691,7 +691,7 @@ class TestReservationScopedAddress(SimpleTestCase):
 
 class TestReservationHostname(SimpleTestCase):
     def test_returns_all_valid_matches_and_quarantines_a_malformed_match(self):
-        client = KeaClient(url="http://kea.example.invalid", send_service=False)
+        client = kea_client(url="http://kea.example.invalid", send_service=False)
         response = {
             "result": 0,
             "arguments": {
@@ -730,7 +730,7 @@ class TestReservationHostname(SimpleTestCase):
         )
 
     def test_quarantines_results_that_do_not_match_the_requested_hostname(self):
-        client = KeaClient(url="http://kea.example.invalid", send_service=False)
+        client = kea_client(url="http://kea.example.invalid", send_service=False)
         response = {
             "result": 0,
             "arguments": {
@@ -780,7 +780,7 @@ class TestReservationIteration(SimpleTestCase):
                     }
                 ) as kea,
             ):
-                client = KeaClient(url="http://kea:8000")
+                client = kea_client(url="http://kea:8000")
                 snapshot = client.reservation_page(4, _catalogue(4, 20, "198.18.0.0/24"), max_raw_pages=1)
                 self.assertEqual(len(kea.bodies("reservation-get-page")), 1)
                 self.assertIsNotNone(snapshot.next_cursor)
@@ -790,7 +790,7 @@ class TestReservationIteration(SimpleTestCase):
                 self.assertEqual(kea.bodies("reservation-get-page")[-1]["arguments"]["from"], 7)
 
     def test_rejects_an_unsupported_snapshot_family(self):
-        client = KeaClient(url="http://kea.example.invalid", send_service=False)
+        client = kea_client(url="http://kea.example.invalid", send_service=False)
 
         with self.assertRaisesRegex(ValueError, "version must be 4 or 6"):
             client.reservation_snapshot(5, _catalogue(4, 20, "198.18.0.0/24"))
@@ -805,7 +805,7 @@ class TestReservationIteration(SimpleTestCase):
             next_source=1,
         )
         final = _res_page([{"subnet-id": 20, "client-id": "01:aa:bb:cc:dd:ee:02", "ip-address": "198.18.0.21"}])
-        client = KeaClient(url="http://kea.example.invalid", send_service=False)
+        client = kea_client(url="http://kea.example.invalid", send_service=False)
 
         with stub_kea({"reservation-get-page": queued(first, final)}) as kea:
             snapshot = client.reservation_snapshot(4, _catalogue(4, 20, "198.18.0.0/24"), page_size=2)
@@ -818,7 +818,7 @@ class TestReservationIteration(SimpleTestCase):
 
     def test_rejects_a_cursor_that_does_not_advance(self):
         stalled = _res_page([], next_from=2, next_source=1)
-        client = KeaClient(url="http://kea.example.invalid", send_service=False)
+        client = kea_client(url="http://kea.example.invalid", send_service=False)
 
         with stub_kea({"reservation-get-page": stalled}):
             with self.assertRaisesRegex(RuntimeError, "did not advance"):
@@ -832,7 +832,7 @@ class TestReservationIteration(SimpleTestCase):
         needs its own bound.
         """
         advancing = queued(*(_res_page([], next_from=index, next_source=1) for index in range(2, 12)))
-        client = KeaClient(url="http://kea.example.invalid", send_service=False)
+        client = kea_client(url="http://kea.example.invalid", send_service=False)
 
         with stub_kea({"reservation-get-page": advancing}) as kea:
             with self.assertRaisesRegex(RuntimeError, "only empty pages"):
@@ -860,7 +860,7 @@ class TestReservationIteration(SimpleTestCase):
                 )
             ]
         )
-        client = KeaClient(url="http://kea.example.invalid", send_service=False)
+        client = kea_client(url="http://kea.example.invalid", send_service=False)
 
         with stub_kea({"reservation-get-page": interleaved}):
             page = client.reservation_page(4, _catalogue(4, 20, "198.18.0.0/24"), limit=10)
@@ -891,7 +891,7 @@ class TestReservationIteration(SimpleTestCase):
                 next_source=1,
             )
 
-        client = KeaClient(url="http://kea.example.invalid", send_service=False)
+        client = kea_client(url="http://kea.example.invalid", send_service=False)
 
         with stub_kea({"reservation-get-page": always_more}):
             snapshot = client.reservation_snapshot(4, _catalogue(4, 20, "198.18.0.0/24"), page_size=1)
@@ -907,7 +907,7 @@ class TestReservationIteration(SimpleTestCase):
             _res_page([{"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:02"}], next_from=2, next_source=1),
             _res_page([{"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:03"}], next_from=1, next_source=1),
         )
-        client = KeaClient(url="http://kea.example.invalid", send_service=False)
+        client = kea_client(url="http://kea.example.invalid", send_service=False)
 
         with stub_kea({"reservation-get-page": pages}):
             snapshot = client.reservation_snapshot(4, _catalogue(4, 20, "198.18.0.0/24"), page_size=1)
@@ -920,7 +920,7 @@ class TestReservationIteration(SimpleTestCase):
 
 class TestReservationMutation(SimpleTestCase):
     def setUp(self):
-        self.kea = KeaClient(url="http://kea.example.invalid", send_service=False)
+        self.kea = kea_client(url="http://kea.example.invalid", send_service=False)
         self.catalogue = _catalogue(4, 20, "198.18.0.0/24")
         self.scope = InSubnetReservationScope(SubnetIdentity(20, ip_network("198.18.0.0/24")))
         self.reservation = IPv4Reservation(
@@ -1346,7 +1346,7 @@ class TestReservationMutation(SimpleTestCase):
         self.assertEqual(result.verification, "verified")
 
     def test_create_reports_when_persistence_is_not_requested(self):
-        client = KeaClient(url="http://kea.example.invalid", send_service=False, persist_config=False)
+        client = kea_client(url="http://kea.example.invalid", send_service=False, persist_config=False)
         raw = {
             "subnet-id": 20,
             "hw-address": "aa:bb:cc:dd:ee:ff",
@@ -1373,7 +1373,7 @@ class TestReservationMutation(SimpleTestCase):
 
 class TestReservationCapabilities(SimpleTestCase):
     def test_uses_live_family_configuration_and_flex_id_hook(self):
-        client = KeaClient(url="http://kea.example.invalid", send_service=False)
+        client = kea_client(url="http://kea.example.invalid", send_service=False)
         commands = ["reservation-get", "reservation-add", "reservation-update", "reservation-del"]
         config = {
             "result": 0,
@@ -1399,7 +1399,7 @@ class TestReservationCapabilities(SimpleTestCase):
         )
 
     def test_missing_host_command_disables_mutation(self):
-        client = KeaClient(url="http://kea.example.invalid", send_service=False)
+        client = kea_client(url="http://kea.example.invalid", send_service=False)
         config = {"result": 0, "arguments": {"Dhcp6": {"host-reservation-identifiers": ["duid"]}}}
 
         with stub_kea(
@@ -1415,7 +1415,7 @@ class TestReservationCapabilities(SimpleTestCase):
         self.assertIn("host_cmds", capabilities.explanation)
 
     def test_rejects_explicit_null_host_reservation_identifiers(self):
-        client = KeaClient(url="http://kea.example.invalid", send_service=False)
+        client = kea_client(url="http://kea.example.invalid", send_service=False)
         config = {"result": 0, "arguments": {"Dhcp4": {"host-reservation-identifiers": None}}}
 
         with stub_kea({"list-commands": {"result": 0, "arguments": []}, "config-get": config}):
@@ -1423,7 +1423,7 @@ class TestReservationCapabilities(SimpleTestCase):
                 client.reservation_capabilities(4)
 
     def test_uses_family_defaults_when_host_reservation_identifiers_are_absent(self):
-        client = KeaClient(url="http://kea.example.invalid", send_service=False)
+        client = kea_client(url="http://kea.example.invalid", send_service=False)
         config = {"result": 0, "arguments": {"Dhcp6": {}}}
 
         with stub_kea({"list-commands": {"result": 0, "arguments": []}, "config-get": config}):

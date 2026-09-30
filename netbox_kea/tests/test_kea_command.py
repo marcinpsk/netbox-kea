@@ -11,7 +11,7 @@ from django.test import override_settings
 
 from netbox_kea.branching import BranchActive, BranchBinding
 from netbox_kea.kea import KeaClient, KeaCommand
-from netbox_kea.tests.kea_stub import stub_kea
+from netbox_kea.tests.kea_stub import kea_client, stub_kea
 from netbox_kea.tests.kea_wire_discipline import WIRE_COMMANDS
 from netbox_kea.tests.utils import _PLUGINS_CONFIG
 
@@ -118,7 +118,7 @@ def test_every_member_is_a_command_the_harness_kea_lists():
     ],
 )
 def test_the_wire_payload_of_each_target(target, send_service, body):
-    client = KeaClient(url="https://kea.example.invalid/", send_service=send_service)
+    client = kea_client(url="https://kea.example.invalid/", send_service=send_service)
     with stub_kea({"config-get": {"result": 0}}) as kea:
         client.command(KeaCommand.CONFIG_GET, target, arguments={"a": 1})
 
@@ -126,7 +126,7 @@ def test_the_wire_payload_of_each_target(target, send_service, body):
 
 
 def test_a_command_without_arguments_sends_no_arguments_key():
-    client = KeaClient(url="https://kea.example.invalid/")
+    client = kea_client(url="https://kea.example.invalid/")
     with stub_kea({"status-get": {"result": 0}}) as kea:
         client.command(KeaCommand.STATUS_GET, None)
 
@@ -134,7 +134,7 @@ def test_a_command_without_arguments_sends_no_arguments_key():
 
 
 def test_a_string_command_is_a_type_error_before_any_send():
-    client = KeaClient(url="https://kea.example.invalid/")
+    client = kea_client(url="https://kea.example.invalid/")
     with stub_kea({"config-get": {"result": 0}}) as kea, pytest.raises(TypeError, match="KeaCommand"):
         client.command("config-get", 4)  # type: ignore[arg-type]
 
@@ -143,7 +143,7 @@ def test_a_string_command_is_a_type_error_before_any_send():
 
 @pytest.mark.parametrize("target", [0, 5, "dhcp4", True])
 def test_a_target_that_is_not_a_family_is_refused_before_any_send(target):
-    client = KeaClient(url="https://kea.example.invalid/")
+    client = kea_client(url="https://kea.example.invalid/")
     with stub_kea({"config-get": {"result": 0}}) as kea, pytest.raises(ValueError, match="target"):
         client.command(KeaCommand.CONFIG_GET, target)
 
@@ -270,13 +270,31 @@ def test_the_runtime_package_imports_no_other_http_client():
     assert imported == ["config_write.py: urllib3.exceptions"]
 
 
-def test_only_server_get_client_builds_a_kea_client_and_it_passes_the_write_guard():
-    builds = [
-        (f"{rel}::{scope}", call)
-        for rel, tree in _runtime_modules()
+def _kea_client_builds(modules: list[tuple[str, ast.Module]]) -> dict[str, str]:
+    """Return each KeaClient construction site, with the write guard expression it passes, or "" for none."""
+    return {
+        f"{rel}::{scope}": next(
+            (ast.unparse(keyword.value) for keyword in call.keywords if keyword.arg == "write_guard"), ""
+        )
+        for rel, tree in modules
         for scope, call in _scoped_calls(tree)
         if _is_name(call.func, "KeaClient")
-    ]
+    }
 
-    assert [site for site, _call in builds] == ["models.py::Server.get_client"]
-    assert "write_guard" in {keyword.arg for keyword in builds[0][1].keywords}
+
+def test_only_server_get_client_builds_a_kea_client_and_it_passes_the_branch_binding():
+    assert _kea_client_builds(_runtime_modules()) == {"models.py::Server.get_client": "branching.bind()"}
+
+
+@pytest.mark.parametrize("guard", ["write_guard=None", "write_guard=no_guard()", "**options"])
+def test_the_build_site_scan_sees_a_guard_other_than_the_branch_binding(guard):
+    source = f"class Server:\n    def get_client(self):\n        return kea_client(url, {guard})\n"
+
+    assert _kea_client_builds([("models.py", ast.parse(source))]) != {
+        "models.py::Server.get_client": "branching.bind()"
+    }
+
+
+def test_a_kea_client_without_a_write_guard_is_a_type_error():
+    with pytest.raises(TypeError, match="write_guard"):
+        KeaClient(url="https://kea.example.invalid/")  # type: ignore[call-arg]

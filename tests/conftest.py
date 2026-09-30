@@ -21,6 +21,13 @@ class TimeoutSession(requests.Session):
         return super().request(method, url, **kwargs)
 
 
+class NoBranchGuard:
+    """The KeaClient write guard of the host harness: it has no NetBox, so no branch can be active."""
+
+    def refuse(self, operation: str) -> None:
+        """Refuse nothing."""
+
+
 def _delete_created_servers(api: pynetbox.api, created_server_ids: set[int]) -> None:
     """Delete every session-owned Server, and report failures without stopping."""
     for server_id in sorted(created_server_ids):

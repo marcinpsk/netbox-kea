@@ -40,6 +40,7 @@ from .kea_stub import (
     _catalogue_responses_for_subnets,
     _subnet_list,
     _subnet_stats,
+    kea_client,
     queued,
     stub_kea,
 )
@@ -2413,7 +2414,7 @@ class TestGetLeasesCoverage(_ViewTestBase):
         from netbox_kea.views.leases import ServerLeases4View
 
         view = ServerLeases4View()
-        client = KeaClient(url="https://kea.example.com")
+        client = kea_client(url="https://kea.example.com")
         with self.assertRaises(ValueError):
             view.get_leases(client, "test_query", "not_a_valid_by")
 

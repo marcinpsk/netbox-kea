@@ -15,7 +15,7 @@ import pytest
 import requests
 from playwright.sync_api import Page
 
-from ..conftest import REQUEST_TIMEOUT, TimeoutSession
+from ..conftest import REQUEST_TIMEOUT, NoBranchGuard, TimeoutSession
 
 # This is linked from netbox_kea to avoid import errors
 from ..constants import Family
@@ -149,7 +149,10 @@ class _DualEndpointKeaClient:
 @pytest.fixture
 def kea_client(kea_control_urls: dict[int, str]) -> Iterator[_DualEndpointKeaClient]:
     # Kea 3.0: two daemons, each on its own host-exposed HTTP control socket.
-    with KeaClient(kea_control_urls[4]) as dhcp4, KeaClient(kea_control_urls[6]) as dhcp6:
+    with (
+        KeaClient(kea_control_urls[4], write_guard=NoBranchGuard()) as dhcp4,
+        KeaClient(kea_control_urls[6], write_guard=NoBranchGuard()) as dhcp6,
+    ):
         yield _DualEndpointKeaClient(dhcp4, dhcp6)
 
 
