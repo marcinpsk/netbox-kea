@@ -68,8 +68,8 @@ from netbox_kea.models import KeaDhcpLink, Server, SyncConfig  # noqa: E402
 from netbox_kea.tests.kea_stub import _leases_per_subnet, _res_get, _res_page, _subnet_stats, stub_kea  # noqa: E402
 from netbox_kea.tests.utils import _WRITE_VERBS, _make_db_server, _refusal_receivers  # noqa: E402
 
-# Changing this set needs a design decision (docs/design/netbox-branching.md).
-BRANCHABLE_MODELS: frozenset[str] = frozenset()
+# Changing this set needs a design decision (docs/design/ipam-ownership-branching.md).
+BRANCHABLE_MODELS: frozenset[str] = frozenset({"netbox_kea.IPAMOwnershipLink"})
 
 # The on_delete handlers that do not write the referencing row. Every other one does (SET(...) and DB_* too).
 _NON_WRITING_ON_DELETE = (models.PROTECT, models.RESTRICT, models.DO_NOTHING)
@@ -136,7 +136,7 @@ class BranchabilityPinTest(SimpleTestCase):
     def test_the_rule_reads_every_plugin_model(self):
         self.assertEqual(
             {model._meta.label for model in _plugin_models()},
-            {"netbox_kea.Server", "netbox_kea.SyncConfig", "netbox_kea.KeaDhcpLink"},
+            {"netbox_kea.Server", "netbox_kea.SyncConfig", "netbox_kea.KeaDhcpLink", "netbox_kea.IPAMOwnershipLink"},
         )
 
 
@@ -751,7 +751,10 @@ class PluginRowWritesInBranchTest(TransactionTestCase):
     def test_the_receivers_cover_every_plugin_model(self):
         labels = {model._meta.label for model in _plugin_models()}
 
-        self.assertEqual(labels, {"netbox_kea.Server", "netbox_kea.SyncConfig", "netbox_kea.KeaDhcpLink"})
+        self.assertEqual(
+            labels,
+            {"netbox_kea.Server", "netbox_kea.SyncConfig", "netbox_kea.KeaDhcpLink", "netbox_kea.IPAMOwnershipLink"},
+        )
         self.assertEqual((_refusal_receivers(pre_save), _refusal_receivers(pre_delete)), (labels, labels))
 
     def test_a_save_in_a_branch_is_refused(self):
