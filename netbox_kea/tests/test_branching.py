@@ -34,15 +34,17 @@ if not branching.installed():
         raise RuntimeError(f"{_REQUIRE_BRANCHING}=1, but netbox_branching is not an installed app")
     pytest.skip("netbox-branching is not an installed app", allow_module_level=True)
 
+from core.events import OBJECT_DELETED  # noqa: E402
 from core.exceptions import JobFailed  # noqa: E402
 from core.models import Job, ObjectType  # noqa: E402
+from dcim.models import Device, DeviceRole, DeviceType, Interface, Manufacturer, Site  # noqa: E402
 from django.apps import apps  # noqa: E402
 from django.conf import settings  # noqa: E402
 from django.contrib.auth import get_user_model  # noqa: E402
 from django.contrib.contenttypes.models import ContentType  # noqa: E402
 from django.core.cache import cache  # noqa: E402
 from django.core.management import call_command  # noqa: E402
-from django.db import connection, connections, models, router  # noqa: E402
+from django.db import connection, connections, models, router, transaction  # noqa: E402
 from django.db.migrations import RunPython, RunSQL, SeparateDatabaseAndState  # noqa: E402
 from django.db.migrations.loader import MigrationLoader  # noqa: E402
 from django.db.migrations.operations.base import Operation  # noqa: E402
@@ -52,7 +54,9 @@ from django.db.models.signals import pre_delete, pre_save  # noqa: E402
 from django.test import Client, RequestFactory, SimpleTestCase, TransactionTestCase, override_settings  # noqa: E402
 from django.test.utils import CaptureQueriesContext, isolate_apps  # noqa: E402
 from django.urls import URLPattern, URLResolver, get_resolver, resolve, reverse  # noqa: E402
+from django.utils.html import escape  # noqa: E402
 from ipam.models import VRF, IPAddress, IPRange, Prefix  # noqa: E402
+from netaddr import IPNetwork  # noqa: E402
 from netbox.context_managers import event_tracking  # noqa: E402
 from netbox_branching import utilities as branching_utilities  # noqa: E402
 from netbox_branching.choices import BranchStatusChoices  # noqa: E402
@@ -60,13 +64,19 @@ from netbox_branching.constants import BRANCH_HEADER, COOKIE_NAME, QUERY_PARAM  
 from netbox_branching.models import Branch  # noqa: E402
 from netbox_branching.utilities import activate_branch, supports_branching  # noqa: E402
 from rest_framework.permissions import SAFE_METHODS  # noqa: E402
+from utilities.exceptions import AbortRequest  # noqa: E402
 
 from netbox_kea import server_configuration  # noqa: E402
 from netbox_kea.jobs import KeaIpamSyncJob  # noqa: E402
 from netbox_kea.kea import KeaCommand, KeaException  # noqa: E402
-from netbox_kea.models import KeaDhcpLink, Server, SyncConfig  # noqa: E402
+from netbox_kea.models import IPAMOwnershipLink, KeaDhcpLink, Server, SyncConfig, next_confirmation_number  # noqa: E402
 from netbox_kea.tests.kea_stub import _leases_per_subnet, _res_get, _res_page, _subnet_stats, stub_kea  # noqa: E402
-from netbox_kea.tests.utils import _WRITE_VERBS, _make_db_server, _refusal_receivers  # noqa: E402
+from netbox_kea.tests.utils import (  # noqa: E402
+    _WRITE_VERBS,
+    DISPATCHED_EVENTS,
+    _make_db_server,
+    _refusal_receivers,
+)
 
 # Changing this set needs a design decision (docs/design/ipam-ownership-branching.md).
 EXPOSED_RELATIONS: frozenset[tuple[str, str]] = frozenset(
@@ -292,6 +302,13 @@ class ResolverTest(SimpleTestCase):
 
     def test_branch_active_is_not_a_kea_error(self):
         self.assertFalse(issubclass(branching.BranchActive, KeaException))
+
+    def test_branch_active_is_an_abort_request_whose_message_escapes_the_branch_name(self):
+        refused = branching.BranchActive("A test change", Branch(name="<b>probe</b>"))
+
+        self.assertIsInstance(refused, AbortRequest)
+        self.assertIn("A test change is refused. Branch &lt;b&gt;probe&lt;/b&gt; is active.", refused.message)
+        self.assertIn("A test change is refused. Branch <b>probe</b> is active.", str(refused))
 
 
 class SuiteConfigurationTest(SimpleTestCase):
@@ -920,6 +937,224 @@ class PluginRowWritesInBranchTest(TransactionTestCase):
 
         self.assertEqual(Server.objects.get(pk=self.server.pk).ca_url, _AFTER)
         self.assertFalse(KeaDhcpLink.objects.filter(pk=self.link.pk).exists())
+
+
+_OWNED_KEY = {IPAddress: "ip_address", Prefix: "prefix", IPRange: "ip_range"}
+_OWNED_SOURCE = {IPAddress: "lease", Prefix: "subnet", IPRange: "pool"}
+_EVENTS_RECORDER = "netbox_kea.tests.utils.record_dispatched_events"
+
+
+def _link(server: Server, obj: models.Model) -> IPAMOwnershipLink:
+    """Link *obj* to *server* in main, as the IPAM sync would."""
+    return IPAMOwnershipLink.objects.create(
+        server=server,
+        family=4,
+        source=_OWNED_SOURCE[type(obj)],
+        confirmation=next_confirmation_number(),
+        **{_OWNED_KEY[type(obj)]: obj},
+    )
+
+
+def _ipam_state() -> tuple:
+    """Return the IPAM rows, the device rows and the ownership links that the active connection reads."""
+    return (
+        list(IPAddress.objects.order_by("pk").values_list("pk", "address", "description")),
+        list(Prefix.objects.order_by("pk").values_list("pk", "prefix", "description")),
+        list(IPRange.objects.order_by("pk").values_list("pk", "start_address", "end_address", "description")),
+        list(Device.objects.order_by("pk").values_list("pk", "name")),
+        list(Interface.objects.order_by("pk").values_list("pk", "name")),
+        list(IPAMOwnershipLink.objects.order_by("pk").values_list("pk", *_OWNED_KEY.values(), "confirmation")),
+    )
+
+
+def _device_with_interface(name: str) -> Interface:
+    site = Site.objects.create(name=name, slug=name)
+    manufacturer = Manufacturer.objects.create(name=name, slug=name)
+    device_type = DeviceType.objects.create(manufacturer=manufacturer, model=name, slug=name)
+    role = DeviceRole.objects.create(name=name, slug=name)
+    device = Device.objects.create(name=name, site=site, device_type=device_type, role=role)
+    return Interface.objects.create(device=device, name="eth0", type="1000base-t")
+
+
+class _OwnedObjectsTestCase(TransactionTestCase):
+    """Main holds an unowned IP address, and an IP address on a device interface, a Prefix and an IP Range that a
+    Kea Server owns. Then a provisioned branch."""
+
+    branch_name = "ownership"
+
+    def setUp(self):
+        self.user = get_user_model().objects.create_superuser("owner-admin")
+        self.client = Client(raise_request_exception=False)
+        self.client.force_login(self.user)
+        self.server = _make_db_server(name="owner", dhcp6=False)
+        self.interface = _device_with_interface("owner-device")
+        self.unowned = IPAddress.objects.create(address="192.0.2.5/24")
+        self.owned = {
+            "ipaddress": IPAddress.objects.create(address="192.0.2.10/24", assigned_object=self.interface),
+            "prefix": Prefix.objects.create(prefix="192.0.2.0/24"),
+            "iprange": IPRange.objects.create(
+                start_address=IPNetwork("192.0.2.100/24"), end_address=IPNetwork("192.0.2.199/24")
+            ),
+        }
+        for obj in self.owned.values():
+            _link(self.server, obj)
+        self.branch = _provisioned_branch(self, self.branch_name)
+        self.main_before = _ipam_state()
+        with activate_branch(self.branch):
+            self.branch_before = _ipam_state()
+        DISPATCHED_EVENTS.clear()
+
+    def _in_branch(self) -> None:
+        self.client.cookies[COOKIE_NAME] = self.branch.schema_id
+
+    def _refusal(self, obj: models.Model) -> str:
+        return escape(
+            f"A delete of {obj._meta.verbose_name} {obj}, which Kea Server {self.server} owns, is refused. "
+            f"Branch {self.branch} is active."
+        )
+
+    def _assert_main_unchanged(self) -> None:
+        self.assertEqual(_ipam_state(), self.main_before, "main changed")
+
+    def _assert_nothing_changed(self) -> None:
+        self._assert_main_unchanged()
+        with activate_branch(self.branch):
+            self.assertEqual(_ipam_state(), self.branch_before, "the branch changed")
+
+    def _bulk_delete(self, model: type[models.Model], *objects: models.Model):
+        return self.client.post(
+            reverse(f"ipam:{model._meta.model_name}_bulk_delete"),
+            {"pk": [obj.pk for obj in objects], "_confirm": True, "confirm": True},
+            follow=True,
+        )
+
+
+@override_settings(EVENTS_PIPELINE=[_EVENTS_RECORDER])
+class OwnedObjectDeleteInBranchTest(_OwnedObjectsTestCase):
+    """A delete in a branch that reaches an ownership link is refused, and main and the branch do not change."""
+
+    def test_the_fixtures_link_each_owned_object_in_main(self):
+        self.assertEqual(IPAMOwnershipLink.objects.count(), 3)
+        self.assertIn(IPAMOwnershipLink._meta.label, _refusal_receivers(pre_delete))
+
+    def test_a_ui_delete_of_an_owned_object_is_refused(self):
+        self._in_branch()
+        for name, obj in self.owned.items():
+            with self.subTest(name):
+                response = self.client.post(
+                    reverse(f"ipam:{name}_delete", args=[obj.pk]), {"confirm": True}, follow=True
+                )
+
+                self.assertEqual(response.redirect_chain, [(obj.get_absolute_url(), 302)])
+                self.assertContains(response, self._refusal(obj))
+        self._assert_nothing_changed()
+        self.assertEqual(DISPATCHED_EVENTS, [])
+
+    def test_a_ui_bulk_delete_of_an_owned_object_is_refused(self):
+        self._in_branch()
+        for obj in self.owned.values():
+            with self.subTest(type(obj).__name__):
+                response = self._bulk_delete(type(obj), obj)
+
+                self.assertContains(response, self._refusal(obj))
+        self._assert_nothing_changed()
+        self.assertEqual(DISPATCHED_EVENTS, [])
+
+    def test_a_rest_delete_of_an_owned_object_is_refused(self):
+        for name, obj in self.owned.items():
+            with self.subTest(name):
+                response = self.client.delete(
+                    reverse(f"ipam-api:{name}-detail", args=[obj.pk]), headers={BRANCH_HEADER: self.branch.schema_id}
+                )
+
+                self.assertEqual(response.status_code, 400, response.content[:500])
+                self.assertIn(self._refusal(obj), response.json()["detail"])
+        self._assert_nothing_changed()
+
+    def test_a_queryset_delete_of_an_owned_object_is_refused(self):
+        for name, obj in self.owned.items():
+            with self.subTest(name), activate_branch(self.branch), self.assertRaises(AbortRequest) as refused:
+                type(obj).objects.filter(pk=obj.pk).delete()
+
+            self.assertIsInstance(refused.exception, branching.BranchActive)
+            self.assertIs(refused.exception.branch, self.branch)
+        self._assert_nothing_changed()
+
+    def test_a_device_delete_that_reaches_an_owned_ip_address_is_refused(self):
+        device = self.interface.device
+        with activate_branch(self.branch), self.assertRaises(branching.BranchActive):
+            Device.objects.get(pk=device.pk).delete()
+        self._in_branch()
+
+        response = self.client.post(reverse("dcim:device_delete", args=[device.pk]), {"confirm": True}, follow=True)
+
+        self.assertContains(response, self._refusal(self.owned["ipaddress"]))
+        self._assert_nothing_changed()
+        self.assertEqual(DISPATCHED_EVENTS, [])
+
+    def test_a_mixed_ui_bulk_delete_is_refused_and_dispatches_no_event(self):
+        owned = self.owned["ipaddress"]
+        self._in_branch()
+        order = list(IPAddress.objects.filter(pk__in=[owned.pk, self.unowned.pk]).values_list("pk", flat=True))
+        self.assertEqual(order, [self.unowned.pk, owned.pk], "the bulk delete must reach the unowned row first")
+
+        response = self._bulk_delete(IPAddress, self.unowned, owned)
+
+        self.assertContains(response, self._refusal(owned))
+        self._assert_nothing_changed()
+        self.assertEqual(DISPATCHED_EVENTS, [])
+        # The recorder sees a delete that the branch allows, so the empty list above means something.
+        self._bulk_delete(IPAddress, self.unowned)
+        self.assertEqual(
+            [(event["object_id"], event["event_type"]) for event in DISPATCHED_EVENTS],
+            [(self.unowned.pk, OBJECT_DELETED)],
+        )
+        self._assert_main_unchanged()
+
+    def test_a_rest_bulk_delete_leaves_main_unchanged_whatever_the_status(self):
+        # netbox-branching's REST bulk delete rolls back the wrong connection (R2-5): only main is asserted.
+        body = json.dumps([{"id": self.unowned.pk}, {"id": self.owned["ipaddress"].pk}])
+        for enclosing in (False, True):
+            with self.subTest(enclosing_default_atomic=enclosing):
+                with ExitStack() as stack:
+                    if enclosing:
+                        stack.enter_context(transaction.atomic())
+                    self.client.delete(
+                        reverse("ipam-api:ipaddress-list"),
+                        data=body,
+                        content_type="application/json",
+                        headers={BRANCH_HEADER: self.branch.schema_id},
+                    )
+
+                self._assert_main_unchanged()
+
+
+class BranchNameEscapeTest(_OwnedObjectsTestCase):
+    """NetBox marks an AbortRequest message safe, so the refusal escapes the free-text branch name."""
+
+    branch_name = "<b>probe</b>"
+
+    def _assert_the_name_is_text(self, response) -> None:
+        self.assertContains(response, "Branch &lt;b&gt;probe&lt;/b&gt; is active.")
+        self.assertNotContains(response, "<b>probe</b>")
+
+    def test_a_refused_ui_delete_shows_the_branch_name_as_text(self):
+        obj = self.owned["ipaddress"]
+        self._in_branch()
+
+        response = self.client.post(reverse("ipam:ipaddress_delete", args=[obj.pk]), {"confirm": True}, follow=True)
+
+        self.assertEqual(response.redirect_chain, [(obj.get_absolute_url(), 302)])
+        self._assert_the_name_is_text(response)
+        self._assert_nothing_changed()
+
+    def test_a_refused_ui_bulk_delete_shows_the_branch_name_as_text(self):
+        self._in_branch()
+
+        response = self._bulk_delete(IPAddress, self.owned["ipaddress"])
+
+        self._assert_the_name_is_text(response)
+        self._assert_nothing_changed()
 
 
 class SyncJobInBranchTest(TransactionTestCase):
