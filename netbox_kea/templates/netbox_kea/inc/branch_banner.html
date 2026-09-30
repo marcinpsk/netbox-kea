@@ -1,9 +1,15 @@
-{# Navbar banner on each plugin page while a netbox-branching branch is active #}
-<div class="alert alert-warning d-flex align-items-center mb-0 me-2 py-1 px-2" role="status" id="kea-branch-banner" style="max-width: 44rem;">
-  <i class="mdi mdi-source-branch me-2" aria-hidden="true"></i>
-  <div class="small">
-    <strong>Branch {{ branch.name }}: netbox-kea refuses changes.</strong>
-    Kea data is live. Kea servers, sync settings and DHCP plugin links come from main.
-    Other NetBox objects follow netbox-branching's routing for branch {{ branch.name }}.
+{# Navbar banner on each plugin page while a netbox-branching branch is active. NetBox renders the navbar twice, so no id. #}
+<div class="kea-branch-banner dropdown me-2">
+  <button class="btn btn-warning dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false"
+          aria-label="Kea read-only" title="Kea read-only">
+    <i class="mdi mdi-lock-outline" aria-hidden="true"></i>
+    <span class="d-none d-md-inline ms-1">Kea read-only</span>
+  </button>
+  <div class="dropdown-menu dropdown-menu-end p-3 text-wrap" style="width: 22rem;">
+    <p class="fw-semibold mb-2">Branch {{ branch.name }}: netbox-kea refuses changes.</p>
+    <p class="small mb-0">
+      Kea data is live. Kea servers, sync settings and DHCP plugin links come from main.
+      Other NetBox objects follow netbox-branching's routing for branch {{ branch.name }}.
+    </p>
   </div>
 </div>
