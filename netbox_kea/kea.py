@@ -304,6 +304,19 @@ class LeaseCollection(NamedTuple):
     truncated: bool
 
 
+class LeaseFields(NamedTuple):
+    """The fields of one lease record from a validated collection that the IPAM synchronization reads."""
+
+    address: str
+    subnet_id: Any
+    hw_address: Any
+
+
+def lease_fields(lease: dict[str, Any]) -> LeaseFields:
+    """Return the IPAM synchronization fields of one lease record; the collection already validated the address."""
+    return LeaseFields(lease["ip-address"], lease.get("subnet-id"), lease.get("hw-address"))
+
+
 class LeaseQueryGuardError(Exception):
     """Base class for a lease query rejected before an unbounded Kea response."""
 

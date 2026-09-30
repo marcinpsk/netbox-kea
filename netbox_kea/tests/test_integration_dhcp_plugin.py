@@ -1305,6 +1305,42 @@ class DhcpPluginStaleCleanupGuardTest(TestCase):
         self.assertTrue(IPAddress.objects.filter(pk=referenced.pk).exists())
         self.assertIn(referenced.pk, dhcp_plugin.sys4_referenced_ip_ids())
 
+    def test_reconciliation_never_removes_or_deprecates_a_referenced_ip(self):
+        from ipam.models import IPAddress
+
+        from netbox_kea.integrations import dhcp_plugin
+        from netbox_kea.ipam_reconciliation import LeasePhase, reconcile
+        from netbox_kea.models import IPAMOwnershipLink
+
+        from .test_jobs import _lease_page
+
+        conf = {
+            "subnet4": [
+                {
+                    "id": 1,
+                    "subnet": "10.77.0.0/24",
+                    "reservations": [{"hw-address": "aa:bb:cc:dd:ee:77", "ip-address": "10.77.0.50", "hostname": "pc"}],
+                }
+            ]
+        }
+        dhcp_plugin.import_server_config(self.server, parse_dhcp_config(conf, 4), _reservation_snapshot(conf, 4))
+        referenced = IPAddress.objects.get(address="10.77.0.50/24")
+        phase = LeasePhase(max_leases=None, subnet_prefix_lengths={1: 24}, reservation_addresses=None)
+        lease = {"ip-address": "10.77.0.50", "hostname": "pc", "subnet-id": 1}
+        for mode in ("remove", "deprecate"):
+            with self.subTest(mode), override_settings(PLUGINS_CONFIG={"netbox_kea": {"stale_ip_cleanup": mode}}):
+                with stub_kea({"lease4-get-page": _lease_page([lease])}):
+                    reconcile(self.server, 4, [phase])
+                self.assertTrue(IPAMOwnershipLink.objects.filter(ip_address=referenced).exists())
+                claimed_status = IPAddress.objects.get(pk=referenced.pk).status
+
+                with stub_kea({"lease4-get-page": _lease_page([])}):
+                    report = reconcile(self.server, 4, [phase])
+
+                self.assertEqual((report.removed, report.deprecated), (0, 0))
+                self.assertEqual(IPAddress.objects.get(pk=referenced.pk).status, claimed_status)
+                self.assertFalse(IPAMOwnershipLink.objects.filter(ip_address=referenced).exists())
+
 
 class ImportSummaryCompletenessTest(SimpleTestCase):
     """Reservation import counts must distinguish traversal and record failures.

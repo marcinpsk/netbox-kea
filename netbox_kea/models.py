@@ -561,6 +561,8 @@ class IPAMOwnershipLink(models.Model):
         on_delete=models.CASCADE,
         related_name="ipam_ownership_links",
     )
+    # The key column of server; the type check runs without the Django plugin, which would add it.
+    server_id: int
     family: models.PositiveSmallIntegerField = models.PositiveSmallIntegerField(
         choices=[(family, f"IPv{family}") for family in get_args(Family)]
     )

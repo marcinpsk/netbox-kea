@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import ipaddress
 from collections.abc import Iterable
-from typing import get_args, get_type_hints
+from typing import get_args, get_origin, get_type_hints
 
 from django.test import TestCase, override_settings
 
@@ -1423,18 +1423,20 @@ class TestCleanupStaleIpsBatch(TestCase):
 
     def test_the_producer_and_the_consumer_declare_the_same_record_types(self):
         """Both sync phases fill one list, so every side must name the same accepted types."""
-        from netbox_kea.jobs import _sync_server_leases, _sync_server_reservations
+        from netbox_kea.ipam_reconciliation import SyncReport
+        from netbox_kea.jobs import _sync_server_reservations
         from netbox_kea.models import Server
         from netbox_kea.reservations import Reservation, ReservationSnapshot
         from netbox_kea.sync import cleanup_stale_ips_batch
 
         job_types = {"Reservation": Reservation, "ReservationSnapshot": ReservationSnapshot, "Server": Server}
         consumer_hints = get_type_hints(cleanup_stale_ips_batch)
-        lease_hints = get_type_hints(_sync_server_leases, localns=job_types)
         reservation_hints = get_type_hints(_sync_server_reservations, localns=job_types)
         consumed = consumer_hints["synced_records"]
-        self.assertEqual(lease_hints["all_synced"], consumed)
         self.assertEqual(reservation_hints["all_synced"], consumed)
+        # The lease phase reports its records through reconcile; the job adds them to the same list.
+        (lease_record,) = get_args(get_type_hints(SyncReport)["lease_records"])
+        self.assertIn(get_origin(lease_record), get_args(get_args(consumed)[0]))
         # The keep-set channel carries the same records; the consumer only reads them.
         record_types = get_args(consumed)[0]
         self.assertEqual(consumer_hints["protected_records"], Iterable[record_types])
