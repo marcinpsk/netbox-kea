@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import time
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -677,7 +678,19 @@ def _serialized(client: KeaClient, family: Family) -> Iterator[None]:
                         "not-sent", ("Another change to this Kea server is still running. Try again later.",)
                     ) from exc
                 cursor.execute("SELECT set_config('lock_timeout', %s, true)", [previous])
-            yield
+            acquired = time.monotonic()
+            try:
+                yield
+            finally:
+                held = time.monotonic() - acquired
+                if held > LOCK_WAIT_SECONDS:
+                    logger.warning(
+                        "A Configuration Change held the DHCPv%s lock for %.1f s, longer than the %.1f s that "
+                        "other changes to this Kea server wait before they are refused",
+                        family,
+                        held,
+                        LOCK_WAIT_SECONDS,
+                    )
             body_done = True
     except DatabaseError:
         if not body_done:

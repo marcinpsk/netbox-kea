@@ -2458,6 +2458,35 @@ class LockTests(TransactionTestCase):
         self.assertEqual(self._names(kea), ["held"])
         self.assertEqual(self.results["holder"], ConfigChangeOutcome("applied", "persisted"))
 
+    def test_a_lock_held_longer_than_the_wait_is_logged(self):
+        def slow(reply):
+            def answer(body):
+                time.sleep(0.2)
+                return reply
+
+            return answer
+
+        rejected = {"result": 1, "text": "network is in use"}
+        with (
+            patch.object(config_write, "LOCK_WAIT_SECONDS", 0.1),
+            self.assertLogs(config_write.logger, "WARNING") as logs,
+        ):
+            with stub_kea({**self._responses(), "network4-add": slow(_OK)}):
+                config_write.add_shared_network(self.holder, 4, "net-a")
+            with (
+                stub_kea({**self._responses(), "network4-add": slow(rejected)}),
+                self.assertRaises(ConfigChangeRejected),
+            ):
+                config_write.add_shared_network(self.holder, 4, "net-b")
+        held = [line for line in logs.output if "lock for" in line]
+        self.assertEqual(len(held), 2, logs.output)
+        for line in held:
+            self.assertRegex(line, r"held the DHCPv4 lock for \d+\.\d s, longer than the 0\.1 s")
+
+    def test_a_short_lock_hold_is_not_logged(self):
+        with stub_kea(self._responses()), self.assertNoLogs(config_write.logger, "WARNING"):
+            config_write.add_shared_network(self.holder, 4, "net-a")
+
     def test_a_failed_commit_after_the_change_keeps_the_outcome(self):
         with connection.cursor() as cursor:
             cursor.execute("SELECT pg_backend_pid()")
