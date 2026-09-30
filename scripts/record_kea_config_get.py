@@ -43,6 +43,8 @@ CONTROL_AGENT_VERSION = "3.0.3"
 CONTROL_AGENT_PORT = 18105
 # A server that accepts the connection and then stops sending must not block the recording.
 DOWNLOAD_SECONDS = 300
+# Longer than DOWNLOAD_SECONDS, so curl ends a stalled download first; `docker run` can pull an image.
+COMMAND_SECONDS = 600
 CONTROL_AGENT_REPOSITORY = "https://dl.cloudsmith.io/public/isc/kea-3-0/alpine/v{alpine}/main/x86_64/"
 # The recorded Kea is local; a proxy from the environment must not see the request.
 _OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -52,7 +54,9 @@ def _run(tool: str, *args: str, check: bool = True) -> str:
     executable = shutil.which(tool)
     if executable is None:
         raise SystemExit(f"{tool} is required to record Kea replies")
-    result = subprocess.run([executable, *args], check=check, capture_output=True, text=True)  # noqa: S603 - fixed argv, no shell
+    result = subprocess.run(  # noqa: S603 - fixed argv, no shell
+        [executable, *args], check=check, capture_output=True, text=True, timeout=COMMAND_SECONDS
+    )
     return result.stdout
 
 

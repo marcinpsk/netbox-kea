@@ -383,3 +383,20 @@ rules:
       - pattern: config_write.$OP(...)
       # The mapper catches the rejection only when it runs the change: a lambda, not an eager call.
       - pattern-not-inside: "_run_config_change(..., lambda: ..., ...)"
+
+  - id: subprocess-without-timeout
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Pass timeout= to this subprocess call. Without a timeout, a child process that stops
+      responding blocks the caller with no limit, and a test run or script hangs instead of failing.
+    metadata:
+      category: correctness
+      confidence: HIGH
+    patterns:
+      - pattern-either:
+          - pattern: subprocess.run(...)
+          - pattern: subprocess.call(...)
+          - pattern: subprocess.check_call(...)
+          - pattern: subprocess.check_output(...)
+      - pattern-not: subprocess.$FUNCTION(..., timeout=$SECONDS, ...)

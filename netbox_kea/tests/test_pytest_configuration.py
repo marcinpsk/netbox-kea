@@ -232,6 +232,7 @@ def test_ci_configuration_writer_generates_the_requested_plugins(monkeypatch, tm
         capture_output=True,
         check=False,
         text=True,
+        timeout=30,
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
@@ -2544,6 +2545,7 @@ def _run_setup_script(sandbox: Path, wheel_names: tuple[str, ...]) -> subprocess
         text=True,
         check=False,
         stdin=subprocess.DEVNULL,
+        timeout=30,
     )
 
 
@@ -2579,6 +2581,7 @@ def test_the_setup_script_stubs_read_their_input():
                 text=True,
                 check=False,
                 stdin=subprocess.DEVNULL,
+                timeout=30,
             )
             assert result.returncode == 0, (
                 f"The {tool} stub left the writer at {result.returncode}. "

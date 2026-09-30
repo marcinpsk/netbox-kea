@@ -24,10 +24,10 @@ if [[ -z "$opengrep_bin" ]]; then
   fi
 fi
 
-# Scan explicit targets if given, otherwise the package source tree.
+# Scan explicit targets if given, otherwise the package, the scripts, and the black-box tests.
 targets=("$@")
 if [[ ${#targets[@]} -eq 0 ]]; then
-  targets=("$repo_root/netbox_kea")
+  targets=("$repo_root/netbox_kea" "$repo_root/scripts" "$repo_root/tests")
 fi
 
 exec "$opengrep_bin" scan \

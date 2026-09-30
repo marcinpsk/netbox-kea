@@ -279,6 +279,8 @@ When a rule below has a matching opengrep rule, a violation fails the local hook
   operation never turns into a 500.
 - **DHCPv6 reservations use `ip-addresses` (list), not `ip-address` (string).** Check
   both fields when inspecting reservation data.
+- **Pass `timeout=` to every `subprocess` call**, in the package, `scripts/`, and the tests.
+  A child process that stops responding must fail the caller, not hang it.
 
 ## Testing philosophy
 
