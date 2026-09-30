@@ -6,14 +6,14 @@ Registers periodic Kea→NetBox IPAM sync jobs using NetBox's built-in
 ``JobRunner`` / ``@system_job`` infrastructure so they run automatically via
 ``manage.py rqworker`` without any external scheduler.
 
-The default sync interval is 5 minutes and can be overridden via
-``PLUGINS_CONFIG["netbox_kea"]["sync_interval_minutes"]`` — the plugin's
-``ready()`` hook patches the registry entry at startup.
+The sync interval comes from ``SyncConfig.interval_minutes``, which the Sync Jobs
+page edits. ``enqueue_once`` and each periodic run read it, so a saved value
+applies after the next scheduled run.
 
 Configuration knobs (all under ``PLUGINS_CONFIG["netbox_kea"]``):
 
 ``sync_interval_minutes`` (int, default 5)
-    How often the sync job runs in minutes.
+    Seeds ``SyncConfig.interval_minutes`` when migration 0018 creates the row.
 
 ``sync_leases_enabled`` (bool, default True)
     Sync active Kea leases to NetBox IPAM (status=active).
@@ -48,7 +48,7 @@ from .sync import DuplicateNetBoxRowsError
 
 logger = logging.getLogger(__name__)
 
-# Default interval (minutes).  Can be overridden at startup via ready().
+# NetBox requires a registry interval; enqueue_once replaces it with SyncConfig.interval_minutes.
 _DEFAULT_INTERVAL = 5
 
 
@@ -543,7 +543,9 @@ class KeaIpamSyncJob(JobRunner):
         name = "Kea IPAM Sync"
 
     @classmethod
-    def enqueue_once(cls, *args: Any, **kwargs: Any) -> Any:
+    def enqueue_once(
+        cls, instance: Any = None, schedule_at: Any = None, interval: int | None = None, *args: Any, **kwargs: Any
+    ) -> Any:
         """Heal ghost scheduled-job records before delegating to NetBox.
 
         NetBox schedules system jobs by calling ``enqueue_once`` on the job class
@@ -555,12 +557,14 @@ class KeaIpamSyncJob(JobRunner):
         during app initialization" warning.
 
         We clean ghost records first, then delegate to the stock
-        ``enqueue_once`` so it can create a fresh schedule.  ``*args``/``**kwargs``
-        are forwarded verbatim to insulate against signature drift across NetBox
-        versions.
+        ``enqueue_once`` so it can create a fresh schedule.  The signature is
+        NetBox's, so a positional ``interval`` binds once; ``SyncConfig.interval_minutes``
+        replaces it, and the other arguments are forwarded verbatim.
         """
+        from .models import SyncConfig
+
         cls._heal_ghost_scheduled_jobs()
-        return super().enqueue_once(*args, **kwargs)
+        return super().enqueue_once(instance, schedule_at, SyncConfig.get().interval_minutes, *args, **kwargs)
 
     @classmethod
     def _heal_ghost_scheduled_jobs(cls) -> None:
@@ -636,6 +640,9 @@ class KeaIpamSyncJob(JobRunner):
         summary: list[dict] = []
         try:
             sync_cfg = SyncConfig.get()
+            if self.job.interval:
+                # handle() schedules the successor with job.interval after run() returns.
+                self.job.interval = sync_cfg.interval_minutes
             if not sync_cfg.sync_enabled:
                 self.logger.info("Global sync kill-switch is active (SyncConfig.sync_enabled=False) — skipping.")
                 return

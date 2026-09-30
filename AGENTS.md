@@ -97,19 +97,33 @@ They used to live in a top-level `e2e/` directory that no workflow named, so the
 ran anywhere. `test_pytest_configuration.py` now asserts the suite stays inside the path
 the integration job executes.
 
+`test_branching_refusal.py` needs the netbox-branching variant of the harness: set
+`COMPOSE_FILE=docker-compose.yml:docker-compose.override.yml:docker-compose.branching.yml` and
+`NETBOX_BRANCHING_VERSION` (the value in the `env` of `.github/workflows/ci.yml`) before
+`test_setup.sh`, with a NetBox 4.7 image. Elsewhere it skips; `NETBOX_KEA_REQUIRE_BRANCHING=1`
+makes it fail instead.
+
 ### CI
 
 - **Unit-test job**: pinned to the exact NetBox patch release named by
   `QUERY_COUNT_NETBOX_VERSION` in `netbox_kea/tests/conftest.py`, because
   `netbox_kea/tests/query_counts.json` describes that release only (see "Query-count
-  baselines"). Bump the constant, the CI `ref`, and the baselines in one change.
+  baselines"). Bump the constant, `NETBOX_RELEASE` in the workflow `env`, and the baselines in one
+  change.
 - **Branching job**: the unit-test NetBox release with netbox-branching 1.2.1 and netbox-plugin-dhcp 0.2.0.
   It runs `test_branching.py` with `NETBOX_KEA_REQUIRE_BRANCHING=1`, so the module fails
   instead of skipping when netbox-branching is absent. `netbox_kea/branching.py` is the only
   module that imports `netbox_branching` (ADR 0007, `docs/design/netbox-branching.md`).
   Every migration sets `fake_on_branch`; guard 4 in `test_branching.py` checks the value.
+  `BranchRefusalMiddleware` in `branching.py` refuses every unsafe request to a netbox_kea URL
+  callback in a branch, or with an unusable branch selection. Guard 1 in `test_branching.py`
+  sends GET, HEAD, OPTIONS, POST, PUT, PATCH and DELETE to every netbox_kea URL in a provisioned
+  branch, API action routes included; a new route with a parameter the guard cannot build fails
+  by name, so teach `_route_arguments` the object.
 - **Compatibility matrix**: runs the integration suite (`test_setup.sh`) against
   NetBox v4.3 (floor), v4.7 (ceiling), and the dev snapshot (allowed to fail).
+- **Branching browser job**: the integration steps on the netbox-branching variant of the
+  harness (a NetBox 4.7 image), running only `tests/ui/test_branching_refusal.py`.
 - Playwright traces on failure are uploaded as artifacts.
 
 Ruff is configured in `pyproject.toml`: line length 120, max complexity 15,
@@ -152,10 +166,11 @@ URL request
   `version-get` connectivity check** per enabled service before saving.
   `get_client(version=4|6|None)` returns a protocol-aware `KeaClient`.
 - **`SyncConfig` model** (`models.py`): singleton (pk=1) for global sync settings —
-  `interval_minutes`, `sync_enabled` (global kill-switch), type toggles,
-  `backfill_applied`. `SyncConfig.get(default_interval)` handles first-boot creation
-  and a one-time PLUGINS_CONFIG backfill; once `backfill_applied=True` it never
-  overrides UI changes. Plain `models.Model` (not a `NetBoxModel`).
+  `interval_minutes`, `sync_enabled` (global kill-switch), type toggles. Migration 0018
+  creates the row from PLUGINS_CONFIG and applies the one-time backfill, so
+  `SyncConfig.get()` only reads it. A TransactionTestCase flush deletes the row, and a
+  `post_migrate` receiver in `netbox_kea/tests/conftest.py` creates it again with the migration's
+  values. Plain `models.Model` (not a `NetBoxModel`).
 - **`KeaClient`** (`kea.py`): wraps a `requests.Session`. All API calls go through
   `.command(command, service, arguments, check)`, which POSTs JSON to the
   **configured endpoint URL** (`self.url` — the daemon's `/` control socket, or a
@@ -173,9 +188,10 @@ URL request
 - **`jobs.py`**: `KeaIpamSyncJob` (`@system_job`). Iterates all `Server` objects,
   runs subnet/lease/reservation/prefix/range sync phases, writes a per-server
   summary to the job log.
-- **`__init__.py`**: `ready()` calls `_configure_sync_job_interval()` (patches the
-  in-memory RQ registry from PLUGINS_CONFIG — no DB access, safe at image build).
-  Ghost-job healing runs inside `KeaIpamSyncJob.enqueue_once()`, not `ready()`.
+- **Sync interval**: `SyncConfig.interval_minutes` is the only runtime source.
+  `KeaIpamSyncJob.enqueue_once()` (rqworker startup) and each periodic `run()` read it;
+  PLUGINS_CONFIG `sync_interval_minutes` only seeds the row in migration 0018.
+  Ghost-job healing also runs inside `enqueue_once()`, not `ready()`.
 - **REST API** (`api/`): `NetBoxModelViewSet` + `NetBoxModelSerializer` — only the
   `Server` model is exposed. All password fields are write-only.
 - **GraphQL** (`graphql.py`): a strawberry-django `ServerType` + `Query`
@@ -379,7 +395,7 @@ resort, reserved for true external boundaries you cannot run locally.
   patch releases. `QUERY_COUNT_NETBOX_VERSION` in `netbox_kea/tests/conftest.py` names
   the release the file describes, the unit-test CI job pins that same release, and the
   assertions are skipped with a warning on any other release. To move to a new NetBox,
-  bump the constant, bump the CI `ref`, and re-record in one change.
+  bump the constant, bump `NETBOX_RELEASE` in the workflow `env`, and re-record in one change.
 - **When fixing a bug, write the failing (red) test first**, confirm it fails against
   the unfixed code, then fix until green.
 - **No source line numbers in comments or docstrings**: name the function or the

@@ -83,8 +83,8 @@ def test_the_harness_pauses_the_periodic_ipam_sync(page: Page, netbox_login: Non
 
     assert not toggle.is_checked(), (
         "The periodic Kea->NetBox IPAM sync is running, so the lease fixtures race it. "
-        "tests/docker/plugins.py disables it, but SyncConfig.get() reads PLUGINS_CONFIG "
-        "only when it creates the singleton row, so a stack whose postgres volume "
+        "tests/docker/plugins.py disables it, but the migration reads PLUGINS_CONFIG "
+        "once, when it creates the SyncConfig row, so a stack whose postgres volume "
         "pre-dates that setting keeps the stored value. Run 'docker compose down -v' in "
         "tests/docker, then test_setup.sh again."
     )
