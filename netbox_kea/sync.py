@@ -31,6 +31,7 @@ from .reservations import (
 )
 
 if TYPE_CHECKING:
+    from django.db.models import QuerySet
     from ipam.models import IPAddress as NbIPAddress
 
     from .constants import IPNetworkValue
@@ -327,7 +328,7 @@ def _cleanup_stale_ips(
     stale_qs = NbIP.objects.filter(
         dns_name=hostname,
         status__in=("dhcp", "active", "reserved"),
-        description__startswith="Synced from Kea DHCP",
+        description__startswith=_KEA_DESC_PREFIX,
         kea_ownership_links__isnull=True,
     ).exclude(address__net_host=new_ip_str)
 
@@ -349,16 +350,33 @@ def _cleanup_stale_ips(
     if protected_ids:
         stale_qs = stale_qs.exclude(pk__in=protected_ids)
 
-    count = stale_qs.count()
-    if count == 0:
-        return 0
+    from .ipam_reconciliation import _host
 
-    if mode == "remove":
-        stale_qs.delete()
-    else:
-        stale_qs.update(status="deprecated")
+    candidates = [(pk, vrf_id, _host(address)) for pk, vrf_id, address in stale_qs.values_list("pk", "vrf", "address")]
+    return sum(_clean_stale_ip(stale_qs, pk, vrf_id, host, mode) for pk, vrf_id, host in candidates)
 
-    return count
+
+def _clean_stale_ip(
+    stale_qs: QuerySet[NbIPAddress], pk: int, vrf_id: int | None, host: str, mode: StaleCleanupMode
+) -> int:
+    """Remove or deprecate one candidate if it is still stale under its identity lock and row lock; return 1 if so."""
+    from django.db import transaction
+    from ipam.models import IPAddress as NbIP
+
+    from .ipam_reconciliation import _lock_identity
+
+    with transaction.atomic():
+        # The same identity lock as the reconciliation, so a link that a concurrent run creates is visible here.
+        _lock_identity(vrf_id, host)
+        locked = NbIP.objects.select_for_update().filter(pk=pk).first()
+        if locked is None or not stale_qs.filter(pk=pk, vrf=vrf_id, address__net_host=host).exists():
+            return 0
+        row = NbIP.objects.filter(pk=pk)
+        if mode == "remove":
+            row.delete()
+        else:
+            row.update(status="deprecated")
+    return 1
 
 
 def _sync_mac_address(hw_address: str, hostname: str = ""):
