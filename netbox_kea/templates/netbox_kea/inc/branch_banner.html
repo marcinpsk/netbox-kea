@@ -1,0 +1,9 @@
+{# Navbar banner on each plugin page while a netbox-branching branch is active #}
+<div class="alert alert-warning d-flex align-items-center mb-0 me-2 py-1 px-2" role="status" id="kea-branch-banner" style="max-width: 44rem;">
+  <i class="mdi mdi-source-branch me-2" aria-hidden="true"></i>
+  <div class="small">
+    <strong>Branch {{ branch.name }}: netbox-kea refuses changes.</strong>
+    Kea data is live. Kea servers, sync settings and DHCP plugin links come from main.
+    Other NetBox objects follow netbox-branching's routing for branch {{ branch.name }}.
+  </div>
+</div>
