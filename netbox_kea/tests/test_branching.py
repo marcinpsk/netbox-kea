@@ -1157,6 +1157,93 @@ class BranchNameEscapeTest(_OwnedObjectsTestCase):
         self._assert_nothing_changed()
 
 
+def _change_request(user) -> Any:
+    """Return a request that records ObjectChanges, as a UI change would, so netbox-branching can replay them."""
+    request: Any = RequestFactory().get("/")
+    request.user, request.id = user, uuid.uuid4()
+    return request
+
+
+class OwnershipBranchLifecycleTest(_OwnedObjectsTestCase):
+    """Links stay in main through sync, discard, merge and revert, and CASCADE removes them only on main."""
+
+    def _status(self) -> str:
+        self.branch.refresh_from_db()
+        return self.branch.status
+
+    def _links_of(self, obj: models.Model) -> list[int]:
+        return list(IPAMOwnershipLink.objects.filter(**{_OWNED_KEY[type(obj)]: obj.pk}).values_list("pk", flat=True))
+
+    def test_the_link_table_is_in_main_only(self):
+        table = IPAMOwnershipLink._meta.db_table
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT current_schema()")
+            (main_schema,) = cursor.fetchone()
+            cursor.execute("SELECT table_schema FROM information_schema.tables WHERE table_name = %s", [table])
+            schemas = [row[0] for row in cursor.fetchall()]
+
+        self.assertEqual(schemas, [main_schema])
+        self.assertNotEqual(main_schema, self.branch.schema_name)
+
+    def test_a_sync_after_main_deleted_an_owned_object_deletes_it_in_the_branch(self):
+        obj = self.owned["ipaddress"]
+        with event_tracking(_change_request(self.user)):
+            IPAddress.objects.get(pk=obj.pk).delete()
+        self.assertEqual(self._links_of(obj), [], "main's CASCADE left the link")
+
+        self.branch.sync(user=self.user)
+
+        self.assertEqual(self._status(), BranchStatusChoices.READY)
+        with activate_branch(self.branch):
+            self.assertFalse(IPAddress.objects.filter(pk=obj.pk).exists())
+
+    def test_a_discard_leaves_mains_objects_and_links_unchanged(self):
+        with activate_branch(self.branch), event_tracking(_change_request(self.user)):
+            _save_with(IPAddress.objects.get(pk=self.owned["ipaddress"].pk), description="edited in the branch")
+            IPAddress.objects.get(pk=self.unowned.pk).delete()
+
+        self.branch.delete()
+
+        self.assertFalse(Branch.objects.filter(pk=self.branch.pk).exists())
+        self._assert_main_unchanged()
+
+    def test_an_unowned_delete_that_is_merged_and_reverted_returns_the_object(self):
+        with activate_branch(self.branch), event_tracking(_change_request(self.user)):
+            IPAddress.objects.get(pk=self.unowned.pk).delete()
+
+        self.branch.merge(user=self.user)
+        merged = IPAddress.objects.filter(pk=self.unowned.pk).exists()
+        self.branch.revert(user=self.user)
+
+        self.assertFalse(merged, "the merge did not delete the object in main")
+        self.assertEqual(self._status(), BranchStatusChoices.READY)
+        self._assert_main_unchanged()
+
+    def test_a_merge_deletes_an_object_that_main_linked_after_the_branch_deleted_it(self):
+        with activate_branch(self.branch), event_tracking(_change_request(self.user)):
+            IPAddress.objects.get(pk=self.unowned.pk).delete()
+        link = _link(self.server, self.unowned)
+
+        self.branch.merge(user=self.user)
+
+        self.assertEqual(self._status(), BranchStatusChoices.MERGED)
+        self.assertFalse(IPAddress.objects.filter(pk=self.unowned.pk).exists())
+        self.assertFalse(IPAMOwnershipLink.objects.filter(pk=link.pk).exists())
+
+    def test_a_revert_deletes_an_object_that_main_linked_after_the_merge(self):
+        with activate_branch(self.branch), event_tracking(_change_request(self.user)):
+            created = IPAddress.objects.create(address="192.0.2.50/24")
+        self.branch.merge(user=self.user)
+        self.assertTrue(IPAddress.objects.filter(pk=created.pk).exists(), "the merge did not create the object")
+        link = _link(self.server, IPAddress.objects.get(pk=created.pk))
+
+        self.branch.revert(user=self.user)
+
+        self.assertEqual(self._status(), BranchStatusChoices.READY)
+        self.assertFalse(IPAddress.objects.filter(pk=created.pk).exists())
+        self.assertFalse(IPAMOwnershipLink.objects.filter(pk=link.pk).exists())
+
+
 class SyncJobInBranchTest(TransactionTestCase):
     """KeaIpamSyncJob runs on main only: in a branch it fails before any read."""
 
