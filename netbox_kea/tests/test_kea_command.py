@@ -91,11 +91,11 @@ WRITE_COMMANDS = frozenset(
 
 
 def test_the_read_members_are_the_pinned_set():
-    assert {member.value for member in KeaCommand if member.kind == "read"} == READ_COMMANDS
+    assert {member.value for member in KeaCommand if not member.is_write} == READ_COMMANDS
 
 
 def test_the_write_members_are_the_pinned_set():
-    assert {member.value for member in KeaCommand if member.kind == "write"} == WRITE_COMMANDS
+    assert {member.value for member in KeaCommand if member.is_write} == WRITE_COMMANDS
 
 
 def test_every_member_is_a_read_or_a_write():
@@ -152,7 +152,7 @@ def test_a_target_that_is_not_a_family_is_refused_before_any_send(target):
 
 # The binding keeps what active_branch() returned; the refusal only needs it to be set.
 _BRANCH = "a branch"
-_WRITES = [member for member in KeaCommand if member.kind == "write"]
+_WRITES = [member for member in KeaCommand if member.is_write]
 
 
 def _bound_client() -> KeaClient:

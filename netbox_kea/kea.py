@@ -69,6 +69,11 @@ class KeaCommand(Enum):
         member.kind = kind
         return member
 
+    @property
+    def is_write(self) -> bool:
+        """Return whether the command changes live or on-disk Kea state."""
+        return self.kind == "write"
+
     CONFIG_GET = "config-get", "read"
     CONFIG_TEST = "config-test", "read"
     LIST_COMMANDS = "list-commands", "read"
@@ -889,7 +894,7 @@ class KeaClient:
             raise TypeError(f"command must be a KeaCommand member, not {type(command).__name__}")
         if target is not None and (isinstance(target, bool) or target not in (4, 6)):
             raise ValueError(f"target must be 4, 6 or None, not {target!r}")
-        if command.kind == "write" and self.write_guard is not None:
+        if command.is_write and self.write_guard is not None:
             self.write_guard.refuse(f"Kea command {command.value}")
         body: dict[str, Any] = {"command": command.value}
 
