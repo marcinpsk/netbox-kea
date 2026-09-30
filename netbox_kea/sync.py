@@ -314,10 +314,12 @@ def _cleanup_stale_ips(
 
     from ipam.models import IPAddress as NbIP
 
+    # An IP address with an IPAM Ownership link belongs to the reconciliation (ADR 0006), not to this cleanup.
     stale_qs = NbIP.objects.filter(
         dns_name=hostname,
         status__in=("dhcp", "active", "reserved"),
         description__startswith="Synced from Kea DHCP",
+        kea_ownership_links__isnull=True,
     ).exclude(address__net_host=new_ip_str)
 
     # Also exclude sibling IPs (e.g. other addresses in the same DHCPv6 reservation).

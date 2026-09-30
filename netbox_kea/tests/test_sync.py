@@ -789,6 +789,22 @@ class TestCleanupStaleIps(TestCase):
         self.assertEqual(count, 1)
         self.assertFalse(NbIP.objects.filter(address__net_host=self._OLD_IP).exists())
 
+    def test_never_touches_an_ip_address_with_an_ownership_link(self):
+        from ipam.models import IPAddress as NbIP
+
+        from netbox_kea.models import IPAMOwnershipLink
+
+        from .utils import _make_db_server
+
+        owned = self._create_old_ip()
+        IPAMOwnershipLink.objects.create(
+            server=_make_db_server(), family=4, source="lease", ip_address=owned, confirmation=1
+        )
+        for mode in ("remove", "deprecate"):
+            with self.subTest(mode):
+                self.assertEqual(self._call(mode=mode), 0)
+                self.assertEqual(NbIP.objects.get(pk=owned.pk).status, "dhcp")
+
     def test_deprecates_stale_ip_in_deprecate_mode(self):
         from ipam.models import IPAddress as NbIP
 
