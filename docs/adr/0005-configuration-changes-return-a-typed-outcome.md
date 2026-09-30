@@ -155,6 +155,9 @@ step. The lock key is the family and the URL that the Server resolves for that f
 one Kea daemon run one at a time. A read-modify-write through `config-set` cannot erase the change of another
 NetBox operation, and no NetBox operation changes a target between a rollback check and its undo. The wait for
 the lock is bounded. When it expires, the operation raises a rejection because the request was never sent.
+The lock lives in an open transaction, so a PostgreSQL `idle_in_transaction_session_timeout` or a pooler timeout
+shorter than the operation ends the transaction and releases the lock while the operation runs. The operation then
+logs a warning when it fails to end the transaction, and the README tells operators to set these timeouts longer.
 
 The lock does not stop Kea administrators or other tools, because they write to Kea directly. Two URLs that
 reach one daemon through different names get two locks, so they count as such a writer. A `config-set` can

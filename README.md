@@ -188,6 +188,12 @@ not available. State-filtered searches also fail closed when Kea does not
 support the scoped state commands. Set the limit to `0` only when you accept
 unbounded responses.
 
+A Configuration Change holds a PostgreSQL advisory lock in an open transaction
+for all of its Kea requests, up to and including the save to disk. A PostgreSQL
+`idle_in_transaction_session_timeout` or a connection pooler timeout shorter than
+the longest Configuration Change ends that transaction and releases the lock
+while the change runs, so set these timeouts longer.
+
 ---
 
 ## Server Configuration
