@@ -191,13 +191,13 @@ class TestKeaClientInit(TestCase):
         sent_json = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
         self.assertNotIn("arguments", sent_json)
 
-    def test_command_raises_kea_exception_on_error_code(self):
+    def test_command_raises_kea_exception_on_a_failure_result(self):
         resp = [{"result": 1, "text": "unknown command"}]
         with self._patched_post(resp):
             with self.assertRaises(KeaException):
                 self.client.command(KeaCommand.LIST_COMMANDS, None)
 
-    def test_command_raises_kea_exception_with_correct_response(self):
+    def test_the_kea_exception_carries_the_failing_reply(self):
         resp = [{"result": 2, "text": "not found"}]
         with self._patched_post(resp):
             try:
@@ -240,7 +240,7 @@ class TestKeaClientInit(TestCase):
         call_kwargs = mock_post.call_args.kwargs
         self.assertEqual(call_kwargs.get("timeout"), 30)
 
-    def test_command_multiple_services(self):
+    def test_command_returns_every_reply_of_a_multi_entry_response(self):
         resp = [{"result": 0, "text": "ok"}, {"result": 0, "text": "ok"}]
         with self._patched_post(resp):
             result = self.client.command(KeaCommand.STATUS_GET, None)
