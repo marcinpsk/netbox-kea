@@ -97,6 +97,11 @@ They used to live in a top-level `e2e/` directory that no workflow named, so the
 ran anywhere. `test_pytest_configuration.py` now asserts the suite stays inside the path
 the integration job executes.
 
+`test_branching_refusal.py` needs the netbox-branching variant of the harness: set
+`COMPOSE_FILE=docker-compose.yml:docker-compose.override.yml:docker-compose.branching.yml` before
+`test_setup.sh`, with a NetBox 4.7 image. Elsewhere it skips; `NETBOX_KEA_REQUIRE_BRANCHING=1`
+makes it fail instead.
+
 ### CI
 
 - **Unit-test job**: pinned to the exact NetBox patch release named by
@@ -114,6 +119,8 @@ the integration job executes.
   parameter the guard cannot build fails by name, so teach `_route_arguments` the object.
 - **Compatibility matrix**: runs the integration suite (`test_setup.sh`) against
   NetBox v4.3 (floor), v4.7 (ceiling), and the dev snapshot (allowed to fail).
+- **Branching browser job**: the integration steps on the netbox-branching variant of the
+  harness (a NetBox 4.7 image), running only `tests/ui/test_branching_refusal.py`.
 - Playwright traces on failure are uploaded as artifacts.
 
 Ruff is configured in `pyproject.toml`: line length 120, max complexity 15,
