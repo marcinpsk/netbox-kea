@@ -41,6 +41,8 @@ KEYWORD_TABLES = (
 HOST_PORT = {4: 18101, 6: 18103}
 CONTROL_AGENT_VERSION = "3.0.3"
 CONTROL_AGENT_PORT = 18105
+# A server that accepts the connection and then stops sending must not block the recording.
+DOWNLOAD_SECONDS = 300
 CONTROL_AGENT_REPOSITORY = "https://dl.cloudsmith.io/public/isc/kea-3-0/alpine/v{alpine}/main/x86_64/"
 # The recorded Kea is local; a proxy from the environment must not see the request.
 _OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -143,22 +145,18 @@ def _table_keys(source: str, table: str) -> list[str]:
 
 
 def _accepted_keys(family: int, version: str) -> dict[str, list[str]]:
-    source = _run(
-        "curl",
-        "--fail",
-        "--silent",
-        "--show-error",
-        "--location",
-        KEYWORD_TABLES.format(version=version, family=family),
-    )
+    source = _curl(KEYWORD_TABLES.format(version=version, family=family))
     return {
         "shared-networks": _table_keys(source, f"SHARED_NETWORK{family}_PARAMETERS"),
         f"subnet{family}": _table_keys(source, f"SUBNET{family}_PARAMETERS"),
     }
 
 
-def _curl(url: str, target: Path) -> None:
-    _run("curl", "--fail", "--silent", "--show-error", "--location", "--output", str(target), url)
+def _curl(url: str, target: Path | None = None) -> str:
+    output = ("--output", str(target)) if target else ()
+    return _run(
+        "curl", "--fail", "--silent", "--show-error", "--location", "--max-time", str(DOWNLOAD_SECONDS), *output, url
+    )
 
 
 def _record_control_agent() -> None:
