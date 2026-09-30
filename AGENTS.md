@@ -98,7 +98,8 @@ ran anywhere. `test_pytest_configuration.py` now asserts the suite stays inside 
 the integration job executes.
 
 `test_branching_refusal.py` needs the netbox-branching variant of the harness: set
-`COMPOSE_FILE=docker-compose.yml:docker-compose.override.yml:docker-compose.branching.yml` before
+`COMPOSE_FILE=docker-compose.yml:docker-compose.override.yml:docker-compose.branching.yml` and
+`NETBOX_BRANCHING_VERSION` (the value in the `env` of `.github/workflows/ci.yml`) before
 `test_setup.sh`, with a NetBox 4.7 image. Elsewhere it skips; `NETBOX_KEA_REQUIRE_BRANCHING=1`
 makes it fail instead.
 
@@ -107,7 +108,8 @@ makes it fail instead.
 - **Unit-test job**: pinned to the exact NetBox patch release named by
   `QUERY_COUNT_NETBOX_VERSION` in `netbox_kea/tests/conftest.py`, because
   `netbox_kea/tests/query_counts.json` describes that release only (see "Query-count
-  baselines"). Bump the constant, the CI `ref`, and the baselines in one change.
+  baselines"). Bump the constant, `NETBOX_RELEASE` in the workflow `env`, and the baselines in one
+  change.
 - **Branching job**: the unit-test NetBox release with netbox-branching 1.2.1 and netbox-plugin-dhcp 0.2.0.
   It runs `test_branching.py` with `NETBOX_KEA_REQUIRE_BRANCHING=1`, so the module fails
   instead of skipping when netbox-branching is absent. `netbox_kea/branching.py` is the only
@@ -391,7 +393,7 @@ resort, reserved for true external boundaries you cannot run locally.
   patch releases. `QUERY_COUNT_NETBOX_VERSION` in `netbox_kea/tests/conftest.py` names
   the release the file describes, the unit-test CI job pins that same release, and the
   assertions are skipped with a warning on any other release. To move to a new NetBox,
-  bump the constant, bump the CI `ref`, and re-record in one change.
+  bump the constant, bump `NETBOX_RELEASE` in the workflow `env`, and re-record in one change.
 - **When fixing a bug, write the failing (red) test first**, confirm it fails against
   the unfixed code, then fix until green.
 - **No source line numbers in comments or docstrings**: name the function or the
