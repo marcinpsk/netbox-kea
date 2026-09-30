@@ -27,7 +27,9 @@ With netbox-branching installed and a branch active, the plugin reads and does n
   Kea transport (`KeaClient.command()` takes a `KeaCommand` member with a read or write kind), and
   in `pre_save`/`pre_delete` receivers on the plugin models.
 
-The design, with its evidence, is `docs/design/netbox-branching.md`.
+The design, with its evidence, is `docs/design/netbox-branching.md`. Issue #231 tracks the
+implementation in the increments that the design lists. Each refusal applies from the increment
+that adds it.
 
 ## Consequences
 
