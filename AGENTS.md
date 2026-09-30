@@ -1,3 +1,8 @@
+<!--
+SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
+SPDX-License-Identifier: Apache-2.0
+-->
+
 # AGENTS.md — netbox-kea-ng
 
 Guidance for AI coding agents (and humans) working in this repository. This is the
@@ -482,9 +487,11 @@ resort, reserved for true external boundaries you cannot run locally.
 
 - **Commit messages**: Conventional Commits (feat, fix, docs, style, refactor, perf,
   test, build, ci, chore, revert) — enforced by a pre-commit hook.
-- **REUSE/SPDX**: every file needs licensing; `uv run reuse lint` must pass. New source
-  files carry inline SPDX headers. Upstream-inherited trees (`netbox_kea/**`, `tests/**`)
-  and docs/config are bulk-annotated in `REUSE.toml` — a file covered there needs no
-  inline header, so don't flag e.g. `tests/*.py` for a missing one.
+- **REUSE/SPDX**: every file needs licensing; `uv run reuse lint` must pass. Each file
+  carries an inline SPDX header, and a new file without one fails the lint. Templates use
+  `{# ... #}` (an HTML comment renders into the page). `REUSE.toml` lists only files that
+  cannot take a comment or are generated (license text, binary, JSON, lock file, changelog).
+  Name one `SPDX-FileCopyrightText` line per author whose lines are in the file. Never
+  remove a holder whose code is still in the file (Apache-2.0 section 4(c)).
 - **Ruff**: line length 120, max complexity 15, migrations excluded, E501 ignored,
   docstrings required except in tests/migrations/`__init__.py`.

@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
+# SPDX-License-Identifier: Apache-2.0
 """Pytest fixtures/hooks for netbox_kea unit tests.
 
 Force the URL resolver to import every plugin's urlconf while the *real*

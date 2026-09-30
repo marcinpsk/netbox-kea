@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
+# SPDX-License-Identifier: Apache-2.0
 """Browser-harness fixtures shared by every Playwright suite in ``tests/ui``.
 
 Both UI modules drive one harness: the compose stack's NetBox, its two direct Kea

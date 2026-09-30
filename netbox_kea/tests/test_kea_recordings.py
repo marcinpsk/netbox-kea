@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
+# SPDX-License-Identifier: Apache-2.0
 """Parse configuration replies recorded from a real Kea, not hand-written stubs.
 
 The recordings come from scripts/record_kea_config_get.py, which runs the coverage

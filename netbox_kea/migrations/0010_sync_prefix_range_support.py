@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2025 Marcin Zieba <marcinpsk@gmail.com>
+# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
 """Add prefix/range sync support: SyncConfig type toggles, Server sync_vrf FK, Server type toggles."""
 

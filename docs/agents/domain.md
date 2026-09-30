@@ -1,3 +1,8 @@
+<!--
+SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
+SPDX-License-Identifier: Apache-2.0
+-->
+
 # Domain documentation
 
 Use these files when exploring the codebase or changing domain terminology and architecture:

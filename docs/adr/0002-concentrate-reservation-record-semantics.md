@@ -3,6 +3,11 @@ status: accepted
 date: 2026-08-13
 ---
 
+<!--
+SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
+SPDX-License-Identifier: Apache-2.0
+-->
+
 # Concentrate Reservation record semantics
 
 ## Context

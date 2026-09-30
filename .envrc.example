@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
+# SPDX-License-Identifier: Apache-2.0
 # direnv configuration — copy to .envrc and run `direnv allow` to enable.
 #
 # Requires: direnv (https://direnv.net), uv (https://docs.astral.sh/uv)

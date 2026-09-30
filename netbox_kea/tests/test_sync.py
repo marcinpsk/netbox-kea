@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
+# SPDX-License-Identifier: Apache-2.0
 """Tests for netbox_kea.sync — IPAM synchronization helpers.
 
 All tests that hit the database extend django.test.TestCase so each test

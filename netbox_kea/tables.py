@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
+# SPDX-FileCopyrightText: 2023-2025 Devon Mar <devon-mar@users.noreply.github.com>
+# SPDX-FileCopyrightText: 2026 Andrew Backeby <andrew@backeby.eu>
+# SPDX-License-Identifier: Apache-2.0
 import django_tables2 as tables
 from django.urls import reverse
 from django.utils.html import format_html

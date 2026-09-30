@@ -3,6 +3,11 @@ status: accepted
 date: 2026-09-29
 ---
 
+<!--
+SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
+SPDX-License-Identifier: Apache-2.0
+-->
+
 # netbox_kea rows stay in main, and a branch is read-only for the plugin
 
 ## Context

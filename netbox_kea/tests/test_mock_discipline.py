@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2025 Marcin Zieba <marcinpsk@gmail.com>
+# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
 """The mock-discipline guard runs as part of the suite, plus self-tests of the analyzer.
 
