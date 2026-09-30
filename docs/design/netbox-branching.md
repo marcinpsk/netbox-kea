@@ -278,6 +278,29 @@ Guard 2 is now the only place that computes the rule, transitively, from the liv
 and names the foreign-key path, when a plugin model would need a branch copy. It also asserts that
 `supports_branching()` is `False` for every plugin model.
 
+#### Implementation note (2026-09-30, increment 3)
+
+The middleware follows the contract, with these facts from netbox-branching 1.2.1 at run time:
+
+- An API request whose `X-NetBox-Branch` header names an unready branch does not get NBB's 400.
+  `get_active_branch()` returns its `HttpResponseBadRequest` instead of raising, and the request
+  processor activates that response as the branch, so the first branchable query fails with a 500.
+  For a plugin-owned callback, the middleware returns that 400, whatever the method. A header that
+  names an unknown branch still gets the 400 from NBB's middleware.
+- NBB reads an empty `active_branch` cookie as no branch, so the predicate does too: the cookie
+  counts only when it is not empty.
+- The plugin templates extend five different NetBox templates and share no base. The banner is a
+  `navbar` template extension, the one hook on every page, and it renders only for a plugin-owned
+  callback. The 409 page links to the Server list with `?_branch=`, the same target as the HTMX
+  stale-selector refusal.
+- `process_exception` renders `BranchActive` from any view, not only from plugin-owned callbacks.
+- Guard 1 fills each URL pattern itself, because two plugin patterns can share a URL name, and
+  checks that the URL resolves back to the same view. Its Kea replies come from
+  `kea_recordings/`; a read may send only the commands that this read-only Kea answers. It found
+  that the format-suffix URLs of the four REST Kea actions (`servers/<pk>/leases4.json` and the
+  like) answer 500 on main, because the action methods take no `format` argument. That is a
+  follow-up; the guard compares them with main and does not require 200.
+
 ### Sinks
 
 - **Kea transport.** `KeaClient.command()` takes a `KeaCommand` enum member and a target,
