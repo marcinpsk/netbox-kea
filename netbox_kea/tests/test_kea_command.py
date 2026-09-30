@@ -178,6 +178,20 @@ def test_a_clone_of_a_branch_bound_client_refuses_every_write_in_a_worker_thread
     assert kea.requests == []
 
 
+def test_a_config_mutation_in_a_branch_is_refused_before_the_cache_invalidation():
+    invalidations: list[str] = []
+    client = KeaClient(
+        url="https://kea.example.invalid/",
+        write_guard=BranchBinding(_BRANCH),
+        on_config_change=lambda: invalidations.append("invalidated"),
+    )
+    with stub_kea({}) as kea, pytest.raises(BranchActive):
+        client.subnet_del(4, 1)
+
+    assert invalidations == []
+    assert kea.requests == []
+
+
 def test_a_branch_bound_client_sends_a_read():
     with stub_kea({"config-get": {"result": 0}}) as kea:
         _bound_client().command(KeaCommand.CONFIG_GET, 4)
