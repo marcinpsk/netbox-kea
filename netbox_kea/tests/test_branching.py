@@ -400,7 +400,8 @@ def _logged_in_client(user) -> tuple[Client, str]:
 class _Selection:
     """One row of the design's selector table: how a change request selects a branch, and its outcome.
 
-    ``header``, ``query`` and ``cookie`` name a branch state: ready, unready (merged), unknown, or "" (empty).
+    ``header``, ``query`` and ``cookie`` name a branch state: ready, an unready state (merged, archived,
+    failed), unknown, or "" (empty). A UI row sends POST; an API row sends ``method``.
     """
 
     name: str
@@ -411,35 +412,58 @@ class _Selection:
     query: str | None = None
     cookie: str | None = None
     csrf: bool = True
+    method: str = "PATCH"
 
+
+_UNREADY = {
+    "merged": BranchStatusChoices.MERGED,
+    "archived": BranchStatusChoices.ARCHIVED,
+    "failed": BranchStatusChoices.FAILED,
+}
+_UNSAFE_METHODS = ("POST", "PUT", "PATCH", "DELETE")
 
 _SELECTIONS = (
     _Selection("UI, no selector", "served"),
     _Selection("UI, X-NetBox-Branch header naming a ready branch", "served", header="ready"),
+    _Selection("UI, empty active_branch cookie", "served", cookie=""),
     _Selection("UI, query naming an unknown branch", "nbb-400", query="unknown"),
-    _Selection("UI, query naming an unready branch", "unusable", query="unready"),
-    _Selection("UI, empty query with a stale cookie", "served", query="", cookie="unready"),
     _Selection("UI, query naming a ready branch", "refused", query="ready"),
     _Selection("UI, cookie naming an unknown branch", "unusable", cookie="unknown"),
-    _Selection("UI, cookie naming an unready branch", "unusable", cookie="unready"),
     _Selection("UI, cookie naming a ready branch", "refused", cookie="ready"),
     _Selection("UI, cookie naming a ready branch, no CSRF token", "csrf-403", cookie="ready", csrf=False),
     _Selection("HTMX, cookie naming a ready branch", "refused", htmx=True, cookie="ready"),
     _Selection("HTMX, query naming a ready branch", "refused", htmx=True, query="ready"),
-    _Selection("HTMX, cookie naming an unready branch", "unusable", htmx=True, cookie="unready"),
     _Selection("HTMX, cookie naming an unknown branch", "unusable", htmx=True, cookie="unknown"),
-    _Selection("HTMX, query naming an unready branch", "unusable", htmx=True, query="unready"),
     _Selection("API, no selector", "served", api=True),
+    _Selection("API, empty active_branch cookie", "served", api=True, cookie=""),
     _Selection("API, header naming an unknown branch", "nbb-400", api=True, header="unknown"),
-    _Selection("API, header naming an unready branch", "nbb-400", api=True, header="unready"),
     _Selection("API, header naming a ready branch", "refused", api=True, header="ready"),
     _Selection("API, query naming an unknown branch", "nbb-400", api=True, query="unknown"),
-    _Selection("API, query naming an unready branch", "unusable", api=True, query="unready"),
-    _Selection("API, empty query with a stale cookie", "served", api=True, query="", cookie="unready"),
     _Selection("API, query naming a ready branch", "refused", api=True, query="ready"),
     _Selection("API, cookie naming an unknown branch", "unusable", api=True, cookie="unknown"),
-    _Selection("API, cookie naming an unready branch", "unusable", api=True, cookie="unready"),
     _Selection("API, cookie naming a ready branch", "refused", api=True, cookie="ready"),
+    *(
+        row
+        for state in _UNREADY
+        for row in (
+            _Selection(f"UI, query naming the {state} branch", "unusable", query=state),
+            _Selection(f"UI, empty query with the {state} branch's cookie", "served", query="", cookie=state),
+            _Selection(f"UI, cookie naming the {state} branch", "unusable", cookie=state),
+            _Selection(f"HTMX, cookie naming the {state} branch", "unusable", htmx=True, cookie=state),
+            _Selection(f"HTMX, query naming the {state} branch", "unusable", htmx=True, query=state),
+            _Selection(f"API, query naming the {state} branch", "unusable", api=True, query=state),
+            _Selection(
+                f"API, empty query with the {state} branch's cookie", "served", api=True, query="", cookie=state
+            ),
+            _Selection(f"API, cookie naming the {state} branch", "unusable", api=True, cookie=state),
+            *(
+                _Selection(
+                    f"API {method}, header naming the {state} branch", "nbb-400", api=True, header=state, method=method
+                )
+                for method in _UNSAFE_METHODS
+            ),
+        )
+    ),
 )
 
 _REFUSAL_STATUS = {"refused": 409, "unusable": 409, "nbb-400": 400, "csrf-403": 403}
@@ -451,10 +475,12 @@ class SelectorTableTest(TransactionTestCase):
     def test_each_selection_has_the_outcome_of_the_design(self):
         user = get_user_model().objects.create_superuser("selector-user")
         ready = _provisioned_branch(self, "selector ready")
-        unready = Branch(name="selector merged")
-        unready.save(provision=False)
-        Branch.objects.filter(pk=unready.pk).update(status=BranchStatusChoices.MERGED)
-        schema_ids = {"ready": ready.schema_id, "unready": unready.schema_id, "unknown": "unknown0", "": ""}
+        schema_ids = {"ready": ready.schema_id, "unknown": "unknown0", "": ""}
+        for state, status in _UNREADY.items():
+            unready = Branch(name=f"selector {state}")
+            unready.save(provision=False)
+            Branch.objects.filter(pk=unready.pk).update(status=status)
+            schema_ids[state] = unready.schema_id
 
         for number, selection in enumerate(_SELECTIONS):
             with self.subTest(selection.name):
@@ -471,7 +497,8 @@ class SelectorTableTest(TransactionTestCase):
 
                 with stub_kea({"version-get": _VERSION_OK}) as kea, _writes(ready) as writes:
                     if selection.api:
-                        response = client.patch(
+                        response = client.generic(
+                            selection.method,
                             reverse("plugins-api:netbox_kea-api:server-detail", args=[server.pk]) + query,
                             data=json.dumps({"ca_url": _AFTER}),
                             content_type="application/json",
@@ -498,7 +525,7 @@ class SelectorTableTest(TransactionTestCase):
 
     def _assert_the_refusal_says_why(self, selection: _Selection, response, client: Client, ready: Branch) -> None:
         if selection.outcome == "nbb-400":
-            reason = b"is not ready for use" if selection.header == "unready" else b"Invalid branch identifier"
+            reason = b"is not ready for use" if selection.header in _UNREADY else b"Invalid branch identifier"
             self.assertIn(reason, response.content)
             return
         if selection.outcome == "csrf-403":
