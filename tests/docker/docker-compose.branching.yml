@@ -1,0 +1,19 @@
+---
+# The netbox-branching variant of the harness. Use it on top of the two base files:
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.override.yml:docker-compose.branching.yml
+# netbox-branching supports NetBox 4.7 only, so run it with a NetBox 4.7 image.
+# DEBUG is off: tests/ui/test_branching_refusal.py needs NetBox's production error pages.
+x-branching: &branching
+  build:
+    args:
+      EXTRA_REQUIREMENTS: netboxlabs-netbox-branching==1.2.1
+  environment:
+    DEBUG: "false"
+  volumes:
+    # netbox-docker reads /etc/netbox/config/*.py in name order, and a later file wins.
+    - ./plugins_branching.py:/etc/netbox/config/plugins_branching.py:z,ro
+
+services:
+  netbox: *branching
+  netbox-worker: *branching
+  netbox-housekeeping: *branching
