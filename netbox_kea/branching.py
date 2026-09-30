@@ -19,11 +19,14 @@ from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import render
 from django.urls import reverse
 from django_htmx.http import HttpResponseClientRedirect, HttpResponseClientRefresh
+from rest_framework.permissions import SAFE_METHODS
 
 APP_LABEL = "netbox_kea"
 BRANCHING_APP_LABEL = "netbox_branching"
 SOURCES_HEADER = "X-NetBox-Kea-Sources"
-SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+# The REST "code" of each refusal.
+BRANCH_WRITE_REFUSED = "branch_write_refused"
+BRANCH_SELECTION_UNUSABLE = "branch_selection_unusable"
 
 
 class BranchActive(Exception):
@@ -134,7 +137,7 @@ def refuse_active_branch(request: HttpRequest, branch: Any) -> HttpResponse:
         messages.error(request, text)
         return HttpResponseClientRefresh()
 
-    return _refusal(request, text, "branch_write_refused", htmx)
+    return _refusal(request, text, BRANCH_WRITE_REFUSED, htmx)
 
 
 def refuse_unusable_selection(request: HttpRequest) -> HttpResponse:
@@ -144,7 +147,7 @@ def refuse_unusable_selection(request: HttpRequest) -> HttpResponse:
         messages.error(request, f"{_UNUSABLE_TEXT} The page now shows main.")
         return HttpResponseClientRedirect(main_url())
 
-    return _refusal(request, _UNUSABLE_TEXT, "branch_selection_unusable", htmx)
+    return _refusal(request, _UNUSABLE_TEXT, BRANCH_SELECTION_UNUSABLE, htmx)
 
 
 class BranchRefusalMiddleware:
