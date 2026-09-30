@@ -10,8 +10,9 @@ from typing import get_args
 import yaml
 from django.test import SimpleTestCase
 
+from netbox_kea import kea
 from netbox_kea.dhcp_options import DHCPOption, parse_dhcp_options
-from netbox_kea.kea import KeaClient
+from netbox_kea.kea import KeaClient, KeaCommand
 from netbox_kea.reservations import (
     MAX_IDENTITY_LENGTH,
     ClearValue,
@@ -1566,6 +1567,17 @@ class TestRawRecordBoundary(SimpleTestCase):
             return left + right, exact
         return "", False
 
+    @staticmethod
+    def _members(node: ast.expr) -> list[str] | None:
+        """Return the wire names that a ``KeaCommand.X`` or a ``kea`` per-family ``NAME[family]`` can send, else None."""
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "KeaCommand":
+            return [KeaCommand[node.attr].value]
+        if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name):
+            by_family = getattr(kea, node.value.id, None)
+            if isinstance(by_family, dict) and all(isinstance(member, KeaCommand) for member in by_family.values()):
+                return [member.value for member in by_family.values()]
+        return None
+
     @classmethod
     def _reservation_commands(cls, tree: ast.AST) -> list[str]:
         """Return every command call in *tree* that can send a ``reservation-*`` command.
@@ -1579,6 +1591,10 @@ class TestRawRecordBoundary(SimpleTestCase):
             if not (isinstance(node, ast.Call) and cls._is_command_call(node)):
                 continue
             argument = cls._command_argument(node)
+            if argument is not None and (members := cls._members(argument)) is not None:
+                if any(member.startswith(cls.PREFIX) for member in members):
+                    found.append(f"{ast.unparse(argument)} (line {node.lineno})")
+                continue
             prefix, exact = cls._known_prefix(argument)
             if exact:
                 if prefix.startswith(cls.PREFIX):
@@ -1670,13 +1686,13 @@ class TestRawRecordBoundary(SimpleTestCase):
     def test_the_boundary_scanner_sees_both_command_spellings(self) -> None:
         """The scanner must find either spelling, and ignore the calls it must not."""
         source = (
-            'client.command("reservation-get-page", service=["dhcp4"])\n'
-            'client.command(command="reservation-get", service=["dhcp4"])\n'
-            'client.command("config-get")\n'
-            'client.command(command="lease4-get-all")\n'
+            "client.command(KeaCommand.RESERVATION_GET_PAGE, 4)\n"
+            "client.command(command=KeaCommand.RESERVATION_GET, target=4)\n"
+            "client.command(KeaCommand.CONFIG_GET, 4)\n"
+            "client.command(command=LEASE_GET_ALL[family], target=family)\n"
         )
 
         self.assertEqual(
             self._reservation_commands(ast.parse(source)),
-            ["reservation-get-page (line 1)", "reservation-get (line 2)"],
+            ["KeaCommand.RESERVATION_GET_PAGE (line 1)", "KeaCommand.RESERVATION_GET (line 2)"],
         )

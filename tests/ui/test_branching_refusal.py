@@ -123,26 +123,30 @@ def branches(branching_installed: None, nb_http: requests.Session, netbox_url: s
         created.delete_created()
 
 
+def _reservations(kea: "_DualEndpointKeaClient", family: int) -> list[dict[str, Any]]:
+    """Return the reservations of every subnet and every host source, as Kea's page cursor walks them."""
+    hosts: list[dict[str, Any]] = []
+    cursor = {"source-index": 0, "from": 0}
+    for _page in range(100):
+        reply = kea.command("reservation-get-page", family, arguments={**cursor, "limit": 1000}, check=(0, 3))[0]
+        if reply["result"] == 3:
+            return hosts
+        hosts.extend(reply["arguments"]["hosts"])
+        cursor = reply["arguments"]["next"]
+        if cursor == {"source-index": 0, "from": 0}:
+            return hosts
+    raise AssertionError(f"reservation-get-page of DHCPv{family} did not end after 100 pages")
+
+
 def _state(
     kea: "_DualEndpointKeaClient", http: requests.Session, netbox_url: str, branch: dict[str, Any] | None = None
 ) -> dict[str, Any]:
     """Return what the Sync all button can change: live Kea, and NetBox IP addresses in main and in *branch*."""
     state: dict[str, Any] = {}
     for family in (4, 6):
-        service = [f"dhcp{family}"]
-        state[f"dhcp{family} hash"] = kea.command("config-hash-get", service=service)[0]["arguments"]["hash"]
-        subnets = kea.command(f"subnet{family}-list", service=service, check=(0, 3))[0].get("arguments") or {}
-        hosts = [
-            host
-            for subnet_id in (0, *(subnet["id"] for subnet in subnets.get("subnets", [])))
-            for host in (
-                kea.command("reservation-get-all", service=service, arguments={"subnet-id": subnet_id}, check=(0, 3))[
-                    0
-                ].get("arguments")
-                or {}
-            ).get("hosts", [])
-        ]
-        leases = (kea.command(f"lease{family}-get-all", service=service, check=(0, 3))[0].get("arguments") or {}).get(
+        state[f"dhcp{family} hash"] = kea.command("config-get", family)[0]["arguments"]["hash"]
+        hosts = _reservations(kea, family)
+        leases = (kea.command(f"lease{family}-get-all", family, check=(0, 3))[0].get("arguments") or {}).get(
             "leases", []
         )
         state[f"dhcp{family} reservations"] = sorted(json.dumps(host, sort_keys=True) for host in hosts)

@@ -17,6 +17,7 @@ import requests
 from netbox_kea import constants
 from netbox_kea.kea import (
     KeaClient,
+    KeaCommand,
     KeaException,
     KeaResponse,
     LeaseCollection,
@@ -153,13 +154,13 @@ class TestKeaClientInit(TestCase):
     def test_command_returns_response_list(self):
         resp = [{"result": 0, "arguments": {"leases": []}, "text": "ok"}]
         with self._patched_post(resp):
-            result = self.client.command("lease4-get-all", service=["dhcp4"])
+            result = self.client.command(KeaCommand.LEASE4_GET_ALL, 4)
         self.assertEqual(result, resp)
 
     def test_command_sends_correct_body(self):
         resp = [{"result": 0, "text": "ok"}]
         with patch.object(self.client._session, "post", return_value=_mock_http_response(resp)) as mock_post:
-            self.client.command("status-get", service=["dhcp4"], arguments={"extra": 1})
+            self.client.command(KeaCommand.STATUS_GET, 4, arguments={"extra": 1})
 
         call_kwargs = mock_post.call_args
         sent_json = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
@@ -170,7 +171,7 @@ class TestKeaClientInit(TestCase):
     def test_command_omits_service_when_none(self):
         resp = [{"result": 0, "text": "ok"}]
         with patch.object(self.client._session, "post", return_value=_mock_http_response(resp)) as mock_post:
-            self.client.command("list-commands")
+            self.client.command(KeaCommand.LIST_COMMANDS, None)
         sent_json = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
         self.assertNotIn("service", sent_json)
 
@@ -179,14 +180,14 @@ class TestKeaClientInit(TestCase):
         client = KeaClient(url="http://kea-daemon:8000", send_service=False)
         resp = [{"result": 0, "text": "ok"}]
         with patch.object(client._session, "post", return_value=_mock_http_response(resp)) as mock_post:
-            client.command("lease4-get", service=["dhcp4"])
+            client.command(KeaCommand.LEASE4_GET, 4)
         sent_json = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
         self.assertNotIn("service", sent_json)
 
     def test_command_omits_arguments_when_none(self):
         resp = [{"result": 0, "text": "ok"}]
         with patch.object(self.client._session, "post", return_value=_mock_http_response(resp)) as mock_post:
-            self.client.command("list-commands")
+            self.client.command(KeaCommand.LIST_COMMANDS, None)
         sent_json = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
         self.assertNotIn("arguments", sent_json)
 
@@ -194,13 +195,13 @@ class TestKeaClientInit(TestCase):
         resp = [{"result": 1, "text": "unknown command"}]
         with self._patched_post(resp):
             with self.assertRaises(KeaException):
-                self.client.command("bad-command")
+                self.client.command(KeaCommand.LIST_COMMANDS, None)
 
     def test_command_raises_kea_exception_with_correct_response(self):
         resp = [{"result": 2, "text": "not found"}]
         with self._patched_post(resp):
             try:
-                self.client.command("something")
+                self.client.command(KeaCommand.VERSION_GET, None)
                 self.fail("Expected KeaException")
             except KeaException as exc:
                 self.assertEqual(exc.response["result"], 2)
@@ -208,20 +209,20 @@ class TestKeaClientInit(TestCase):
     def test_command_check_none_skips_validation(self):
         resp = [{"result": 1, "text": "error but accepted"}]
         with self._patched_post(resp):
-            result = self.client.command("whatever", check=None)
+            result = self.client.command(KeaCommand.VERSION_GET, None, check=None)
         self.assertEqual(result, resp)
 
     def test_command_custom_ok_codes(self):
         resp = [{"result": 3, "text": "empty"}]
         with self._patched_post(resp):
-            result = self.client.command("lease4-get", service=["dhcp4"], check=(0, 3))
+            result = self.client.command(KeaCommand.LEASE4_GET, 4, check=(0, 3))
         self.assertEqual(result, resp)
 
     def test_command_http_error_raises(self):
         mock_resp = _mock_http_response({}, status_code=500)
         with patch.object(self.client._session, "post", return_value=mock_resp):
             with self.assertRaises(requests.HTTPError):
-                self.client.command("something")
+                self.client.command(KeaCommand.VERSION_GET, None)
 
     def test_command_raises_value_error_on_non_list_json(self):
         with patch.object(
@@ -230,26 +231,26 @@ class TestKeaClientInit(TestCase):
             return_value=_mock_http_response({"result": 0, "text": "ok"}),
         ):
             with self.assertRaises(ValueError):
-                self.client.command("something")
+                self.client.command(KeaCommand.VERSION_GET, None)
 
     def test_command_uses_timeout(self):
         resp = [{"result": 0, "text": "ok"}]
         with patch.object(self.client._session, "post", return_value=_mock_http_response(resp)) as mock_post:
-            self.client.command("list-commands")
+            self.client.command(KeaCommand.LIST_COMMANDS, None)
         call_kwargs = mock_post.call_args.kwargs
         self.assertEqual(call_kwargs.get("timeout"), 30)
 
     def test_command_multiple_services(self):
         resp = [{"result": 0, "text": "ok"}, {"result": 0, "text": "ok"}]
         with self._patched_post(resp):
-            result = self.client.command("status-get", service=["dhcp4", "dhcp6"])
+            result = self.client.command(KeaCommand.STATUS_GET, None)
         self.assertEqual(len(result), 2)
 
     def test_command_raises_on_second_failed_response(self):
         resp = [{"result": 0, "text": "ok"}, {"result": 1, "text": "failed"}]
         with self._patched_post(resp):
             with self.assertRaises(KeaException) as ctx:
-                self.client.command("status-get", service=["dhcp4", "dhcp6"])
+                self.client.command(KeaCommand.STATUS_GET, None)
         self.assertEqual(ctx.exception.index, 1)
 
 
@@ -337,7 +338,7 @@ class TestCheckResponse(TestCase):
 
 
 class TestGetAvailableCommands(TestCase):
-    """Tests for KeaClient.get_available_commands(service) -> set[str]."""
+    """Tests for KeaClient.get_available_commands(family) -> set[str]."""
 
     def setUp(self):
         self.client = KeaClient(url="http://kea:8000")
@@ -348,7 +349,7 @@ class TestGetAvailableCommands(TestCase):
     def test_returns_set_of_command_names(self):
         resp = [{"result": 0, "arguments": ["reservation-add", "reservation-get-page", "reservation-del"]}]
         with self._patched_post(resp):
-            result = self.client.get_available_commands("dhcp4")
+            result = self.client.get_available_commands(4)
         self.assertIsInstance(result, set)
         self.assertIn("reservation-add", result)
         self.assertIn("reservation-get-page", result)
@@ -357,13 +358,13 @@ class TestGetAvailableCommands(TestCase):
     def test_handles_empty_arguments(self):
         resp = [{"result": 0, "arguments": []}]
         with self._patched_post(resp):
-            result = self.client.get_available_commands("dhcp4")
+            result = self.client.get_available_commands(4)
         self.assertEqual(result, set())
 
     def test_sends_list_commands_to_correct_service(self):
         resp = [{"result": 0, "arguments": ["reservation-add"]}]
         with patch.object(self.client._session, "post", return_value=_mock_http_response(resp)) as mock_post:
-            self.client.get_available_commands("dhcp4")
+            self.client.get_available_commands(4)
         sent_json = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
         self.assertEqual(sent_json["command"], "list-commands")
         self.assertEqual(sent_json["service"], ["dhcp4"])
@@ -371,7 +372,7 @@ class TestGetAvailableCommands(TestCase):
     def test_works_for_dhcp6_service(self):
         resp = [{"result": 0, "arguments": ["reservation-add", "reservation-get-page"]}]
         with patch.object(self.client._session, "post", return_value=_mock_http_response(resp)) as mock_post:
-            result = self.client.get_available_commands("dhcp6")
+            result = self.client.get_available_commands(6)
         self.assertIsInstance(result, set)
         sent_json = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
         self.assertEqual(sent_json["service"], ["dhcp6"])
@@ -534,7 +535,7 @@ class TestDHCPDisable(TestCase):
             "post",
             side_effect=_side_effects(_DHCP_DISABLE_RESP),
         ) as mock_post:
-            self.client.dhcp_disable("dhcp4")
+            self.client.dhcp_disable(4)
         payload = self._payload(mock_post)
         self.assertEqual(payload["command"], "dhcp-disable")
         self.assertEqual(payload["service"], ["dhcp4"])
@@ -546,7 +547,7 @@ class TestDHCPDisable(TestCase):
             "post",
             side_effect=_side_effects(_DHCP_DISABLE_RESP),
         ) as mock_post:
-            self.client.dhcp_disable("dhcp4")
+            self.client.dhcp_disable(4)
         payload = self._payload(mock_post)
         self.assertNotIn("arguments", payload)
 
@@ -557,7 +558,7 @@ class TestDHCPDisable(TestCase):
             "post",
             side_effect=_side_effects(_DHCP_DISABLE_RESP),
         ) as mock_post:
-            self.client.dhcp_disable("dhcp4", max_period=300)
+            self.client.dhcp_disable(4, max_period=300)
         payload = self._payload(mock_post)
         self.assertIn("arguments", payload)
         self.assertEqual(payload["arguments"]["max-period"], 300)
@@ -570,7 +571,7 @@ class TestDHCPDisable(TestCase):
             side_effect=_side_effects([{"result": 1, "text": "server busy"}]),
         ):
             with self.assertRaises(KeaException):
-                self.client.dhcp_disable("dhcp4")
+                self.client.dhcp_disable(4)
 
     def test_dhcp_disable_works_for_dhcp6(self):
         """dhcp-disable can target the dhcp6 service."""
@@ -579,7 +580,7 @@ class TestDHCPDisable(TestCase):
             "post",
             side_effect=_side_effects(_DHCP_DISABLE_RESP),
         ) as mock_post:
-            self.client.dhcp_disable("dhcp6")
+            self.client.dhcp_disable(6)
         payload = self._payload(mock_post)
         self.assertEqual(payload["service"], ["dhcp6"])
 
@@ -590,7 +591,7 @@ class TestDHCPDisable(TestCase):
             "post",
             side_effect=_side_effects(_DHCP_DISABLE_RESP),
         ):
-            result = self.client.dhcp_disable("dhcp4")
+            result = self.client.dhcp_disable(4)
         self.assertIsNone(result)
 
 
@@ -610,7 +611,7 @@ class TestDHCPEnable(TestCase):
             "post",
             side_effect=_side_effects(_DHCP_ENABLE_RESP),
         ) as mock_post:
-            self.client.dhcp_enable("dhcp4")
+            self.client.dhcp_enable(4)
         payload = self._payload(mock_post)
         self.assertEqual(payload["command"], "dhcp-enable")
         self.assertEqual(payload["service"], ["dhcp4"])
@@ -622,7 +623,7 @@ class TestDHCPEnable(TestCase):
             "post",
             side_effect=_side_effects(_DHCP_ENABLE_RESP),
         ) as mock_post:
-            self.client.dhcp_enable("dhcp4")
+            self.client.dhcp_enable(4)
         payload = self._payload(mock_post)
         self.assertNotIn("arguments", payload)
 
@@ -634,7 +635,7 @@ class TestDHCPEnable(TestCase):
             side_effect=_side_effects([{"result": 1, "text": "already enabled"}]),
         ):
             with self.assertRaises(KeaException):
-                self.client.dhcp_enable("dhcp4")
+                self.client.dhcp_enable(4)
 
     def test_dhcp_enable_works_for_dhcp6(self):
         """dhcp-enable can target the dhcp6 service."""
@@ -643,7 +644,7 @@ class TestDHCPEnable(TestCase):
             "post",
             side_effect=_side_effects(_DHCP_ENABLE_RESP),
         ) as mock_post:
-            self.client.dhcp_enable("dhcp6")
+            self.client.dhcp_enable(6)
         payload = self._payload(mock_post)
         self.assertEqual(payload["service"], ["dhcp6"])
 
@@ -654,7 +655,7 @@ class TestDHCPEnable(TestCase):
             "post",
             side_effect=_side_effects(_DHCP_ENABLE_RESP),
         ):
-            result = self.client.dhcp_enable("dhcp4")
+            result = self.client.dhcp_enable(4)
         self.assertIsNone(result)
 
 
@@ -2235,7 +2236,7 @@ class TestGetAvailableCommandsMalformed(TestCase):
         """Empty response list hits the 'not resp' branch and raises RuntimeError."""
         with patch.object(self.client._session, "post", return_value=_mock_http_response([])):
             with self.assertRaises(RuntimeError):
-                self.client.get_available_commands("dhcp4")
+                self.client.get_available_commands(4)
 
 
 class TestLeaseUpdateGuards(TestCase):
@@ -2299,10 +2300,3 @@ class TestLeaseGetAllMalformedArguments(TestCase):
         with self.assertRaises(RuntimeError) as cm:
             self.client.lease_get_all(version=4)
         self.assertIn("leases", str(cm.exception))
-
-
-class TestConfigPhaseCommand(TestCase):
-    def test_config_set_requires_an_explicit_configuration(self):
-        with stub_kea({}) as kea, self.assertRaises(ValueError):
-            KeaClient(url="http://kea:8000")._config_phase_command("config-set", "dhcp4")
-        self.assertEqual(kea.commands(), [])

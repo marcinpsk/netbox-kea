@@ -172,12 +172,16 @@ URL request
   `post_migrate` receiver in `netbox_kea/tests/conftest.py` creates it again with the migration's
   values. Plain `models.Model` (not a `NetBoxModel`).
 - **`KeaClient`** (`kea.py`): wraps a `requests.Session`. All API calls go through
-  `.command(command, service, arguments, check)`, which POSTs JSON to the
-  **configured endpoint URL** (`self.url` — the daemon's `/` control socket, or a
-  Control Agent URL). Responses are `list[KeaResponse]` (one entry per targeted
-  service); `check_response()` raises `KeaException` if any result code is not in
+  `.command(command, target, arguments, check)`, the only HTTP send of the plugin, which POSTs
+  JSON to the **configured endpoint URL** (`self.url` — the daemon's `/` control socket, or a
+  Control Agent URL). `command` is a `KeaCommand` member, never a string (a string is a
+  `TypeError`); each member has a `read` or `write` kind. `target` is the `Family` (4 or 6), or
+  `None` for the Control Agent itself. A family-specific command comes from a per-family mapping
+  in `kea.py`, such as `SUBNET_LIST[family]`; never format a command name. A new member needs an
+  entry in the pinned read or write set of `test_kea_command.py`. Responses are
+  `list[KeaResponse]`; `check_response()` raises `KeaException` if any result code is not in
   `check`. `.clone()` creates a thread-safe copy (fresh `requests.Session`) for
-  concurrent lookups. **`send_service`**: `command()` includes the `service`
+  concurrent lookups. **`send_service`**: `command()` sends the target as the `service`
   argument only when the server is fronted by a Control Agent
   (`send_service = has_control_agent`); a direct daemon drops it, because Kea 3.2.0+
   rejects a `service` that does not match the daemon the request lands on.

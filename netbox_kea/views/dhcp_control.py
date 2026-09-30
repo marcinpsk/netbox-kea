@@ -33,15 +33,14 @@ class _BaseServerDHCPEnableView(_KeaChangeMixin, generic.ObjectView):
 
     def post(self, request: HttpRequest, pk: int, **kwargs: Any) -> HttpResponse:
         instance = self.get_object(pk=pk)
-        service = f"dhcp{self.dhcp_version}"
         try:
             client = instance.get_client(version=self.dhcp_version)
-            client.dhcp_enable(service)
+            client.dhcp_enable(self.dhcp_version)
             messages.success(request, f"DHCPv{self.dhcp_version} service re-enabled on {instance}.")
         except KeaException as exc:
             messages.error(request, f"Failed to enable DHCPv{self.dhcp_version}: {kea_error_hint(exc)}")
         except (requests.RequestException, ValueError):
-            logger.exception("Unexpected error enabling %s on server %s", service, pk)
+            logger.exception("Unexpected error enabling DHCPv%s on server %s", self.dhcp_version, pk)
             messages.error(request, "An internal error occurred.")
         return redirect(reverse("plugins:netbox_kea:server_status", args=[pk]))
 
@@ -78,11 +77,10 @@ class _BaseServerDHCPDisableView(_KeaChangeMixin, generic.ObjectView):
                 self.template_name,
                 self.get_extra_context(request, instance) | {"object": instance},
             )
-        service = f"dhcp{self.dhcp_version}"
         max_period = form.cleaned_data.get("max_period")
         try:
             client = instance.get_client(version=self.dhcp_version)
-            client.dhcp_disable(service, max_period=max_period)
+            client.dhcp_disable(self.dhcp_version, max_period=max_period)
             if max_period:
                 messages.warning(
                     request,
@@ -93,7 +91,7 @@ class _BaseServerDHCPDisableView(_KeaChangeMixin, generic.ObjectView):
         except KeaException as exc:
             messages.error(request, f"Failed to disable DHCPv{self.dhcp_version}: {kea_error_hint(exc)}")
         except (requests.RequestException, ValueError):
-            logger.exception("Unexpected error disabling %s on server %s", service, pk)
+            logger.exception("Unexpected error disabling DHCPv%s on server %s", self.dhcp_version, pk)
             messages.error(request, "An internal error occurred.")
         return redirect(reverse("plugins:netbox_kea:server_status", args=[pk]))
 

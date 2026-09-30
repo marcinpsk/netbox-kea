@@ -24,6 +24,7 @@ from .dhcp_options import (
 )
 from .kea import (
     CandidateConfiguration,
+    KeaCommand,
     KeaException,
     SharedNetworkEdit,
     SubnetDefinition,
@@ -222,7 +223,7 @@ def _unavailable(server: Server, family: Family, code: str, message: str) -> Ser
 def _read_live(server: Server, family: Family) -> ServerConfigurationSnapshot:
     try:
         client = server.get_client(version=family)
-        response = client.command("config-get", service=[f"dhcp{family}"])
+        response = client.command(KeaCommand.CONFIG_GET, family)
     except KeaException as exc:
         logger.warning("Server configuration read failed for DHCPv%s", family, exc_info=True)
         return _unavailable(
