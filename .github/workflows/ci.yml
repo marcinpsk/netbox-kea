@@ -96,7 +96,8 @@ jobs:
             --cov-report=xml:${{ github.workspace }}/coverage.xml \
             --no-header -q
 
-      - name: Upload coverage to Codecov
+      - &upload-coverage
+        name: Upload coverage to Codecov
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5  # v7.1.1
         with:
           files: ./coverage.xml
@@ -182,7 +183,12 @@ jobs:
             -n auto \
             --maxschedchunk=1 \
             --reuse-db \
+            --cov=netbox_kea \
+            --cov-report=xml:${{ github.workspace }}/coverage.xml \
             --no-header -q
+
+      # Only this job runs the netbox-branching code paths; Codecov merges this report with the unit-test one.
+      - *upload-coverage
 
   lint:
     runs-on: ubuntu-latest
