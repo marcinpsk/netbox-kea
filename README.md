@@ -114,8 +114,15 @@ NetBox 4.7 with netbox-branching 1.2.1. List `netbox_branching` last in `PLUGINS
 - Kea servers, sync settings and DHCP plugin links stay in main. A branch has no copy of them, so
   it shows main's values.
 - Kea data is live, in main and in every branch.
-- This release does not yet refuse plugin writes while a branch is active. Do not change Kea
-  servers or Kea data in a branch. A later release refuses these writes.
+- In a branch, the plugin refuses every change that comes through its web pages or its REST API,
+  before it sends anything to Kea or writes to the database. A page shows HTTP 409 with a link to
+  main; the REST API answers 409 with the code `branch_write_refused`. Plugin pages show a banner,
+  and plugin and GraphQL responses carry an `X-NetBox-Kea-Sources` header.
+- A change request that still selects a branch that you can no longer use (merged, archived,
+  deleted, or not ready) is refused the same way, with the code `branch_selection_unusable`, and
+  changes nothing. Select main (`?_branch=`) and try again.
+- Code that runs outside a web request (a custom script, for example) is not refused yet. Do not
+  change Kea servers or Kea data from a script in a branch.
 - A merge fails, and changes nothing, when the branch deletes a VRF that a Kea server in main now
   syncs into. Clear or change that server's Sync VRF, then merge again.
 

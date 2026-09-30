@@ -108,6 +108,10 @@ the integration job executes.
   instead of skipping when netbox-branching is absent. `netbox_kea/branching.py` is the only
   module that imports `netbox_branching` (ADR 0007, `docs/design/netbox-branching.md`).
   Every migration sets `fake_on_branch`; guard 4 in `test_branching.py` checks the value.
+  `BranchRefusalMiddleware` in `branching.py` refuses every unsafe request to a netbox_kea URL
+  callback in a branch, or with an unusable branch selection. Guard 1 in `test_branching.py`
+  sends every method to every netbox_kea URL in a provisioned branch; a new route with a
+  parameter the guard cannot build fails by name, so teach `_route_arguments` the object.
 - **Compatibility matrix**: runs the integration suite (`test_setup.sh`) against
   NetBox v4.3 (floor), v4.7 (ceiling), and the dev snapshot (allowed to fail).
 - Playwright traces on failure are uploaded as artifacts.
