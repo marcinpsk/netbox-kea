@@ -967,6 +967,32 @@ class OwnerFactsTest(TestCase):
         self.assertEqual(report.disagreements, set())
         self.assertEqual(_row().dns_name, "host")
 
+    def test_one_phase_that_reports_an_address_with_and_without_a_hostname_takes_the_hostname(self):
+        def host(hostname: str, identifier: str) -> dict:
+            return {"ip-address": ADDRESS, "flex-id": identifier, "hostname": hostname, "subnet-id": 1}
+
+        cases = {
+            "leases": ([_lease(), _lease(hostname="host")], []),
+            "leases, the hostname first": ([_lease(hostname="host"), _lease()], []),
+            "Reservations": ([], [host("", "host-a"), host("host", "host-b")]),
+        }
+        for case, (leases, reservations) in cases.items():
+            with self.subTest(case):
+                NbIP.objects.all().delete()
+
+                report = _reconcile(self.server, leases, reservations)
+
+                self.assertEqual((report.disagreements, report.created), (set(), 1))
+                source = "lease" if leases else "reservation"
+                self.assertEqual(_row().dns_name, "host")
+                self.assertEqual(_links(_row(), source)["owner"].facts, {"hostname": "host", "prefix_length": 24})
+
+    def test_one_phase_that_reports_an_address_with_two_hostnames_disagrees(self):
+        report = _reconcile(self.server, [_lease(hostname="host-a"), _lease(hostname="host-b")])
+
+        self.assertEqual((report.disagreements, report.created), ({ADDRESS}, 0))
+        self.assertFalse(NbIP.objects.exists())
+
     def test_a_lease_and_a_reservation_with_different_prefix_lengths_disagree_and_leave_the_row_unchanged(self):
         _reconcile(self.server, [_lease(hostname="host")], subnets=OVERLAPPING)
 
