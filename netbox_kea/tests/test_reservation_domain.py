@@ -46,6 +46,8 @@ from netbox_kea.subnet_catalogue import (
 from .kea_stub import _res_get, _res_page, _typed_reservation, kea_client, queued, stub_kea
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+#: The statements that bind the name in their ``name`` attribute.
+_NAMED_BINDINGS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.ExceptHandler, ast.MatchAs, ast.MatchStar)
 
 
 def _catalogue(family: Family, subnet_id: int, cidr: str) -> CatalogueSnapshot:
@@ -1577,11 +1579,37 @@ class TestRawRecordBoundary(SimpleTestCase):
         return "", False
 
     @staticmethod
-    def _members(node: ast.expr) -> list[str] | None:
+    def _kea_imports(tree: ast.AST) -> set[str]:
+        """Return the names that only a module-level ``from ...kea import NAME`` binds in *tree*."""
+        imported: set[str] = set()
+        rebound: set[str] = set()
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.ImportFrom)
+                and node in getattr(tree, "body", [])
+                and node.module
+                and (node.module == "kea" or node.module.endswith(".kea"))
+            ):
+                imported.update(alias.name for alias in node.names if alias.asname is None)
+                rebound.update(alias.asname for alias in node.names if alias.asname)
+            elif isinstance(node, (ast.Import, ast.ImportFrom)):
+                rebound.update((alias.asname or alias.name).split(".")[0] for alias in node.names)
+            elif isinstance(node, ast.Name) and not isinstance(node.ctx, ast.Load):
+                rebound.add(node.id)
+            elif isinstance(node, ast.arg):
+                rebound.add(node.arg)
+            elif isinstance(node, _NAMED_BINDINGS) and node.name:
+                rebound.add(node.name)
+            elif isinstance(node, (ast.Global, ast.Nonlocal)):
+                rebound.update(node.names)
+        return imported - rebound
+
+    @staticmethod
+    def _members(node: ast.expr, kea_names: set[str]) -> list[str] | None:
         """Return the wire names that a ``KeaCommand.X`` or a ``kea`` per-family ``NAME[family]`` can send, else None."""
         if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "KeaCommand":
-            return [KeaCommand[node.attr].value]
-        if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name):
+            return [KeaCommand[node.attr].value] if "KeaCommand" in kea_names else None
+        if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name) and node.value.id in kea_names:
             by_family = getattr(kea, node.value.id, None)
             if isinstance(by_family, dict) and all(isinstance(member, KeaCommand) for member in by_family.values()):
                 return [member.value for member in by_family.values()]
@@ -1596,11 +1624,12 @@ class TestRawRecordBoundary(SimpleTestCase):
         ``client.command(chosen)`` are both cases a literal-only scanner missed.
         """
         found: list[str] = []
+        kea_names = cls._kea_imports(tree)
         for node in ast.walk(tree):
             if not (isinstance(node, ast.Call) and cls._is_command_call(node)):
                 continue
             argument = cls._command_argument(node)
-            if argument is not None and (members := cls._members(argument)) is not None:
+            if argument is not None and (members := cls._members(argument, kea_names)) is not None:
                 if any(member.startswith(cls.PREFIX) for member in members):
                     found.append(f"{ast.unparse(argument)} (line {node.lineno})")
                 continue
@@ -1692,9 +1721,24 @@ class TestRawRecordBoundary(SimpleTestCase):
 
                 self.assertEqual(len(self._reservation_commands(ast.parse(source))), 1, label)
 
+    def test_the_scanner_reads_a_command_name_only_through_its_kea_import(self) -> None:
+        """A parameter or a local named like a kea map or ``KeaCommand`` is not that object."""
+        imports = "from netbox_kea.kea import LEASE_GET_ALL, KeaCommand\n"
+        for label, binding in (
+            ("map parameter", "def send(client, LEASE_GET_ALL):\n    client.command(LEASE_GET_ALL[4], 4)\n"),
+            ("map assignment", "LEASE_GET_ALL = ops\nclient.command(LEASE_GET_ALL[4], 4)\n"),
+            ("map, no import", "client.command(LEASE_GET_ALL[4], 4)\n"),
+            ("enum parameter", "def send(client, KeaCommand):\n    client.command(KeaCommand.CONFIG_GET, 4)\n"),
+        ):
+            with self.subTest(label):
+                source = binding if label.endswith("no import") else imports + binding
+
+                self.assertEqual(len(self._reservation_commands(ast.parse(source))), 1, label)
+
     def test_the_boundary_scanner_sees_both_command_spellings(self) -> None:
         """The scanner must find either spelling, and ignore the calls it must not."""
         source = (
+            "from ..kea import LEASE_GET_ALL, KeaCommand\n"
             "client.command(KeaCommand.RESERVATION_GET_PAGE, 4)\n"
             "client.command(command=KeaCommand.RESERVATION_GET, target=4)\n"
             "client.command(KeaCommand.CONFIG_GET, 4)\n"
@@ -1703,5 +1747,5 @@ class TestRawRecordBoundary(SimpleTestCase):
 
         self.assertEqual(
             self._reservation_commands(ast.parse(source)),
-            ["KeaCommand.RESERVATION_GET_PAGE (line 1)", "KeaCommand.RESERVATION_GET (line 2)"],
+            ["KeaCommand.RESERVATION_GET_PAGE (line 2)", "KeaCommand.RESERVATION_GET (line 3)"],
         )
