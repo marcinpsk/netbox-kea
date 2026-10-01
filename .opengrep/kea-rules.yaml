@@ -408,3 +408,41 @@ rules:
           - pattern: subprocess.check_call(...)
           - pattern: subprocess.check_output(...)
       - pattern-not: subprocess.$FUNCTION(..., timeout=$SECONDS, ...)
+
+  - id: kea-sync-except-request-exception-not-oserror
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Catch OSError, not requests.RequestException, at a Kea call in the IPAM sync job. A missing
+      TLS file raises a plain OSError that is not a RequestException; it escapes the phase and
+      stops the sync of the whole Server. RequestException is an OSError subclass, so OSError covers both.
+    metadata:
+      category: correctness
+      confidence: HIGH
+    paths:
+      include:
+        - "netbox_kea/ipam_reconciliation.py"
+        - "netbox_kea/jobs.py"
+        - "netbox_kea/sync.py"
+        - "kea-sync-except-request-exception-not-oserror.py"
+    pattern-either:
+      - pattern: |
+          try:
+              ...
+          except requests.RequestException:
+              ...
+      - pattern: |
+          try:
+              ...
+          except requests.RequestException as $E:
+              ...
+      - pattern: |
+          try:
+              ...
+          except (..., requests.RequestException, ...):
+              ...
+      - pattern: |
+          try:
+              ...
+          except (..., requests.RequestException, ...) as $E:
+              ...
