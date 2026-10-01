@@ -386,12 +386,13 @@ def _sync_mac_address(hw_address: str, hostname: str = ""):
         mac_obj, _ = MACAddress.objects.get_or_create(mac_address=mac_str)
         if hostname and _update_mac_description(mac_obj, hostname):
             mac_obj.save()
-    except (ProgrammingError, OperationalError, IntegrityError):
-        logger.debug("DB error while syncing a MAC address to NetBox DCIM", exc_info=True)
+    # The exception text can repeat the MAC address, so only its type goes to the log.
+    except (ProgrammingError, OperationalError, IntegrityError) as exc:
+        logger.debug("DB error while syncing a MAC address to NetBox DCIM: %s", type(exc).__name__)
     except AddrFormatError:
-        logger.debug("Invalid MAC address format — skipping DCIM MAC sync", exc_info=True)
-    except Exception:
-        logger.debug("Failed to sync a MAC address to NetBox DCIM", exc_info=True)
+        logger.debug("Invalid MAC address format — skipping DCIM MAC sync")
+    except Exception as exc:  # noqa: BLE001 — a MAC sync failure must not stop the IP address sync
+        logger.debug("Failed to sync a MAC address to NetBox DCIM: %s", type(exc).__name__)
     else:
         return mac_obj
     return None

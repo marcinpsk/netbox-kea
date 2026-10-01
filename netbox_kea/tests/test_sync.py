@@ -9,6 +9,7 @@ runs in a transaction that is rolled back afterwards.
 from __future__ import annotations
 
 import ipaddress
+import logging
 from collections.abc import Iterable
 from types import UnionType
 from typing import get_args, get_origin, get_type_hints
@@ -1063,7 +1064,8 @@ class TestSyncMacAddressErrors(TestCase):
             _sync_mac_address("aa:bb:cc:dd:ee:zz", hostname="test-host")
 
         self.assertEqual([record.levelname for record in logs.records], ["DEBUG"])
-        self.assertNotIn("aa:bb:cc:dd:ee:zz", logs.records[0].getMessage())
+        # The formatted record includes the traceback text, where netaddr repeats the value.
+        self.assertNotIn("aa:bb:cc:dd:ee:zz", logging.Formatter().format(logs.records[0]))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
