@@ -142,6 +142,8 @@ class TestKeaClientInit(TestCase):
         self.assertFalse(kea_client(url="http://kea:8000", send_service=False).clone().send_service)
         self.assertTrue(kea_client(url="http://kea:8000").clone().send_service)
 
+
+class TestKeaClientCommand(TestCase):
     """Tests for KeaClient.command()."""
 
     def setUp(self):
