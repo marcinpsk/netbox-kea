@@ -36,17 +36,12 @@ class Marker:
     """The marker at the start of a description: its kind and the text after it.
 
     ``rest`` is the text after the block or the legacy phrase, byte for byte. ``kind`` is ``None`` only for a
-    legacy phrase that no known kind follows.
+    legacy phrase that no known kind follows as a whole word.
     """
 
     kind: MarkerKind | None
     rest: str
     legacy: bool
-
-    @property
-    def note(self) -> str:
-        """Return the operator note: the rest without the one space that separates it from the marker."""
-        return self.rest.removeprefix(" ")
 
 
 def parse_marker(description: str) -> Marker | None:

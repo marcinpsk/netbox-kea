@@ -88,11 +88,6 @@ def test_a_rendered_marker_parses_back_to_its_kind(kind):
     assert parse_marker(render_marker(kind)) == Marker(kind, "", legacy=False)
 
 
-def test_the_note_drops_one_separating_space():
-    assert Marker("lease", "  note", legacy=False).note == " note"
-    assert Marker("lease", "", legacy=False).note == ""
-
-
 def test_each_status_that_the_sync_writes_has_a_kind():
     assert {status: status_kind(status) for status in ("dhcp", "reserved", "active")} == {
         "dhcp": "lease",
