@@ -15,11 +15,19 @@ from contextlib import suppress
 from core.exceptions import JobFailed
 from django.db import connection, connections, transaction
 from django.test import TestCase, TransactionTestCase, override_settings
-from ipam.models import VRF
+from ipam.models import VRF, Prefix
 from ipam.models import IPAddress as NbIP
 
 from netbox_kea import subnet_catalogue
-from netbox_kea.ipam_reconciliation import LeasePhase, ReservationPhase, SyncReport, _lock_identity, reconcile
+from netbox_kea.ipam_reconciliation import (
+    ClaimResult,
+    LeasePhase,
+    ReservationPhase,
+    SyncReport,
+    _lock_identity,
+    claim,
+    reconcile,
+)
 from netbox_kea.jobs import KeaIpamSyncJob
 from netbox_kea.models import (
     CONFIRMATION_SEQUENCE,
@@ -1239,3 +1247,86 @@ class LeasePhaseConcurrencyTest(TransactionTestCase):
         self.assertEqual(self.results["cleanup"], 0)
         self.assertTrue(NbIP.objects.filter(pk=ip.pk).exists())
         self.assertEqual(set(_links(ip)), {"owner"})
+
+    def _claim_result(self, name: str) -> ClaimResult:
+        result = self.results[name]
+        if not isinstance(result, ClaimResult):
+            self.fail(f"{name} did not return claim results: {result!r}")
+        return result
+
+    def test_claim_and_reconcile_create_one_row_under_the_same_identity_lock(self):
+        first, second = _server("claim-owner"), _server("reconcile-owner")
+        Prefix.objects.create(prefix="10.0.0.0/24")
+        holder = self._hold("LOCK TABLE ipam_ipaddress IN SHARE MODE", [])
+        with stub_kea({"lease4-get-page": _lease_page([_lease(hostname="host")])}):
+            self._start("claim", lambda: claim(first, 4, [_lease(hostname="host")], force=False))
+            self._start("reconcile", lambda: reconcile(second, 4, [_lease_phase()]))
+            self._wait_for_lock_waits(2)
+            holder.commit()
+            self._join()
+        self.assertEqual(NbIP.objects.filter(address__net_host=ADDRESS).count(), 1)
+        self.assertEqual(set(_links(_row())), {"claim-owner", "reconcile-owner"})
+        outcome = self._claim_result("claim").addresses[ADDRESS].outcome
+        self.assertIn(outcome, {"created", "unchanged"})
+        self.assertEqual(int(outcome == "created") + self._report("reconcile").created, 1)
+        self.assertEqual(self._report("reconcile").disagreements, set())
+
+    def test_claim_confirmation_after_reconcile_cutoff_survives_cleanup(self):
+        server = _server("owner")
+        Prefix.objects.create(prefix="10.0.0.0/24")
+        _reconcile(server, [_lease(hostname="host")])
+        ip = _row()
+        before = _links(ip)["owner"].confirmation
+        holder = self._hold("SELECT id FROM ipam_ipaddress WHERE id = %s FOR UPDATE", [ip.pk])
+        with _kea():
+            phases = _phases(server)
+            self._start("claim", lambda: claim(server, 4, [_lease(hostname="host")], force=False))
+            self._wait_for_lock_waits(1)
+            self._start("cleanup", lambda: reconcile(server, 4, phases))
+            self._wait_for_lock_waits(2)
+            holder.commit()
+            self._join()
+        self.assertEqual(self._claim_result("claim").addresses[ADDRESS].outcome, "unchanged")
+        self.assertEqual(self._report("cleanup").removed, 0)
+        self.assertTrue(NbIP.objects.filter(pk=ip.pk).exists())
+        self.assertGreater(_links(ip)["owner"].confirmation, before)
+
+    def test_claim_reads_operator_release_from_the_locked_row_after_commit(self):
+        server = _server("owner")
+        _reconcile(server, [_lease(hostname="host")])
+        ip = _row()
+        operator = self._hold("UPDATE ipam_ipaddress SET description = 'Printer on floor 2' WHERE id = %s", [ip.pk])
+        self._start("claim", lambda: claim(server, 4, [_lease(hostname="renamed")], force=False))
+        self._wait_for_lock_waits(1)
+        operator.commit()
+        committed = NbIP.objects.values().get(pk=ip.pk)
+        self._join()
+        self.assertEqual(self._claim_result("claim").addresses[ADDRESS].outcome, "conflict")
+        self.assertEqual(_links(ip), {})
+        self.assertEqual(NbIP.objects.values().get(pk=ip.pk), committed)
+        self.assertEqual(_row().description, "Printer on floor 2")
+
+    def test_claim_row_lock_error_does_not_fail_other_addresses_or_clean_up(self):
+        server = _server("owner")
+        Prefix.objects.create(prefix="10.0.0.0/24")
+        _reconcile(server, [_lease("10.0.0.1", "one"), _lease("10.0.0.2", "two"), _lease("10.0.0.9", "stale")])
+        blocked = _row("10.0.0.1")
+        before = NbIP.objects.values().get(pk=blocked.pk)
+        self._hold("SELECT id FROM ipam_ipaddress WHERE id = %s FOR UPDATE", [blocked.pk])
+
+        def run():
+            with connection.cursor() as cursor:
+                cursor.execute("SET lock_timeout = '500ms'")
+            return claim(server, 4, [_lease("10.0.0.1", "one-b"), _lease("10.0.0.2", "two-b")], force=False)
+
+        self._start("claim", run)
+        self._wait_for_lock_waits(1)
+        self._join()
+        outcomes = self._claim_result("claim").addresses
+        self.assertEqual(
+            {address: result.outcome for address, result in outcomes.items()},
+            {"10.0.0.1": "error", "10.0.0.2": "updated"},
+        )
+        self.assertEqual(NbIP.objects.values().get(pk=blocked.pk), before)
+        self.assertEqual(_row("10.0.0.2").dns_name, "two-b")
+        self.assertEqual(set(_links(_row("10.0.0.9"))), {"owner"})

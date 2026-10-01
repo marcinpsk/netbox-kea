@@ -24,7 +24,7 @@ connectivity checks.
 
 import re
 import threading
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import requests
 from django.contrib.messages import get_messages
@@ -1640,40 +1640,65 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("sync_to_netbox", response.content.decode())
 
-    @patch("netbox_kea.views.leases.sync_lease_to_netbox", autospec=True)
-    def test_post_lease4_add_with_sync_calls_sync_lease(self, mock_sync):
-        """POST with sync_to_netbox=on calls sync_lease_to_netbox() with the lease dict."""
-        mock_sync.return_value = (MagicMock(spec=NbIP), True, False)
+    def test_post_lease4_add_with_sync_links_the_created_ip(self):
+        from netbox_kea.models import IPAMOwnershipLink
+
         with _lease_stub({"lease4-add": {"result": 0}}):
             response = self.client.post(self._url(version=4), self._post4(sync=True))
         self.assertEqual(response.status_code, 302)
-        mock_sync.assert_called_once()
-        lease = mock_sync.call_args[0][0]
-        self.assertEqual(lease["ip-address"], "10.0.0.200")
+        ip = NbIP.objects.get(address__net_host="10.0.0.200")
+        link = IPAMOwnershipLink.objects.get(ip_address=ip)
+        self.assertEqual((link.server_id, link.family, link.source), (self.server.pk, 4, "lease"))
+        self.assertEqual(link.facts, {"hostname": "newlease.example.com", "prefix_length": 32})
 
-    @patch("netbox_kea.views.leases.sync_lease_to_netbox", autospec=True)
-    def test_post_lease4_add_without_sync_does_not_call_sync(self, mock_sync):
-        """POST without sync_to_netbox does NOT call sync_lease_to_netbox()."""
+    def test_post_lease4_add_without_sync_does_not_write_ipam(self):
+        from netbox_kea.models import IPAMOwnershipLink
+
         with _lease_stub({"lease4-add": {"result": 0}}):
             response = self.client.post(self._url(version=4), self._post4(sync=False))
         self.assertEqual(response.status_code, 302)
-        mock_sync.assert_not_called()
+        self.assertFalse(NbIP.objects.exists())
+        self.assertFalse(IPAMOwnershipLink.objects.exists())
 
-    @patch("netbox_kea.views.leases.sync_lease_to_netbox", autospec=True)
-    def test_post_lease4_add_sync_failure_does_not_prevent_kea_success(self, mock_sync):
-        """Sync failure is a warning; the lease creation still succeeds (302 redirect)."""
-        mock_sync.side_effect = ValueError("NetBox unreachable")
-        with _lease_stub({"lease4-add": {"result": 0}}) as kea:
-            response = self.client.post(self._url(version=4), self._post4(sync=True))
-        self.assertEqual(response.status_code, 302)
-        self.assertEqual(kea.commands().count("lease4-add"), 1)
+    def test_post_lease4_add_reports_owner_disagreement_and_keeps_the_existing_row(self):
+        from netbox_kea.ipam_reconciliation import claim
+        from netbox_kea.models import IPAMOwnershipLink
 
-    @patch("netbox_kea.views.leases.sync_lease_to_netbox", autospec=True)
-    def test_post_lease4_add_sync_skipped_without_ipam_permission(self, mock_sync):
-        """A user with server-change but no IPAM write permission must not trigger the IPAM sync."""
+        other = Server.objects.create(name="other-owner", ca_url="https://other.example.com")
+        existing = claim(other, 4, [{"ip-address": "10.0.0.200", "hostname": "other.example.com"}], force=False)
+        before = NbIP.objects.values().get(pk=existing.primary.pk)
+        with _lease_stub({"lease4-add": {"result": 0}, "subnet4-list": self._SUBNETS4}):
+            response = self.client.post(self._url(version=4), self._post4(sync=True), follow=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(any("owners disagree" in str(message) for message in response.context["messages"]))
+        self.assertEqual(NbIP.objects.values().get(pk=existing.primary.pk), before)
+        self.assertEqual(IPAMOwnershipLink.objects.get(server=self.server).facts["hostname"], "newlease.example.com")
+
+    def test_post_lease4_add_sync_failure_does_not_prevent_kea_success(self):
+        from django.db import connection
+
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "ALTER TABLE ipam_ipaddress ADD CONSTRAINT reject_claim CHECK (host(address) != '10.0.0.200')"
+            )
+        try:
+            with _lease_stub({"lease4-add": {"result": 0}, "subnet4-list": self._SUBNETS4}) as kea:
+                response = self.client.post(self._url(version=4), self._post4(sync=True), follow=True)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(kea.commands().count("lease4-add"), 1)
+            self.assertTrue(any("sync failed" in str(message) for message in response.context["messages"]))
+            self.assertFalse(NbIP.objects.exists())
+        finally:
+            with connection.cursor() as cursor:
+                cursor.execute("ALTER TABLE ipam_ipaddress DROP CONSTRAINT reject_claim")
+
+    def test_post_lease4_add_sync_skipped_without_ipam_permission(self):
+        """Server-change permission alone cannot write IPAM."""
         from django.contrib.auth import get_user_model
         from django.contrib.contenttypes.models import ContentType
         from users.models import ObjectPermission
+
+        from netbox_kea.models import IPAMOwnershipLink
 
         User = get_user_model()
         limited = User.objects.create_user(username="lease_no_ipam", password="x")
@@ -1684,10 +1709,10 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
 
         with _lease_stub({"lease4-add": {"result": 0}}) as kea:
             response = self.client.post(self._url(version=4), self._post4(sync=True))
-        # Lease still created in Kea (302), but the IPAM sync was gated out.
         self.assertEqual(response.status_code, 302)
         self.assertEqual(kea.commands().count("lease4-add"), 1)
-        mock_sync.assert_not_called()
+        self.assertFalse(NbIP.objects.exists())
+        self.assertFalse(IPAMOwnershipLink.objects.exists())
 
     def test_post_lease4_add_reports_foreign_ip_skip(self):
         """A foreign NetBox IP (force=False) is skipped and reported as such, not 'synced'."""
