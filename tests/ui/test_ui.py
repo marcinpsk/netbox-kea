@@ -20,9 +20,9 @@ from ..kea import KeaClient
 from .conftest import _USER_PREFERENCES_TIMEOUT_SECONDS, _DualEndpointKeaClient
 
 
-def test_dual_endpoint_client_rejects_multiple_services(kea_client: _DualEndpointKeaClient) -> None:
-    with pytest.raises(ValueError, match="route one service per call"):
-        kea_client.command("list-commands", service=["dhcp4", "dhcp6"])
+def test_the_harness_client_sends_only_commands_the_plugin_sends(kea_client: _DualEndpointKeaClient) -> None:
+    with pytest.raises(ValueError, match="config-hash-get"):
+        kea_client.command("config-hash-get", 4)
 
 
 def _claim_netbox_ip(nb_api: pynetbox.api, address: str, **fields):
@@ -83,8 +83,8 @@ def test_the_harness_pauses_the_periodic_ipam_sync(page: Page, netbox_login: Non
 
     assert not toggle.is_checked(), (
         "The periodic Kea->NetBox IPAM sync is running, so the lease fixtures race it. "
-        "tests/docker/plugins.py disables it, but SyncConfig.get() reads PLUGINS_CONFIG "
-        "only when it creates the singleton row, so a stack whose postgres volume "
+        "tests/docker/plugins.py disables it, but the migration reads PLUGINS_CONFIG "
+        "once, when it creates the SyncConfig row, so a stack whose postgres volume "
         "pre-dates that setting keeps the stored value. Run 'docker compose down -v' in "
         "tests/docker, then test_setup.sh again."
     )
@@ -95,7 +95,7 @@ def lease6(kea: KeaClient) -> dict[str, Any]:
     lease_ip = "2001:db8:1::1"
     kea.command(
         "lease6-add",
-        service=["dhcp6"],
+        6,
         arguments={
             "ip-address": lease_ip,
             "duid": "01:02:03:04:05:06:07:08",
@@ -106,7 +106,7 @@ def lease6(kea: KeaClient) -> dict[str, Any]:
             "preferred-lft": 7200,
         },
     )
-    lease = kea.command("lease6-get", arguments={"ip-address": lease_ip}, service=["dhcp6"])[0]["arguments"]
+    lease = kea.command("lease6-get", 6, arguments={"ip-address": lease_ip})[0]["arguments"]
     assert lease is not None
     return lease
 
@@ -212,7 +212,7 @@ def lease4(kea: KeaClient) -> dict[str, Any]:
     lease_ip = "192.0.2.1"
     kea.command(
         "lease4-add",
-        service=["dhcp4"],
+        4,
         arguments={
             "ip-address": lease_ip,
             "hw-address": "08:08:08:08:08:08",
@@ -220,7 +220,7 @@ def lease4(kea: KeaClient) -> dict[str, Any]:
             "hostname": "test-lease4",
         },
     )
-    lease = kea.command("lease4-get", arguments={"ip-address": lease_ip}, service=["dhcp4"])[0]["arguments"]
+    lease = kea.command("lease4-get", 4, arguments={"ip-address": lease_ip})[0]["arguments"]
     assert lease is not None
     return lease
 
@@ -329,7 +329,7 @@ def leases6_250(kea: KeaClient) -> None:
     for i in range(1, 251):
         kea.command(
             "lease6-add",
-            service=["dhcp6"],
+            6,
             arguments={
                 "ip-address": f"2001:db8:1::{i:x}",
                 "duid": str(EUI(i * 10, dialect=mac_unix_expanded)),
@@ -347,7 +347,7 @@ def leases4_250(kea: KeaClient) -> None:
     for i in range(1, 251):
         kea.command(
             "lease4-add",
-            service=["dhcp4"],
+            4,
             arguments={
                 "ip-address": f"192.0.2.{i}",
                 "client-id": str(EUI(i * 10, dialect=mac_unix_expanded)),
@@ -664,8 +664,8 @@ def test_server_status(page: Page, kea: _DualEndpointKeaClient) -> None:
     page.get_by_role("link", name="Status", exact=True).click()
 
     # has_control_agent=False (Kea 3.0): the status view shows the daemon versions, not a CA row.
-    dhcp4_version = kea.command("version-get", service=["dhcp4"])[0]["arguments"]["extended"]
-    dhcp6_version = kea.command("version-get", service=["dhcp6"])[0]["arguments"]["extended"]
+    dhcp4_version = kea.command("version-get", 4)[0]["arguments"]["extended"]
+    dhcp6_version = kea.command("version-get", 6)[0]["arguments"]["extended"]
 
     locator = page.locator(".tab-content")
     expect(locator).to_contain_text(dhcp4_version)
@@ -861,11 +861,7 @@ def test_dhcp_lease_all_columns(
     lease_args = request.getfixturevalue(f"lease{family}")
     lease_ip = lease_args["ip-address"]
 
-    lease = kea.command(
-        f"lease{family}-get",
-        service=[f"dhcp{family}"],
-        arguments={"ip-address": lease_ip},
-    )[0]["arguments"]
+    lease = kea.command(f"lease{family}-get", family, arguments={"ip-address": lease_ip})[0]["arguments"]
     assert lease is not None
 
     def search() -> None:
@@ -1009,7 +1005,7 @@ def test_dhcp_export_csv_all(
 ):
     request.getfixturevalue(f"leases{family}_250")
 
-    leases = kea.command(f"lease{family}-get-all", service=[f"dhcp{family}"])[0]["arguments"]["leases"]
+    leases = kea.command(f"lease{family}-get-all", family)[0]["arguments"]["leases"]
 
     def search() -> None:
         return search_lease(page, family, "Subnet", "2001:db8:1::/64" if family == 6 else "192.0.2.0/24")
@@ -1057,12 +1053,7 @@ def test_lease_delete(
     page.locator('button[name="_confirm"]').click()
     expect(page.locator(".toast-body")).to_have_text(re.compile(f"Deleted 1 DHCPv{family} lease\\(s\\)"))
 
-    kea.command(
-        f"lease{family}-get",
-        service=[f"dhcp{family}"],
-        arguments={"ip-address": ip},
-        check=(3,),
-    )
+    kea.command(f"lease{family}-get", family, arguments={"ip-address": ip}, check=(3,))
 
     expect(page).to_have_url(url)
 
@@ -1167,7 +1158,7 @@ def test_lease_deleted_before_delete(
     page.locator('input[name="pk"]').check()
     page.get_by_role("button", name="Delete Selected").click()
 
-    kea.command(f"lease{family}-del", service=[f"dhcp{family}"], arguments={"ip-address": ip})
+    kea.command(f"lease{family}-del", family, arguments={"ip-address": ip})
 
     page.locator('button[name="_confirm"]').click()
     # Kea will return status 3
@@ -1519,7 +1510,7 @@ def test_dhcpv6_lease_long_duid(page: Page, kea: KeaClient, with_test_server_onl
     lease_ip = "2001:db8:1::dead:beef"
     kea.command(
         "lease6-add",
-        service=["dhcp6"],
+        6,
         arguments={
             "ip-address": lease_ip,
             "duid": "01:02:03:04:05:06:07:08:02:03:04:05:06:07:08:02:03:04:05:06:07:08:02:03:04:05:06:07:08:02:03:04:05:06:07:08:02:03:04:05:06:07:08",
@@ -1597,7 +1588,7 @@ def _reservation_get(
     """Read one reservation back from the daemon, or None when it holds no such host."""
     resp = kea.command(
         "reservation-get",
-        service=[f"dhcp{version}"],
+        version,
         arguments=_reservation_key_args(subnet_id, identifier_type, identifier),
         check=(0, 3),
     )
@@ -1610,7 +1601,7 @@ def _reservation_del(
     """Delete a reservation directly, tolerating one that is not there."""
     kea.command(
         "reservation-del",
-        service=[f"dhcp{version}"],
+        version,
         arguments=_reservation_key_args(subnet_id, identifier_type, identifier),
         check=(0, 3),
     )
@@ -1767,9 +1758,7 @@ def test_reservation4_without_address_matches_lease_by_identifier(
     reservation_keys.append((4, RESERVATION_SUBNET_ID, "hw-address", mac))
     _reservation_del(kea_client, 4, RESERVATION_SUBNET_ID, "hw-address", mac)
     kea_client.command(
-        "lease4-add",
-        service=["dhcp4"],
-        arguments={"ip-address": lease_ip, "hw-address": mac, "hostname": "leased-client"},
+        "lease4-add", 4, arguments={"ip-address": lease_ip, "hw-address": mac, "hostname": "leased-client"}
     )
     # reservation_keys only drops reservations, so the lease needs its own cleanup.
     try:
@@ -1779,12 +1768,7 @@ def test_reservation4_without_address_matches_lease_by_identifier(
         expect(row).to_have_count(1)
         expect(row.get_by_text("Active Lease", exact=True)).to_be_visible()
     finally:
-        kea_client.command(
-            "lease4-del",
-            service=["dhcp4"],
-            arguments={"ip-address": lease_ip},
-            check=(0, 3),
-        )
+        kea_client.command("lease4-del", 4, arguments={"ip-address": lease_ip}, check=(0, 3))
 
 
 def test_reservation6_prefix_only_round_trip(
@@ -1859,7 +1843,7 @@ def test_global_reservation_is_visible_and_read_only(
     _reservation_del(kea_client, 4, 0, "hw-address", mac)
     kea_client.command(
         "reservation-add",
-        service=["dhcp4"],
+        4,
         arguments={
             "reservation": {
                 "subnet-id": 0,

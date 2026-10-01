@@ -4,6 +4,10 @@
 from django.db import migrations, models
 
 
+# netbox_kea tables stay in main, so branch migrate fakes this migration (ADR 0007).
+fake_on_branch = True
+
+
 class Migration(migrations.Migration):
     """Add dhcp4_url, dhcp6_url, and has_control_agent fields to Server."""
 

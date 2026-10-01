@@ -611,7 +611,7 @@ def reserved_lease4(kea_client: "_DualEndpointKeaClient", clear_leases: None) ->
     # would fail pointing at the badge code instead of at the config.
     reserved = kea_client.command(
         "reservation-get",
-        service=["dhcp4"],
+        4,
         arguments={"subnet-id": _RESERVED_SUBNET_ID, "identifier-type": "hw-address", "identifier": _RESERVED_MAC4},
         check=(0, 3),
     )[0]
@@ -623,7 +623,7 @@ def reserved_lease4(kea_client: "_DualEndpointKeaClient", clear_leases: None) ->
     )
     kea_client.command(
         "lease4-add",
-        service=["dhcp4"],
+        4,
         arguments={
             "ip-address": _RESERVED_IP4,
             "hw-address": _RESERVED_MAC4,
@@ -633,12 +633,7 @@ def reserved_lease4(kea_client: "_DualEndpointKeaClient", clear_leases: None) ->
     try:
         yield _RESERVED_IP4
     finally:
-        kea_client.command(
-            "lease4-del",
-            service=["dhcp4"],
-            arguments={"ip-address": _RESERVED_IP4},
-            check=(0, 3),
-        )
+        kea_client.command("lease4-del", 4, arguments={"ip-address": _RESERVED_IP4}, check=(0, 3))
 
 
 class TestBadgeEnrichment:
@@ -1497,13 +1492,13 @@ class TestPoolManagement:
         an exception that is already propagating from the test body.
         """
         try:
-            data = kea_client.command("subnet4-get", service=["dhcp4"], arguments={"id": subnet_id}, check=(0, 3))[0]
+            data = kea_client.command("subnet4-get", 4, arguments={"id": subnet_id}, check=(0, 3))[0]
             for subnet in (data.get("arguments") or {}).get("subnet4") or []:
                 if not any(entry.get("pool") == pool for entry in subnet.get("pools") or []):
                     continue
                 kea_client.command(
                     "subnet4-delta-del",
-                    service=["dhcp4"],
+                    4,
                     arguments={"subnet4": [{"id": subnet_id, "subnet": subnet["subnet"], "pools": [{"pool": pool}]}]},
                     check=(0, 3),
                 )
@@ -1596,10 +1591,10 @@ class TestSubnetManagement:
         an exception that is already propagating from the test body.
         """
         try:
-            data = kea_client.command("subnet4-list", service=["dhcp4"], check=(0, 3))[0]
+            data = kea_client.command("subnet4-list", 4, check=(0, 3))[0]
             for s in (data.get("arguments") or {}).get("subnets", []):
                 if s.get("subnet") == cidr:
-                    kea_client.command("subnet4-del", service=["dhcp4"], arguments={"id": s["id"]}, check=(0, 3))
+                    kea_client.command("subnet4-del", 4, arguments={"id": s["id"]}, check=(0, 3))
         except Exception as exc:
             if strict:
                 raise
@@ -1681,7 +1676,7 @@ class TestSubnetManagement:
             _assert_no_http_errors(track_http_errors)
 
             # ---- VERIFY DELETED via direct Kea API ----
-            data = kea_client.command("subnet4-list", service=["dhcp4"], check=(0, 3))[0]
+            data = kea_client.command("subnet4-list", 4, check=(0, 3))[0]
             remaining_ids = {s["id"] for s in (data.get("arguments") or {}).get("subnets", [])}
             assert new_subnet_id not in remaining_ids, (
                 f"Subnet ID {new_subnet_id} ({test_subnet}) still present in Kea after UI delete"

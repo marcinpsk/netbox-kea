@@ -6,15 +6,22 @@ Import from this module instead of duplicating scaffold code in each test file.
 """
 
 import re
+from typing import TYPE_CHECKING
 
 import requests
 from django.contrib import messages as django_messages
 from django.contrib.auth import get_user_model
+from django.db import connection
 from django.test import Client, TestCase, override_settings
+from django.test.utils import CaptureQueriesContext
+from django.urls import reverse
 
 from netbox_kea.models import Server
 
 from .kea_stub import stub_kea
+
+if TYPE_CHECKING:
+    from django.test.client import _MonkeyPatchedWSGIResponse
 
 # Minimal PLUGINS_CONFIG for tests that do not exercise the Subnet lease-query guard.
 _PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30, "lease_query_max_unpaged_leases": 0}}
@@ -46,6 +53,33 @@ def _make_db_server(**kwargs) -> Server:
     return Server.objects.create(**defaults)
 
 
+_WRITE_VERBS = ("INSERT", "UPDATE", "DELETE")
+
+
+def _refusal_receivers(signal) -> set[str]:
+    """Return the label of each model whose branch refusal receiver *signal* has connected."""
+    prefix = "netbox_kea.refuse_in_branch."
+    return {key[0].removeprefix(prefix) for key, *_rest in signal.receivers if str(key[0]).startswith(prefix)}
+
+
+def _sync_page_urls(server: Server) -> tuple[str, str]:
+    """Return the two sync pages that read SyncConfig: the Sync Jobs page and the Server's Sync tab."""
+    return (
+        reverse("plugins:netbox_kea:sync_jobs"),
+        reverse("plugins:netbox_kea:server_sync_status", args=[server.pk]),
+    )
+
+
+def _get_with_writes(client: Client, url: str) -> tuple["_MonkeyPatchedWSGIResponse", list[str]]:
+    """GET ``url`` and return the response with each INSERT, UPDATE or DELETE statement it ran."""
+    with CaptureQueriesContext(connection) as captured:
+        response = client.get(url)
+    writes = [
+        query["sql"] for query in captured.captured_queries if query["sql"].lstrip().upper().startswith(_WRITE_VERBS)
+    ]
+    return response, writes
+
+
 def _page_data(response) -> dict[str, str]:
     """Return the data that a browser posts for the form of *response*: each field that the page rendered."""
     form, page = response.context["form"], response.content.decode()
@@ -54,20 +88,6 @@ def _page_data(response) -> dict[str, str]:
         for name in form.fields
         if f'name="{form[name].html_name}"' in page
     }
-
-
-def _kea_command_side_effect(cmd, service=None, arguments=None, check=None):
-    """Return a plausible Kea API response for each command type."""
-    if cmd == "status-get":
-        return [{"result": 0, "arguments": {"pid": 1234, "uptime": 3600, "reload": 0}}]
-    if cmd == "version-get":
-        return [{"result": 0, "arguments": {"extended": "3.2.0"}}]
-    if cmd == "config-get":
-        # Return minimal Dhcp4/Dhcp6 config so subnet views can parse it.
-        if service and service[0] == "dhcp6":
-            return [{"result": 0, "arguments": {"Dhcp6": {"subnet6": [], "shared-networks": []}}}]
-        return [{"result": 0, "arguments": {"Dhcp4": {"subnet4": [], "shared-networks": []}}}]
-    return [{"result": 0, "arguments": {}}]
 
 
 # ─────────────────────────────────────────────────────────────────────────────

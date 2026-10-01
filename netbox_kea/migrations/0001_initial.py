@@ -5,6 +5,10 @@ import taggit.managers
 import utilities.json
 
 
+# netbox_kea tables stay in main, so branch migrate fakes this migration (ADR 0007).
+fake_on_branch = True
+
+
 class Migration(migrations.Migration):
 
     initial = True

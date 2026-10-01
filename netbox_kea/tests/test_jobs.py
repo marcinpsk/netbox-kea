@@ -60,6 +60,14 @@ _LEASE6 = {
 _RESV4 = {"ip-address": "10.0.0.100", "hw-address": "11:22:33:44:55:66", "hostname": "reserved1", "subnet-id": 1}
 
 
+def _set_sync_config(**fields) -> None:
+    """Change fields of the SyncConfig row that the migrations create."""
+    config = SyncConfig.get()
+    for name, value in fields.items():
+        setattr(config, name, value)
+    config.save()
+
+
 def _make_job() -> MagicMock:
     """Create a minimal mock Job object for JobRunner.__init__."""
     mock_job = MagicMock()  # mock-ok: NetBox job-runner stand-in
@@ -276,16 +284,12 @@ class TestKeaIpamSyncJobRun(TestCase):
 
     def test_creates_reserved_ip_from_reservation(self):
         """Reservation sync creates an IPAddress with status='reserved'."""
-        from netbox_kea.models import SyncConfig
-
-        SyncConfig.objects.create(
-            pk=1,
+        _set_sync_config(
             interval_minutes=5,
             sync_leases_enabled=False,
             sync_reservations_enabled=True,
             sync_prefixes_enabled=False,
             sync_ip_ranges_enabled=False,
-            backfill_applied=True,
         )
         self._make_db_server(sync_leases_enabled=False)
         with _patch_kea(reservations=[_RESV4]):
@@ -346,16 +350,12 @@ class TestKeaIpamSyncJobRun(TestCase):
 
     def test_skips_leases_when_sync_leases_disabled(self):
         """sync_leases_enabled=False → no IPAddress from lease created."""
-        from netbox_kea.models import SyncConfig
-
-        SyncConfig.objects.create(
-            pk=1,
+        _set_sync_config(
             interval_minutes=5,
             sync_leases_enabled=False,
             sync_reservations_enabled=False,
             sync_prefixes_enabled=False,
             sync_ip_ranges_enabled=False,
-            backfill_applied=True,
         )
         self._make_db_server()
         with _patch_kea(leases4=[_LEASE4]):
@@ -366,16 +366,12 @@ class TestKeaIpamSyncJobRun(TestCase):
 
     def test_skips_reservations_when_sync_reservations_disabled(self):
         """sync_reservations_enabled=False → no reserved IPAddress created."""
-        from netbox_kea.models import SyncConfig
-
-        SyncConfig.objects.create(
-            pk=1,
+        _set_sync_config(
             interval_minutes=5,
             sync_leases_enabled=True,
             sync_reservations_enabled=False,
             sync_prefixes_enabled=False,
             sync_ip_ranges_enabled=False,
-            backfill_applied=True,
         )
         self._make_db_server()
         with _patch_kea(leases4=[], reservations=[_RESV4]):
@@ -1045,9 +1041,7 @@ class TestKeaIpamSyncJobKillSwitches(TestCase):
 
     def test_global_kill_switch_creates_no_ips(self):
         """SyncConfig.sync_enabled=False → no IPs synced, no Kea calls made."""
-        from netbox_kea.models import SyncConfig
-
-        SyncConfig.objects.create(pk=1, interval_minutes=5, sync_enabled=False, backfill_applied=True)
+        _set_sync_config(interval_minutes=5, sync_enabled=False)
         self._make_db_server()
         with _patch_kea(leases4=[_LEASE4]):
             self._run()
@@ -1097,9 +1091,7 @@ class TestKeaIpamSyncJobKillSwitches(TestCase):
 
     def test_summary_written_on_global_kill_switch(self):
         """job.data['summary'] is an empty list even when kill-switch aborts the run."""
-        from netbox_kea.models import SyncConfig
-
-        SyncConfig.objects.create(pk=1, interval_minutes=5, sync_enabled=False, backfill_applied=True)
+        _set_sync_config(interval_minutes=5, sync_enabled=False)
         mock_job = _make_job()
         KeaIpamSyncJob(mock_job).run()
         self.assertIn("summary", mock_job.data)
@@ -1108,16 +1100,12 @@ class TestKeaIpamSyncJobKillSwitches(TestCase):
 
     def test_job_data_summary_written_when_data_is_none(self):
         """job.data['summary'] is written even when job.data starts as None."""
-        from netbox_kea.models import SyncConfig
-
-        SyncConfig.objects.create(
-            pk=1,
+        _set_sync_config(
             interval_minutes=5,
             sync_leases_enabled=False,
             sync_reservations_enabled=False,
             sync_prefixes_enabled=False,
             sync_ip_ranges_enabled=False,
-            backfill_applied=True,
         )
         mock_job = _make_job()
         mock_job.data = None
@@ -1127,46 +1115,60 @@ class TestKeaIpamSyncJobKillSwitches(TestCase):
         mock_job.save.assert_called_once_with(update_fields=["data"])
 
 
-class TestConfigureSyncJobInterval(SimpleTestCase):
-    """Tests for NetBoxKeaConfig._configure_sync_job_interval()."""
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestSyncIntervalFromSyncConfig(TestCase):
+    """The stored SyncConfig.interval_minutes sets every periodic schedule; PLUGINS_CONFIG does not."""
 
-    def test_interval_override_logs_warning_on_failure(self):
-        """When any exception occurs inside _configure_sync_job_interval, a WARNING is logged."""
+    def _db_job(self, *, interval: int | None):
+        import uuid
 
-        from django.apps import apps
+        from core.models import Job
+        from django.utils import timezone
 
-        cfg = apps.get_app_config("netbox_kea")
+        return Job.objects.create(
+            name=KeaIpamSyncJob.name,
+            status="scheduled" if interval else "pending",
+            scheduled=timezone.now() if interval else None,
+            interval=interval,
+            job_id=uuid.uuid4(),
+        )
 
-        # Removing netbox_kea.jobs from sys.modules causes 'from .jobs import KeaIpamSyncJob'
-        # to raise ImportError, which triggers the except block and the logger.warning call.
-        with patch.dict("sys.modules", {"netbox_kea.jobs": None}):
-            with self.assertLogs("netbox_kea", level="WARNING") as cm:
-                cfg._configure_sync_job_interval()
+    def _successors(self, job):
+        from core.models import Job
 
-        self.assertTrue(any("Failed to apply netbox_kea sync interval override" in msg for msg in cm.output))
+        return Job.objects.filter(name=KeaIpamSyncJob.name).exclude(pk=job.pk)
 
-    def test_interval_set_from_plugins_config_no_db_query(self):
-        """PLUGINS_CONFIG.sync_interval_minutes seeds the registry without hitting the DB."""
-        from django.apps import apps
-        from netbox.registry import registry
+    def test_enqueue_once_schedules_the_stored_interval(self):
+        """The rqworker passes the registry interval; the Job gets the stored one."""
+        from core.models import Job
 
-        from netbox_kea.jobs import KeaIpamSyncJob
+        _set_sync_config(interval_minutes=17)
+        KeaIpamSyncJob.enqueue_once(interval=5)
+        self.assertEqual(list(Job.objects.filter(name=KeaIpamSyncJob.name).values_list("interval", flat=True)), [17])
 
-        cfg = apps.get_app_config("netbox_kea")
+    def test_a_positional_interval_is_replaced_by_the_stored_one(self):
+        """NetBox's signature is (instance, schedule_at, interval), so a positional interval is valid."""
+        from core.models import Job
 
-        # Ensure the job is in the registry so we can check the interval update.
-        registry["system_jobs"].setdefault(KeaIpamSyncJob, {"interval": 999})
-        original_interval = registry["system_jobs"][KeaIpamSyncJob]["interval"]
+        _set_sync_config(interval_minutes=17)
+        KeaIpamSyncJob.enqueue_once(None, None, 5)
+        self.assertEqual(list(Job.objects.filter(name=KeaIpamSyncJob.name).values_list("interval", flat=True)), [17])
 
-        try:
-            with override_settings(PLUGINS_CONFIG={"netbox_kea": {"sync_interval_minutes": 17}}):
-                # No DB access should occur — if it does, it raises OperationalError in the
-                # SimpleTestCase (no DB) and the test would fail with a DB error rather than pass.
-                cfg._configure_sync_job_interval()
+    def test_periodic_run_schedules_its_successor_with_the_stored_interval(self):
+        """An interval saved after the job was scheduled applies to the next successor."""
+        _set_sync_config(interval_minutes=23, sync_enabled=False)
+        job = self._db_job(interval=5)
+        KeaIpamSyncJob.handle(job)
+        self.assertEqual(list(self._successors(job).values_list("interval", flat=True)), [23])
 
-            self.assertEqual(registry["system_jobs"][KeaIpamSyncJob]["interval"], 17)
-        finally:
-            registry["system_jobs"][KeaIpamSyncJob]["interval"] = original_interval
+    def test_one_off_run_stays_one_off(self):
+        """A Sync Now job has no interval, so it gets none and schedules no successor."""
+        _set_sync_config(interval_minutes=23, sync_enabled=False)
+        job = self._db_job(interval=None)
+        KeaIpamSyncJob.handle(job)
+        job.refresh_from_db()
+        self.assertIsNone(job.interval)
+        self.assertFalse(self._successors(job).exists())
 
 
 class TestGetPluginConfig(SimpleTestCase):

@@ -14,19 +14,25 @@ from urllib.parse import urlparse
 import requests
 from django.apps import apps
 from django.conf import settings
+from django.contrib import messages as django_messages
+from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
-from django.core.exceptions import ValidationError
+from django.core.exceptions import ImproperlyConfigured, ValidationError
 from django.core.management import call_command
 from django.db import IntegrityError, transaction
+from django.db.models import ProtectedError
 from django.test import SimpleTestCase, TestCase, TransactionTestCase, override_settings
+from django.urls import reverse
 from netbox.models import NetBoxModel
 
 import netbox_kea
-from netbox_kea.kea import KeaClient
+from netbox_kea.kea import KeaClient, KeaCommand
 from netbox_kea.models import KeaDhcpLink, Server, SyncConfig, _get_kea_timeout, _get_max_unpaged_leases
 from netbox_kea.reservations import MAX_IDENTITY_LENGTH
 from netbox_kea.tests.kea_stub import stub_kea
 from netbox_kea.tests.utils import _make_db_server
+
+_SEED = importlib.import_module("netbox_kea.migrations.0018_seed_syncconfig")
 
 _VERSION_OK = {"result": 0, "arguments": {"version": "2.5.0"}}
 
@@ -271,11 +277,11 @@ class TestGetClientSendService(SimpleTestCase):
     Agent (Kea < 3.0) or a bare daemon socket (Kea 3.0+).
     """
 
-    def _sent_body(self, client, cmd="lease4-get"):
-        """Issue *cmd* through the real client against the HTTP-boundary stub; return the sent body."""
-        with stub_kea({cmd: {"result": 0, "arguments": {}}}) as kea:
-            client.command(cmd, service=["dhcp4"])
-        return kea.bodies(cmd)[0]
+    def _sent_body(self, client):
+        """Send lease4-get through the real client against the HTTP-boundary stub; return the sent body."""
+        with stub_kea({"lease4-get": {"result": 0, "arguments": {}}}) as kea:
+            client.command(KeaCommand.LEASE4_GET, 4)
+        return kea.bodies("lease4-get")[0]
 
     def test_control_agent_sends_service(self):
         # ca_url + has_control_agent → CA endpoint → service is included.
@@ -653,33 +659,25 @@ class TestServerCleanExceptionRouting(SimpleTestCase):
 
 
 class TestSyncConfig(TestCase):
-    """Tests for the SyncConfig singleton model."""
+    """Tests for the SyncConfig singleton model, whose row the migrations create."""
 
-    def test_get_creates_with_defaults_when_missing(self):
-        cfg = SyncConfig.get()
-        self.assertEqual(cfg.interval_minutes, 5)
-        self.assertTrue(cfg.sync_enabled)
+    def test_get_reads_the_migrated_row_and_writes_nothing(self):
+        with self.assertNumQueries(1):
+            cfg = SyncConfig.get()
+        expected = _SEED.configured_values()
+        self.assertEqual({name: getattr(cfg, name) for name in expected}, expected)
 
-    def test_get_returns_existing_record(self):
-        SyncConfig.objects.create(pk=1, interval_minutes=10, sync_enabled=False)
+    def test_get_returns_the_stored_values(self):
+        SyncConfig.objects.filter(pk=1).update(interval_minutes=10, sync_enabled=False)
         cfg = SyncConfig.get()
         self.assertEqual(cfg.interval_minutes, 10)
         self.assertFalse(cfg.sync_enabled)
 
-    def test_get_is_idempotent(self):
-        cfg1 = SyncConfig.get()
-        cfg2 = SyncConfig.get()
-        self.assertEqual(cfg1.pk, cfg2.pk)
-        self.assertEqual(SyncConfig.objects.count(), 1)
-
-    def test_get_uses_default_interval_on_first_create(self):
-        cfg = SyncConfig.get(default_interval=15)
-        self.assertEqual(cfg.interval_minutes, 15)
-
-    def test_get_does_not_override_existing_interval(self):
-        SyncConfig.objects.create(pk=1, interval_minutes=30)
-        cfg = SyncConfig.get(default_interval=99)
-        self.assertEqual(cfg.interval_minutes, 30)
+    def test_get_raises_when_the_row_is_missing(self):
+        SyncConfig.objects.all().delete()
+        with self.assertRaises(SyncConfig.DoesNotExist):
+            SyncConfig.get()
+        self.assertFalse(SyncConfig.objects.exists())
 
     def test_save_forces_pk_to_1(self):
         cfg = SyncConfig(interval_minutes=10)
@@ -689,9 +687,7 @@ class TestSyncConfig(TestCase):
         self.assertEqual(SyncConfig.objects.count(), 1)
 
     def test_save_second_instance_merges_to_singleton(self):
-        SyncConfig.objects.create(pk=1, interval_minutes=5)
-        cfg2 = SyncConfig(interval_minutes=20)
-        cfg2.save()
+        SyncConfig(interval_minutes=20).save()
         self.assertEqual(SyncConfig.objects.count(), 1)
         self.assertEqual(SyncConfig.objects.get(pk=1).interval_minutes, 20)
 
@@ -699,52 +695,6 @@ class TestSyncConfig(TestCase):
         cfg = SyncConfig.get()
         with self.assertRaises(TypeError):
             cfg.delete()
-
-    def test_backfill_applies_disabled_fields_once(self):
-        """When an existing row has backfill_applied=False and PLUGINS_CONFIG disables a
-        field that is still True in the DB, SyncConfig.get() must set that field to False
-        and mark backfill_applied=True so subsequent calls do not reset UI overrides."""
-        SyncConfig.objects.create(
-            pk=1,
-            interval_minutes=5,
-            sync_prefixes_enabled=True,  # DB is True (migration default)
-            backfill_applied=False,  # not yet backfilled
-        )
-        plugins_cfg = {
-            "netbox_kea": {
-                "sync_prefixes_enabled": False,  # operator disabled this in PLUGINS_CONFIG
-            }
-        }
-        with override_settings(PLUGINS_CONFIG=plugins_cfg):
-            cfg = SyncConfig.get()
-
-        # Backfill must have set sync_prefixes_enabled=False
-        self.assertFalse(cfg.sync_prefixes_enabled)
-        # And persisted the marker so it won't run again
-        self.assertTrue(cfg.backfill_applied)
-        # Verify the DB row was actually updated
-        cfg.refresh_from_db()
-        self.assertFalse(cfg.sync_prefixes_enabled)
-        self.assertTrue(cfg.backfill_applied)
-
-    def test_backfill_does_not_run_when_already_applied(self):
-        """Once backfill_applied=True, SyncConfig.get() must not override UI-set values."""
-        SyncConfig.objects.create(
-            pk=1,
-            interval_minutes=5,
-            sync_prefixes_enabled=True,  # user set this to True via UI
-            backfill_applied=True,  # already backfilled
-        )
-        plugins_cfg = {
-            "netbox_kea": {
-                "sync_prefixes_enabled": False,  # operator config says False
-            }
-        }
-        with override_settings(PLUGINS_CONFIG=plugins_cfg):
-            cfg = SyncConfig.get()
-
-        # The UI override (True) must be preserved — backfill must NOT run again
-        self.assertTrue(cfg.sync_prefixes_enabled)
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
@@ -904,10 +854,8 @@ class TestMigrationState(TestCase):
             self.fail("netbox_kea models changed with no matching migration. Run makemigrations.")
 
 
-class TestKeaDhcpLinkConstraintMigration(TransactionTestCase):
-    """Current migrations must accept every KeaDhcpLink row a released deployment can hold."""
-
-    _RELEASED = "0013_server_sync_dhcp_plugin_enabled_keadhcplink"
+class _MigrationTestCase(TransactionTestCase):
+    """Base for tests that move the netbox_kea schema and data between migrations."""
 
     def _fixture_teardown(self):
         """Flush cross-plugin foreign keys while preserving normal post-migrate setup."""
@@ -920,6 +868,12 @@ class TestKeaDhcpLinkConstraintMigration(TransactionTestCase):
                 reset_sequences=False,
                 allow_cascade=True,
             )
+
+
+class TestKeaDhcpLinkConstraintMigration(_MigrationTestCase):
+    """Current migrations must accept every KeaDhcpLink row a released deployment can hold."""
+
+    _RELEASED = "0013_server_sync_dhcp_plugin_enabled_keadhcplink"
 
     def test_data_repair_uses_the_schema_editor_database_alias(self):
         migration = importlib.import_module("netbox_kea.migrations.0015_keadhcplink_one_identity_kind")
@@ -1112,3 +1066,185 @@ class TestNoModelAdvertisesDocsItDoesNotShip(SimpleTestCase):
         models = [m for m in apps.get_app_config("netbox_kea").get_models() if issubclass(m, NetBoxModel)]
 
         self.assertIn(Server, models)
+
+
+class TestSyncVrfProtectsTheVrf(TestCase):
+    """A VRF that a Server syncs into cannot be deleted while the Server uses it (ADR 0007).
+
+    With netbox-branching, a SET_NULL here would null main's Server row from a branch.
+    """
+
+    def setUp(self):
+        from ipam.models import VRF
+        from rest_framework.test import APIClient
+
+        self.vrf = VRF.objects.create(name="sync target")
+        self.server = _make_db_server(sync_vrf=self.vrf)
+        self.user = get_user_model().objects.create_superuser(username="vrf-admin", password="unused")
+        self.api_client = APIClient()
+        self.api_client.force_authenticate(user=self.user)
+
+    def _assert_unchanged(self):
+        from ipam.models import VRF
+
+        self.assertTrue(VRF.objects.filter(pk=self.vrf.pk).exists(), "the VRF was deleted")
+        self.server.refresh_from_db()
+        self.assertEqual(self.server.sync_vrf_id, self.vrf.pk)
+
+    def test_the_orm_delete_raises_protected_error(self):
+        with self.assertRaises(ProtectedError) as refused:
+            self.vrf.delete()
+
+        self.assertEqual(list(refused.exception.protected_objects), [self.server])
+        self._assert_unchanged()
+
+    def test_the_vrf_delete_view_shows_the_server_that_protects_it(self):
+        self.client.force_login(self.user)
+
+        response = self.client.post(reverse("ipam:vrf_delete", kwargs={"pk": self.vrf.pk}), {"confirm": True})
+
+        self.assertRedirects(response, self.vrf.get_absolute_url(), fetch_redirect_response=False)
+        shown = [str(message) for message in django_messages.get_messages(response.wsgi_request)]
+        self.assertEqual(len(shown), 1, shown)
+        self.assertIn(f"Unable to delete <strong>{self.vrf}</strong>", shown[0])
+        self.assertIn(self.server.get_absolute_url(), shown[0])
+        self._assert_unchanged()
+
+    def test_the_vrf_delete_api_answers_409(self):
+        response = self.api_client.delete(reverse("ipam-api:vrf-detail", kwargs={"pk": self.vrf.pk}))
+
+        self.assertEqual(response.status_code, 409, response.content)
+        self.assertIn(f"{self.server} ({self.server.pk})", response.json()["detail"])
+        self._assert_unchanged()
+
+
+class TestSyncConfigSeedMigration(_MigrationTestCase):
+    """The migration creates the SyncConfig row and applies the backfill, so a GET only reads it."""
+
+    _BEFORE = ("netbox_kea", "0017_alter_server_sync_vrf")
+    _TOGGLES = _SEED.TYPE_TOGGLES
+    #: The type toggles that _CONFIG gives a new row or a row whose backfill has not run.
+    _CONFIGURED_TOGGLES = {
+        "sync_leases_enabled": False,
+        "sync_reservations_enabled": True,
+        "sync_prefixes_enabled": True,
+        "sync_ip_ranges_enabled": False,
+    }
+    _CONFIG = {
+        "netbox_kea": {
+            "kea_timeout": 30,
+            "sync_interval_minutes": 17,
+            "sync_enabled": False,
+            "sync_leases_enabled": False,
+            "sync_ip_ranges_enabled": False,
+        }
+    }
+
+    def _roll_back(self):
+        """Migrate netbox_kea back to the release before the seed, and return that SyncConfig model."""
+        from django.db import connection
+        from django.db.migrations.executor import MigrationExecutor
+
+        executor = MigrationExecutor(connection)
+        current = executor.loader.graph.leaf_nodes("netbox_kea")
+        self.assertEqual(len(current), 1, f"netbox_kea migrations must have one leaf, found {current}.")
+
+        def migrate_to_current():
+            forward = MigrationExecutor(connection)
+            forward.loader.build_graph()
+            forward.migrate(current)
+
+        self._migrate_to_current = migrate_to_current
+        self.addCleanup(migrate_to_current)
+        executor.migrate([self._BEFORE])
+        return executor.loader.project_state([self._BEFORE]).apps.get_model("netbox_kea", "SyncConfig")
+
+    def _upgrade(self):
+        with override_settings(PLUGINS_CONFIG=self._CONFIG):
+            self._migrate_to_current()
+        return SyncConfig.objects.get(pk=1)
+
+    def _assert_sync_pages_write_nothing(self):
+        from netbox_kea.tests.utils import _PLUGINS_CONFIG as VIEW_PLUGINS_CONFIG
+        from netbox_kea.tests.utils import _get_with_writes, _sync_page_urls
+
+        server = _make_db_server(name="seed-upgrade")
+        self.client.force_login(get_user_model().objects.create_superuser("seed", "seed@example.com", "pass"))
+        with override_settings(PLUGINS_CONFIG=VIEW_PLUGINS_CONFIG):
+            for url in _sync_page_urls(server):
+                with self.subTest(url=url):
+                    response, writes = _get_with_writes(self.client, url)
+                    self.assertEqual(response.status_code, 200)
+                    self.assertEqual(writes, [])
+
+    def test_upgrade_without_a_row_creates_it_from_plugins_config(self):
+        historical = self._roll_back()
+        historical.objects.all().delete()
+
+        cfg = self._upgrade()
+
+        self.assertEqual(cfg.interval_minutes, 17)
+        self.assertFalse(cfg.sync_enabled)
+        self.assertEqual({name: getattr(cfg, name) for name in self._TOGGLES}, self._CONFIGURED_TOGGLES)
+        self._assert_sync_pages_write_nothing()
+
+    def test_upgrade_applies_the_backfill_that_has_not_run(self):
+        historical = self._roll_back()
+        updated = historical.objects.filter(pk=1).update(
+            interval_minutes=9, sync_enabled=True, backfill_applied=False, **dict.fromkeys(self._TOGGLES, True)
+        )
+        self.assertEqual(updated, 1, "the database held no SyncConfig row before the upgrade")
+
+        cfg = self._upgrade()
+
+        # The backfill changes only the type toggles that PLUGINS_CONFIG disables.
+        self.assertEqual(cfg.interval_minutes, 9)
+        self.assertTrue(cfg.sync_enabled)
+        self.assertEqual({name: getattr(cfg, name) for name in self._TOGGLES}, self._CONFIGURED_TOGGLES)
+        self._assert_sync_pages_write_nothing()
+
+    def test_upgrade_keeps_a_row_whose_backfill_has_run(self):
+        historical = self._roll_back()
+        updated = historical.objects.filter(pk=1).update(
+            interval_minutes=9, sync_enabled=True, backfill_applied=True, **dict.fromkeys(self._TOGGLES, True)
+        )
+        self.assertEqual(updated, 1, "the database held no SyncConfig row before the upgrade")
+
+        cfg = self._upgrade()
+
+        self.assertEqual(cfg.interval_minutes, 9)
+        self.assertTrue(cfg.sync_enabled)
+        self.assertEqual({name: getattr(cfg, name) for name in self._TOGGLES}, dict.fromkeys(self._TOGGLES, True))
+        self._assert_sync_pages_write_nothing()
+
+    def test_upgrade_without_a_row_refuses_an_invalid_interval_by_name(self):
+        """A value the database constraint refuses must not fail as an IntegrityError, nor be truncated or coerced."""
+        historical = self._roll_back()
+        historical.objects.all().delete()
+
+        for interval in (0, 1441, 2.5, "10", True):
+            with self.subTest(interval=interval):
+                config = {"netbox_kea": {**self._CONFIG["netbox_kea"], "sync_interval_minutes": interval}}
+                with override_settings(PLUGINS_CONFIG=config):
+                    with self.assertRaisesMessage(ImproperlyConfigured, "sync_interval_minutes"):
+                        self._migrate_to_current()
+                self.assertFalse(historical.objects.exists())
+
+    def test_upgrade_with_a_row_ignores_an_invalid_interval(self):
+        """The interval only seeds a new row, so a value no run reads must not block the upgrade."""
+        historical = self._roll_back()
+        historical.objects.filter(pk=1).update(interval_minutes=9, backfill_applied=False)
+        config = {"netbox_kea": {**self._CONFIG["netbox_kea"], "sync_interval_minutes": 0}}
+
+        with override_settings(PLUGINS_CONFIG=config):
+            self._migrate_to_current()
+
+        cfg = SyncConfig.objects.get(pk=1)
+        self.assertEqual(cfg.interval_minutes, 9)
+        self.assertEqual({name: getattr(cfg, name) for name in self._TOGGLES}, self._CONFIGURED_TOGGLES)
+
+    def test_downgrade_marks_the_backfill_as_applied(self):
+        """The seed already applied the backfill, so the restored flag must not let it run again."""
+        historical = self._roll_back()
+
+        self.assertIs(historical.objects.get(pk=1).backfill_applied, True)

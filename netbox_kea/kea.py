@@ -2,9 +2,10 @@ import base64
 import ipaddress
 import json
 import logging
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Literal, NamedTuple, TypedDict, cast
+from enum import Enum
+from typing import Any, Literal, NamedTuple, Protocol, TypedDict, cast
 
 import requests
 from requests.models import HTTPBasicAuth
@@ -50,6 +51,128 @@ from .reservations import (
 )
 
 logger = logging.getLogger(__name__)
+
+# A write changes live or on-disk Kea state. A read only reads or validates.
+CommandKind = Literal["read", "write"]
+
+
+class KeaCommand(Enum):
+    """Each Kea command that the plugin sends: its wire name is the value, and it has a kind."""
+
+    _value_: str
+    kind: CommandKind
+
+    def __new__(cls, wire: str, kind: CommandKind) -> "KeaCommand":
+        """Store the wire name as the value, and the kind."""
+        member = object.__new__(cls)
+        member._value_ = wire
+        member.kind = kind
+        return member
+
+    @property
+    def is_write(self) -> bool:
+        """Return whether the command changes live or on-disk Kea state."""
+        return self.kind == "write"
+
+    CONFIG_GET = "config-get", "read"
+    CONFIG_TEST = "config-test", "read"
+    LIST_COMMANDS = "list-commands", "read"
+    STATUS_GET = "status-get", "read"
+    VERSION_GET = "version-get", "read"
+    RESERVATION_GET = "reservation-get", "read"
+    RESERVATION_GET_BY_HOSTNAME = "reservation-get-by-hostname", "read"
+    RESERVATION_GET_PAGE = "reservation-get-page", "read"
+    LEASE4_GET = "lease4-get", "read"
+    LEASE6_GET = "lease6-get", "read"
+    LEASE4_GET_ALL = "lease4-get-all", "read"
+    LEASE6_GET_ALL = "lease6-get-all", "read"
+    LEASE4_GET_BY_CLIENT_ID = "lease4-get-by-client-id", "read"
+    LEASE4_GET_BY_HOSTNAME = "lease4-get-by-hostname", "read"
+    LEASE6_GET_BY_HOSTNAME = "lease6-get-by-hostname", "read"
+    LEASE4_GET_BY_HW_ADDRESS = "lease4-get-by-hw-address", "read"
+    LEASE6_GET_BY_DUID = "lease6-get-by-duid", "read"
+    LEASE4_GET_BY_STATE = "lease4-get-by-state", "read"
+    LEASE6_GET_BY_STATE = "lease6-get-by-state", "read"
+    LEASE4_GET_PAGE = "lease4-get-page", "read"
+    LEASE6_GET_PAGE = "lease6-get-page", "read"
+    STAT_LEASE4_GET = "stat-lease4-get", "read"
+    STAT_LEASE6_GET = "stat-lease6-get", "read"
+    SUBNET4_GET = "subnet4-get", "read"
+    SUBNET6_GET = "subnet6-get", "read"
+    SUBNET4_LIST = "subnet4-list", "read"
+    SUBNET6_LIST = "subnet6-list", "read"
+    NETWORK4_GET = "network4-get", "read"
+    NETWORK6_GET = "network6-get", "read"
+
+    CONFIG_SET = "config-set", "write"
+    CONFIG_WRITE = "config-write", "write"
+    DHCP_DISABLE = "dhcp-disable", "write"
+    DHCP_ENABLE = "dhcp-enable", "write"
+    RESERVATION_ADD = "reservation-add", "write"
+    RESERVATION_DEL = "reservation-del", "write"
+    RESERVATION_UPDATE = "reservation-update", "write"
+    LEASE4_ADD = "lease4-add", "write"
+    LEASE6_ADD = "lease6-add", "write"
+    LEASE4_DEL = "lease4-del", "write"
+    LEASE6_DEL = "lease6-del", "write"
+    LEASE4_UPDATE = "lease4-update", "write"
+    LEASE6_UPDATE = "lease6-update", "write"
+    LEASE4_WIPE = "lease4-wipe", "write"
+    LEASE6_WIPE = "lease6-wipe", "write"
+    SUBNET4_ADD = "subnet4-add", "write"
+    SUBNET6_ADD = "subnet6-add", "write"
+    SUBNET4_DEL = "subnet4-del", "write"
+    SUBNET6_DEL = "subnet6-del", "write"
+    SUBNET4_UPDATE = "subnet4-update", "write"
+    SUBNET6_UPDATE = "subnet6-update", "write"
+    SUBNET4_DELTA_ADD = "subnet4-delta-add", "write"
+    SUBNET6_DELTA_ADD = "subnet6-delta-add", "write"
+    SUBNET4_DELTA_DEL = "subnet4-delta-del", "write"
+    SUBNET6_DELTA_DEL = "subnet6-delta-del", "write"
+    NETWORK4_ADD = "network4-add", "write"
+    NETWORK6_ADD = "network6-add", "write"
+    NETWORK4_DEL = "network4-del", "write"
+    NETWORK6_DEL = "network6-del", "write"
+    NETWORK4_SUBNET_ADD = "network4-subnet-add", "write"
+    NETWORK6_SUBNET_ADD = "network6-subnet-add", "write"
+    NETWORK4_SUBNET_DEL = "network4-subnet-del", "write"
+    NETWORK6_SUBNET_DEL = "network6-subnet-del", "write"
+
+
+class WriteGuard(Protocol):
+    """Refuses a write command before it is sent. ``branching.BranchBinding`` refuses one in a branch."""
+
+    def refuse(self, operation: str) -> None:
+        """Raise when *operation* must not change Kea now."""
+
+
+# The member of each family-specific command, by family. Families absent from a mapping have no such command.
+ByFamily = Mapping[Family, KeaCommand]
+LEASE_GET: ByFamily = {4: KeaCommand.LEASE4_GET, 6: KeaCommand.LEASE6_GET}
+LEASE_GET_ALL: ByFamily = {4: KeaCommand.LEASE4_GET_ALL, 6: KeaCommand.LEASE6_GET_ALL}
+LEASE_GET_BY_CLIENT_ID: ByFamily = {4: KeaCommand.LEASE4_GET_BY_CLIENT_ID}
+LEASE_GET_BY_DUID: ByFamily = {6: KeaCommand.LEASE6_GET_BY_DUID}
+LEASE_GET_BY_HOSTNAME: ByFamily = {4: KeaCommand.LEASE4_GET_BY_HOSTNAME, 6: KeaCommand.LEASE6_GET_BY_HOSTNAME}
+LEASE_GET_BY_HW_ADDRESS: ByFamily = {4: KeaCommand.LEASE4_GET_BY_HW_ADDRESS}
+LEASE_GET_BY_STATE: ByFamily = {4: KeaCommand.LEASE4_GET_BY_STATE, 6: KeaCommand.LEASE6_GET_BY_STATE}
+LEASE_GET_PAGE: ByFamily = {4: KeaCommand.LEASE4_GET_PAGE, 6: KeaCommand.LEASE6_GET_PAGE}
+STAT_LEASE_GET: ByFamily = {4: KeaCommand.STAT_LEASE4_GET, 6: KeaCommand.STAT_LEASE6_GET}
+SUBNET_GET: ByFamily = {4: KeaCommand.SUBNET4_GET, 6: KeaCommand.SUBNET6_GET}
+SUBNET_LIST: ByFamily = {4: KeaCommand.SUBNET4_LIST, 6: KeaCommand.SUBNET6_LIST}
+NETWORK_GET: ByFamily = {4: KeaCommand.NETWORK4_GET, 6: KeaCommand.NETWORK6_GET}
+LEASE_ADD: ByFamily = {4: KeaCommand.LEASE4_ADD, 6: KeaCommand.LEASE6_ADD}
+LEASE_DEL: ByFamily = {4: KeaCommand.LEASE4_DEL, 6: KeaCommand.LEASE6_DEL}
+LEASE_UPDATE: ByFamily = {4: KeaCommand.LEASE4_UPDATE, 6: KeaCommand.LEASE6_UPDATE}
+LEASE_WIPE: ByFamily = {4: KeaCommand.LEASE4_WIPE, 6: KeaCommand.LEASE6_WIPE}
+SUBNET_ADD: ByFamily = {4: KeaCommand.SUBNET4_ADD, 6: KeaCommand.SUBNET6_ADD}
+SUBNET_DEL: ByFamily = {4: KeaCommand.SUBNET4_DEL, 6: KeaCommand.SUBNET6_DEL}
+SUBNET_UPDATE: ByFamily = {4: KeaCommand.SUBNET4_UPDATE, 6: KeaCommand.SUBNET6_UPDATE}
+SUBNET_DELTA_ADD: ByFamily = {4: KeaCommand.SUBNET4_DELTA_ADD, 6: KeaCommand.SUBNET6_DELTA_ADD}
+SUBNET_DELTA_DEL: ByFamily = {4: KeaCommand.SUBNET4_DELTA_DEL, 6: KeaCommand.SUBNET6_DELTA_DEL}
+NETWORK_ADD: ByFamily = {4: KeaCommand.NETWORK4_ADD, 6: KeaCommand.NETWORK6_ADD}
+NETWORK_DEL: ByFamily = {4: KeaCommand.NETWORK4_DEL, 6: KeaCommand.NETWORK6_DEL}
+NETWORK_SUBNET_ADD: ByFamily = {4: KeaCommand.NETWORK4_SUBNET_ADD, 6: KeaCommand.NETWORK6_SUBNET_ADD}
+NETWORK_SUBNET_DEL: ByFamily = {4: KeaCommand.NETWORK4_SUBNET_DEL, 6: KeaCommand.NETWORK6_SUBNET_DEL}
 
 _MANAGED_OPTION_KEYS = frozenset({"code", "name", "space", "data", "csv-format", "always-send", "never-send"})
 
@@ -682,6 +805,8 @@ class KeaClient:
         send_service: bool = True,
         max_unpaged_leases: int | None = 1000,
         on_config_change: Callable[[], None] | None = None,
+        *,
+        write_guard: WriteGuard,
     ):
         """Initialise a Kea HTTP client session.
 
@@ -708,6 +833,8 @@ class KeaClient:
             on_config_change: Optional callback invoked after Kea's live configuration
                 changes. Cache invalidation failures are logged and do not interrupt
                 persistence of an already-applied change.
+            write_guard: Required. Refuses each write command before it is sent. ``Server.get_client()``
+                passes the branch binding; a caller that passes another guard owns that choice.
 
         Raises:
             ValueError: If only one of client_cert/client_key is provided.
@@ -726,6 +853,7 @@ class KeaClient:
         self.send_service = send_service
         self.max_unpaged_leases = max_unpaged_leases
         self._on_config_change = on_config_change
+        self.write_guard = write_guard
 
         self._session = requests.Session()
         if verify is not None:
@@ -737,18 +865,18 @@ class KeaClient:
 
     def command(
         self,
-        command: str,
-        service: list[str] | None = None,
+        command: KeaCommand,
+        target: Family | None,
         arguments: dict[str, Any] | None = None,
         check: Sequence[int] | None = (0,),
     ) -> list[KeaResponse]:
-        """Send a command to the Kea API and return the response list.
+        """Send a command to the Kea API and return the response list. This is the only HTTP send of the plugin.
 
         Args:
-            command: Kea command name (e.g. ``"lease4-get-all"``).
-            service: List of target services (e.g. ``["dhcp4"]``). Omit for CA-level commands.
-                Dropped from the request body when the client targets a DHCP daemon
-                directly (``send_service=False``) — see :meth:`__init__`.
+            command: The Kea command.
+            target: The DHCP family whose daemon runs the command, or ``None`` for the Control Agent itself.
+                A family becomes the ``service`` of the request body only when ``send_service`` is true;
+                a direct daemon connection omits it, see :meth:`__init__`.
             arguments: Optional command arguments payload.
             check: Sequence of acceptable result codes. Pass ``None`` to skip checking.
 
@@ -756,17 +884,23 @@ class KeaClient:
             Parsed JSON response as a list of KeaResponse dicts.
 
         Raises:
+            TypeError: If *command* is not a KeaCommand member.
+            ValueError: If *target* is not 4, 6 or None.
+            BranchActive: If *command* is a write and the write guard refuses it, for example in a branch.
             requests.HTTPError: If the HTTP response status is not 2xx.
             KeaException: If any response result code is not in *check*.
 
         """
-        body: dict[str, Any] = {"command": command}
+        if not isinstance(command, KeaCommand):
+            raise TypeError(f"command must be a KeaCommand member, not {type(command).__name__}")
+        if target is not None and (isinstance(target, bool) or target not in (4, 6)):
+            raise ValueError(f"target must be 4, 6 or None, not {target!r}")
+        self._refuse(command)
+        body: dict[str, Any] = {"command": command.value}
 
-        # A direct daemon connection must not carry ``service``: Kea 3.2.0+ rejects a
-        # non-matching service, and callers pass a version-matched singleton that is
-        # redundant when the URL already targets that one daemon.
-        if service is not None and self.send_service:
-            body["service"] = service
+        # Kea 3.2.0+ rejects a service that does not match the daemon that the URL already targets.
+        if target is not None and self.send_service:
+            body["service"] = [f"dhcp{target}"]
 
         if arguments is not None:
             body["arguments"] = arguments
@@ -798,33 +932,35 @@ class KeaClient:
         new.send_service = self.send_service
         new.max_unpaged_leases = self.max_unpaged_leases
         new._on_config_change = self._on_config_change
+        # Thread-pool workers do not inherit context variables, so the clone keeps the branch binding.
+        new.write_guard = self.write_guard
         return new
 
-    def _notify_config_change(self, service: str) -> None:
+    def _refuse(self, command: KeaCommand) -> None:
+        """Ask the write guard before a write member, before any side effect of sending it."""
+        if command.is_write:
+            self.write_guard.refuse(f"Kea command {command.value}")
+
+    def _notify_config_change(self, family: Family) -> None:
         """Notify the owner without interrupting persistence of a live change."""
         if self._on_config_change is None:
             return
         try:
             self._on_config_change()
         except Exception:
-            logger.exception("Configuration changed for %s, but cache invalidation failed", service)
+            logger.exception("Configuration changed for DHCPv%s, but cache invalidation failed", family)
 
-    def _config_mutation_command(
-        self,
-        command: str,
-        service: str,
-        arguments: dict[str, Any],
-        *,
-        check: Sequence[int] | None = (0,),
-    ) -> list[KeaResponse]:
-        """Send one live configuration mutation between invalidation notifications."""
-        self._notify_config_change(service)
+    def _config_mutation_command(self, command: KeaCommand, family: Family, arguments: dict[str, Any]) -> None:
+        """Send one live configuration mutation between invalidation notifications, and require one success reply."""
+        self._refuse(command)
+        self._notify_config_change(family)
         try:
-            return self.command(command, service=[service], arguments=arguments, check=check)
+            response = self.command(command, family, arguments=arguments, check=None)
         finally:
             # The response can be lost after Kea applies the command. Invalidate again
             # so a read during the request cannot repopulate the active cache generation.
-            self._notify_config_change(service)
+            self._notify_config_change(family)
+        _one_reply(command, family, response)
 
     def close(self) -> None:
         """Close the underlying requests.Session and release connection resources."""
@@ -836,17 +972,14 @@ class KeaClient:
     def __exit__(self, *args: object) -> None:
         self.close()
 
-    def get_available_commands(self, service: str) -> set[str]:
-        """Return the set of commands available on *service* (e.g. ``"dhcp4"``).
-
-        Args:
-            service: Kea service name to query (``"dhcp4"`` or ``"dhcp6"``).
+    def get_available_commands(self, family: Family) -> set[str]:
+        """Return the set of commands available on the daemon of *family*.
 
         Returns:
             Set of command name strings reported by ``list-commands``.
 
         """
-        resp = self.command("list-commands", service=[service])
+        resp = self.command(KeaCommand.LIST_COMMANDS, family)
         if not resp or not isinstance(resp[0], dict):
             raise RuntimeError(f"list-commands returned malformed response: {resp!r}")
         arguments = resp[0].get("arguments")
@@ -854,13 +987,12 @@ class KeaClient:
             raise RuntimeError(f"list-commands returned malformed arguments: {resp[0]!r}")
         return set(arguments)
 
-    def reservation_capabilities(self, version: int) -> ReservationCapabilities:
+    def reservation_capabilities(self, version: Family) -> ReservationCapabilities:
         """Read live identifier configuration and host command availability."""
         if version not in (4, 6):
             raise ValueError(f"version must be 4 or 6, got {version!r}")
-        service = f"dhcp{version}"
-        commands = self.get_available_commands(service)
-        response = self.command("config-get", service=[service])
+        commands = self.get_available_commands(version)
+        response = self.command(KeaCommand.CONFIG_GET, version)
         if not response or not isinstance(response[0], dict):
             raise RuntimeError("config-get returned a malformed response.")
         arguments = response[0].get("arguments")
@@ -897,7 +1029,15 @@ class KeaClient:
             for identifier in supported
             if identifier not in available
         )
-        required_commands = {"reservation-get", "reservation-add", "reservation-update", "reservation-del"}
+        required_commands = {
+            member.value
+            for member in (
+                KeaCommand.RESERVATION_GET,
+                KeaCommand.RESERVATION_ADD,
+                KeaCommand.RESERVATION_UPDATE,
+                KeaCommand.RESERVATION_DEL,
+            )
+        }
         missing_commands = required_commands - commands
         mutation_available = bool(available) and not missing_commands
         if missing_commands:
@@ -907,7 +1047,7 @@ class KeaClient:
         else:
             explanation = ""
         return ReservationCapabilities(
-            family=cast(Family, version),
+            family=version,
             identifiers=available,
             mutation_available=mutation_available,
             explanation=explanation,
@@ -916,7 +1056,7 @@ class KeaClient:
 
     def _reservation_raw_page(
         self,
-        service: str,
+        family: Family,
         source_index: int = 0,
         from_index: int = 0,
         limit: int = 100,
@@ -925,7 +1065,7 @@ class KeaClient:
         """Fetch a page of host reservations from Kea.
 
         Args:
-            service: Target service (``"dhcp4"`` or ``"dhcp6"``).
+            family: The DHCP family whose daemon holds the reservations.
             source_index: 0 = all sources, 1+ = specific backend source index.
             from_index: Starting offset within the source (use ``next_from`` returned
                 by a previous call to continue pagination).
@@ -946,8 +1086,8 @@ class KeaClient:
         if subnet_id is not None:
             arguments["subnet-id"] = subnet_id
         resp = self.command(
-            "reservation-get-page",
-            service=[service],
+            KeaCommand.RESERVATION_GET_PAGE,
+            family,
             arguments=arguments,
             check=(0, 3),
         )
@@ -971,7 +1111,7 @@ class KeaClient:
 
     def reservation_page(
         self,
-        version: int,
+        version: Family,
         catalogue,
         *,
         cursor: str | None = None,
@@ -997,7 +1137,7 @@ class KeaClient:
         while len(hosts) < limit:
             remaining = limit - len(hosts)
             page, candidate_from, candidate_source = self._reservation_raw_page(
-                f"dhcp{version}",
+                version,
                 source_index=next_source,
                 from_index=next_from,
                 limit=remaining,
@@ -1031,7 +1171,7 @@ class KeaClient:
 
     def reservation_by_identity(
         self,
-        version: int,
+        version: Family,
         catalogue,
         scope: ReservationScope,
         identity: ReservationIdentity,
@@ -1054,15 +1194,15 @@ class KeaClient:
 
     def _reservation_raw_by_identity(
         self,
-        version: int,
+        version: Family,
         scope: ReservationScope,
         identity: ReservationIdentity,
     ) -> dict[str, Any] | None:
         """Fetch one exact raw Reservation for private read-modify-write use."""
         subnet_id = _reservation_scope_subnet_id(scope)
         response = self.command(
-            "reservation-get",
-            service=[f"dhcp{version}"],
+            KeaCommand.RESERVATION_GET,
+            version,
             arguments={
                 "subnet-id": subnet_id,
                 "identifier-type": identity.identifier_type,
@@ -1074,14 +1214,14 @@ class KeaClient:
 
     def _reservation_raw_by_address(
         self,
-        version: int,
+        version: Family,
         scope: InSubnetReservationScope,
         address: str,
     ) -> dict[str, Any] | None:
         """Fetch one scoped raw Reservation by allocation address."""
         response = self.command(
-            "reservation-get",
-            service=[f"dhcp{version}"],
+            KeaCommand.RESERVATION_GET,
+            version,
             arguments={"subnet-id": scope.subnet.subnet_id, "ip-address": address},
             check=(0, 3),
         )
@@ -1089,7 +1229,7 @@ class KeaClient:
 
     def reservation_by_address(
         self,
-        version: int,
+        version: Family,
         catalogue,
         scope: ReservationScope,
         address: str,
@@ -1118,7 +1258,7 @@ class KeaClient:
 
     def reservations_by_hostname(
         self,
-        version: int,
+        version: Family,
         catalogue,
         hostname: str,
     ) -> ReservationSnapshot:
@@ -1128,8 +1268,8 @@ class KeaClient:
         if not isinstance(hostname, str) or not hostname:
             raise ValueError("hostname must be a non-empty string.")
         response = self.command(
-            "reservation-get-by-hostname",
-            service=[f"dhcp{version}"],
+            KeaCommand.RESERVATION_GET_BY_HOSTNAME,
+            version,
             arguments={"hostname": hostname},
             check=(0, 3),
         )
@@ -1150,7 +1290,7 @@ class KeaClient:
 
     def reservation_snapshot(
         self,
-        version: int,
+        version: Family,
         catalogue,
         *,
         page_size: int = 100,
@@ -1214,18 +1354,17 @@ class KeaClient:
             seen_cursors.add(page.next_cursor)
             cursor = page.next_cursor
         return ReservationSnapshot(
-            family=cast(Family, version),
+            family=version,
             records=tuple(records),
             diagnostics=tuple(diagnostics),
             complete=not diagnostics,
             next_cursor=None,
         )
 
-    def _reservation_mutation_command(self, command: str, version: int, arguments: dict[str, Any]) -> None:
-        """Apply one Reservation command and validate its success envelope."""
-        response = self.command(command, service=[f"dhcp{version}"], arguments=arguments)
-        if not response or not isinstance(response[0], dict) or response[0].get("result") != 0:
-            raise RuntimeError(f"{command} returned a malformed success response.")
+    def _reservation_mutation_command(self, command: KeaCommand, version: Family, arguments: dict[str, Any]) -> None:
+        """Apply one Reservation command. command() checks each entry, so only an empty reply is left to refuse."""
+        if not self.command(command, version, arguments=arguments):
+            raise RuntimeError(f"{command.value} returned a malformed success response.")
 
     def _verify_reservation(
         self,
@@ -1254,7 +1393,7 @@ class KeaClient:
             raise ValueError("Creating Global Reservations is not supported.")
         raw = _reservation_to_raw(reservation)
         self._reservation_mutation_command(
-            "reservation-add",
+            KeaCommand.RESERVATION_ADD,
             reservation.family,
             {"reservation": raw},
         )
@@ -1311,7 +1450,7 @@ class KeaClient:
             merged.pop(key, None)
         merged.update(serialized)
         self._reservation_mutation_command(
-            "reservation-update",
+            KeaCommand.RESERVATION_UPDATE,
             target.family,
             {"reservation": merged},
         )
@@ -1336,7 +1475,7 @@ class KeaClient:
         if current.scope != target.scope or current.identity != target.identity:
             raise MalformedReservation("target-mismatch", "Kea returned a different Reservation target.")
         self._reservation_mutation_command(
-            "reservation-del",
+            KeaCommand.RESERVATION_DEL,
             target.family,
             {
                 "subnet-id": target.scope.subnet.subnet_id,
@@ -1354,7 +1493,7 @@ class KeaClient:
             verification=self._verify_reservation(None, target, catalogue),
         )
 
-    def configured_subnet_id_from_cidr(self, version: int, cidr: str) -> int | None:
+    def configured_subnet_id_from_cidr(self, version: Family, cidr: str) -> int | None:
         """Resolve a CIDR from the running config without requiring ``subnet_cmds``."""
         if version not in (4, 6):
             raise ValueError(f"version must be 4 or 6, got {version!r}")
@@ -1365,7 +1504,7 @@ class KeaClient:
         if network.version != version:
             raise ValueError(f"Subnet family IPv{network.version} does not match DHCPv{version}.")
 
-        response = self.command("config-get", service=[f"dhcp{version}"])
+        response = self.command(KeaCommand.CONFIG_GET, version)
         if not response or not isinstance(response[0], dict):
             raise RuntimeError("config-get returned a malformed response.")
         arguments = response[0].get("arguments")
@@ -1397,8 +1536,6 @@ class KeaClient:
             RuntimeError: If the reply is malformed.
 
         """
-        command = f"subnet{version}-add"
-        service = f"dhcp{version}"
         subnet: dict[str, Any] = {"subnet": cidr, "id": subnet_id}
         if fields.pools:
             subnet["pools"] = [{"pool": pool} for pool in fields.pools]
@@ -1414,8 +1551,7 @@ class KeaClient:
             subnet["option-data"] = option_data
         if fields.ddns_qualifying_suffix:
             subnet["ddns-qualifying-suffix"] = fields.ddns_qualifying_suffix
-        response = self._config_mutation_command(command, service, {f"subnet{version}": [subnet]}, check=None)
-        _one_reply(command, service, response)
+        self._config_mutation_command(SUBNET_ADD[version], version, {f"subnet{version}": [subnet]})
 
     def subnet_del(self, version: Family, subnet_id: int) -> None:
         """Send one ``subnet{v}-del``. It does not persist.
@@ -1425,10 +1561,7 @@ class KeaClient:
             RuntimeError: If the reply is malformed.
 
         """
-        command = f"subnet{version}-del"
-        service = f"dhcp{version}"
-        response = self._config_mutation_command(command, service, {"id": subnet_id}, check=None)
-        _one_reply(command, service, response)
+        self._config_mutation_command(SUBNET_DEL[version], version, {"id": subnet_id})
 
     def shared_network_exists(self, version: Family, name: str) -> bool:
         """Return whether the daemon has a Shared Network named *name*.
@@ -1438,9 +1571,8 @@ class KeaClient:
             RuntimeError: If the reply is malformed or names another Shared Network.
 
         """
-        command = f"network{version}-get"
-        response = self.command(command, service=[f"dhcp{version}"], arguments={"name": name}, check=None)
-        reply = _one_reply(command, f"dhcp{version}", response, (0, 3))
+        command = NETWORK_GET[version]
+        reply = self._one_command(command, version, {"name": name}, (0, 3))
         if reply["result"] == 3:
             return False
         arguments = reply.get("arguments")
@@ -1451,7 +1583,7 @@ class KeaClient:
             or not isinstance(networks[0], dict)
             or networks[0].get("name") != name
         ):
-            raise RuntimeError(f"{command} returned a malformed Shared Network for {name!r}.")
+            raise RuntimeError(f"{command.value} returned a malformed Shared Network for {name!r}.")
         return True
 
     def network_add(self, version: Family, name: str) -> None:
@@ -1462,10 +1594,7 @@ class KeaClient:
             RuntimeError: If the reply is malformed.
 
         """
-        command = f"network{version}-add"
-        service = f"dhcp{version}"
-        response = self._config_mutation_command(command, service, {"shared-networks": [{"name": name}]}, check=None)
-        _one_reply(command, service, response)
+        self._config_mutation_command(NETWORK_ADD[version], version, {"shared-networks": [{"name": name}]})
 
     def network_del(self, version: Family, name: str) -> None:
         """Send one ``network{v}-del``. Member Subnets stay and leave the Shared Network. It does not persist.
@@ -1475,10 +1604,7 @@ class KeaClient:
             RuntimeError: If the reply is malformed.
 
         """
-        command = f"network{version}-del"
-        service = f"dhcp{version}"
-        response = self._config_mutation_command(command, service, {"name": name}, check=None)
-        _one_reply(command, service, response)
+        self._config_mutation_command(NETWORK_DEL[version], version, {"name": name})
 
     def forwarding_failed(self, exc: "KeaException", version: Family) -> bool:
         """Return whether a Control Agent answered that it could not forward a command to the daemon.
@@ -1501,10 +1627,7 @@ class KeaClient:
             RuntimeError: If the reply is malformed.
 
         """
-        command = f"network{version}-subnet-add"
-        service = f"dhcp{version}"
-        response = self._config_mutation_command(command, service, {"name": name, "id": subnet_id}, check=None)
-        _one_reply(command, service, response)
+        self._config_mutation_command(NETWORK_SUBNET_ADD[version], version, {"name": name, "id": subnet_id})
 
     def network_subnet_del(self, version: Family, name: str, subnet_id: int) -> None:
         """Send one ``network{v}-subnet-del``. The Subnet stays, outside any Shared Network. It does not persist.
@@ -1514,10 +1637,7 @@ class KeaClient:
             RuntimeError: If the reply is malformed.
 
         """
-        command = f"network{version}-subnet-del"
-        service = f"dhcp{version}"
-        response = self._config_mutation_command(command, service, {"name": name, "id": subnet_id}, check=None)
-        _one_reply(command, service, response)
+        self._config_mutation_command(NETWORK_SUBNET_DEL[version], version, {"name": name, "id": subnet_id})
 
     def subnet_definition(self, version: Family, subnet_id: int) -> SubnetDefinition:
         """Send one ``subnet{v}-get`` and return the Subnet with *subnet_id*, for an update.
@@ -1549,13 +1669,9 @@ class KeaClient:
             RuntimeError: If the reply is malformed.
 
         """
-        command = f"subnet{family}-update"
-        service = f"dhcp{family}"
-        arguments = {f"subnet{family}": [subnet]}
-        response = self._config_mutation_command(command, service, arguments, check=None)
-        _one_reply(command, service, response)
+        self._config_mutation_command(SUBNET_UPDATE[family], family, {f"subnet{family}": [subnet]})
 
-    def lease_wipe(self, version: int, subnet_id: int) -> None:
+    def lease_wipe(self, version: Family, subnet_id: int) -> None:
         """Delete all leases in a subnet using the ``lease{v}-wipe`` command.
 
         Requires the ``lease_cmds`` hook to be loaded on the Kea server.
@@ -1569,13 +1685,9 @@ class KeaClient:
                 when ``lease_cmds`` is not loaded).
 
         """
-        self.command(
-            f"lease{version}-wipe",
-            service=[f"dhcp{version}"],
-            arguments={"subnet-id": subnet_id},
-        )
+        self.command(LEASE_WIPE[version], version, arguments={"subnet-id": subnet_id})
 
-    def lease_add(self, version: int, lease: dict) -> None:
+    def lease_add(self, version: Family, lease: dict) -> None:
         """Create a new lease in the Kea lease database using ``lease{v}-add``.
 
         Args:
@@ -1588,15 +1700,11 @@ class KeaClient:
                 in use, subnet not found).
 
         """
-        self.command(
-            f"lease{version}-add",
-            service=[f"dhcp{version}"],
-            arguments=lease,
-        )
+        self.command(LEASE_ADD[version], version, arguments=lease)
 
     def lease_update(
         self,
-        version: int,
+        version: Family,
         ip_address: str,
         hostname: str | None = None,
         hw_address: str | None = None,
@@ -1623,12 +1731,7 @@ class KeaClient:
                 an error for the update.
 
         """
-        service = f"dhcp{version}"
-        resp = self.command(
-            f"lease{version}-get",
-            service=[service],
-            arguments={"ip-address": ip_address},
-        )
+        resp = self.command(LEASE_GET[version], version, arguments={"ip-address": ip_address})
         if resp[0]["result"] == 3:
             raise KeaException(resp[0])
         lease = resp[0]["arguments"]
@@ -1644,13 +1747,9 @@ class KeaClient:
             lease["valid-lft"] = valid_lft
         if duid is not None:
             lease["duid"] = duid
-        self.command(
-            f"lease{version}-update",
-            service=[service],
-            arguments=lease,
-        )
+        self.command(LEASE_UPDATE[version], version, arguments=lease)
 
-    def lease_get_by_ip(self, version: int, ip_address: str) -> dict | None:
+    def lease_get_by_ip(self, version: Family, ip_address: str) -> dict | None:
         """Fetch a single lease through the canonical lease-search interface.
 
         Args:
@@ -1671,7 +1770,7 @@ class KeaClient:
 
     def lease_search(
         self,
-        version: int,
+        version: Family,
         selector: str,
         value: Any,
         *,
@@ -1679,21 +1778,22 @@ class KeaClient:
     ) -> list[dict[str, Any]]:
         """Return raw leases that match one supported selector."""
         selector_specs = {
-            constants.BY_IP: ("", "ip-address", False, {4, 6}),
-            constants.BY_HW_ADDRESS: ("-by-hw-address", "hw-address", True, {4}),
-            constants.BY_HOSTNAME: ("-by-hostname", "hostname", True, {4, 6}),
-            constants.BY_CLIENT_ID: ("-by-client-id", "client-id", True, {4}),
-            constants.BY_SUBNET: ("-all", "subnets", True, {4, 6}),
-            constants.BY_SUBNET_ID: ("-all", "subnets", True, {4, 6}),
-            constants.BY_DUID: ("-by-duid", "duid", True, {6}),
+            constants.BY_IP: (LEASE_GET, "ip-address", False),
+            constants.BY_HW_ADDRESS: (LEASE_GET_BY_HW_ADDRESS, "hw-address", True),
+            constants.BY_HOSTNAME: (LEASE_GET_BY_HOSTNAME, "hostname", True),
+            constants.BY_CLIENT_ID: (LEASE_GET_BY_CLIENT_ID, "client-id", True),
+            constants.BY_SUBNET: (LEASE_GET_ALL, "subnets", True),
+            constants.BY_SUBNET_ID: (LEASE_GET_ALL, "subnets", True),
+            constants.BY_DUID: (LEASE_GET_BY_DUID, "duid", True),
         }
         if version not in (4, 6):
             raise ValueError(f"version must be 4 or 6, got {version!r}")
         spec = selector_specs.get(selector)
-        if spec is None or version not in spec[3]:
+        if spec is None or version not in spec[0]:
             raise ValueError(f"Lease selector {selector!r} is not supported for DHCPv{version}.")
 
-        command_suffix, argument_name, multiple, _supported_versions = spec
+        commands, argument_name, multiple = spec
+        command = commands[version]
         if selector in (constants.BY_SUBNET, constants.BY_SUBNET_ID):
             if selector == constants.BY_SUBNET:
                 if not isinstance(value, str) or not value:
@@ -1702,7 +1802,7 @@ class KeaClient:
                 if subnet_id is None:
                     return []
                 value = subnet_id
-            command_suffix, arguments = self._subnet_lease_search_spec(version, value, state)
+            command, arguments = self._subnet_lease_search_spec(version, value, state)
         else:
             if state is not None:
                 raise ValueError("state can only be combined with a Subnet ID search.")
@@ -1710,46 +1810,37 @@ class KeaClient:
                 raise ValueError(f"{selector} must be a non-empty string.")
             arguments = {argument_name: value}
 
-        command, response = self._lease_search_response(
-            version,
-            command_suffix,
-            arguments,
-        )
+        response = self._lease_search_response(version, command, arguments)
         if not response or not isinstance(response[0], dict):
-            raise RuntimeError(f"{command} returned a malformed response.")
+            raise RuntimeError(f"{command.value} returned a malformed response.")
         if response[0].get("result") == 3:
             return []
         response_arguments = response[0].get("arguments")
         if not isinstance(response_arguments, dict):
-            raise RuntimeError(f"{command} returned malformed arguments.")
+            raise RuntimeError(f"{command.value} returned malformed arguments.")
         raw_leases = response_arguments.get("leases") if multiple else [response_arguments]
         if not isinstance(raw_leases, list):
-            raise RuntimeError(f"{command} returned a malformed leases collection.")
-        _validated_lease_addresses(raw_leases, version, command)
+            raise RuntimeError(f"{command.value} returned a malformed leases collection.")
+        _validated_lease_addresses(raw_leases, version, command.value)
         return raw_leases
 
     def _lease_search_response(
         self,
-        version: int,
-        command_suffix: str,
+        version: Family,
+        command: KeaCommand,
         arguments: dict[str, Any],
-    ) -> tuple[str, list[KeaResponse]]:
+    ) -> list[KeaResponse]:
         """Run one scoped lease query and fail closed if the state command is unavailable."""
-        command = f"lease{version}-get{command_suffix}"
         try:
-            response = self.command(
-                command,
-                service=[f"dhcp{version}"],
-                arguments=arguments,
-                check=(0, 3),
-            )
+            return self.command(command, version, arguments=arguments, check=(0, 3))
         except KeaException as exc:
-            if command_suffix != "-by-state" or not exc.unsupported_command:
+            if command is not LEASE_GET_BY_STATE[version] or not exc.unsupported_command:
                 raise
             raise LeaseQueryPreflightUnavailable("state-command") from exc
-        return command, response
 
-    def _subnet_lease_search_spec(self, version: int, value: Any, state: int | None) -> tuple[str, dict[str, Any]]:
+    def _subnet_lease_search_spec(
+        self, version: Family, value: Any, state: int | None
+    ) -> tuple[KeaCommand, dict[str, Any]]:
         """Validate and guard one Subnet lease query before selecting its command."""
         if isinstance(value, bool) or not isinstance(value, (int, str)):
             raise ValueError("subnet_id must be a positive integer.")
@@ -1763,8 +1854,8 @@ class KeaClient:
             raise LeaseQueryNotMeasurable(state)
         if self.max_unpaged_leases is None:
             if state is None:
-                return "-all", {"subnets": [subnet_id]}
-            return "-by-state", {"subnet-id": subnet_id, "state": state}
+                return LEASE_GET_ALL[version], {"subnets": [subnet_id]}
+            return LEASE_GET_BY_STATE[version], {"subnet-id": subnet_id, "state": state}
 
         try:
             counts = self._subnet_lease_counts(version, subnet_id)
@@ -1774,17 +1865,17 @@ class KeaClient:
             raise
         if state is None:
             observed_leases = counts.covered
-            command_suffix = "-all"
+            command = LEASE_GET_ALL[version]
             arguments = {"subnets": [subnet_id]}
         else:
             observed_leases = counts.active if state == 0 else counts.declined
-            command_suffix = "-by-state"
+            command = LEASE_GET_BY_STATE[version]
             arguments = {"subnet-id": subnet_id, "state": state}
         if observed_leases > self.max_unpaged_leases:
             raise LeaseQueryTooBroad(observed_leases, self.max_unpaged_leases)
-        return command_suffix, arguments
+        return command, arguments
 
-    def _subnet_lease_counts(self, version: int, subnet_id: int) -> _SubnetLeaseCounts:
+    def _subnet_lease_counts(self, version: Family, subnet_id: int) -> _SubnetLeaseCounts:
         """Return the covered per-Subnet lease counts from ``stat_cmds``.
 
         Raises:
@@ -1793,13 +1884,8 @@ class KeaClient:
                 rather than treat an unmeasured Subnet as an empty one.
 
         """
-        command = f"stat-lease{version}-get"
-        response = self.command(
-            command,
-            service=[f"dhcp{version}"],
-            arguments={"subnet-id": subnet_id},
-            check=(0, 3),
-        )
+        command = STAT_LEASE_GET[version].value
+        response = self.command(STAT_LEASE_GET[version], version, arguments={"subnet-id": subnet_id}, check=(0, 3))
         if not response or not isinstance(response[0], dict):
             raise RuntimeError(f"{command} returned a malformed response.")
         if response[0].get("result") == 3:
@@ -1845,7 +1931,7 @@ class KeaClient:
 
     def lease_get_page(
         self,
-        version: int,
+        version: Family,
         *,
         limit: int,
         cursor: str | None = None,
@@ -1862,14 +1948,11 @@ class KeaClient:
             cursor=_lease_page_start(version, cursor),
         )
 
-    def _request_lease_page(self, version: int, *, limit: int, cursor: str) -> LeasePage:
+    def _request_lease_page(self, version: Family, *, limit: int, cursor: str) -> LeasePage:
         """Request one structurally valid lease page from Kea."""
-        command = f"lease{version}-get-page"
+        command = LEASE_GET_PAGE[version].value
         response = self.command(
-            command,
-            service=[f"dhcp{version}"],
-            arguments={"from": cursor, "limit": limit},
-            check=(0, 3),
+            LEASE_GET_PAGE[version], version, arguments={"from": cursor, "limit": limit}, check=(0, 3)
         )
         if not response or not isinstance(response[0], dict):
             raise RuntimeError(f"{command} returned a malformed response.")
@@ -1898,7 +1981,7 @@ class KeaClient:
         _validated_lease_addresses(leases, version, command)
         return LeasePage(leases=leases, next_cursor=next_cursor)
 
-    def lease_get_all(self, version: int, *, per_page: int = 250, max_leases: int | None = None) -> LeaseCollection:
+    def lease_get_all(self, version: Family, *, per_page: int = 250, max_leases: int | None = None) -> LeaseCollection:
         """Return a bounded collection of all leases on the daemon.
 
         Uses ``lease{v}-get-page`` under the hood so it works with very large
@@ -1953,15 +2036,15 @@ class KeaClient:
             seen_cursors.add(page.next_cursor)
             cursor = page.next_cursor
 
-    def dhcp_disable(self, service: str, max_period: int | None = None) -> None:
-        """Temporarily disable DHCP processing on *service*.
+    def dhcp_disable(self, family: Family, max_period: int | None = None) -> None:
+        """Temporarily disable DHCP processing on the daemon of *family*.
 
         The daemon continues running but stops responding to DHCP requests.
         Pass *max_period* (in seconds) to automatically re-enable after that time;
         omit it to keep the service disabled until :meth:`dhcp_enable` is called.
 
         Args:
-            service: Kea service name, e.g. ``"dhcp4"`` or ``"dhcp6"``.
+            family: The DHCP family whose daemon stops processing.
             max_period: Optional number of seconds before the service auto-re-enables.
 
         Raises:
@@ -1971,19 +2054,16 @@ class KeaClient:
         arguments: dict[str, Any] | None = None
         if max_period is not None:
             arguments = {"max-period": max_period}
-        self.command("dhcp-disable", service=[service], arguments=arguments)
+        self.command(KeaCommand.DHCP_DISABLE, family, arguments=arguments)
 
-    def dhcp_enable(self, service: str) -> None:
-        """Re-enable DHCP processing on *service* after a :meth:`dhcp_disable` call.
-
-        Args:
-            service: Kea service name, e.g. ``"dhcp4"`` or ``"dhcp6"``.
+    def dhcp_enable(self, family: Family) -> None:
+        """Re-enable DHCP processing on the daemon of *family* after a :meth:`dhcp_disable` call.
 
         Raises:
             KeaException: If Kea returns a non-zero result code.
 
         """
-        self.command("dhcp-enable", service=[service])
+        self.command(KeaCommand.DHCP_ENABLE, family)
 
     def pool_change(self, version: Family, action: PoolAction, subnet_id: int, declared_cidr: str, pool: str) -> None:
         """Send one ``subnet{v}-delta-{action}`` for the Pool of the Subnet. It does not persist.
@@ -1993,21 +2073,19 @@ class KeaClient:
             RuntimeError: If the reply is malformed.
 
         """
-        command = f"subnet{version}-delta-{action}"
-        service = f"dhcp{version}"
+        commands = SUBNET_DELTA_ADD if action == "add" else SUBNET_DELTA_DEL
         subnet = {"id": subnet_id, "subnet": declared_cidr, "pools": [{"pool": pool}]}
-        response = self._config_mutation_command(command, service, {f"subnet{version}": [subnet]}, check=None)
-        _one_reply(command, service, response)
+        self._config_mutation_command(commands[version], version, {f"subnet{version}": [subnet]})
 
-    def _config_phase_command(self, command: str, service: str, arguments: dict[str, Any] | None = None) -> None:
-        """Require one well-formed success reply for a single-service config phase."""
-        if command == "config-set":
-            if arguments is None:
-                raise ValueError("config-set requires an explicit configuration.")
-            response = self._config_mutation_command(command, service, arguments, check=None)
-        else:
-            response = self.command(command, service=[service], arguments=arguments, check=None)
-        _one_reply(command, service, response)
+    def _one_command(
+        self,
+        command: KeaCommand,
+        family: Family,
+        arguments: dict[str, Any] | None = None,
+        ok_codes: Sequence[int] = (0,),
+    ) -> KeaResponse:
+        """Send one single-service command and return its one well-formed reply."""
+        return _one_reply(command, family, self.command(command, family, arguments=arguments, check=None), ok_codes)
 
     def config_candidate(self, version: Family) -> CandidateConfiguration:
         """Send one ``config-get`` and return the running configuration, for a read-modify-write.
@@ -2018,11 +2096,10 @@ class KeaClient:
             MalformedConfiguration: If the ``Dhcp{v}`` block is not an object.
 
         """
-        command, service = "config-get", f"dhcp{version}"
-        reply = _one_reply(command, service, self.command(command, service=[service], check=None))
+        reply = self._one_command(KeaCommand.CONFIG_GET, version)
         arguments = reply.get("arguments")
         if not isinstance(arguments, dict):
-            raise RuntimeError(f"{command} returned no configuration object for {service}.")
+            raise RuntimeError(f"config-get returned no configuration object for dhcp{version}.")
         # Kea 2.4+ adds "hash"; config-test and config-set reject it.
         arguments.pop("hash", None)
         return CandidateConfiguration(version, arguments)
@@ -2035,7 +2112,7 @@ class KeaClient:
             RuntimeError: If the reply is malformed.
 
         """
-        self._config_phase_command("config-test", candidate.service, candidate.arguments)
+        self._one_command(KeaCommand.CONFIG_TEST, candidate.family, candidate.arguments)
 
     def config_set(self, candidate: CandidateConfiguration) -> None:
         """Send one ``config-set`` of *candidate*. It does not persist.
@@ -2045,7 +2122,7 @@ class KeaClient:
             RuntimeError: If the reply is malformed.
 
         """
-        self._config_phase_command("config-set", candidate.service, candidate.arguments)
+        self._config_mutation_command(KeaCommand.CONFIG_SET, candidate.family, candidate.arguments)
 
     def persist(self, version: Family) -> PersistResult:
         """Write the running configuration to disk: ``config-get``, ``config-test`` of it, then ``config-write``.
@@ -2072,7 +2149,7 @@ class KeaClient:
             logger.warning("config-test failed for %s, so config-write was not sent", service, exc_info=True)
             return PersistResult("failed", ("config-test did not return a usable reply, so nothing was saved.",))
         try:
-            self._config_phase_command("config-write", service)
+            self._one_command(KeaCommand.CONFIG_WRITE, version)
         except KeaException as exc:
             logger.warning("config-write failed for %s: %s", service, exc)
             return PersistResult("failed", (f"config-write failed: {exc.reply_text}",))
@@ -2081,7 +2158,7 @@ class KeaClient:
             return PersistResult("failed", ("The reply to config-write was lost or unreadable.",))
         return PersistResult("persisted")
 
-    def subnet_get(self, version: int, subnet_id: int) -> dict:
+    def subnet_get(self, version: Family, subnet_id: int) -> dict:
         """Fetch the full subnet config dict for *subnet_id* from Kea.
 
         The complete subnet object (id, subnet, pools, option-data, relay, allocator, ...)
@@ -2100,13 +2177,8 @@ class KeaClient:
             KeaException: If the subnet is not found or Kea returns an error.
 
         """
-        service = f"dhcp{version}"
         subnet_key = f"subnet{version}"
-        resp = self.command(
-            f"subnet{version}-get",
-            service=[service],
-            arguments={"id": subnet_id},
-        )
+        resp = self.command(SUBNET_GET[version], version, arguments={"id": subnet_id})
         if not isinstance(resp, list) or not resp or not isinstance(resp[0], dict):
             raise RuntimeError(f"subnet{version}-get returned an invalid response envelope")
         args = resp[0].get("arguments") or {}
@@ -2148,7 +2220,9 @@ class KeaException(Exception):
         return text if isinstance(text, str) and text else f"result {self.response.get('result')}"
 
 
-def _one_reply(command: str, service: str, response: list[KeaResponse], ok_codes: Sequence[int] = (0,)) -> KeaResponse:
+def _one_reply(
+    command: KeaCommand, family: Family, response: list[KeaResponse], ok_codes: Sequence[int] = (0,)
+) -> KeaResponse:
     """Return the one reply of a single-service command, or raise when it is malformed or its result is not ok."""
     if (
         len(response) != 1
@@ -2156,7 +2230,7 @@ def _one_reply(command: str, service: str, response: list[KeaResponse], ok_codes
         or not isinstance(response[0].get("result"), int)
         or isinstance(response[0].get("result"), bool)
     ):
-        raise RuntimeError(f"{command} did not return one valid result for {service}.")
+        raise RuntimeError(f"{command.value} did not return one valid result for dhcp{family}.")
     check_response(response, ok_codes)
     return response[0]
 

@@ -16,7 +16,7 @@ from netbox.tables import BaseTable
 from ..config_write import ConfigChangeOutcome, ConfigChangeRejected, RejectionReason
 from ..constants import Family
 from ..dhcp_options import DHCPOption
-from ..kea import KeaException
+from ..kea import STAT_LEASE_GET, KeaException
 from ..models import Server
 from ..server_configuration import Diagnostic, SharedNetwork
 from ..subnet_catalogue import ConfiguredSubnet, VerifiedSubnet
@@ -211,7 +211,7 @@ def _enrich_subnet_statistics(rows: list[dict[str, Any]], server: Server, versio
 
     try:
         client = server.get_client(version=version)
-        response = client.command(f"stat-lease{version}-get", service=[f"dhcp{version}"])
+        response = client.command(STAT_LEASE_GET[version], version)
         stats = parse_subnet_stats(cast(list[dict[str, Any]], response), version)
         for row in rows:
             if row["id"] in stats:

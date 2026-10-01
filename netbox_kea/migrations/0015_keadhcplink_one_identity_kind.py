@@ -14,6 +14,10 @@ def remove_invalid_identity_links(apps, schema_editor):
     KeaDhcpLink.objects.using(schema_editor.connection.alias).filter(invalid_identity).delete()
 
 
+# The RunPython deletes only KeaDhcpLink rows, which stay in main (ADR 0007).
+fake_on_branch = True
+
+
 class Migration(migrations.Migration):
 
     dependencies = [

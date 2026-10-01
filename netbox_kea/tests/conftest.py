@@ -15,6 +15,7 @@ avoids that. In an isolated CI environment (only netbox_kea installed) this is a
 harmless no-op.
 """
 
+import importlib
 import logging
 import os
 import warnings
@@ -22,6 +23,7 @@ from contextlib import ExitStack, contextmanager
 from unittest.mock import patch
 
 import pytest
+from django.db.models.signals import post_migrate
 
 from netbox_kea import constants
 from netbox_kea.tests.parallel import MAX_PARALLEL_WORKERS, isolated_test_database_name
@@ -177,6 +179,20 @@ def database_lifecycle(config) -> tuple[bool, bool]:
     return (reuse_db and not create_db), (not reuse_db)
 
 
+def _restore_sync_config_row(sender, app_config, using, **kwargs) -> None:
+    """Recreate the SyncConfig row after a flush, with the values of the migration that creates it.
+
+    A TransactionTestCase flushes every table after each test, and flush sends ``post_migrate``.
+    Without this receiver the next test on that worker, and the next ``--reuse-db`` run, has no row.
+    """
+    if app_config.label != "netbox_kea":
+        return
+    from netbox_kea.models import SyncConfig
+
+    seed = importlib.import_module("netbox_kea.migrations.0018_seed_syncconfig")
+    SyncConfig.objects.using(using).get_or_create(pk=1, defaults=seed.configured_values())
+
+
 @pytest.fixture(scope="session")
 def django_db_setup(request, django_test_environment, django_db_blocker):
     """Use a plugin-specific test DB name to avoid conflicts with other plugins
@@ -195,9 +211,10 @@ def django_db_setup(request, django_test_environment, django_db_blocker):
 
     keepdb, teardown_at_end = database_lifecycle(request.config)
     verbosity = request.config.option.verbose
-
     with django_db_blocker.unblock():
         db_cfg = setup_databases(verbosity=verbosity, interactive=False, keepdb=keepdb)
+        # Connected after setup, so on a fresh database only migration 0018 can create the row.
+        post_migrate.connect(_restore_sync_config_row, dispatch_uid="netbox_kea_tests_restore_sync_config_row")
         # Populate the URL resolver now that DB access is unblocked — importing some
         # plugin urlconfs touches the DB, so doing this in pytest_configure raised
         # "Database access not allowed". Runs once per session, before any DB test.

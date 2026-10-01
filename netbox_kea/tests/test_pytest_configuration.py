@@ -264,6 +264,72 @@ def test_ci_configuration_writer_generates_the_requested_plugins(monkeypatch, tm
     }
 
 
+def _write_ci_configuration(tmp_path, *arguments: str) -> subprocess.CompletedProcess:
+    """Run the CI configuration writer into *tmp_path* with *arguments*."""
+    return subprocess.run(
+        [
+            sys.executable,
+            str(REPOSITORY_ROOT / "scripts/write_netbox_ci_configuration.py"),
+            "--output",
+            str(tmp_path / "configuration.py"),
+            *arguments,
+        ],
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=30,
+    )
+
+
+def _module_assignments(source: str) -> dict[str, ast.expr]:
+    """Return each top-level ``NAME = value`` of *source*, by name."""
+    return {
+        node.targets[0].id: node.value
+        for node in ast.parse(source).body
+        if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name)
+    }
+
+
+def test_ci_configuration_writer_adds_netbox_branching_last_with_its_database_settings(tmp_path):
+    """The branching job gets the settings netbox-branching refuses to start without.
+
+    The file imports netbox-branching, which the unit suite does not install, so this reads it
+    as source. The branching suite loads the same file for real.
+    """
+    result = _write_ci_configuration(tmp_path, "--plugin", "netbox_kea", "--plugin", "netbox_dhcp", "--branching")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    source = (tmp_path / "configuration.py").read_text()
+    assignments = _module_assignments(source)
+    assert ast.literal_eval(assignments["PLUGINS"]) == ["netbox_kea", "netbox_dhcp", "netbox_branching"]
+    assert ast.literal_eval(assignments["DATABASE_ROUTERS"]) == ["netbox_branching.database.BranchAwareRouter"]
+    assert "DATABASE" not in assignments, "NetBox refuses DATABASE beside DATABASES"
+    databases = assignments["DATABASES"]
+    assert isinstance(databases, ast.Call)
+    assert ast.unparse(databases.func) == "DynamicSchemaDict"
+    assert ast.literal_eval(databases.args[0])["default"]["ENGINE"] == "django.db.backends.postgresql"
+    assert "from netbox_branching.utilities import DynamicSchemaDict" in source
+
+
+def test_ci_configuration_writer_refuses_netbox_branching_as_a_plain_plugin(tmp_path):
+    """Only --branching lists netbox-branching, so its database settings cannot be left out."""
+    result = _write_ci_configuration(tmp_path, "--plugin", "netbox_kea", "--plugin", "netbox_branching")
+
+    assert result.returncode != 0
+    assert "--branching" in result.stderr
+    assert not (tmp_path / "configuration.py").exists()
+
+
+def test_ci_configuration_writer_leaves_database_settings_alone_without_branching(tmp_path):
+    """The other jobs keep NetBox's plain DATABASE setting."""
+    result = _write_ci_configuration(tmp_path, "--plugin", "netbox_kea")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assignments = _module_assignments((tmp_path / "configuration.py").read_text())
+    assert "DATABASES" not in assignments
+    assert "DATABASE_ROUTERS" not in assignments
+
+
 def test_isolated_settings_define_an_api_token_pepper():
     """Keep NetBox API test tokens usable outside the generated CI settings."""
     from django.conf import settings
@@ -276,7 +342,9 @@ def test_isolated_settings_load_only_supported_test_plugins():
     from django.conf import settings
 
     assert "netbox_kea" in settings.PLUGINS
-    assert set(settings.PLUGINS) <= {"netbox_kea", "netbox_dhcp"}
+    assert set(settings.PLUGINS) <= {"netbox_kea", "netbox_dhcp", "netbox_branching"}
+    if "netbox_branching" in settings.PLUGINS:
+        assert settings.PLUGINS[-1] == "netbox_branching", "netbox-branching must be the last plugin"
 
 
 def test_option_view_contracts_are_not_accepted_in_the_mypy_baseline():
@@ -574,6 +642,7 @@ def test_database_jobs_use_the_shared_ci_configuration_writer():
     workflow = (REPOSITORY_ROOT / ".github/workflows/ci.yml").read_text()
     unit_test_job = re.sub(r"[ \t]*\\\n[ \t]*", " ", _workflow_job(workflow, "unit-test"))
     dhcp_plugin_job = re.sub(r"[ \t]*\\\n[ \t]*", " ", _workflow_job(workflow, "dhcp-plugin-test"))
+    branching_job = re.sub(r"[ \t]*\\\n[ \t]*", " ", _workflow_job(workflow, "branching-test"))
     writer = 'python "${{ github.workspace }}/scripts/write_netbox_ci_configuration.py"'
 
     for anchor in (
@@ -585,10 +654,15 @@ def test_database_jobs_use_the_shared_ci_configuration_writer():
     ):
         assert f"&{anchor}" in unit_test_job, anchor
         assert f"*{anchor}" in dhcp_plugin_job, anchor
+        assert f"*{anchor}" in branching_job, anchor
 
-    assert workflow.count(writer) == 2
+    assert workflow.count(writer) == 3
     assert f"{writer} --output netbox/configuration.py --plugin netbox_kea\n" in unit_test_job
     assert f"{writer} --output netbox/configuration.py --plugin netbox_kea --plugin netbox_dhcp\n" in dhcp_plugin_job
+    assert (
+        f"{writer} --output netbox/configuration.py --plugin netbox_kea --plugin netbox_dhcp --branching\n"
+        in branching_job
+    )
     assert "cat > netbox/configuration.py" not in workflow
 
     uv_commands = _workflow_uv_commands(workflow)
@@ -642,16 +716,51 @@ def test_dhcp_plugin_job_uses_the_unit_test_runtime_versions():
     """Define each shared runtime input once, so database jobs cannot drift."""
     workflow = (REPOSITORY_ROOT / ".github/workflows/ci.yml").read_text()
     unit_test_job = _workflow_job(workflow, "unit-test")
-    dhcp_plugin_job = _workflow_job(workflow, "dhcp-plugin-test")
 
     for setting in ("ref", "python-version-file"):
         pattern = rf"^\s+{setting}: (.+)$"
         values = re.findall(pattern, unit_test_job, re.MULTILINE)
         assert values, (setting, workflow)
         assert len(values) == 1, f"{setting} is repeated in the shared setup and can drift: {values}"
-        assert not re.findall(pattern, dhcp_plugin_job, re.MULTILINE), (
-            f"{setting} must come from the shared setup anchor, not a second declaration."
-        )
+        for job in ("dhcp-plugin-test", "branching-test"):
+            assert not re.findall(pattern, _workflow_job(workflow, job), re.MULTILINE), (
+                f"{setting} must come from the shared setup anchor in {job}, not a second declaration."
+            )
+
+
+def test_branching_job_cannot_pass_with_the_branching_tests_skipped():
+    """The branching job runs test_branching.py with the pinned versions, and a skip there fails.
+
+    test_branching.py raises at import, instead of skipping, when NETBOX_KEA_REQUIRE_BRANCHING=1
+    and netbox-branching is not an installed app.
+    """
+    workflow = (REPOSITORY_ROOT / ".github/workflows/ci.yml").read_text()
+    job = yaml.safe_load(workflow)["jobs"]["branching-test"]
+    runs = [step for step in job["steps"] if "run" in step]
+    install = next(step["run"] for step in runs if "uv pip install" in step["run"])
+    test_step = next(step for step in runs if "pytest" in step["run"])
+
+    assert re.fullmatch(r"\d+\.\d+\.\d+", str(yaml.safe_load(workflow)["env"]["NETBOX_BRANCHING_VERSION"]))
+    assert '"netboxlabs-netbox-branching==${NETBOX_BRANCHING_VERSION}"' in install
+    assert '"netbox-plugin-dhcp==0.2.0"' in install
+    assert test_step["env"]["NETBOX_KEA_REQUIRE_BRANCHING"] == "1"
+    assert "/netbox_kea/tests/test_branching.py " in test_step["run"]
+    assert job["permissions"] == {"contents": "read"}
+    source = (REPOSITORY_ROOT / "netbox_kea/tests/test_branching.py").read_text()
+    assert 'raise RuntimeError(f"{_REQUIRE_BRANCHING}=1, but netbox_branching is not an installed app")' in source
+
+
+def test_the_branching_browser_job_reads_both_pins_from_the_workflow_env():
+    """The job runs the netbox-branching harness variant on the unit-test NetBox release, pinned once each."""
+    workflow = yaml.safe_load((REPOSITORY_ROOT / ".github/workflows/ci.yml").read_text())
+    job = workflow["jobs"]["branching-browser-test"]
+    setup = next(step for step in job["steps"] if step.get("run") == "./tests/test_setup.sh")
+    variant = (REPOSITORY_ROOT / "tests/docker/docker-compose.branching.yml").read_text()
+
+    assert job["env"]["COMPOSE_FILE"].split(":")[-1] == "docker-compose.branching.yml"
+    assert setup["env"]["NETBOX_CONTAINER_TAG"] == "${{ env.NETBOX_RELEASE }}"
+    assert "netboxlabs-netbox-branching==${NETBOX_BRANCHING_VERSION:?" in variant
+    assert "NETBOX_BRANCHING_VERSION" in workflow["env"]
 
 
 def test_worker_settings_are_read_as_whole_tokens():
@@ -1121,15 +1230,19 @@ def test_ci_pins_the_netbox_release_the_query_counts_describe():
     """
     from netbox_kea.tests.conftest import QUERY_COUNT_NETBOX_VERSION
 
-    workflow = (REPOSITORY_ROOT / ".github" / "workflows" / "ci.yml").read_text()
+    workflow = yaml.safe_load((REPOSITORY_ROOT / ".github" / "workflows" / "ci.yml").read_text())
     # Every job that checks NetBox out, so a bump cannot leave one job on an older release.
     checkouts = [
-        section.split("path: netbox", 1)[0] for section in workflow.split("repository: netbox-community/netbox")[1:]
+        step["with"]
+        for job in workflow["jobs"].values()
+        for step in job["steps"]
+        if step.get("with", {}).get("repository") == "netbox-community/netbox"
     ]
 
+    assert workflow["env"]["NETBOX_RELEASE"] == f"v{QUERY_COUNT_NETBOX_VERSION}"
     assert checkouts, "No job checks NetBox out; this guard would pass without reading anything."
     for checkout in checkouts:
-        assert f"ref: v{QUERY_COUNT_NETBOX_VERSION}\n" in checkout, checkout
+        assert checkout["ref"] == "${{ env.NETBOX_RELEASE }}", checkout
 
 
 def test_query_count_assertion_sites_still_exist():

@@ -2,33 +2,29 @@
 # SPDX-License-Identifier: Apache-2.0
 
 
-def apply(client, service, config):
+def apply(client, family, config):
     # ruleid: kea-config-phase-without-reply-validation
-    client.command("config-test", service=[service], arguments=config)
+    client.command(KeaCommand.CONFIG_TEST, family, arguments=config)
     # ruleid: kea-config-phase-without-reply-validation
-    client.command("config-set", service=[service], arguments=config)
+    client.command(KeaCommand.CONFIG_SET, family, arguments=config)
     # ruleid: kea-config-phase-without-reply-validation
-    client.command("config-write", service=[service])
+    client.command(KeaCommand.CONFIG_WRITE, family)
     # ruleid: kea-config-phase-without-reply-validation
-    client._config_mutation_command("config-set", service, config)
+    client.command(command=KeaCommand.CONFIG_TEST, target=family, arguments=config)
     # ruleid: kea-config-phase-without-reply-validation
-    client.command(command="config-test", service=[service], arguments=config)
+    client.command(target=family, command=KeaCommand.CONFIG_WRITE)
     # ruleid: kea-config-phase-without-reply-validation
-    client.command(command="config-set", service=[service], arguments=config)
-    # ruleid: kea-config-phase-without-reply-validation
-    client.command(service=[service], command="config-write")
-    # ruleid: kea-config-phase-without-reply-validation
-    client._config_mutation_command(command="config-set", service=service, arguments=config)
+    client._one_command(KeaCommand.CONFIG_SET, family, config)
     # ok: kea-config-phase-without-reply-validation
-    client._config_phase_command("config-test", service, config)
+    client._one_command(KeaCommand.CONFIG_TEST, family, config)
     # ok: kea-config-phase-without-reply-validation
-    client._config_phase_command("config-set", service, config)
+    client._one_command(KeaCommand.CONFIG_WRITE, family)
     # ok: kea-config-phase-without-reply-validation
-    client._config_phase_command("config-write", service)
+    client._config_mutation_command(KeaCommand.CONFIG_SET, family, config)
     # ok: kea-config-phase-without-reply-validation
-    client.command("config-get", service=[service])
+    client.command(KeaCommand.CONFIG_GET, family)
 
 
-def _config_phase_command(client, command, service):
+def _one_command(client, command, family):
     # ok: kea-config-phase-without-reply-validation
-    return client.command(command, service=[service], check=None)
+    return client.command(command, family, check=None)
