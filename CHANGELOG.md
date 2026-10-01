@@ -13,6 +13,238 @@ forked, and predate its conventional-commit history.
 
 <!-- version list -->
 
+## v1.11.0 (2026-10-01)
+
+### Bug Fixes
+
+- Build the Subnet update before the first step, so an edit that NetBox cannot build sends nothing
+  ([`aab511e`](https://github.com/marcinpsk/netbox-kea/commit/aab511e917189fa12fadac8fe0c8cd92a576ebbf))
+
+- Compare a Subnet lifetime or timer only when the edit writes it
+  ([`9aa05f9`](https://github.com/marcinpsk/netbox-kea/commit/9aa05f9b023fe4ebd25c595f20d548db8fdd018b))
+
+- Keep Shared Network facts out of the Catalogue, and fail closed on an unknown membership
+  ([`3807b49`](https://github.com/marcinpsk/netbox-kea/commit/3807b49858f9922f428cb450083a164cc154f825))
+
+- Keep the option text that Kea holds when a save leaves the value
+  ([`304e095`](https://github.com/marcinpsk/netbox-kea/commit/304e095edd9885555f5a55ad7e0a1f7e4d1a6082))
+
+- Name a live value that the edit form cannot show
+  ([`c0e6c0e`](https://github.com/marcinpsk/netbox-kea/commit/c0e6c0eaa89dec80e62495d11cc89baefdb207e9))
+
+- Name config-set in the help of the shared network and server options edit pages
+  ([`9d76e31`](https://github.com/marcinpsk/netbox-kea/commit/9d76e31cc77b3f6b37ccf1ff5ec11394dc853746))
+
+- Redirect the Pool add GET when NetBox cannot confirm the Subnet
+  ([`bc30b73`](https://github.com/marcinpsk/netbox-kea/commit/bc30b73491a2ae2e679899f9ddb761d5593d353d))
+
+- Refuse a Shared Network or Subnet edit whose shown values changed in Kea
+  ([`7cdd103`](https://github.com/marcinpsk/netbox-kea/commit/7cdd103f8a45d7a390f2bf4a0b8ab3ec0b6c2f73))
+
+- Refuse a Subnet edit when a live Pool entry is malformed, instead of dropping it
+  ([`94454fa`](https://github.com/marcinpsk/netbox-kea/commit/94454faae0d00dd7ef33d3e5c0ab1265c5439516))
+
+- Refuse a Subnet form whose page could not load the Shared Networks
+  ([`ec21d5f`](https://github.com/marcinpsk/netbox-kea/commit/ec21d5f5bbcc5f5be66c65421dff0ae20a5b6ce0))
+
+- Scan only comments and docstrings for source line numbers, and say an unknown membership sends no
+  undo
+  ([`4cc3c5f`](https://github.com/marcinpsk/netbox-kea/commit/4cc3c5fdcf986c6dbe82bb0f51fb6e4492285ae8))
+
+- Select the managed DHCP Option entry with one rule for display and save
+  ([`fb00a3b`](https://github.com/marcinpsk/netbox-kea/commit/fb00a3b2c335c409508a10be0d699414ffb48bd7))
+
+- Show why Kea could not persist a Reservation change
+  ([`aa24096`](https://github.com/marcinpsk/netbox-kea/commit/aa240963dd4d51c963356b0ed1b23a416e8e9717))
+
+- **config_write**: Catch only a malformed configuration, and require a Verified Subnet for Subnet
+  options
+  ([`9557842`](https://github.com/marcinpsk/netbox-kea/commit/9557842464c0ccaa5468b071fcd011e5a83f12ee))
+
+- **config_write**: Check the Pool before the send, and keep ID reuse from reading as a rejection
+  ([`21a0d39`](https://github.com/marcinpsk/netbox-kea/commit/21a0d390c6faf656c7de0c13b2ea039e93326372))
+
+- **config_write**: Keep the outcome when the lock transaction fails to commit after the change
+  ([`3452dc2`](https://github.com/marcinpsk/netbox-kea/commit/3452dc21bcf9c90db4172c4d435d4c2e7a757d8a))
+
+- **config_write**: Refuse a Subnet edit whose Shared Network changed after the page
+  ([`ac350b5`](https://github.com/marcinpsk/netbox-kea/commit/ac350b562c60ebddcf9e385e8cc58d5394d310bc))
+
+- **config_write**: Send Subnet delete and Pool writes only to the Subnet the page showed
+  ([`fe1b182`](https://github.com/marcinpsk/netbox-kea/commit/fe1b1820a8c783b39ca6bf50df540d3bf6aa6996))
+
+- **dhcp_options**: Refuse a save when a shown option value changed
+  ([`1040349`](https://github.com/marcinpsk/netbox-kea/commit/1040349379a40f4a1573dda69621b25136dc1833))
+
+- **kea**: Keep the Pool-level fields of each Pool that a Subnet edit keeps
+  ([`8eb8005`](https://github.com/marcinpsk/netbox-kea/commit/8eb8005122f6fb5b2ab5355dbdb1b084ae46b4b9))
+
+- **kea**: Send Pool changes only as subnet delta commands
+  ([`f2e0ece`](https://github.com/marcinpsk/netbox-kea/commit/f2e0ece50834daf9ecea0ed8d9543891cd5fc502))
+
+- **opengrep**: Exempt only a lambda passed to _run_config_change
+  ([`405ff45`](https://github.com/marcinpsk/netbox-kea/commit/405ff451f21d4f82cf8fb71914275f625748a548))
+
+- **opengrep**: Refuse a _run_config_change defined outside views/_base.py
+  ([`6e75f4c`](https://github.com/marcinpsk/netbox-kea/commit/6e75f4c84123339c6549aadaa8f3cfce07fe10aa))
+
+- **scripts**: End a stalled download in the Kea recording script
+  ([`9ef124b`](https://github.com/marcinpsk/netbox-kea/commit/9ef124b30e5b92aca6fee3289bbcdf9256b45e1b))
+
+### Chores
+
+- **coverage**: Exclude raise NotImplementedError
+  ([`a13bc03`](https://github.com/marcinpsk/netbox-kea/commit/a13bc03368c76578ada14b0203b17b3b9312f2dd))
+
+- **opengrep**: Require timeout= on every subprocess call
+  ([`2576714`](https://github.com/marcinpsk/netbox-kea/commit/257671457b88b80875d0e92d25cb3eed1a36c2a8))
+
+### Continuous Integration
+
+- Make the unit-test coverage run read pyproject's coverage config
+  ([`c85e9d1`](https://github.com/marcinpsk/netbox-kea/commit/c85e9d12a92878dc244ee01bf5331408098acf9c))
+
+### Documentation
+
+- Escape the pipe in Family | None, so the R4-N1 row keeps four columns
+  ([`5e4bfa9`](https://github.com/marcinpsk/netbox-kea/commit/5e4bfa9ced54338359fce0c1885892fd11f2b7c3))
+
+- Netbox-branching compatibility design (ratified r6) and ADR 0007
+  ([`9d66dcf`](https://github.com/marcinpsk/netbox-kea/commit/9d66dcf03b75fe6b8b3deb8447ea78dd44bcf0a7))
+
+- Remove the review history from the netbox-branching design
+  ([`88f0188`](https://github.com/marcinpsk/netbox-kea/commit/88f0188299367c50dbf2ca50c0c42d78f4f88496))
+
+- Say which read each check under the lock sends
+  ([`d1ea9bd`](https://github.com/marcinpsk/netbox-kea/commit/d1ea9bdd1373c38dbea84d39f8a1959bb16742a4))
+
+- Scope two netbox-branching acceptance conditions to the contract table
+  ([`c882ce2`](https://github.com/marcinpsk/netbox-kea/commit/c882ce2e91ee518744e8f5046a812ad77a5a6e5d))
+
+- Tell operators that a database idle timeout can end the change lock
+  ([`4c5670b`](https://github.com/marcinpsk/netbox-kea/commit/4c5670bfba9dc9dcbe8534a5ee88af3b50edf988))
+
+- **adr**: ADR 0007 names the writes that its branch refusal does not cover
+  ([`d9f9347`](https://github.com/marcinpsk/netbox-kea/commit/d9f9347e8517b432406a9f9bbba80906cc20215c))
+
+- **adr**: Say that the ADR 0007 refusals arrive in the tracked increments
+  ([`77a2431`](https://github.com/marcinpsk/netbox-kea/commit/77a24316ea8f2e33648e5ec85184c9b9e562cac8))
+
+- **agents**: Name #207 as the removal ticket, and say that old write paths skip the lock
+  ([`2fdc7c4`](https://github.com/marcinpsk/netbox-kea/commit/2fdc7c44e2e9cf8057a07b6a0120ccc0c0b80c2a))
+
+### Features
+
+- Log a Configuration Change that holds the Kea server lock longer than the lock wait
+  ([`c428c04`](https://github.com/marcinpsk/netbox-kea/commit/c428c04a235388a08086a4cf4e126ac77eeb2fa7))
+
+- **config_write**: Add the Configuration Change outcome and use it for Shared Network add and
+  delete
+  ([`6d56f99`](https://github.com/marcinpsk/netbox-kea/commit/6d56f99db295595d9482462c29fce085d9cc7cac))
+
+- **opengrep**: Refuse a broad except around a config_write call in a view
+  ([`b84c9d5`](https://github.com/marcinpsk/netbox-kea/commit/b84c9d5ce27a1fc310134385ad0bba59d80746df))
+
+### Performance Improvements
+
+- Check a Subnet after a step with one Subnet list read
+  ([`3fe210b`](https://github.com/marcinpsk/netbox-kea/commit/3fe210bfe6adec2e334fd7f2876caae2077ff462))
+
+- Send no config-get from the Subnet add and edit POST
+  ([`a91524a`](https://github.com/marcinpsk/netbox-kea/commit/a91524a5128bd09771472c0ac26046ce09acc5c6))
+
+- Take the target Shared Network from the Subnet scope read
+  ([`fe60730`](https://github.com/marcinpsk/netbox-kea/commit/fe607303cd1afb8810c6842307e415711bf73536))
+
+### Refactoring
+
+- Delete the last old write exceptions, and refuse a view that catches the rejection
+  ([`61ad2be`](https://github.com/marcinpsk/netbox-kea/commit/61ad2bed063d2b3393f3ba122430b6707368ba40))
+
+- Move the form option projection to dhcp_options
+  ([`981fe1a`](https://github.com/marcinpsk/netbox-kea/commit/981fe1a7e4545fd493dc1e71d566d7598efd571c))
+
+- One typed Pool parser, with Pool form errors for out-of-Subnet and overlapping Pools
+  ([#216](https://github.com/marcinpsk/netbox-kea/pull/216),
+  [`c1ecf1a`](https://github.com/marcinpsk/netbox-kea/commit/c1ecf1a6c25d2a0b6e1445ef3263bc79a2f36f8d))
+
+- Rename the Subnet membership fields to original_network
+  ([`e6cb2bd`](https://github.com/marcinpsk/netbox-kea/commit/e6cb2bdd0bbb032e371ce509f9067f2757e75bb9))
+
+- **config_write**: Add a Subnet and assign it to a Shared Network as one change
+  ([#223](https://github.com/marcinpsk/netbox-kea/pull/223),
+  [`390c151`](https://github.com/marcinpsk/netbox-kea/commit/390c15122ce1ce8c42d00d47c2228b903bc79280))
+
+- **config_write**: Edit a Subnet and move it between Shared Networks as one change
+  ([`2dc2645`](https://github.com/marcinpsk/netbox-kea/commit/2dc264582430a8ff12c6b9797f2cdf2637e9012f))
+
+- **config_write**: Run the read-modify-write changes through config_write
+  ([`04ed6bd`](https://github.com/marcinpsk/netbox-kea/commit/04ed6bd396a210df335654fa460b051be152c4a3))
+
+- **forms**: Derive the hidden shown copies from one declaration
+  ([`5a2df92`](https://github.com/marcinpsk/netbox-kea/commit/5a2df92a0437ebd2f1038dc68844224ebbf0ae1d))
+
+- **pools**: Move the Pool type and its parser below kea.py
+  ([`8c383a4`](https://github.com/marcinpsk/netbox-kea/commit/8c383a45e9eed9f39e26939732bf4e876f710702))
+
+- **reservations**: Use the shared config_write persist step
+  ([#219](https://github.com/marcinpsk/netbox-kea/pull/219),
+  [`2d5c4d0`](https://github.com/marcinpsk/netbox-kea/commit/2d5c4d0deb16a36a55fea795d3693dbbf233dcbe))
+
+### Testing
+
+- Assert the commands of the refused GET in the null option-data edit test
+  ([`3b440c4`](https://github.com/marcinpsk/netbox-kea/commit/3b440c4e740fe23ec70934fddec77f256f3feea9))
+
+- Cover a failed Pool sync in the IPAM job
+  ([`dee9c38`](https://github.com/marcinpsk/netbox-kea/commit/dee9c3868f07ec58f12b3323b9417e60bebd61ca))
+
+- Fail loudly when a stub Subnet names a Shared Network that the stub does not hold
+  ([`d0a9ab9`](https://github.com/marcinpsk/netbox-kea/commit/d0a9ab9276ac7cfcd3b96c8bbe2110dbb30b525f))
+
+- Fail on a source line number in a comment or docstring
+  ([`bd79cef`](https://github.com/marcinpsk/netbox-kea/commit/bd79cef5c1c0f397b0fae64e51837040d9f16a5b))
+
+- Name the behaviour instead of source line numbers in test docstrings
+  ([`90b61e6`](https://github.com/marcinpsk/netbox-kea/commit/90b61e667497ae5bb5550ac6c5231d49d87bdd95))
+
+- Name the code that the Subnet view tests exercise today
+  ([`7cd4de7`](https://github.com/marcinpsk/netbox-kea/commit/7cd4de70f41484ddf44ae803f9329e935624eb58))
+
+- Name the inherited option tests after _inherited_subnet_options
+  ([`e44f86f`](https://github.com/marcinpsk/netbox-kea/commit/e44f86ff906061289acdddd667a3a19d7506307e))
+
+- Refuse a dotted --cov source, which splits the psycopg error classes
+  ([`f257e01`](https://github.com/marcinpsk/netbox-kea/commit/f257e012f9cc8960f64c31bd29a329d35baacea2))
+
+- **config_write**: A Pool failure whose read shows the change and another writer's Pool is unknown
+  ([`fe4cdbb`](https://github.com/marcinpsk/netbox-kea/commit/fe4cdbb344a1d6d843991f5ebd12dda6635f18b9))
+
+- **config_write**: Cover a non-lock database error and a missing TLS file on the change
+  ([`2c6debf`](https://github.com/marcinpsk/netbox-kea/commit/2c6debfe0fdf6eeea0e5e5d1697f514151d1bfea))
+
+- **config_write**: Cover the Subnet options target checks and a config-get without a configuration
+  ([`b0be1d2`](https://github.com/marcinpsk/netbox-kea/commit/b0be1d2d4bd10fa26e2216244a2364af522e3855))
+
+- **config_write**: Tighten the Pool-keep test to an NTP-only save
+  ([`741c9ea`](https://github.com/marcinpsk/netbox-kea/commit/741c9ea5cda69bc8893d647909b170bd7996c5e1))
+
+- **kea**: Take Kea command names from a recorded list-commands reply
+  ([`d2990cf`](https://github.com/marcinpsk/netbox-kea/commit/d2990cfb67c9d415be9aba3b12b83b6fe315cc74))
+
+- **kea_stub**: Answer the Subnet edit commands in SubnetDaemon
+  ([`c9e993c`](https://github.com/marcinpsk/netbox-kea/commit/c9e993c783d994d73f8e3f234d6d5d8feb80a31f))
+
+- **kea_stub**: Check the commands that a list-commands Response object advertises
+  ([`be294b1`](https://github.com/marcinpsk/netbox-kea/commit/be294b14db900de914c50ba3b7960d26d6f882a0))
+
+- **subnets**: Remove subnet_cidr from the Kea Pool objects in two fixtures
+  ([`8d4cf9d`](https://github.com/marcinpsk/netbox-kea/commit/8d4cf9d2e67630f40f8ac63c6f63956f79d07e2e))
+
+- **views**: A Subnet that Kea holds in another text form saves from its page
+  ([`eaa8fe4`](https://github.com/marcinpsk/netbox-kea/commit/eaa8fe4e0b06465978d46114704732d269fe3e4d))
+
+
 ## v1.10.2 (2026-09-28)
 
 ### Bug Fixes
