@@ -481,8 +481,8 @@ def _status(sources: Collection[str]) -> str:
     return _STATUSES[frozenset(sources)]
 
 
-def _restatus(ip: IPAddress, links: Iterable[IPAMOwnershipLink]) -> _Outcome:
-    """Give an owned object the status of its live *links*. Without a live link, the object keeps its status.
+def _restatus(ip: IPAddress, links: Sequence[IPAMOwnershipLink]) -> _Outcome:
+    """Give an owned object the status and the hostname of its live *links*. Without a live link, it stays as it is.
 
     When the new marker and the operator note do not fit, the object stays as it is and the result is a conflict.
     """
@@ -493,10 +493,22 @@ def _restatus(ip: IPAddress, links: Iterable[IPAMOwnershipLink]) -> _Outcome:
     description = _ip_description(ip.description, status, claim=False)
     if description is None:
         return "conflict"
-    if not _apply_ip_fields(ip, status=status, hostname="", description=description):
+    if not _apply_ip_fields(ip, status=status, hostname=_implied_hostname(links), description=description):
         return "unchanged"
     ip.save()
     return "updated"
+
+
+def _implied_hostname(links: Sequence[IPAMOwnershipLink]) -> str:
+    """Return the hostname of the live *links* under the rule of :func:`_applied_facts`: a Reservation hostname wins.
+
+    An empty result changes no DNS name: the live links of the winning source name no host, or different hosts.
+    """
+    for source in (RESERVATION, LEASE):
+        names = {link.facts["hostname"] for link in links if _is_live(link) and link.source == source} - {""}
+        if names:
+            return names.pop() if len(names) == 1 else ""
+    return ""
 
 
 def _is_own_link(link: IPAMOwnershipLink, server: Server, family: Family, source: str) -> bool:
