@@ -3,6 +3,11 @@ status: accepted
 date: 2026-09-18
 ---
 
+<!--
+SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
+SPDX-License-Identifier: Apache-2.0
+-->
+
 # Separate the Server Configuration authority from the Subnet Catalogue
 
 _Amended 2026-09-27 by ADR 0005, which gives Configuration Changes to a `config_write` module.

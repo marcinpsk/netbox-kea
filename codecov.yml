@@ -1,4 +1,12 @@
+# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
+# SPDX-License-Identifier: Apache-2.0
+# Two CI jobs upload coverage (unit-test, branching-test); report only after both arrive.
+codecov:
+  notify:
+    after_n_builds: 2
+
 comment:
+  after_n_builds: 2
   layout: "diff, flags, files"
   behavior: default
   require_changes: false

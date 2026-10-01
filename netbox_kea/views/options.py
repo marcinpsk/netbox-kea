@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
+# SPDX-License-Identifier: Apache-2.0
 from collections.abc import Callable
 from typing import Any, cast
 from urllib.parse import urlencode as _urlencode

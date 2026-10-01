@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
+# SPDX-FileCopyrightText: 2023-2025 Devon Mar <devon-mar@users.noreply.github.com>
+# SPDX-License-Identifier: Apache-2.0
 [project]
 name = "netbox-kea-ng"
 version = "1.12.0"
@@ -7,8 +10,7 @@ requires-python = ">=3.10"
 license = "Apache-2.0"
 license-files = ["LICENSE", "LICENSES/*.txt"]
 authors = [
-  {name = "Devon Mar", email = "devon-mar@users.noreply.github.com"},
-  {name = "Marcin Zieba"},
+  {name = "Marcin Zieba", email = "marcinpsk@gmail.com"},
 ]
 keywords = [
   "netbox",

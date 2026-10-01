@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
+# SPDX-License-Identifier: Apache-2.0
 """The reservation "Sync all" button with a netbox-branching branch selected, in a real browser.
 
 It runs against the netbox-branching variant of the harness (docker-compose.branching.yml: NetBox

@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
+# SPDX-License-Identifier: Apache-2.0
 """Load sample Kea DHCP server entries into NetBox for development.
 
 Run from the NetBox shell:
