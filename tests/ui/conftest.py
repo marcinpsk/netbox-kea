@@ -152,8 +152,8 @@ class _DualEndpointKeaClient:
 def kea_client(kea_control_urls: dict[int, str]) -> Iterator[_DualEndpointKeaClient]:
     # Kea 3.0: two daemons, each on its own host-exposed HTTP control socket.
     with (
-        KeaClient(kea_control_urls[4], write_guard=NoBranchGuard()) as dhcp4,
-        KeaClient(kea_control_urls[6], write_guard=NoBranchGuard()) as dhcp6,
+        KeaClient(kea_control_urls[4], timeout=30, max_unpaged_leases=1000, write_guard=NoBranchGuard()) as dhcp4,
+        KeaClient(kea_control_urls[6], timeout=30, max_unpaged_leases=1000, write_guard=NoBranchGuard()) as dhcp6,
     ):
         yield _DualEndpointKeaClient(dhcp4, dhcp6)
 
