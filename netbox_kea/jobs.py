@@ -423,8 +423,8 @@ def _sync_one_server(
     if conflict_ips:
         sample = sorted(conflict_ips)[:_CONFLICT_SAMPLE_SIZE]
         logger.warning(
-            "Server %s: %d NetBox IP(s) left untouched — not Kea-managed (description does not start"
-            " with 'Synced from Kea DHCP'); first %d: %s",
+            "Server %s: %d NetBox IP(s) left untouched: the description does not start with the sync marker,"
+            " or the new marker and the note do not fit; first %d: %s",
             server.name,
             len(conflict_ips),
             len(sample),

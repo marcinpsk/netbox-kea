@@ -24,6 +24,15 @@ from functools import cached_property
 from typing import TYPE_CHECKING, cast
 
 from .constants import STALE_CLEANUP_MODES, StaleCleanupMode
+from .ipam_marker import (
+    DESCRIPTION_MAX_LENGTH,
+    MarkerKind,
+    marked_description_q,
+    parse_marker,
+    render_marker,
+    rewrite_marker,
+    status_kind,
+)
 from .plugin_settings import plugin_setting
 from .reservations import (
     GlobalReservationScope,
@@ -292,7 +301,7 @@ def _cleanup_stale_ips(
     Matching criteria (all must be true):
     - ``dns_name`` matches *hostname* exactly
     - ``status`` is one of ``dhcp``, ``active``, or ``reserved``
-    - ``description`` starts with ``"Synced from Kea DHCP"``
+    - ``description`` starts with the sync marker (see :mod:`netbox_kea.ipam_marker`)
     - Address is NOT *new_ip_str* (the current IP is never touched)
     - Address is NOT in *exclude_ips* (allows protecting all IPs in a multi-address reservation)
     - Same IP family (IPv4 cleanup does not remove IPv6 entries)
@@ -321,9 +330,9 @@ def _cleanup_stale_ips(
 
     # An IP address with an IPAM Ownership link belongs to the reconciliation (ADR 0006), not to this cleanup.
     stale_qs = NbIP.objects.filter(
+        marked_description_q(),
         dns_name=hostname,
         status__in=("dhcp", "active", "reserved"),
-        description__startswith=_KEA_DESC_PREFIX,
         kea_ownership_links__isnull=True,
     ).exclude(address__net_host=new_ip_str)
 
@@ -412,29 +421,21 @@ def _sync_mac_address(hw_address: str, hostname: str = ""):
     return None
 
 
-_KEA_DESC_PREFIX = "Synced from Kea DHCP"
-
-#: The note this module writes on a Prefix it creates for a Kea subnet.
-KEA_SUBNET_PREFIX_DESCRIPTION = f"{_KEA_DESC_PREFIX} subnet"
-#: The note for a Prefix created from a Reservation's delegated prefix.
-KEA_DELEGATED_PREFIX_DESCRIPTION = f"{_KEA_DESC_PREFIX} delegated prefix"
-
-
 def _is_kea_managed_description(description: str | None) -> bool:
-    """Return ``True`` when *description* is safe for the sync to overwrite.
+    """Return ``True`` when *description* is safe for the old sync paths to overwrite.
 
     A description is Kea-managed when it is empty (the IP is being adopted this
-    run) or starts with ``"Synced from Kea DHCP"``.  Manually-curated
-    descriptions are left untouched.
+    run) or starts with the sync marker (see :mod:`netbox_kea.ipam_marker`).
+    Manually-curated descriptions are left untouched.
     """
-    return not description or description.startswith(_KEA_DESC_PREFIX)
+    return not description or parse_marker(description) is not None
 
 
 def is_kea_managed_ip(ip_obj: NbIPAddress) -> bool:
     """Return ``True`` when *ip_obj* is safe for the sync to claim/overwrite.
 
     A NetBox IP is *Kea-managed* when its ``description`` is blank or starts
-    with ``"Synced from Kea DHCP"`` (see :func:`_is_kea_managed_description`).
+    with the sync marker (see :func:`_is_kea_managed_description`).
     Any other description marks the IP as a manually-curated ("foreign") entry
     that an unattended (bulk / background) sync must not overwrite unless
     explicitly forced.
@@ -442,18 +443,19 @@ def is_kea_managed_ip(ip_obj: NbIPAddress) -> bool:
     return _is_kea_managed_description(getattr(ip_obj, "description", "") or "")
 
 
-def _status_description(status: str) -> str:
-    """Return the Kea-sync description that matches the semantic *status*.
+def _ip_description(description: str, status: str, *, claim: bool) -> str:
+    """Return the description that the sync writes for *status*, or *description* when the sync keeps it.
 
-    - ``dhcp``     → dynamic lease, no reservation
-    - ``reserved`` → reservation only, no active lease
-    - ``active``   → both an active lease and a reservation
+    The sync rewrites only the marker block and keeps the operator note after it. A blank description, or any
+    description when *claim* is ``True``, gets the block alone. The result can exceed the NetBox length limit.
     """
-    if status == "dhcp":
-        return f"{_KEA_DESC_PREFIX} lease"
-    if status == "active":
-        return f"{_KEA_DESC_PREFIX} lease + reservation"
-    return f"{_KEA_DESC_PREFIX} reservation"  # "reserved"
+    kind = status_kind(status)
+    marker = parse_marker(description)
+    if marker is not None:
+        return rewrite_marker(marker, kind)
+    if claim or not description:
+        return render_marker(kind)
+    return description
 
 
 def _apply_ip_fields(
@@ -463,17 +465,18 @@ def _apply_ip_fields(
     *,
     claim: bool = False,
 ) -> bool:
-    """Apply *status*, *hostname* (dns_name), and a status-derived description to *ip_obj*.
+    """Apply *status*, *hostname* (dns_name), and the status marker of the description to *ip_obj*.
 
-    The description is derived from *status* via :func:`_status_description` and
-    self-heals on every run for Kea-managed IPs — so an IP first created from a
-    lease but later (also) reserved no longer stays labelled ``"... lease"``.
+    The marker kind comes from *status* (see :func:`_ip_description`) and
+    self-heals on every run for Kea-managed IPs, so an IP first created from a
+    lease but later (also) reserved no longer stays marked ``lease``.
 
-    When *claim* is ``True`` (an explicit forced sync), the Kea-managed description
-    is written even over a foreign (manually-curated) one — so the override is
+    When *claim* is ``True`` (an explicit forced sync), the marker is written even
+    over a foreign (manually-curated) description, so the override is
     *sticky*: :func:`is_kea_managed_ip` returns ``True`` afterwards and the next
     unattended sync updates the IP normally instead of re-reporting it as a
     conflict. When ``False`` (default), a foreign description is preserved.
+    When the marker and the note do not fit in the description, the description stays and a warning is logged.
 
     Returns ``True`` when any field was changed and the object should be saved.
     """
@@ -489,8 +492,14 @@ def _apply_ip_fields(
         ip_obj.dns_name = hostname
         changed = True
 
-    description = _status_description(status)
-    if (claim or _is_kea_managed_description(ip_obj.description)) and ip_obj.description != description:
+    description = _ip_description(ip_obj.description, status, claim=claim)
+    if len(description) > DESCRIPTION_MAX_LENGTH:
+        logger.warning(
+            "IP address %s keeps its description: the marker and the note do not fit in %d characters",
+            ip_obj.address,
+            DESCRIPTION_MAX_LENGTH,
+        )
+    elif ip_obj.description != description:
         ip_obj.description = description
         changed = True
 
@@ -540,7 +549,7 @@ def sync_lease_to_netbox(
 
     The ``status`` is ``"dhcp"`` (or ``"active"`` when the IP also has a
     reservation) and ``dns_name`` is set to the lease hostname.  The description
-    self-heals to match the status (see :func:`_status_description`).  The prefix
+    marker self-heals to match the status (see :func:`_ip_description`).  The prefix
     length is resolved by :func:`_resolve_prefix_length` — the Kea subnet (via
     ``subnet-id`` + *subnet_prefix_map*) is authoritative, falling back to the
     longest matching NetBox prefix, then ``/32`` / ``/128``.
@@ -919,22 +928,20 @@ def _single_match(queryset, kea_object: str, list_filter: dict[str, str]):
     return matches[0] if matches else None
 
 
-def sync_subnet_to_netbox_prefix(
-    network: IPNetworkValue, vrf=None, description: str = KEA_SUBNET_PREFIX_DESCRIPTION
-) -> tuple:
+def sync_subnet_to_netbox_prefix(network: IPNetworkValue, vrf=None, kind: MarkerKind = "subnet") -> tuple:
     """Create or update a NetBox Prefix from a parsed Kea network.
 
     Behaviour:
     - If a Prefix with this CIDR already exists (in *vrf*), it is returned
       as-is (idempotent).  The description is set only when the existing
       object has an empty description, to avoid overwriting operator notes.
-    - Otherwise a new active Prefix is created with *description*.
+    - Otherwise a new active Prefix is created with the marker of *kind*.
 
     Args:
         network: The canonical network, e.g. from :func:`netbox_kea.kea.subnet_network`.
         vrf: NetBox VRF instance to assign the prefix to.  ``None`` means the global VRF.
-        description: The note for a Prefix this call creates, or for an existing one that
-            carries none.
+        kind: The marker kind for a Prefix this call creates, or for an existing one that
+            carries no description.
 
     Returns ``(prefix_object, created, did_update)`` where *created* is ``True`` for new
     objects and *did_update* is ``True`` when an existing object's description was set.
@@ -943,6 +950,7 @@ def sync_subnet_to_netbox_prefix(
     from ipam.models import Prefix
 
     cidr = str(network)
+    description = render_marker(kind)
     prefix_obj = _single_match(
         Prefix.objects.filter(prefix=cidr, vrf=vrf),
         f"subnet {cidr}",
@@ -1008,11 +1016,11 @@ def sync_pool_to_netbox_ip_range(pool: Pool, subnet: IPNetworkValue, vrf=None) -
             end_address=end_addr,
             vrf=vrf,
             status="active",
-            description="Synced from Kea DHCP pool",
+            description=render_marker("pool"),
         )
     did_update = False
     if not created and not range_obj.description:
-        range_obj.description = "Synced from Kea DHCP pool"
+        range_obj.description = render_marker("pool")
         range_obj.save(update_fields=["description"])
         did_update = True
     return range_obj, created, did_update

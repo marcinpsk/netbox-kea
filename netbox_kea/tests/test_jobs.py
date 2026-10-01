@@ -214,7 +214,7 @@ class TestKeaIpamSyncJobRun(TestCase):
             address="198.18.0.29/32",
             status="dhcp",
             dns_name="valid.example.invalid",
-            description="Synced from Kea DHCP (dhcp)",
+            description="[kea-sync: lease]",
         )
         valid_lease = {"ip-address": "198.18.0.30", "subnet-id": 1, "hostname": "valid.example.invalid"}
         for hostname in (["host.example.invalid"], {"name": "host.example.invalid"}):
@@ -298,7 +298,7 @@ class TestKeaIpamSyncJobRun(TestCase):
             address="198.18.0.20/24",
             status="reserved",
             dns_name="old.example.invalid",
-            description="Synced from Kea DHCP reservation",
+            description="[kea-sync: reservation]",
         )
         reservation = {
             "ip-address": "198.18.0.20",
@@ -453,7 +453,7 @@ class TestKeaIpamSyncJobRun(TestCase):
             address="10.0.0.99/32",
             status="dhcp",
             dns_name="host1",
-            description="Synced from Kea DHCP (dhcp)",
+            description="[kea-sync: lease]",
         )
         overflow = {**_LEASE4, "ip-address": "10.0.0.2", "hostname": "host2"}
         with _patch_kea(leases4=[_LEASE4, overflow]):
@@ -577,7 +577,7 @@ class TestKeaIpamSyncJobRun(TestCase):
             address="10.0.0.99/32",
             status="dhcp",
             dns_name="host1",
-            description="Synced from Kea DHCP (dhcp)",
+            description="[kea-sync: lease]",
         )
 
         with _patch_kea(
@@ -600,7 +600,7 @@ class TestKeaIpamSyncJobRun(TestCase):
             address="10.0.0.99/32",
             status="dhcp",
             dns_name="host1",
-            description="Synced from Kea DHCP (dhcp)",
+            description="[kea-sync: lease]",
         )
         with _patch_kea(leases4=[_LEASE4], reservations=[]):
             self._run()
@@ -616,7 +616,7 @@ class TestKeaIpamSyncJobRun(TestCase):
             address="10.0.0.99/32",
             status="dhcp",
             dns_name="host1",
-            description="Synced from Kea DHCP (dhcp)",
+            description="[kea-sync: lease]",
         )
         bad_lease = {**_LEASE4, "ip-address": "not-an-ip"}
         with _patch_kea(leases4=[bad_lease]):
@@ -637,7 +637,7 @@ class TestKeaIpamSyncJobRun(TestCase):
             address="10.0.0.99/32",
             status="reserved",
             dns_name=_PAGE_HOSTNAME,
-            description="Synced from Kea DHCP (reserved)",
+            description="[kea-sync: reservation]",
         )
 
         # A full page yields a cursor; the page it points at never arrives.
@@ -720,7 +720,7 @@ class TestKeaIpamSyncJobRun(TestCase):
             address="198.18.0.200/32",
             status="reserved",
             dns_name="partial-snapshot.example.invalid",
-            description="Synced from Kea DHCP (reserved)",
+            description="[kea-sync: reservation]",
         )
 
         with _patch_kea(
@@ -1229,7 +1229,7 @@ class TestSubnetCatalogueJob(TestCase):
         prefix.save()
         summary, _ = self._run(responses)
         prefix.refresh_from_db()
-        self.assertEqual(prefix.description, "Synced from Kea DHCP subnet")
+        self.assertEqual(prefix.description, "[kea-sync: subnet]")
         self.assertEqual(summary[0]["created"], 0)
         self.assertEqual(summary[0]["updated"], 1)
         summary, _ = self._run(responses)
@@ -1253,7 +1253,7 @@ class TestSubnetCatalogueJob(TestCase):
         summary, _ = self._run(responses)
         ranges[0].refresh_from_db()
         ranges[1].refresh_from_db()
-        self.assertEqual(ranges[0].description, "Synced from Kea DHCP pool")
+        self.assertEqual(ranges[0].description, "[kea-sync: pool]")
         self.assertEqual(ranges[1].description, "Operator pool note")
         self.assertEqual(summary[0]["updated"], 1)
         self.assertEqual(summary[0]["created"], 0)

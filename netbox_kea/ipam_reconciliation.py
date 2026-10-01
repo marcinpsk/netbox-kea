@@ -23,17 +23,17 @@ from ipam.models import IPAddress
 
 from .constants import Family, StaleCleanupMode
 from .integrations import dhcp_plugin
+from .ipam_marker import DESCRIPTION_MAX_LENGTH, parse_marker, render_marker, status_kind
 from .kea import KeaException, lease_fields
 from .models import IPAMOwnershipLink, IPAMOwnershipSource, next_confirmation_number
 from .sync import (
-    _KEA_DESC_PREFIX,
     _apply_ip_fields,
     _apply_ip_mask,
     _compute_ip_status,
     _get_stale_cleanup_mode,
+    _ip_description,
     _record_hostname,
     _resolve_prefix_length,
-    _status_description,
     _sync_mac_address,
 )
 
@@ -253,7 +253,7 @@ def _host(address: Any) -> str:
 
 
 def _is_owned_description(description: str) -> bool:
-    return description.startswith(_KEA_DESC_PREFIX)
+    return parse_marker(description) is not None
 
 
 def _claim_lease(server: Server, family: Family, lease: _LeaseReport, phase: LeasePhase) -> _Outcome:
@@ -275,7 +275,7 @@ def _claim_lease(server: Server, family: Family, lease: _LeaseReport, phase: Lea
             vrf_id=vrf_id,
             status=status,
             dns_name=facts.hostname,
-            description=_status_description(status),
+            description=render_marker(status_kind(status)),
         )
         ip.save()
         _store_link(None, server, family, ip, facts.stored(), stale_mark=None)
@@ -298,6 +298,10 @@ def _claim_lease(server: Server, family: Family, lease: _LeaseReport, phase: Lea
         return "disagreement"
 
     status = _compute_ip_status("lease", ip.status, ip_str=lease.address, other_source_ips=phase.reservation_addresses)
+    if len(_ip_description(ip.description, status, claim=False)) > DESCRIPTION_MAX_LENGTH:
+        # The new marker and the operator note do not fit: the object stays as it is, and the owner keeps its link.
+        _store_link(own, server, family, ip, facts.stored(), stale_mark=_kept_mark(own))
+        return "conflict"
     changed = _apply_ip_fields(ip, status=status, hostname=facts.hostname)
     changed = _apply_ip_mask(ip, lease.address, facts.prefix_length) or changed
     if changed:

@@ -39,10 +39,27 @@ requires exactly one. The source is `lease`, `reservation`, `subnet`, `pool` or 
 unique per `(server, family, source, object)`. Each link also stores the facts that its owner last reported for
 the object.
 
-An object is owned when it has at least one link and its description still starts with the marker. An operator who
-removes the marker from the start of the description releases the object. A note after the marker does not. The
-next run drops the links and reports a conflict. It does not remove or deprecate the released object, even when it
-drops the last link. The `lease + reservation` status comes from the links of the object.
+An object is owned when it has at least one link and its description still starts with the marker. The marker is
+a block at the start of the description: `[kea-sync: <kind>]`. The kind is `lease`, `reservation`,
+`lease + reservation`, `subnet`, `delegated prefix` or `pool`. Free operator text can follow the block, after one
+space. A description that is only the block has no trailing space. `netbox_kea/ipam_marker.py` owns this format, and
+every reader and writer of the marker uses it.
+
+The sync reads and rewrites only the block. It keeps all text after the block, byte for byte. An operator releases
+the object when the description does not start with a well-formed block of a known kind (or with the legacy marker
+below): the block is missing, moved or changed, for example `[kea-sync: lease ]` or `rack 4 [kea-sync: lease]`. A
+note after the block does not release the object. The next run drops the links and reports a conflict. It does not remove or deprecate the released object, even when it drops
+the last link. The `lease + reservation` status comes from the links of the object.
+
+The NetBox description holds at most 200 characters. When the new block and the kept text do not fit, the run does
+not change the object and does not cut the text. It keeps and confirms the link of its owner, as after an owner
+disagreement, and reports a conflict. The next run tries again.
+
+A description that starts with the legacy text `Synced from Kea DHCP` is also a marker. The legacy marker is that
+text followed by the longest known kind that matches (` lease + reservation` before ` lease`). The next write that
+rewrites the description replaces the legacy marker with the block, and keeps the text after it. For example,
+`Synced from Kea DHCP lease my note` becomes `[kea-sync: lease] my note`. Adoption (see Upgrade) uses the same
+recognizer.
 
 A blank description is not the marker. When a run reports an object that has no link and no marker, the run
 reports a conflict and does not change the object. Only a forced `claim` writes the marker over it and links it.

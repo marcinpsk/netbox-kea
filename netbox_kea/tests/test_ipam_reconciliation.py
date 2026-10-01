@@ -366,13 +366,13 @@ class LeasePhaseReleaseTest(TestCase):
     @override_settings(PLUGINS_CONFIG=_config("remove"))
     def test_a_note_after_the_marker_does_not_release_the_row(self):
         _reconcile(self.server, [_lease(hostname="host")])
-        ip = self._curate("Synced from Kea DHCP lease, printer on floor 2")
+        ip = self._curate("[kea-sync: lease] printer on floor 2")
 
         report = _reconcile(self.server, [_lease(hostname="host")])
 
         self.assertEqual(report.conflicts, set())
         self.assertEqual(set(_links(ip)), {"owner"})
-        self._curate("Synced from Kea DHCP lease, printer on floor 2")
+        self._curate("[kea-sync: lease] printer on floor 2")
 
         _reconcile(self.server, [])
 
@@ -397,7 +397,7 @@ class LeasePhaseReleaseTest(TestCase):
 
     @override_settings(PLUGINS_CONFIG=_config("remove"))
     def test_an_unlinked_marker_row_in_the_sync_vrf_is_linked_in_place(self):
-        ip = NbIP.objects.create(address=f"{ADDRESS}/32", status="dhcp", description="Synced from Kea DHCP lease")
+        ip = NbIP.objects.create(address=f"{ADDRESS}/32", status="dhcp", description="[kea-sync: lease]")
 
         report = _reconcile(self.server, [_lease(hostname="host")])
 
@@ -410,9 +410,7 @@ class LeasePhaseReleaseTest(TestCase):
     def test_a_row_outside_the_sync_vrf_is_neither_linked_nor_changed(self):
         self.server.sync_vrf = VRF.objects.create(name="sync")
         self.server.save()
-        other_vrf = NbIP.objects.create(
-            address=f"{ADDRESS}/32", status="dhcp", description="Synced from Kea DHCP lease"
-        )
+        other_vrf = NbIP.objects.create(address=f"{ADDRESS}/32", status="dhcp", description="[kea-sync: lease]")
 
         _reconcile(self.server, [_lease(hostname="host")])
 
@@ -421,6 +419,85 @@ class LeasePhaseReleaseTest(TestCase):
         other_vrf.refresh_from_db()
         self.assertEqual((str(other_vrf.address), other_vrf.dns_name), (f"{ADDRESS}/32", ""))
         self.assertEqual(_links(other_vrf), {})
+
+
+@override_settings(PLUGINS_CONFIG=_config("remove"))
+class LeasePhaseMarkerTest(TestCase):
+    """The sync rewrites only the marker block at the start of the description and keeps the operator note."""
+
+    def setUp(self):
+        self.server = _server("owner")
+
+    def _reconcile_reserved(self, leases: list[dict]) -> SyncReport:
+        with stub_kea({"lease4-get-page": _lease_page(leases)}):
+            return reconcile(self.server, 4, [_phase(reservation_addresses=frozenset({ADDRESS}))])
+
+    def _describe(self, description: str) -> NbIP:
+        ip = _row()
+        ip.description = description
+        ip.save()
+        return ip
+
+    def test_an_operator_note_after_the_block_survives_a_status_change(self):
+        _reconcile(self.server, [_lease(hostname="host")])
+        self.assertEqual(_row().description, "[kea-sync: lease]")
+        self._describe("[kea-sync: lease] printer on floor 2")
+
+        self._reconcile_reserved([_lease(hostname="host")])
+
+        row = _row()
+        self.assertEqual(row.status, "active")
+        self.assertEqual(row.description, "[kea-sync: lease + reservation] printer on floor 2")
+
+    def test_a_legacy_marker_becomes_the_block_and_keeps_its_note(self):
+        cases = (
+            ("Synced from Kea DHCP lease printer on floor 2", "[kea-sync: lease + reservation] printer on floor 2"),
+            ("Synced from Kea DHCP lease + reservation", "[kea-sync: lease + reservation]"),
+            ("Synced from Kea DHCP lease, rack 4", "[kea-sync: lease + reservation], rack 4"),
+        )
+        for legacy, expected in cases:
+            with self.subTest(legacy=legacy):
+                NbIP.objects.all().delete()
+                ip = NbIP.objects.create(address=f"{ADDRESS}/24", status="dhcp", description=legacy)
+
+                report = self._reconcile_reserved([_lease(hostname="host")])
+
+                self.assertEqual(report.conflicts, set())
+                self.assertEqual((_row().pk, _row().description), (ip.pk, expected))
+                self.assertEqual(set(_links(ip)), {"owner"})
+
+    def test_a_changed_or_moved_block_releases_the_row(self):
+        for description in ("[kea-sync: lease ]", "rack 4 [kea-sync: lease]", "[kea-sync: leases]", "[kea-sync:lease]"):
+            with self.subTest(description=description):
+                NbIP.objects.all().delete()
+                _reconcile(self.server, [_lease(hostname="host")])
+                ip = self._describe(description)
+
+                report = self._reconcile_reserved([_lease(hostname="renamed")])
+
+                self.assertEqual(report.conflicts, {ADDRESS})
+                self.assertEqual(_links(ip), {})
+                row = _row()
+                self.assertEqual((row.description, row.dns_name, row.status), (description, "host", "dhcp"))
+
+    def test_a_note_that_does_not_fit_with_the_new_block_keeps_the_link_and_the_row(self):
+        _reconcile(self.server, [_lease(hostname="host")])
+        description = "[kea-sync: lease] " + "n" * (200 - len("[kea-sync: lease] "))
+        ip = self._describe(description)
+
+        report = self._reconcile_reserved([_lease(hostname="renamed")])
+
+        self.assertEqual(report.conflicts, {ADDRESS})
+        self.assertEqual(report.errors, 0)
+        self.assertEqual(set(_links(ip)), {"owner"})
+        self.assertIsNone(_links(ip)["owner"].stale_mark)
+        row = _row()
+        self.assertEqual((row.description, row.dns_name, row.status), (description, "host", "dhcp"))
+
+        fitting = _reconcile(self.server, [_lease(hostname="renamed")])
+
+        self.assertEqual(fitting.conflicts, set())
+        self.assertEqual((_row().description, _row().dns_name), (description, "renamed"))
 
 
 @override_settings(PLUGINS_CONFIG=_config("remove"))
@@ -605,7 +682,7 @@ class LeasePhaseConcurrencyTest(TransactionTestCase):
     def test_the_old_stale_cleanup_keeps_a_row_that_a_concurrent_run_links_under_the_identity_lock(self):
         server = _server("owner")
         ip = NbIP.objects.create(
-            address=f"{ADDRESS}/24", status="dhcp", dns_name="host", description="Synced from Kea DHCP lease"
+            address=f"{ADDRESS}/24", status="dhcp", dns_name="host", description="[kea-sync: lease]"
         )
 
         with transaction.atomic():
