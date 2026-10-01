@@ -10,20 +10,7 @@ The sync interval comes from ``SyncConfig.interval_minutes``, which the Sync Job
 page edits. ``enqueue_once`` and each periodic run read it, so a saved value
 applies after the next scheduled run.
 
-Configuration knobs (all under ``PLUGINS_CONFIG["netbox_kea"]``):
-
-``sync_interval_minutes`` (int, default 5)
-    Seeds ``SyncConfig.interval_minutes`` when migration 0018 creates the row.
-
-``sync_leases_enabled`` (bool, default True)
-    Sync active Kea leases to NetBox IPAM (status=active).
-
-``sync_reservations_enabled`` (bool, default True)
-    Sync Kea reservations to NetBox IPAM (status=reserved).
-
-``sync_max_leases_per_server`` (int, default 50000)
-    Hard cap on leases fetched per server per run.  Prevents runaway memory
-    consumption on very large deployments.  Set to 0 to disable the cap.
+The ``PLUGINS_CONFIG["netbox_kea"]`` settings and their rules are in ``plugin_settings.SETTINGS``.
 """
 
 from __future__ import annotations
