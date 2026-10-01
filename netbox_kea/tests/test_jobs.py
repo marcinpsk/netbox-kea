@@ -3,8 +3,7 @@
 """Exercise the sync job through real ORM writes and a Kea HTTP transport stub.
 
 Job tests assert IPAddress, Prefix, IPRange and summary results. Catalogue parsing
-and malformed wire shapes belong to the catalogue and configuration tests. Pure
-configuration and scheduling helpers retain focused SimpleTestCase coverage.
+and malformed wire shapes belong to the catalogue and configuration tests.
 """
 
 from __future__ import annotations
@@ -16,7 +15,7 @@ from unittest.mock import MagicMock, patch
 
 import requests
 from core.exceptions import JobFailed
-from django.test import SimpleTestCase, TestCase, override_settings
+from django.test import TestCase, override_settings
 from ipam.models import IPAddress as NbIP
 from ipam.models import IPRange, Prefix
 
@@ -471,14 +470,14 @@ class TestKeaIpamSyncJobRun(TestCase):
         """result=2 (unknown command) from reservation-get-page → WARNING about host_cmds.
 
         The real ``command()`` turns the result-2 code into a ``KeaException``,
-        which the job reads as "host_cmds hook not loaded".
+        which the Reservation phase reads as "host_cmds hook not loaded".
         """
         self._make_db_server()
         with _patch_kea(
             leases4=[_LEASE4],
             responses={"reservation-get-page": {"result": 2, "text": "unknown command"}},
         ):
-            with self.assertLogs("netbox_kea.jobs", level="WARNING") as cm:
+            with self.assertLogs("netbox_kea.ipam_reconciliation", level="WARNING") as cm:
                 self._run()
         self.assertTrue(any("host_cmds" in msg for msg in cm.output))
 
@@ -510,16 +509,15 @@ class TestKeaIpamSyncJobRun(TestCase):
     def test_absent_host_cmds_is_skipped_not_counted_as_an_error(self):
         """A server without host_cmds has no reservations to sync, so the job must not fail.
 
-        ``_fetch_reservation_snapshot`` returned ``None`` for both a missing hook and a
-        genuine failure, so the skip incremented ``stats["errors"]`` and every sync run
-        against such a server ended in ``JobFailed``.
+        A missing hook once counted as a failed read, so every sync run against such a
+        server ended in ``JobFailed``.
         """
         self._make_db_server()
         with _patch_kea(
             leases4=[_LEASE4],
             responses={"reservation-get-page": {"result": 2, "text": "unknown command"}},
         ):
-            with self.assertLogs("netbox_kea.jobs", level="WARNING"):
+            with self.assertLogs("netbox_kea.ipam_reconciliation", level="WARNING"):
                 # Must not raise JobFailed: nothing failed, the feature is absent.
                 KeaIpamSyncJob(_make_job()).run()
 
@@ -529,7 +527,7 @@ class TestKeaIpamSyncJobRun(TestCase):
             leases4=[_LEASE4],
             responses={"reservation-get-page": {"result": 2, "text": "unknown command"}},
         ):
-            with self.assertLogs("netbox_kea.jobs", level="WARNING"):
+            with self.assertLogs("netbox_kea.ipam_reconciliation", level="WARNING"):
                 job = self._run()
 
         self.assertEqual([entry["errors"] for entry in job.data["summary"]], [0])
@@ -544,13 +542,13 @@ class TestKeaIpamSyncJobRun(TestCase):
             leases4=[_LEASE4],
             responses={"reservation-get-page": {"result": 1, "text": "internal error"}},
         ):
-            with self.assertLogs("netbox_kea.jobs", level="WARNING") as logs:
+            with self.assertLogs("netbox_kea.ipam_reconciliation", level="WARNING") as logs:
                 self._run()
 
         failures = [
             record
             for record in logs.records
-            if "Reservation Snapshot failed" in record.getMessage() and record.exc_info is not None
+            if "the Reservation snapshot failed" in record.getMessage() and record.exc_info is not None
         ]
         self.assertTrue(failures, [record.getMessage() for record in logs.records])
 
@@ -562,7 +560,7 @@ class TestKeaIpamSyncJobRun(TestCase):
             leases4=[_LEASE4],
             responses={"reservation-get-page": {"result": 1, "text": "internal error"}},
         ):
-            with self.assertLogs("netbox_kea.jobs", level="WARNING"):
+            with self.assertLogs("netbox_kea.ipam_reconciliation", level="WARNING"):
                 job = self._run()
 
         self.assertEqual([entry["errors"] for entry in job.data["summary"]], [1])
@@ -733,13 +731,13 @@ class TestKeaIpamSyncJobRun(TestCase):
                 )
             },
         ):
-            with self.assertLogs("netbox_kea.jobs", level="WARNING") as logs:
+            with self.assertLogs("netbox_kea.ipam_reconciliation", level="WARNING") as logs:
                 self._run()
 
         self.assertTrue(IPAddress.objects.filter(address__net_host="198.18.0.1").exists())
         self.assertTrue(IPAddress.objects.filter(address__net_host="198.18.0.100").exists())
         self.assertTrue(IPAddress.objects.filter(pk=stale.pk).exists())
-        self.assertTrue(any("Reservation Snapshot diagnostic" in message for message in logs.output))
+        self.assertTrue(any("the Reservation snapshot is incomplete" in message for message in logs.output))
         self.assertFalse(any("malformed Reservation" in message for message in logs.output))
 
     # ── reservation KeaException (non-result-2) ───────────────────────────
@@ -751,9 +749,9 @@ class TestKeaIpamSyncJobRun(TestCase):
             leases4=[_LEASE4],
             responses={"reservation-get-page": {"result": 1, "text": "internal error"}},
         ):
-            with self.assertLogs("netbox_kea.jobs", level="WARNING") as cm:
+            with self.assertLogs("netbox_kea.ipam_reconciliation", level="WARNING") as cm:
                 self._run_raises()
-        self.assertTrue(any("Reservation Snapshot failed" in msg for msg in cm.output))
+        self.assertTrue(any("the Reservation snapshot failed" in msg for msg in cm.output))
 
     # ── per-reservation sync exception ───────────────────────────────────
 
@@ -901,9 +899,9 @@ class TestKeaIpamSyncJobRun(TestCase):
             leases4=[_LEASE4],
             responses={"reservation-get-page": RuntimeError("unexpected")},
         ):
-            with self.assertLogs("netbox_kea.jobs", level="WARNING") as cm:
+            with self.assertLogs("netbox_kea.ipam_reconciliation", level="WARNING") as cm:
                 self._run_raises()
-        self.assertTrue(any("Reservation Snapshot failed" in msg for msg in cm.output))
+        self.assertTrue(any("the Reservation snapshot failed" in msg for msg in cm.output))
 
     # ── unhandled exception in _sync_one_server ────────────────────────
 
@@ -1123,28 +1121,6 @@ class TestSyncIntervalFromSyncConfig(TestCase):
         job.refresh_from_db()
         self.assertIsNone(job.interval)
         self.assertFalse(self._successors(job).exists())
-
-
-class TestRecordConflicts(SimpleTestCase):
-    """_record_conflicts folds one phase's conflicts into the job stats."""
-
-    def test_a_set_deduplicates_across_calls_and_spellings(self):
-        from netbox_kea.jobs import _record_conflicts
-
-        stats = {"conflicts": 0}
-        seen = set()
-        _record_conflicts(stats, ["2001:db8::1", "10.0.0.1"], seen)
-        _record_conflicts(stats, ["2001:0db8::0001"], seen)
-        self.assertEqual(seen, {"2001:db8::1", "10.0.0.1"})
-        self.assertEqual(stats["conflicts"], 2)
-
-    def test_without_a_set_the_counts_accumulate(self):
-        from netbox_kea.jobs import _record_conflicts
-
-        stats = {}
-        _record_conflicts(stats, ["10.0.0.1", "10.0.0.1"], None)
-        _record_conflicts(stats, ["10.0.0.2"], None)
-        self.assertEqual(stats["conflicts"], 3)
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)

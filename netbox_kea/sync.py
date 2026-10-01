@@ -784,8 +784,8 @@ def sync_reservation_to_netbox(
             exclude_ips=frozenset(all_ips),
         )
 
-    if reservation.identity.identifier_type == "hw-address":
-        _sync_mac_address(reservation.identity.value, hostname)
+    if (hw_address := reservation.identity.hardware_address) is not None:
+        _sync_mac_address(hw_address, hostname)
 
     return ReservationSyncResult(
         reservation=reservation,

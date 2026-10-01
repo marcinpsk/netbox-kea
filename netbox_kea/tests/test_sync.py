@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ipaddress
 from collections.abc import Iterable
+from types import UnionType
 from typing import get_args, get_origin, get_type_hints
 
 from django.test import SimpleTestCase, TestCase, override_settings
@@ -1423,25 +1424,19 @@ class TestCleanupStaleIpsBatch(TestCase):
             cleanup_stale_ips_batch([object()])
 
     def test_the_producer_and_the_consumer_declare_the_same_record_types(self):
-        """Both sync phases fill one list, so every side must name the same accepted types."""
+        """The reconciliation reports the records that the old stale cleanup reads, so both sides name one type."""
         from netbox_kea.ipam_reconciliation import SyncReport
-        from netbox_kea.jobs import _sync_server_reservations
-        from netbox_kea.models import Server
-        from netbox_kea.reservations import Reservation, ReservationSnapshot
         from netbox_kea.sync import cleanup_stale_ips_batch
 
-        job_types = {"Reservation": Reservation, "ReservationSnapshot": ReservationSnapshot, "Server": Server}
         consumer_hints = get_type_hints(cleanup_stale_ips_batch)
-        reservation_hints = get_type_hints(_sync_server_reservations, localns=job_types)
-        consumed = consumer_hints["synced_records"]
-        self.assertEqual(reservation_hints["all_synced"], consumed)
-        # The lease phase reports its records through reconcile; the job adds them to the same list.
-        (lease_record,) = get_args(get_type_hints(SyncReport)["lease_records"])
-        self.assertIn(get_origin(lease_record), get_args(get_args(consumed)[0]))
+        (record_type,) = get_args(consumer_hints["synced_records"])
         # The keep-set channel carries the same records; the consumer only reads them.
-        record_types = get_args(consumed)[0]
-        self.assertEqual(consumer_hints["protected_records"], Iterable[record_types])
-        self.assertEqual(reservation_hints["protected"], consumed)
+        self.assertEqual(consumer_hints["protected_records"], Iterable[record_type])
+        report_hints = get_type_hints(SyncReport)
+        for name in ("lease_records", "reservation_records", "skipped_reservations"):
+            (reported,) = get_args(report_hints[name])
+            members = get_args(reported) if get_origin(reported) is UnionType else (get_origin(reported) or reported,)
+            self.assertLessEqual(set(members), set(get_args(record_type)), name)
 
     def test_every_jobs_function_has_resolvable_type_hints(self):
         """Every annotation name in netbox_kea.jobs except Server must exist at runtime."""
