@@ -38,15 +38,19 @@ enforces it?
 
 1. With a branch active, every plugin entry point (UI view, REST API, GraphQL, background job,
    template extension on a core page) has one documented outcome. A read returns data and says
-   which schema it read. A write is refused before any Kea command and before any database write.
-   No outcome is an unhandled 500.
+   where the plugin's own sources come from: Kea data is live, and netbox_kea rows come from main.
+   It names the active branch as the routing context only. Other NetBox objects follow
+   netbox-branching's routing. A write is refused before any Kea command and before any database
+   write. No outcome is an unhandled 500.
 2. A NetBox core action executed in a branch does not change the plugin's rows in main, and sends
    no Kea command. A change to a global object (an exempt or non-branchable core model, such as
    CustomField, User, `core.Job`, Bookmark) lands in main, and so do its effects on plugin rows.
 3. After a branch merges or is discarded, main's plugin rows are consistent with main's NetBox
    objects.
 4. A CI job with netbox-branching on NetBox 4.7 runs tests that fail when 1 to 3 regress.
-5. A mechanical guard stops a new write path from bypassing the refusal.
+5. A mechanical guard stops a new plugin route or a new Kea write command from bypassing the
+   refusal. Queryset `update()`, `bulk_create()`, `bulk_update()` and raw SQL on plugin models
+   are outside the contract (see the table below), so no guard covers them.
 
 ### Prior art (sibling plugins, same NetBox and netbox-branching versions)
 
