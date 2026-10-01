@@ -193,12 +193,12 @@ class LeasePhaseOwnersTest(TestCase):
         self.assertEqual(links["first"].facts, {"hostname": "host-a", "prefix_length": 24})
         self.assertEqual(links["second"].facts, {"hostname": "host-b", "prefix_length": 24})
 
-        _reconcile(first, [])
+        # The cleanup that removes the disagreeing link applies the hostname of the remaining link.
+        removal = _reconcile(first, [])
+        self.assertEqual((_row().dns_name, removal.updated), ("host-b", 1))
         applied = _reconcile(second, [_lease(hostname="host-b")])
 
-        self.assertEqual(_row().dns_name, "host-b")
-        self.assertEqual(applied.disagreements, set())
-        self.assertEqual(applied.updated, 1)
+        self.assertEqual((applied.disagreements, applied.updated), (set(), 0))
 
     def test_a_link_without_facts_takes_part_in_no_fact_comparison(self):
         first, second = _server("first"), _server("second")
@@ -669,6 +669,35 @@ class ReservationPhaseTest(TestCase):
                 self.assertEqual((row.pk, row.status, row.description), (ip.pk, status, f"[kea-sync: {source}]"))
                 self.assertEqual(_owners(ip), {("owner", source)})
                 self.assertEqual((report.removed, report.updated), (0, 1))
+
+    def test_the_hostname_follows_when_cleanup_removes_a_link_that_is_not_the_last(self):
+        cases = (
+            ("the Reservation goes", [_lease(hostname="laptop.example.com")], [], "laptop.example.com"),
+            ("the Reservation goes, the lease names no host", [_lease()], [], "laptop"),
+            ("the lease goes", [], [_reservation(hostname="laptop")], "laptop"),
+        )
+        for case, leases, reservations, dns_name in cases:
+            with self.subTest(case):
+                NbIP.objects.all().delete()
+                _reconcile(
+                    self.server, leases or [_lease(hostname="laptop.example.com")], [_reservation(hostname="laptop")]
+                )
+                self.assertEqual(_row().dns_name, "laptop")
+
+                _reconcile(self.server, leases, reservations)
+
+                self.assertEqual(_row().dns_name, dns_name)
+
+    def test_cleanup_changes_no_hostname_while_the_remaining_reservation_links_disagree(self):
+        _reconcile(self.server, [_lease(hostname="laptop.example.com")], [_reservation(hostname="laptop")])
+        for name in ("b", "c"):
+            disagreeing = _reconcile(_server(name), reservations=[_reservation(hostname=f"laptop-{name}")])
+            self.assertEqual(disagreeing.disagreements, {ADDRESS})
+
+        _reconcile(self.server, [_lease(hostname="laptop.example.com")])
+
+        self.assertEqual(_owners(_row()), {("owner", "lease"), ("b", "reservation"), ("c", "reservation")})
+        self.assertEqual((_row().status, _row().dns_name), ("active", "laptop"))
 
     def test_an_incomplete_reservation_snapshot_skips_reservation_cleanup_and_the_lease_phase_keeps_last_links(self):
         failures = {
