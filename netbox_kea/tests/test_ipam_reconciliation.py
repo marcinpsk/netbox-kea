@@ -681,12 +681,18 @@ class ReservationPhaseTest(TestCase):
                 NbIP.objects.all().delete()
                 _reconcile(
                     self.server,
-                    [_lease("10.0.0.5", "both"), _lease("10.0.0.6", "leased")],
-                    [_reservation("10.0.0.5", "both"), _reservation("10.0.0.7", "reserved")],
+                    [_lease("10.0.0.5", "both"), _lease("10.0.0.6", "leased"), _lease("10.0.0.8", "still-leased")],
+                    [
+                        _reservation("10.0.0.5", "both"),
+                        _reservation("10.0.0.7", "reserved"),
+                        _reservation("10.0.0.8", "still-leased"),
+                    ],
                 )
-                both, leased, reserved = _row("10.0.0.5"), _row("10.0.0.6"), _row("10.0.0.7")
+                both, leased, reserved, still_leased = (_row(f"10.0.0.{host}") for host in (5, 6, 7, 8))
 
-                report = _reconcile(self.server, responses={"reservation-get-page": page})
+                report = _reconcile(
+                    self.server, [_lease("10.0.0.8", "still-leased")], responses={"reservation-get-page": page}
+                )
 
                 self.assertFalse(report.complete)
                 self.assertEqual(report.removed, 0)
@@ -694,6 +700,11 @@ class ReservationPhaseTest(TestCase):
                 self.assertEqual((_owners(both), _row("10.0.0.5").status), ({("owner", "reservation")}, "reserved"))
                 self.assertEqual((_owners(leased), _row("10.0.0.6").status), ({("owner", "lease")}, "dhcp"))
                 self.assertEqual((_owners(reserved), _row("10.0.0.7").status), ({("owner", "reservation")}, "reserved"))
+                # The Reservation link is not the last link of the Server, so only a Reservation cleanup could drop it.
+                self.assertEqual(
+                    (_owners(still_leased), _row("10.0.0.8").status),
+                    ({("owner", "lease"), ("owner", "reservation")}, "active"),
+                )
 
     def test_a_failed_lease_phase_keeps_the_last_link_to_an_address_that_the_reservation_phase_drops(self):
         _reconcile(
