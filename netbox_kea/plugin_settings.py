@@ -74,6 +74,7 @@ SETTINGS: dict[str, IntSetting | BoolSetting | ChoiceSetting] = {
     "stale_ip_cleanup": ChoiceSetting(default="remove", choices=STALE_CLEANUP_MODES),
     # The SyncConfig.interval_minutes check constraint.
     "sync_interval_minutes": IntSetting(default=5, minimum=1, maximum=1440),
+    "sync_enabled": BoolSetting(default=True),
     "sync_leases_enabled": BoolSetting(default=True),
     "sync_reservations_enabled": BoolSetting(default=True),
     "sync_prefixes_enabled": BoolSetting(default=True),
