@@ -16,7 +16,6 @@ from collections.abc import Callable, Collection, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypeVar, cast
 
-import requests
 from django.db import DatabaseError, connection, transaction
 from django.db.models import F
 from ipam.models import IPAddress
@@ -249,7 +248,8 @@ def _lease_reports(server: Server, family: Family, phase: LeasePhase, report: Sy
     try:
         client = server.get_client(version=family)
         collection = client.lease_get_all(version=family, max_leases=phase.max_leases)
-    except (KeaException, requests.RequestException, ValueError, RuntimeError) as exc:
+    # requests errors are OSError subclasses; a missing TLS file raises a plain OSError.
+    except (KeaException, OSError, ValueError, RuntimeError) as exc:
         report.fail_snapshot(LEASE, f"Server {server.name} (v{family}): the lease snapshot", exc)
         return {}
     logger.info("Server %s (v%s): fetched %d leases", server.name, family, len(collection.leases))
@@ -303,7 +303,7 @@ def _reservation_reports(
         )
         report.incomplete.add(RESERVATION)
         return {}
-    except (requests.RequestException, ValueError, RuntimeError) as exc:
+    except (OSError, ValueError, RuntimeError) as exc:
         report.fail_snapshot(RESERVATION, what, exc)
         return {}
     if snapshot.diagnostics or not snapshot.complete:
