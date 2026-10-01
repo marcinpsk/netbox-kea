@@ -108,6 +108,22 @@ class _SyncViewBase(TestCase):
 class TestLease4SyncView(_SyncViewBase):
     """POST to server_lease4_sync creates/updates a NetBox IPAddress."""
 
+    def test_unavailable_catalogue_returns_a_generic_error_without_claiming(self):
+        from netbox_kea.models import IPAMOwnershipLink
+
+        with stub_kea(
+            {
+                "lease4-get": _lease_get("host.example.com"),
+                "subnet4-list": {"result": 1, "text": "private diagnostic"},
+                "config-get": {"result": 1, "text": "private diagnostic"},
+            }
+        ):
+            response = self.client.post(self._url(), {"ip_address": "198.18.0.10"})
+        self.assertContains(response, "Sync error: see server logs", status_code=500)
+        self.assertNotContains(response, "private diagnostic", status_code=500)
+        self.assertFalse(NbIP.objects.exists())
+        self.assertFalse(IPAMOwnershipLink.objects.exists())
+
     def test_duplicate_ipam_rows_report_a_sync_error_without_changing_either(self):
         from netbox_kea.models import IPAMOwnershipLink
 
@@ -126,9 +142,10 @@ class TestLease4SyncView(_SyncViewBase):
         super().setUp()
         self._start_stub(
             {
+                **_catalogue_responses(4, 1, "192.168.0.0/16"),
                 "lease4-get": _lease_get(
                     "mock-host.local", **{"hw-address": "aa:bb:cc:00:00:01", "valid-lft": 86400, "cltt": 1700000000}
-                )
+                ),
             }
         )
 
@@ -204,7 +221,12 @@ class TestLease6SyncView(_SyncViewBase):
     def setUp(self):
         super().setUp()
         self._start_stub(
-            {"lease6-get": _lease_get("mock-v6.local", duid="01:02:03:04", **{"valid-lft": 86400, "cltt": 1700000000})}
+            {
+                **_catalogue_responses(6, 1, "2001:db8::/64"),
+                "lease6-get": _lease_get(
+                    "mock-v6.local", duid="01:02:03:04", **{"valid-lft": 86400, "cltt": 1700000000}
+                ),
+            }
         )
 
     def _url(self):
@@ -217,7 +239,7 @@ class TestLease6SyncView(_SyncViewBase):
         )
         self.assertEqual(response.status_code, 200)
 
-    def test_creates_netbox_ip_with_slash128_for_ipv6(self):
+    def test_creates_netbox_ip_with_kea_subnet_mask_for_ipv6(self):
 
         self.client.post(
             self._url(),
@@ -225,7 +247,7 @@ class TestLease6SyncView(_SyncViewBase):
         )
         ip = NbIP.objects.filter(address__net_host="2001:db8::2").first()
         self.assertIsNotNone(ip)
-        self.assertTrue(str(ip.address).endswith("/128"))
+        self.assertTrue(str(ip.address).endswith("/64"))
 
     def test_created_ip_has_dhcp_status(self):
 
@@ -590,9 +612,10 @@ class TestSyncViewPermissionChecks(_SyncViewBase):
         # self.user is superuser — should succeed as before
         url = reverse("plugins:netbox_kea:server_lease4_sync", args=[self.server.pk])
         stub = {
+            **_catalogue_responses(4, 1, "192.168.99.0/24"),
             "lease4-get": _lease_get(
                 "mock-host.local", **{"hw-address": "aa:bb:cc:00:00:01", "valid-lft": 86400, "cltt": 1700000000}
-            )
+            ),
         }
         with stub_kea(stub):
             response = self.client.post(url, {"ip_address": "192.168.99.3"})

@@ -12,7 +12,7 @@ from __future__ import annotations
 import hashlib
 import ipaddress
 import logging
-from collections.abc import Callable, Collection, Iterable, Iterator, Sequence
+from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypeVar, cast
 
@@ -20,6 +20,7 @@ from django.db import DatabaseError, connection, transaction
 from django.db.models import F
 from ipam.models import IPAddress, Prefix
 
+from . import subnet_catalogue
 from .constants import Family, StaleCleanupMode
 from .integrations import dhcp_plugin
 from .ipam_marker import parse_marker, render_marker, status_kind
@@ -33,7 +34,6 @@ from .sync import (
     _get_stale_cleanup_mode,
     _ip_description,
     _record_hostname,
-    _resolve_prefix_length,
     _sync_mac_address,
 )
 
@@ -71,10 +71,14 @@ _LOCK_CLASS = _int4("netbox_kea.ipam_reconciliation")
 
 @dataclass(frozen=True)
 class LeasePhase:
-    """The lease phase of one reconcile call: the Server's lease snapshot of the family."""
+    """The lease phase of one reconcile call: the Server's lease snapshot of the family.
+
+    A mask mapping is the available Kea authority, even when empty. ``None`` selects the job's unavailable-catalogue
+    fallback to Prefixes in the Server's VRF, then host masks.
+    """
 
     max_leases: int | None
-    subnet_prefix_lengths: dict[int, int]
+    subnet_prefix_lengths: Mapping[int, int] | None
     source: ClassVar[str] = LEASE
 
 
@@ -199,7 +203,7 @@ def claim(server: Server, family: Family, records: Sequence[dict[str, Any] | Res
     """Claim one source's records in the Server's VRF, with per-address outcomes and no stale cleanup.
 
     A call contains leases or Reservations, never both. All records are validated and grouped before any write.
-    Lease masks come from the longest Prefix in the Server's VRF. Reservations carry their verified Subnet mask.
+    Lease masks come from the live Kea Subnet Catalogue. Reservations carry their verified Subnet mask.
     """
     if family not in (4, 6) or isinstance(family, bool):
         raise ValueError("The address family must be 4 or 6")
@@ -209,7 +213,11 @@ def claim(server: Server, family: Family, records: Sequence[dict[str, Any] | Res
     if any(isinstance(record, dict) != lease_records for record in records):
         raise ValueError("A claim takes one source: leases or Reservations, not both")
     source = LEASE if lease_records else RESERVATION
-    reports = _claim_reports(server, family, records)
+    subnet_prefix_lengths = {}
+    if lease_records:
+        catalogue = subnet_catalogue.for_synchronization(server, family)
+        subnet_prefix_lengths = {subnet.subnet_id: subnet.network.prefixlen for subnet in catalogue.subnets}
+    reports = _claim_reports(server, family, records, subnet_prefix_lengths)
     outcomes = {address: AddressClaim(address, "error") for address in reports}
 
     def apply(row: _Report) -> AddressClaim:
@@ -229,30 +237,21 @@ def claim(server: Server, family: Family, records: Sequence[dict[str, Any] | Res
 
 
 def _claim_reports(
-    server: Server, family: Family, records: Sequence[dict[str, Any] | Reservation]
+    server: Server,
+    family: Family,
+    records: Sequence[dict[str, Any] | Reservation],
+    subnet_prefix_lengths: Mapping[int, int],
 ) -> dict[str, _Report]:
     """Validate and aggregate one call before acquiring locks or changing objects."""
     reports: dict[str, _Report] = {}
     for record in records:
         if isinstance(record, dict):
-            fields = lease_fields(record)
-            address = ipaddress.ip_address(fields.address)
-            if address.version != family:
-                raise ValueError("The lease address does not match the claim family")
-            hostname = _record_hostname(record)
-            prefix = (
-                Prefix.objects.filter(vrf_id=server.sync_vrf_id, prefix__net_contains_or_equals=str(address))
-                .order_by("-prefix__net_mask_length")
-                .first()
-            )
-            prefix_length = prefix.prefix.prefixlen if prefix is not None else address.max_prefixlen
-            mac_addresses = ((fields.hw_address, hostname),) if fields.hw_address else ()
-            _add_report(reports, _Report(str(address), _Facts(hostname, prefix_length), mac_addresses))
+            _add_report(reports, _lease_report(server, family, record, subnet_prefix_lengths))
         else:
             if record.family != family:
                 raise ValueError("The Reservation does not match the claim family")
             facts = None
-            mac_addresses = ()
+            mac_addresses: tuple[tuple[str, str], ...] = ()
             if isinstance(record.scope, InSubnetReservationScope):
                 facts = _Facts(record.hostname, record.scope.subnet.network.prefixlen)
                 if (hardware := record.identity.hardware_address) is not None:
@@ -260,6 +259,30 @@ def _claim_reports(
             for address in record.addresses:
                 _add_report(reports, _Report(str(address), facts, mac_addresses))
     return reports
+
+
+def _lease_report(
+    server: Server, family: Family, lease: dict[str, Any], subnet_prefix_lengths: Mapping[int, int] | None
+) -> _Report:
+    """Resolve lease facts from Kea, or the job's explicit unavailable-catalogue fallback."""
+    fields = lease_fields(lease)
+    address = ipaddress.ip_address(fields.address)
+    if address.version != family:
+        raise ValueError("The lease address does not match the claim family")
+    hostname = _record_hostname(lease)
+    if subnet_prefix_lengths is not None:
+        if fields.subnet_id not in subnet_prefix_lengths:
+            raise ValueError("The lease Subnet ID is absent from the Subnet Catalogue")
+        prefix_length = subnet_prefix_lengths[fields.subnet_id]
+    else:
+        prefix = (
+            Prefix.objects.filter(vrf_id=server.sync_vrf_id, prefix__net_contains_or_equals=str(address))
+            .order_by("-prefix__net_mask_length")
+            .first()
+        )
+        prefix_length = prefix.prefix.prefixlen if prefix is not None else address.max_prefixlen
+    mac_addresses = ((fields.hw_address, hostname),) if fields.hw_address else ()
+    return _Report(str(address), _Facts(hostname, prefix_length), mac_addresses)
 
 
 def reconcile(server: Server, family: Family, phases: Sequence[Phase]) -> SyncReport:
@@ -366,14 +389,12 @@ def _lease_reports(server: Server, family: Family, phase: LeasePhase, report: Sy
         # The snapshot already validated each address.
         address = str(ipaddress.ip_address(fields.address))
         try:
-            hostname = _record_hostname(lease)
-        except RuntimeError as exc:
+            row = _lease_report(server, family, lease, phase.subnet_prefix_lengths)
+        except (ValueError, RuntimeError) as exc:
             report.fail_row(LEASE, f"lease {address}", exc)
             continue
         report.lease_records.append(lease)
-        facts = _Facts(hostname, _resolve_prefix_length(address, fields.subnet_id, phase.subnet_prefix_lengths))
-        mac_addresses = ((fields.hw_address, hostname),) if fields.hw_address else ()
-        _add_report(reports, _Report(address, facts, mac_addresses))
+        _add_report(reports, row)
     return reports
 
 

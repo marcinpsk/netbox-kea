@@ -27,7 +27,7 @@ from ..reservation_transfer import (
     resolve_import_proposal,
 )
 from ..reservations import TRAVERSAL_DIAGNOSTIC_CODES
-from ..subnet_catalogue import MutationScope
+from ..subnet_catalogue import CatalogueUnavailable, MutationScope
 from ..utilities import (
     kea_error_hint,
     parse_lease_csv,
@@ -68,7 +68,7 @@ class _BaseSyncView(ConditionalLoginRequiredMixin, View):
             outcome = next(iter(result.addresses.values()))
             if outcome.outcome == "error":
                 return HttpResponse("Sync error: see server logs for details.", status=500)
-        except (ValueError, IntegrityError, ValidationError, OperationalError, ProgrammingError):
+        except (CatalogueUnavailable, ValueError, IntegrityError, ValidationError, OperationalError, ProgrammingError):
             logger.exception("Sync error for ip=%s", ip_str)
             return HttpResponse("Sync error: see server logs for details.", status=500)
 

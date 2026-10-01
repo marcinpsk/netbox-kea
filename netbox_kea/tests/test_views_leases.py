@@ -1632,7 +1632,7 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
         return data
 
     # A followed redirect lands on the leases page, which fetches the subnet quick-select.
-    _SUBNETS4 = _subnet_list(4, [])
+    _SUBNETS4 = _subnet_list(4, [{"id": 1, "subnet": "10.0.0.0/24"}])
 
     def test_lease4_add_form_has_sync_to_netbox_field(self):
         """GET lease4 add page renders a sync_to_netbox checkbox."""
@@ -1643,18 +1643,31 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
     def test_post_lease4_add_with_sync_links_the_created_ip(self):
         from netbox_kea.models import IPAMOwnershipLink
 
-        with _lease_stub({"lease4-add": {"result": 0}}):
+        with _lease_stub({"lease4-add": {"result": 0}, "subnet4-list": self._SUBNETS4}):
             response = self.client.post(self._url(version=4), self._post4(sync=True))
         self.assertEqual(response.status_code, 302)
         ip = NbIP.objects.get(address__net_host="10.0.0.200")
         link = IPAMOwnershipLink.objects.get(ip_address=ip)
         self.assertEqual((link.server_id, link.family, link.source), (self.server.pk, 4, "lease"))
-        self.assertEqual(link.facts, {"hostname": "newlease.example.com", "prefix_length": 32})
+        self.assertEqual(link.facts, {"hostname": "newlease.example.com", "prefix_length": 24})
+
+    def test_post_lease4_add_keeps_kea_success_when_the_catalogue_is_unavailable(self):
+        from netbox_kea.models import IPAMOwnershipLink
+
+        with _lease_stub(
+            {"lease4-add": {"result": 0}, "subnet4-list": {"result": 1}, "config-get": {"result": 1}}
+        ) as kea:
+            response = self.client.post(self._url(version=4), self._post4(sync=True))
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(kea.commands().count("lease4-add"), 1)
+        self.assertTrue(any("sync failed" in str(message) for message in get_messages(response.wsgi_request)))
+        self.assertFalse(NbIP.objects.exists())
+        self.assertFalse(IPAMOwnershipLink.objects.exists())
 
     def test_post_lease4_add_without_sync_does_not_write_ipam(self):
         from netbox_kea.models import IPAMOwnershipLink
 
-        with _lease_stub({"lease4-add": {"result": 0}}):
+        with _lease_stub({"lease4-add": {"result": 0}, "subnet4-list": self._SUBNETS4}):
             response = self.client.post(self._url(version=4), self._post4(sync=False))
         self.assertEqual(response.status_code, 302)
         self.assertFalse(NbIP.objects.exists())
@@ -1665,7 +1678,10 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
         from netbox_kea.models import IPAMOwnershipLink
 
         other = Server.objects.create(name="other-owner", ca_url="https://other.example.com")
-        existing = claim(other, 4, [{"ip-address": "10.0.0.200", "hostname": "other.example.com"}], force=False)
+        with _lease_stub({"subnet4-list": self._SUBNETS4}):
+            existing = claim(
+                other, 4, [{"ip-address": "10.0.0.200", "hostname": "other.example.com", "subnet-id": 1}], force=False
+            )
         before = NbIP.objects.values().get(pk=existing.primary.pk)
         with _lease_stub({"lease4-add": {"result": 0}, "subnet4-list": self._SUBNETS4}):
             response = self.client.post(self._url(version=4), self._post4(sync=True), follow=True)
@@ -1707,7 +1723,7 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
         perm.users.add(limited)
         self.client.force_login(limited)
 
-        with _lease_stub({"lease4-add": {"result": 0}}) as kea:
+        with _lease_stub({"lease4-add": {"result": 0}, "subnet4-list": self._SUBNETS4}) as kea:
             response = self.client.post(self._url(version=4), self._post4(sync=True))
         self.assertEqual(response.status_code, 302)
         self.assertEqual(kea.commands().count("lease4-add"), 1)

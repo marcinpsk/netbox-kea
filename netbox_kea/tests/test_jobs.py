@@ -143,6 +143,15 @@ def _patch_kea(
     error code, or an exception instance raised at the HTTP boundary.
     """
     reservation_rows = list(reservations or [])
+    lease_subnets = {
+        4: [{"id": 1, "subnet": "10.0.0.0/24"}] if leases4 is not None else [],
+        6: [{"id": 1, "subnet": "2001:db8::/64"}] if leases6 is not None else [],
+    }
+
+    def subnets(version: int) -> list[dict]:
+        configured = {subnet["id"]: subnet for subnet in lease_subnets[version]}
+        configured.update({subnet["id"]: subnet for subnet in _reservation_subnets(reservation_rows, version)})
+        return list(configured.values())
 
     def config_get(body: dict) -> dict:
         service = (body.get("service") or ["dhcp4"])[0]
@@ -151,13 +160,13 @@ def _patch_kea(
         subnet_key = f"subnet{version}"
         return {
             "result": 0,
-            "arguments": {root: {subnet_key: _reservation_subnets(reservation_rows, version), "shared-networks": []}},
+            "arguments": {root: {subnet_key: subnets(version), "shared-networks": []}},
         }
 
     def subnet_list(body: dict) -> dict:
         version = 6 if body.get("command") == "subnet6-list" else 4
-        subnets = _reservation_subnets(reservation_rows, version)
-        return {"result": 0, "arguments": {"subnets": subnets}} if subnets else {"result": 3}
+        rows = subnets(version)
+        return {"result": 0, "arguments": {"subnets": rows}} if rows else {"result": 3}
 
     def reservation_page(body: dict) -> dict:
         version = 6 if (body.get("service") or ["dhcp4"])[0] == "dhcp6" else 4
@@ -181,6 +190,19 @@ def _patch_kea(
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestKeaIpamSyncJobRun(TestCase):
     """Run the job with real sync helpers and ORM writes; stub only Kea HTTP."""
+
+    def test_available_empty_catalogue_does_not_select_the_unavailable_fallback(self):
+        from ipam.models import IPAddress, Prefix
+
+        from netbox_kea.models import IPAMOwnershipLink
+
+        self._make_db_server(dhcp6=False, sync_reservations_enabled=False)
+        Prefix.objects.create(prefix="10.0.0.0/24")
+        with _patch_kea(leases4=[_LEASE4], responses=_catalogue_responses_for_subnets(4, [])):
+            job = self._run()
+        self.assertEqual(job.data["summary"][0]["errors"], 1)
+        self.assertFalse(IPAddress.objects.exists())
+        self.assertFalse(IPAMOwnershipLink.objects.exists())
 
     # ── scaffolding ──────────────────────────────────────────────────────────
 
@@ -791,7 +813,7 @@ class TestKeaIpamSyncJobRun(TestCase):
 
     def test_job_data_summary_written_after_run(self):
         """Per-server stats are persisted to job.data['summary'] after a run."""
-        self._make_db_server(name="kea-prod")
+        self._make_db_server(name="kea-prod", sync_prefixes_enabled=False)
         with _patch_kea(leases4=[_LEASE4]):
             mock_job = _make_job()
             KeaIpamSyncJob(mock_job).run()
