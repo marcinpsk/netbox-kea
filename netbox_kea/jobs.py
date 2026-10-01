@@ -10,20 +10,7 @@ The sync interval comes from ``SyncConfig.interval_minutes``, which the Sync Job
 page edits. ``enqueue_once`` and each periodic run read it, so a saved value
 applies after the next scheduled run.
 
-Configuration knobs (all under ``PLUGINS_CONFIG["netbox_kea"]``):
-
-``sync_interval_minutes`` (int, default 5)
-    Seeds ``SyncConfig.interval_minutes`` when migration 0018 creates the row.
-
-``sync_leases_enabled`` (bool, default True)
-    Sync active Kea leases to NetBox IPAM (status=active).
-
-``sync_reservations_enabled`` (bool, default True)
-    Sync Kea reservations to NetBox IPAM (status=reserved).
-
-``sync_max_leases_per_server`` (int, default 50000)
-    Hard cap on leases fetched per server per run.  Prevents runaway memory
-    consumption on very large deployments.  Set to 0 to disable the cap.
+The ``PLUGINS_CONFIG["netbox_kea"]`` settings and their rules are in ``plugin_settings.SETTINGS``.
 """
 
 from __future__ import annotations
@@ -42,6 +29,7 @@ if TYPE_CHECKING:
 # TYPE_CHECKING-only Family or DuplicateNetBoxRowsError would raise NameError.
 from . import branching, subnet_catalogue
 from .constants import Family
+from .plugin_settings import plugin_setting
 from .reservations import Reservation, ReservationSnapshot
 from .subnet_catalogue import CatalogueUnavailable, CompleteCatalogueSnapshot, VerifiedSubnet
 from .sync import DuplicateNetBoxRowsError
@@ -50,21 +38,6 @@ logger = logging.getLogger(__name__)
 
 # NetBox requires a registry interval; enqueue_once replaces it with SyncConfig.interval_minutes.
 _DEFAULT_INTERVAL = 5
-
-
-def _get_plugin_config() -> dict[str, Any]:
-    """Return the netbox_kea section of PLUGINS_CONFIG (never raises)."""
-    from django.conf import settings
-
-    plugins_config = getattr(settings, "PLUGINS_CONFIG", {})
-    if not isinstance(plugins_config, dict):
-        logger.warning("PLUGINS_CONFIG is %s, expected dict — using defaults.", type(plugins_config).__name__)
-        return {}
-    config = plugins_config.get("netbox_kea", {})
-    if not isinstance(config, dict):
-        logger.warning("PLUGINS_CONFIG['netbox_kea'] is %s, expected dict — using defaults.", type(config).__name__)
-        return {}
-    return config
 
 
 class _SnapshotSkipped:
@@ -141,81 +114,6 @@ def _record_conflicts(stats: dict[str, int], conflicts: list[str], conflict_ips:
         stats["conflicts"] = len(conflict_ips)
     else:
         stats["conflicts"] = stats.get("conflicts", 0) + len(conflicts)
-
-
-def _sync_server_leases(
-    server: Server,
-    version: Family,
-    *,
-    max_leases: int,
-    stats: dict[str, int],
-    all_synced: list[dict | Reservation],
-    reservation_ips: frozenset[str] | None = None,
-    subnet_prefix_map: dict[int, int] | None = None,
-    conflict_ips: set[str] | None = None,
-) -> tuple[bool, frozenset[str]]:
-    """Fetch all leases from *server* for *version* and upsert into NetBox IPAM.
-
-    Returns ``(fully_completed, lease_ips)`` where *fully_completed* is ``True``
-    only when the full lease set was fetched without truncation AND every
-    individual lease row synced without error (``False`` means *all_synced* or
-    *lease_ips* may be incomplete and should not be forwarded to reservation sync
-    or used for cleanup) and *lease_ips* is the frozenset of successfully synced
-    lease IP addresses processed this run (used for two-pass idempotent
-    reservation sync).
-    """
-    from .sync import sync_lease_to_netbox
-
-    try:
-        client = server.get_client(version=version)
-        collection = client.lease_get_all(version=version, max_leases=max_leases or None)
-        raw_leases = collection.leases
-        truncated = collection.truncated
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Failed to fetch leases from server %s (v%s): %s", server.name, version, exc)
-        stats["errors"] += 1
-        return False, frozenset()
-
-    if truncated:
-        logger.warning(
-            "Server %s (v%s): lease fetch truncated at %d — increase sync_max_leases_per_server",
-            server.name,
-            version,
-            max_leases,
-        )
-
-    logger.info("Server %s (v%s): fetched %d leases", server.name, version, len(raw_leases))
-
-    lease_ips: set[str] = set()
-    had_errors = False
-    # Foreign (manually-curated) NetBox IPs skipped to avoid overwriting them.
-    conflicts: list[str] = []
-    for lease in raw_leases:
-        try:
-            ip, created, changed = sync_lease_to_netbox(
-                lease,
-                cleanup=False,
-                reservation_ips=reservation_ips,
-                subnet_prefix_map=subnet_prefix_map,
-                conflicts=conflicts,
-            )
-            all_synced.append(lease)
-            lease_ips.add(str(ipaddress.ip_interface(str(ip.address)).ip))
-            if created:
-                stats["created"] += 1
-            elif changed:
-                stats["updated"] += 1
-        except Exception:  # noqa: PERF203
-            logger.debug(
-                "Failed to sync lease from server %s",
-                server.name,
-                exc_info=True,
-            )
-            stats["errors"] += 1
-            had_errors = True
-
-    _record_conflicts(stats, conflicts, conflict_ips)
-    return not truncated and not had_errors, frozenset(lease_ips)
 
 
 def _sync_server_reservations(
@@ -410,6 +308,7 @@ def _sync_one_server(
     stats: dict[str, int],
     *,
     conflict_ips: set[str],
+    disagreement_ips: set[str],
     duplicates: list[DuplicateNetBoxRowsError],
 ) -> None:
     """Sync a single server's leases, reservations, prefixes, and IP ranges.
@@ -419,11 +318,14 @@ def _sync_one_server(
     summary.  One set per server, shared by both phases and both IP versions: a
     foreign IP that has *both* a lease and a reservation is one conflict for the
     operator to resolve, not two.  Each phase still accumulates into its own list
-    because ``sync_{lease,reservation}_to_netbox`` append to it.
+    because ``sync_reservation_to_netbox`` appends to it.
+
+    *disagreement_ips* collects the addresses whose owners report different facts (ADR 0006).
 
     *duplicates* is a caller-owned list that collects the Kea subnets and
     pools that match more than one NetBox row, so the caller can name them.
     """
+    from .ipam_reconciliation import LeasePhase, reconcile
     from .sync import cleanup_stale_ips_batch
 
     all_synced: list[dict | Reservation] = []
@@ -463,18 +365,22 @@ def _sync_one_server(
         lease_ips_set: frozenset[str] = frozenset()
         lease_phase_ok = False
         if sync_leases:
-            sync_ok, lease_ips_set = _sync_server_leases(
-                server,
-                version,
-                max_leases=max_leases,
-                stats=stats,
-                all_synced=all_synced,
-                reservation_ips=pre_reservation_ips,
-                subnet_prefix_map=subnet_prefix_map,
-                conflict_ips=conflict_ips,
+            phase = LeasePhase(
+                max_leases=max_leases or None,
+                subnet_prefix_lengths=subnet_prefix_map,
+                reservation_addresses=pre_reservation_ips,
             )
-            lease_phase_ok = sync_ok
-            cleanup_safe &= sync_ok
+            report = reconcile(server, version, [phase])
+            stats["created"] += report.created
+            stats["updated"] += report.updated
+            stats["errors"] += report.errors
+            conflict_ips.update(report.conflicts)
+            disagreement_ips.update(report.disagreements)
+            # Until #214 the old stale cleanup reads the lease records too; it never touches a linked row.
+            all_synced.extend(report.lease_records)
+            lease_ips_set = frozenset(report.lease_addresses)
+            lease_phase_ok = report.complete
+            cleanup_safe &= report.complete
 
         if sync_reservations:
             # Pass lease_ips_set only when the lease phase fully completed this run;
@@ -504,6 +410,16 @@ def _sync_one_server(
     # Authoritative count: the per-phase increments above double-count an IP that is
     # foreign to both a lease and a reservation, so the deduplicated set wins.
     stats["conflicts"] = len(conflict_ips)
+    stats["disagreements"] = len(disagreement_ips)
+    if disagreement_ips:
+        sample = sorted(disagreement_ips)[:_CONFLICT_SAMPLE_SIZE]
+        logger.warning(
+            "Server %s: %d NetBox IP(s) keep their facts because their owners report different facts; first %d: %s",
+            server.name,
+            len(disagreement_ips),
+            len(sample),
+            ", ".join(sample),
+        )
     if conflict_ips:
         sample = sorted(conflict_ips)[:_CONFLICT_SAMPLE_SIZE]
         logger.warning(
@@ -655,22 +571,11 @@ class KeaIpamSyncJob(JobRunner):
                 self.logger.info("Global sync kill-switch is active (SyncConfig.sync_enabled=False) — skipping.")
                 return
 
-            config = _get_plugin_config()
             sync_leases = sync_cfg.sync_leases_enabled
             sync_reservations = sync_cfg.sync_reservations_enabled
             sync_prefixes = sync_cfg.sync_prefixes_enabled
             sync_ip_ranges = sync_cfg.sync_ip_ranges_enabled
-            raw_max_leases = config.get("sync_max_leases_per_server", 50000)
-            try:
-                max_leases = int(raw_max_leases)
-            except (TypeError, ValueError):
-                self.logger.warning(f"Invalid sync_max_leases_per_server={raw_max_leases!r}; falling back to 50000")
-                max_leases = 50000
-            if max_leases < 0:
-                self.logger.warning(
-                    f"Negative sync_max_leases_per_server={max_leases} is not allowed; using 0 (no cap)"
-                )
-                max_leases = 0
+            max_leases = plugin_setting("sync_max_leases_per_server")
 
             if not any([sync_leases, sync_reservations, sync_prefixes, sync_ip_ranges]):
                 self.logger.info("All sync type flags are False — nothing to do.")
@@ -691,6 +596,7 @@ class KeaIpamSyncJob(JobRunner):
                 "errors": 0,
                 "prefix_errors": 0,
                 "conflicts": 0,
+                "disagreements": 0,
                 "skipped": 0,
             }
 
@@ -714,11 +620,13 @@ class KeaIpamSyncJob(JobRunner):
                     "errors": 0,
                     "prefix_errors": 0,
                     "conflicts": 0,
+                    "disagreements": 0,
                     "skipped": 0,
                 }
                 # Foreign NetBox IPs this server refused to overwrite, deduplicated
                 # across the lease and reservation phases and both IP versions.
                 conflict_ips: set[str] = set()
+                disagreement_ips: set[str] = set()
                 duplicates: list[DuplicateNetBoxRowsError] = []
 
                 try:
@@ -731,6 +639,7 @@ class KeaIpamSyncJob(JobRunner):
                         max_leases,
                         server_stats,
                         conflict_ips=conflict_ips,
+                        disagreement_ips=disagreement_ips,
                         duplicates=duplicates,
                     )
                 except Exception:
@@ -742,6 +651,7 @@ class KeaIpamSyncJob(JobRunner):
                     f" updated={server_stats['updated']} errors={server_stats['errors']}"
                     f" prefix_errors={server_stats['prefix_errors']}"
                     f" conflicts={server_stats['conflicts']}"
+                    f" disagreements={server_stats['disagreements']}"
                     f" skipped={server_stats['skipped']}"
                 )
                 # No row pks here: the list URL applies the viewer's own IPAM permissions.
@@ -764,6 +674,7 @@ class KeaIpamSyncJob(JobRunner):
                         "conflicts": server_stats["conflicts"],
                         "conflict_sample": sorted(conflict_ips)[:_CONFLICT_SAMPLE_SIZE],
                         "conflicts_truncated": max(0, len(conflict_ips) - _CONFLICT_SAMPLE_SIZE),
+                        "disagreements": server_stats["disagreements"],
                         "skipped": server_stats["skipped"],
                     }
                 )
@@ -772,7 +683,7 @@ class KeaIpamSyncJob(JobRunner):
                 f"Kea IPAM sync complete — servers={len(summary)}"
                 f" created={total['created']} updated={total['updated']}"
                 f" errors={total['errors']} prefix_errors={total['prefix_errors']}"
-                f" conflicts={total['conflicts']} skipped={total['skipped']}"
+                f" conflicts={total['conflicts']} disagreements={total['disagreements']} skipped={total['skipped']}"
             )
             if total["errors"] > 0 or total["prefix_errors"] > 0:
                 raise JobFailed

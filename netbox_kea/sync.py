@@ -21,8 +21,10 @@ import logging
 from collections.abc import Iterable
 from dataclasses import dataclass
 from functools import cached_property
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
+from .constants import STALE_CLEANUP_MODES, StaleCleanupMode
+from .plugin_settings import plugin_setting
 from .reservations import (
     GlobalReservationScope,
     InSubnetReservationScope,
@@ -31,6 +33,7 @@ from .reservations import (
 )
 
 if TYPE_CHECKING:
+    from django.db.models import QuerySet
     from ipam.models import IPAddress as NbIPAddress
 
     from .constants import IPNetworkValue
@@ -261,15 +264,16 @@ def _update_mac_description(mac_obj: object, hostname: str) -> bool:
     return False
 
 
-def _get_stale_cleanup_mode() -> str:
-    """Return the configured stale IP cleanup mode from PLUGINS_CONFIG.
+def _stale_cleanup_mode(value: str) -> StaleCleanupMode:
+    """Return *value* as a stale cleanup mode, or raise ValueError when it is not one."""
+    if value not in STALE_CLEANUP_MODES:
+        raise ValueError(f"stale_ip_cleanup must be one of {', '.join(STALE_CLEANUP_MODES)}, not {value!r}")
+    return cast("StaleCleanupMode", value)
 
-    Supported values: ``"remove"`` (default), ``"deprecate"``, ``"none"``.
-    """
-    from django.conf import settings
 
-    config = getattr(settings, "PLUGINS_CONFIG", {}).get("netbox_kea", {})
-    return config.get("stale_ip_cleanup", "remove")
+def _get_stale_cleanup_mode() -> StaleCleanupMode:
+    """Return the configured stale IP cleanup mode."""
+    return plugin_setting("stale_ip_cleanup")
 
 
 def _cleanup_stale_ips(
@@ -306,18 +310,21 @@ def _cleanup_stale_ips(
                      full-table scan :func:`dhcp_plugin.sys4_referenced_ip_ids`
                      performs on every call. When ``None`` it is computed on demand.
 
-    Returns the number of IPs cleaned up.
+    Returns the number of IPs cleaned up. Raises ValueError for an unknown *mode*.
 
     """
+    mode = _stale_cleanup_mode(mode)
     if mode == "none" or not hostname:
         return 0
 
     from ipam.models import IPAddress as NbIP
 
+    # An IP address with an IPAM Ownership link belongs to the reconciliation (ADR 0006), not to this cleanup.
     stale_qs = NbIP.objects.filter(
         dns_name=hostname,
         status__in=("dhcp", "active", "reserved"),
-        description__startswith="Synced from Kea DHCP",
+        description__startswith=_KEA_DESC_PREFIX,
+        kea_ownership_links__isnull=True,
     ).exclude(address__net_host=new_ip_str)
 
     # Also exclude sibling IPs (e.g. other addresses in the same DHCPv6 reservation).
@@ -338,19 +345,33 @@ def _cleanup_stale_ips(
     if protected_ids:
         stale_qs = stale_qs.exclude(pk__in=protected_ids)
 
-    count = stale_qs.count()
-    if count == 0:
-        return 0
+    from .ipam_reconciliation import _host
 
-    if mode == "remove":
-        stale_qs.delete()
-    elif mode == "deprecate":
-        stale_qs.update(status="deprecated")
-    else:
-        logger.warning("Unknown stale_ip_cleanup mode %r — skipping cleanup", mode)
-        return 0
+    candidates = [(pk, vrf_id, _host(address)) for pk, vrf_id, address in stale_qs.values_list("pk", "vrf", "address")]
+    return sum(_clean_stale_ip(stale_qs, pk, vrf_id, host, mode) for pk, vrf_id, host in candidates)
 
-    return count
+
+def _clean_stale_ip(
+    stale_qs: QuerySet[NbIPAddress], pk: int, vrf_id: int | None, host: str, mode: StaleCleanupMode
+) -> int:
+    """Remove or deprecate one candidate if it is still stale under its identity lock and row lock; return 1 if so."""
+    from django.db import transaction
+    from ipam.models import IPAddress as NbIP
+
+    from .ipam_reconciliation import _lock_identity
+
+    with transaction.atomic():
+        # The same identity lock as the reconciliation, so a link that a concurrent run creates is visible here.
+        _lock_identity(vrf_id, host)
+        locked = NbIP.objects.select_for_update().filter(pk=pk).first()
+        if locked is None or not stale_qs.filter(pk=pk, vrf=vrf_id, address__net_host=host).exists():
+            return 0
+        row = NbIP.objects.filter(pk=pk)
+        if mode == "remove":
+            row.delete()
+        else:
+            row.update(status="deprecated")
+    return 1
 
 
 def _sync_mac_address(hw_address: str, hostname: str = ""):

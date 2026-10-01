@@ -23,9 +23,11 @@ snapshots are keyed by Server pk, so a branch read would fill the key that main 
 With netbox-branching installed and a branch active, the plugin reads and does not write:
 
 - netbox_kea rows are main-only. A branching resolver answers `False` for `Server`, which is
-  change-logged; the other two are plain models. A plugin model becomes branchable only when it has
-  a writing foreign key (`CASCADE`, `SET_NULL`, `SET_DEFAULT`, `SET(...)`) to a branchable model
-  outside the plugin; the ADR 0006 ownership link will be the first.
+  change-logged; the other plain models stay in main because the resolver answers `False` for every
+  netbox_kea model. A delete in a branch reaches a plugin model that has a writing foreign key to a
+  branchable model outside the plugin. Such a key must be a concrete `CASCADE` key, so the
+  `pre_delete` receiver refuses the delete. The ADR 0006 ownership link is the first
+  (`docs/design/ipam-ownership-branching.md`).
 - `Server.sync_vrf` is `PROTECT`, so a VRF delete in a branch cannot null a main row through the
   branch connection's `search_path`.
 - Every write through the plugin is refused: in plugin middleware (also for an unusable branch

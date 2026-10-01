@@ -3,14 +3,16 @@
 # SPDX-License-Identifier: Apache-2.0
 import json
 import logging
+from functools import reduce
+from operator import or_
 from pathlib import Path
+from typing import get_args
 
 import requests
-from django.conf import settings
 from django.contrib.contenttypes.fields import GenericForeignKey
 from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator
-from django.db import models
+from django.db import connection, models
 from django.urls import reverse
 from netbox.constants import CENSOR_TOKEN, CENSOR_TOKEN_CHANGED
 from netbox.models import NetBoxModel
@@ -19,46 +21,20 @@ from netbox.models.features import JobsMixin
 from . import branching
 from .constants import Family
 from .kea import KeaClient, KeaCommand, KeaException
+from .plugin_settings import plugin_setting
 from .reservations import MAX_IDENTITY_LENGTH
 
 logger = logging.getLogger(__name__)
 
 
-def _get_kea_timeout(default: int = 30) -> int:
-    """Return kea_timeout from PLUGINS_CONFIG, coerced to int with a safe fallback."""
-    plugins_config = getattr(settings, "PLUGINS_CONFIG", {})
-    if not isinstance(plugins_config, dict):
-        return default
-    raw = (plugins_config.get("netbox_kea") or {}).get("kea_timeout", default)
-    try:
-        return int(raw)
-    except (TypeError, ValueError):
-        return default
+def _get_kea_timeout() -> int:
+    """Return the Kea request timeout in seconds."""
+    return plugin_setting("kea_timeout")
 
 
-def _get_max_unpaged_leases(default: int = 1000) -> int | None:
-    """Return the Subnet lease-query guard limit, or ``None`` when disabled."""
-    plugins_config = getattr(settings, "PLUGINS_CONFIG", {})
-    if not isinstance(plugins_config, dict):
-        return default
-    plugin_config = plugins_config.get("netbox_kea") or {}
-    if not isinstance(plugin_config, dict):
-        return default
-    raw = plugin_config.get("lease_query_max_unpaged_leases", default)
-    if isinstance(raw, bool):
-        return default
-    if isinstance(raw, int):
-        value = raw
-    elif isinstance(raw, str):
-        try:
-            value = int(raw)
-        except ValueError:
-            return default
-    else:
-        return default
-    if value == 0:
-        return None
-    return value if value > 0 else default
+def _get_max_unpaged_leases() -> int | None:
+    """Return the Subnet lease-query guard limit, or ``None`` when it is disabled."""
+    return plugin_setting("lease_query_max_unpaged_leases") or None
 
 
 class Server(JobsMixin, NetBoxModel):
@@ -215,7 +191,10 @@ class Server(JobsMixin, NetBoxModel):
         blank=True,
         related_name="+",
         verbose_name="Sync VRF",
-        help_text="VRF to assign when syncing subnets as Prefixes and pools as IP Ranges. Leave blank for the global VRF.",
+        help_text=(
+            "VRF to assign when syncing subnets as Prefixes, pools as IP Ranges and leases as IP Addresses. "
+            "Leave blank for the global VRF."
+        ),
     )
 
     class Meta:
@@ -516,3 +495,119 @@ class KeaDhcpLink(models.Model):
     def __str__(self) -> str:
         key = f"subnet-id={self.kea_subnet_id}" if self.kea_identity is None else self.kea_identity
         return f"{self.server} v{self.family} {key} → {self.object_type_id}:{self.object_id}"
+
+
+# One sequence gives every link confirmation and every phase cutoff number (ADR 0006); migration 0019 creates it.
+CONFIRMATION_SEQUENCE = "netbox_kea_ipam_ownership_confirmation"
+
+
+def next_confirmation_number() -> int:
+    """Take the next number of the confirmation sequence, for a link confirmation or a phase cutoff."""
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT nextval(%s)", [CONFIRMATION_SEQUENCE])
+        (number,) = cursor.fetchone()
+    return number
+
+
+class IPAMOwnershipSource(models.TextChoices):
+    """The Kea source through which a Server owns a NetBox object."""
+
+    LEASE = "lease", "Lease"
+    RESERVATION = "reservation", "Reservation"
+    SUBNET = "subnet", "Subnet"
+    POOL = "pool", "Pool"
+    DELEGATED_PREFIX = "delegated-prefix", "Delegated prefix"
+
+
+OWNED_OBJECT_KEYS = ("ip_address", "prefix", "ip_range")
+
+
+def _only_key(key: str) -> models.Q:
+    return models.Q(**{f"{other}__isnull": other != key for other in OWNED_OBJECT_KEYS})
+
+
+class IPAMOwnershipLink(models.Model):
+    """IPAM Ownership (ADR 0006): one Server and family synchronized one IP address, Prefix or IP Range from one source.
+
+    The row stays in main (ADR 0007). In a branch, a delete that reaches a link is refused before any write.
+    """
+
+    server: models.ForeignKey = models.ForeignKey(
+        to="netbox_kea.Server",
+        on_delete=models.CASCADE,
+        related_name="ipam_ownership_links",
+    )
+    # The key column of server; the type check runs without the Django plugin, which would add it.
+    server_id: int
+    family: models.PositiveSmallIntegerField = models.PositiveSmallIntegerField(
+        choices=[(family, f"IPv{family}") for family in get_args(Family)]
+    )
+    source: models.CharField = models.CharField(max_length=16, choices=IPAMOwnershipSource.choices)
+    ip_address: models.ForeignKey = models.ForeignKey(
+        to="ipam.IPAddress",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="kea_ownership_links",
+    )
+    prefix: models.ForeignKey = models.ForeignKey(
+        to="ipam.Prefix",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="kea_ownership_links",
+    )
+    ip_range: models.ForeignKey = models.ForeignKey(
+        to="ipam.IPRange",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="kea_ownership_links",
+    )
+    facts: models.JSONField = models.JSONField(
+        null=True,
+        blank=True,
+        help_text="The facts that the owner last reported for the object; null for a link without facts.",
+    )
+    confirmation: models.BigIntegerField = models.BigIntegerField(
+        help_text="The confirmation sequence number that a run took when it last confirmed the link.",
+    )
+    stale_mark: models.BigIntegerField = models.BigIntegerField(
+        null=True,
+        blank=True,
+        help_text="The cutoff number of the cleanup that kept this last link as stale; null when it is not stale.",
+    )
+
+    class Meta:
+        app_label = "netbox_kea"
+        verbose_name = "IPAM ownership link"
+        constraints = [
+            models.CheckConstraint(
+                condition=reduce(or_, (_only_key(key) for key in OWNED_OBJECT_KEYS)),
+                name="ipamownershiplink_one_object",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(family__in=get_args(Family)),
+                name="ipamownershiplink_family",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(source__in=IPAMOwnershipSource.values),
+                name="ipamownershiplink_source",
+            ),
+            *(
+                models.UniqueConstraint(
+                    fields=["server", "family", "source", key],
+                    condition=models.Q(**{f"{key}__isnull": False}),
+                    name=f"ipamownershiplink_unique_{key}",
+                )
+                for key in OWNED_OBJECT_KEYS
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.server} IPv{self.family} {self.source} → {self.owned_object}"
+
+    @property
+    def owned_object(self) -> models.Model:
+        """Return the IP address, Prefix or IP Range that the link names."""
+        return next(obj for key in OWNED_OBJECT_KEYS if (obj := getattr(self, key)) is not None)

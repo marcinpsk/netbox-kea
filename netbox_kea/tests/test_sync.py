@@ -10,11 +10,12 @@ from __future__ import annotations
 
 import ipaddress
 from collections.abc import Iterable
-from typing import get_args, get_type_hints
+from typing import get_args, get_origin, get_type_hints
 
-from django.test import TestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
 
 from .kea_stub import _typed_reservation
+from .utils import plugins_config
 
 
 def _sync_reservation(raw: dict, **kwargs):
@@ -753,9 +754,9 @@ class TestSyncMacAddressWithHostname(TestCase):
 # P4 — Stale IP Cleanup
 # ─────────────────────────────────────────────────────────────────────────────
 
-_STALE_PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30, "stale_ip_cleanup": "remove"}}
-_DEPRECATE_PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30, "stale_ip_cleanup": "deprecate"}}
-_NONE_PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30, "stale_ip_cleanup": "none"}}
+_STALE_PLUGINS_CONFIG = plugins_config()
+_DEPRECATE_PLUGINS_CONFIG = plugins_config(stale_ip_cleanup="deprecate")
+_NONE_PLUGINS_CONFIG = plugins_config(stale_ip_cleanup="none")
 
 
 class TestCleanupStaleIps(TestCase):
@@ -788,6 +789,22 @@ class TestCleanupStaleIps(TestCase):
         count = self._call(mode="remove")
         self.assertEqual(count, 1)
         self.assertFalse(NbIP.objects.filter(address__net_host=self._OLD_IP).exists())
+
+    def test_never_touches_an_ip_address_with_an_ownership_link(self):
+        from ipam.models import IPAddress as NbIP
+
+        from netbox_kea.models import IPAMOwnershipLink
+
+        from .utils import _make_db_server
+
+        owned = self._create_old_ip()
+        IPAMOwnershipLink.objects.create(
+            server=_make_db_server(), family=4, source="lease", ip_address=owned, confirmation=1
+        )
+        for mode in ("remove", "deprecate"):
+            with self.subTest(mode):
+                self.assertEqual(self._call(mode=mode), 0)
+                self.assertEqual(NbIP.objects.get(pk=owned.pk).status, "dhcp")
 
     def test_deprecates_stale_ip_in_deprecate_mode(self):
         from ipam.models import IPAddress as NbIP
@@ -894,7 +911,7 @@ class TestSyncLeaseWithStaleCleanup(TestCase):
             description="Synced from Kea DHCP lease",
         )
 
-    @override_settings(PLUGINS_CONFIG={"netbox_kea": {"kea_timeout": 30}})
+    @override_settings(PLUGINS_CONFIG=plugins_config())
     def test_removes_old_ip_by_default(self):
         from ipam.models import IPAddress as NbIP
 
@@ -1007,27 +1024,16 @@ class TestNetboxDnsAvailable(TestCase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-class TestCleanupStaleIpsUnknownMode(TestCase):
-    """_cleanup_stale_ips with an unrecognised mode logs and returns 0."""
+class TestCleanupStaleIpsUnknownMode(SimpleTestCase):
+    """The old cleanup refuses an unknown mode argument; NetBox refuses an unknown configured mode at startup."""
 
-    _HOSTNAME = "moving-device.example.com"
-    _OLD_IP = "10.30.0.11"
-    _KEA_DESC = "Synced from Kea DHCP lease"
-
-    def test_unknown_mode_returns_zero_and_does_not_delete(self):
-        from ipam.models import IPAddress as NbIP
-
+    def test_a_direct_call_with_an_unknown_mode_raises(self):
         from netbox_kea.sync import _cleanup_stale_ips
 
-        NbIP.objects.create(
-            address=f"{self._OLD_IP}/32",
-            status="dhcp",
-            dns_name=self._HOSTNAME,
-            description=self._KEA_DESC,
-        )
-        count = _cleanup_stale_ips("10.30.0.99", self._HOSTNAME, mode="unknown")
-        self.assertEqual(count, 0)
-        self.assertTrue(NbIP.objects.filter(address__net_host=self._OLD_IP).exists())
+        with self.assertRaisesMessage(
+            ValueError, "stale_ip_cleanup must be one of remove, deprecate, none, not 'unknown'"
+        ):
+            _cleanup_stale_ips("10.30.0.99", "moving-device.example.com", mode="unknown")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1407,18 +1413,20 @@ class TestCleanupStaleIpsBatch(TestCase):
 
     def test_the_producer_and_the_consumer_declare_the_same_record_types(self):
         """Both sync phases fill one list, so every side must name the same accepted types."""
-        from netbox_kea.jobs import _sync_server_leases, _sync_server_reservations
+        from netbox_kea.ipam_reconciliation import SyncReport
+        from netbox_kea.jobs import _sync_server_reservations
         from netbox_kea.models import Server
         from netbox_kea.reservations import Reservation, ReservationSnapshot
         from netbox_kea.sync import cleanup_stale_ips_batch
 
         job_types = {"Reservation": Reservation, "ReservationSnapshot": ReservationSnapshot, "Server": Server}
         consumer_hints = get_type_hints(cleanup_stale_ips_batch)
-        lease_hints = get_type_hints(_sync_server_leases, localns=job_types)
         reservation_hints = get_type_hints(_sync_server_reservations, localns=job_types)
         consumed = consumer_hints["synced_records"]
-        self.assertEqual(lease_hints["all_synced"], consumed)
         self.assertEqual(reservation_hints["all_synced"], consumed)
+        # The lease phase reports its records through reconcile; the job adds them to the same list.
+        (lease_record,) = get_args(get_type_hints(SyncReport)["lease_records"])
+        self.assertIn(get_origin(lease_record), get_args(get_args(consumed)[0]))
         # The keep-set channel carries the same records; the consumer only reads them.
         record_types = get_args(consumed)[0]
         self.assertEqual(consumer_hints["protected_records"], Iterable[record_types])

@@ -21,10 +21,11 @@ from netbox_kea.models import Server
 from netbox_kea.subnet_catalogue import invalidate
 
 from .kea_stub import _catalogue_responses, _res_get, _res_page, stub_kea
+from .utils import plugins_config
 
 User = get_user_model()
 
-_PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30}}
+_PLUGINS_CONFIG = plugins_config()
 
 # Not found — reservation-get result=3
 _RESERVATION_NOT_FOUND = [{"result": 3, "text": "Host not found."}]

@@ -24,20 +24,12 @@ from netbox_kea.jobs import KeaIpamSyncJob
 from netbox_kea.models import SyncConfig
 
 from .kea_stub import _catalogue_responses_for_subnets, _res_page, _reservation_family, _subnet_list, queued, stub_kea
+from .utils import plugins_config
 
-_PLUGINS_CONFIG = {
-    "netbox_kea": {
-        "kea_timeout": 30,
-        "stale_ip_cleanup": "none",
-        "sync_interval_minutes": 5,
-        "sync_leases_enabled": True,
-        "sync_reservations_enabled": True,
-        "sync_max_leases_per_server": 50000,
-    }
-}
+_PLUGINS_CONFIG = plugins_config(stale_ip_cleanup="none")
 
 # Variant used by tests that exercise the stale-IP cleanup path.
-_PLUGINS_CONFIG_CLEANUP = {"netbox_kea": {**_PLUGINS_CONFIG["netbox_kea"], "stale_ip_cleanup": "remove"}}
+_PLUGINS_CONFIG_CLEANUP = plugins_config()
 
 _LEASE4 = {
     "ip-address": "10.0.0.1",
@@ -446,9 +438,7 @@ class TestKeaIpamSyncJobRun(TestCase):
 
     # ── truncation ─────────────────────────────────────────────────────────
 
-    @override_settings(
-        PLUGINS_CONFIG={"netbox_kea": {**_PLUGINS_CONFIG_CLEANUP["netbox_kea"], "sync_max_leases_per_server": 1}}
-    )
+    @override_settings(PLUGINS_CONFIG=plugins_config(sync_max_leases_per_server=1))
     def test_truncation_warning_skips_cleanup(self):
         """Truncated lease fetch → warning logged and stale IP not removed.
 
@@ -467,7 +457,7 @@ class TestKeaIpamSyncJobRun(TestCase):
         )
         overflow = {**_LEASE4, "ip-address": "10.0.0.2", "hostname": "host2"}
         with _patch_kea(leases4=[_LEASE4, overflow]):
-            with self.assertLogs("netbox_kea.jobs", level="WARNING") as cm:
+            with self.assertLogs("netbox_kea.ipam_reconciliation", level="WARNING") as cm:
                 self._run()
         self.assertTrue(any("truncated" in msg for msg in cm.output))
         # The overflow lease past the cap was genuinely dropped, not synced.
@@ -751,42 +741,6 @@ class TestKeaIpamSyncJobRun(TestCase):
         self.assertTrue(IPAddress.objects.filter(pk=stale.pk).exists())
         self.assertTrue(any("Reservation Snapshot diagnostic" in message for message in logs.output))
         self.assertFalse(any("malformed Reservation" in message for message in logs.output))
-
-    # ── max_leases config validation ──────────────────────────────────────
-
-    @override_settings(
-        PLUGINS_CONFIG={
-            **_PLUGINS_CONFIG,
-            "netbox_kea": {**_PLUGINS_CONFIG["netbox_kea"], "sync_max_leases_per_server": "not-a-number"},
-        }
-    )
-    def test_invalid_max_leases_string_falls_back_to_default(self):
-        """Non-integer sync_max_leases_per_server → warning logged, sync continues."""
-        self._make_db_server()
-        with _patch_kea(leases4=[_LEASE4]):
-            with self.assertLogs("netbox.jobs", level="WARNING") as cm:
-                self._run()
-        self.assertTrue(any("Invalid sync_max_leases_per_server" in msg for msg in cm.output))
-        from ipam.models import IPAddress
-
-        self.assertTrue(IPAddress.objects.filter(address__net_host="10.0.0.1").exists())
-
-    @override_settings(
-        PLUGINS_CONFIG={
-            **_PLUGINS_CONFIG,
-            "netbox_kea": {**_PLUGINS_CONFIG["netbox_kea"], "sync_max_leases_per_server": -1},
-        }
-    )
-    def test_negative_max_leases_resets_to_zero(self):
-        """Negative sync_max_leases_per_server → warning logged, sync continues."""
-        self._make_db_server()
-        with _patch_kea(leases4=[_LEASE4]):
-            with self.assertLogs("netbox.jobs", level="WARNING") as cm:
-                self._run()
-        self.assertTrue(any("Negative sync_max_leases_per_server" in msg for msg in cm.output))
-        from ipam.models import IPAddress
-
-        self.assertTrue(IPAddress.objects.filter(address__net_host="10.0.0.1").exists())
 
     # ── reservation KeaException (non-result-2) ───────────────────────────
 
@@ -1169,40 +1123,6 @@ class TestSyncIntervalFromSyncConfig(TestCase):
         job.refresh_from_db()
         self.assertIsNone(job.interval)
         self.assertFalse(self._successors(job).exists())
-
-
-class TestGetPluginConfig(SimpleTestCase):
-    """Tests for _get_plugin_config() defensive type-checking."""
-
-    def test_returns_dict_when_plugins_config_missing(self):
-        """PLUGINS_CONFIG not set → empty dict returned, no exception."""
-        from netbox_kea.jobs import _get_plugin_config
-
-        with override_settings(PLUGINS_CONFIG={}):
-            result = _get_plugin_config()
-        self.assertIsInstance(result, dict)
-
-    def test_returns_dict_when_plugins_config_is_none(self):
-        """PLUGINS_CONFIG=None → WARNING logged, empty dict returned."""
-        from netbox_kea.jobs import _get_plugin_config
-
-        with override_settings(PLUGINS_CONFIG=None):
-            with self.assertLogs("netbox_kea.jobs", level="WARNING") as cm:
-                result = _get_plugin_config()
-
-        self.assertEqual(result, {})
-        self.assertTrue(any("PLUGINS_CONFIG" in msg for msg in cm.output))
-
-    def test_returns_dict_when_netbox_kea_section_is_not_dict(self):
-        """PLUGINS_CONFIG['netbox_kea'] is a string → WARNING logged, empty dict returned."""
-        from netbox_kea.jobs import _get_plugin_config
-
-        with override_settings(PLUGINS_CONFIG={"netbox_kea": "bad-value"}):
-            with self.assertLogs("netbox_kea.jobs", level="WARNING") as cm:
-                result = _get_plugin_config()
-
-        self.assertEqual(result, {})
-        self.assertTrue(any("netbox_kea" in msg for msg in cm.output))
 
 
 class TestRecordConflicts(SimpleTestCase):

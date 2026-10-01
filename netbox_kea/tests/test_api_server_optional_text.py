@@ -15,11 +15,11 @@ from django.urls import reverse
 from rest_framework.test import APIClient
 
 from .kea_stub import stub_kea
-from .utils import _make_db_server
+from .utils import _make_db_server, plugins_config
 
 User = get_user_model()
 
-_PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30}}
+_PLUGINS_CONFIG = plugins_config()
 
 #: The columns 0016 moved from NULL-or-blank to blank only.
 OPTIONAL_TEXT_FIELDS = (
