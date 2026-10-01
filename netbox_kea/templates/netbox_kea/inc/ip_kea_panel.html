@@ -15,7 +15,13 @@
   <div class="card-body p-0">
     {% if server_links %}
     <div class="list-group list-group-flush">
+      {% if in_branch %}
+      <div class="list-group-item py-2">
+        <small class="fw-semibold">Kea servers (main)</small>
+      </div>
+      {% endif %}
       {% for item in server_links %}
+      {% if item.url %}
       <a href="{{ item.url }}"
          class="list-group-item list-group-item-action d-flex justify-content-between align-items-center py-2">
         <small class="text-body-secondary">
@@ -25,6 +31,13 @@
           <i class="mdi mdi-plus" aria-hidden="true"></i> Reserve
         </span>
       </a>
+      {% else %}
+      <div class="list-group-item py-2">
+        <small class="text-body-secondary">
+          <i class="mdi mdi-server me-1" aria-hidden="true"></i>{{ item.server.name }}
+        </small>
+      </div>
+      {% endif %}
       {% endfor %}
     </div>
     {% else %}

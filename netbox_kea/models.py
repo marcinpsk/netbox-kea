@@ -13,8 +13,9 @@ from netbox.constants import CENSOR_TOKEN, CENSOR_TOKEN_CHANGED
 from netbox.models import NetBoxModel
 from netbox.models.features import JobsMixin
 
+from . import branching
 from .constants import Family
-from .kea import KeaClient, KeaException
+from .kea import KeaClient, KeaCommand, KeaException
 from .reservations import MAX_IDENTITY_LENGTH
 
 logger = logging.getLogger(__name__)
@@ -205,7 +206,8 @@ class Server(JobsMixin, NetBoxModel):
     )
     sync_vrf = models.ForeignKey(
         to="ipam.VRF",
-        on_delete=models.SET_NULL,
+        # PROTECT, not SET_NULL: from a branch, SET_NULL would null main's row (ADR 0007).
+        on_delete=models.PROTECT,
         null=True,
         blank=True,
         related_name="+",
@@ -246,6 +248,9 @@ class Server(JobsMixin, NetBoxModel):
         single source of truth here: a protocol-specific ``dhcp{4,6}_url`` may itself
         point at a per-protocol Control Agent (Kea < 3.0) or a bare daemon socket
         (Kea 3.0+), so the routing decision follows the flag, not the URL.
+
+        The client is bound to the branch that is active now, so it refuses each Kea write
+        command in a branch, also from a clone in a worker thread (ADR 0007).
 
         Args:
             version: DHCP protocol version (4 or 6). When provided and a protocol-specific
@@ -288,6 +293,7 @@ class Server(JobsMixin, NetBoxModel):
             send_service=self.has_control_agent,
             max_unpaged_leases=_get_max_unpaged_leases(),
             on_config_change=on_config_change,
+            write_guard=branching.bind(),
         )
 
     def clean(self) -> None:
@@ -312,7 +318,7 @@ class Server(JobsMixin, NetBoxModel):
 
         if self.dhcp6:
             try:
-                self.get_client(version=6).command("version-get", service=["dhcp6"])
+                self.get_client(version=6).command(KeaCommand.VERSION_GET, 6)
             except KeaException as e:
                 logger.exception("DHCPv6 connectivity check failed during Server.clean()")
                 raise ValidationError({"dhcp6": "Unable to reach the Kea DHCPv6 service."}) from e
@@ -324,7 +330,7 @@ class Server(JobsMixin, NetBoxModel):
                 raise ValidationError({"dhcp6": "Unable to reach the Kea DHCPv6 service."}) from e
         if self.dhcp4:
             try:
-                self.get_client(version=4).command("version-get", service=["dhcp4"])
+                self.get_client(version=4).command(KeaCommand.VERSION_GET, 4)
             except KeaException as e:
                 logger.exception("DHCPv4 connectivity check failed during Server.clean()")
                 raise ValidationError({"dhcp4": "Unable to reach the Kea DHCPv4 service."}) from e
@@ -365,8 +371,8 @@ class SyncConfig(models.Model):
 
     Stores the sync interval and global kill-switch in the database so
     operators can change them from the UI without restarting Django.
-    Exactly one row exists (pk=1 always); ``save()`` enforces this and
-    ``delete()`` is disabled.
+    Exactly one row exists (pk=1 always): a migration creates it, ``save()``
+    keeps pk=1 and ``delete()`` is disabled.
     """
 
     interval_minutes = models.PositiveIntegerField(
@@ -394,10 +400,6 @@ class SyncConfig(models.Model):
         default=True,
         help_text="Sync Kea pools to NetBox IPAM as IP Ranges.",
     )
-    backfill_applied = models.BooleanField(
-        default=False,
-        help_text="Internal flag: True once the one-time PLUGINS_CONFIG backfill has been applied.",
-    )
 
     class Meta:
         app_label = "netbox_kea"
@@ -422,63 +424,9 @@ class SyncConfig(models.Model):
         raise TypeError("SyncConfig singleton cannot be deleted.")
 
     @classmethod
-    def get(cls, default_interval: int = 5) -> "SyncConfig":
-        """Return the singleton config row, creating it with defaults if absent.
-
-        **Creation path (first boot):** when no row exists, ``get_or_create``
-        inserts one using ``default_interval`` and the ``PLUGINS_CONFIG`` values
-        for the four type-toggle fields (``sync_leases_enabled``,
-        ``sync_reservations_enabled``, ``sync_prefixes_enabled``,
-        ``sync_ip_ranges_enabled``) so the config file is honoured until the
-        operator overrides it via the UI.  ``backfill_applied`` is set to
-        ``True`` immediately on creation so the backfill path is skipped.
-
-        **One-time backfill path (upgrades):** when an existing row is found
-        with ``backfill_applied=False`` (i.e. the row pre-dates the introduction
-        of *sync_prefixes_enabled* / *sync_ip_ranges_enabled*), the four
-        type-toggle fields are compared against ``PLUGINS_CONFIG``.  For each
-        field still at its migration default (``True``) but explicitly disabled
-        in ``PLUGINS_CONFIG``, the stored value is overridden once.  After that
-        ``backfill_applied`` is set to ``True`` and the row is saved, so future
-        calls do **not** mutate UI overrides.
-
-        ``default_interval`` is only used on the creation path; it is ignored
-        when a row already exists.
-        """
-        config = getattr(settings, "PLUGINS_CONFIG", {}).get("netbox_kea", {})
-        obj, created = cls.objects.get_or_create(
-            pk=1,
-            defaults={
-                "interval_minutes": default_interval,
-                "sync_enabled": config.get("sync_enabled", True),
-                "sync_leases_enabled": config.get("sync_leases_enabled", True),
-                "sync_reservations_enabled": config.get("sync_reservations_enabled", True),
-                "sync_prefixes_enabled": config.get("sync_prefixes_enabled", True),
-                "sync_ip_ranges_enabled": config.get("sync_ip_ranges_enabled", True),
-                "backfill_applied": True,
-            },
-        )
-        if not created and not obj.backfill_applied:
-            # One-time backfill: on upgrades, newly added type-toggle fields are
-            # initialised to their migration default (True) regardless of
-            # PLUGINS_CONFIG.  Apply the configured value once for fields that are
-            # still at the migration default but the operator has explicitly disabled
-            # them in PLUGINS_CONFIG.  Setting backfill_applied=True afterwards
-            # prevents this from running again so UI overrides are preserved.
-            _type_fields = [
-                "sync_leases_enabled",
-                "sync_reservations_enabled",
-                "sync_prefixes_enabled",
-                "sync_ip_ranges_enabled",
-            ]
-            to_save = ["backfill_applied"]
-            obj.backfill_applied = True
-            for f in _type_fields:
-                if not config.get(f, True) and getattr(obj, f):
-                    setattr(obj, f, False)
-                    to_save.append(f)
-            obj.save(update_fields=to_save)
-        return obj
+    def get(cls) -> "SyncConfig":
+        """Return the singleton row. Migration 0018 creates it, so a missing row raises ``DoesNotExist``."""
+        return cls.objects.get(pk=1)
 
 
 class KeaDhcpLink(models.Model):

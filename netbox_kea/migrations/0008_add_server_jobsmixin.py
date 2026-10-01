@@ -6,6 +6,10 @@ import django.core.validators
 from django.db import migrations, models
 
 
+# netbox_kea tables stay in main, so branch migrate fakes this migration (ADR 0007).
+fake_on_branch = True
+
+
 class Migration(migrations.Migration):
 
     dependencies = [

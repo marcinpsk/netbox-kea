@@ -14,9 +14,10 @@ from unittest.mock import MagicMock, patch
 
 import requests
 
-from netbox_kea import constants
+from netbox_kea import branching, constants
 from netbox_kea.kea import (
     KeaClient,
+    KeaCommand,
     KeaException,
     KeaResponse,
     LeaseCollection,
@@ -31,7 +32,7 @@ from netbox_kea.kea import (
     check_response,
     lease_query_guard_message,
 )
-from netbox_kea.tests.kea_stub import _subnet_stats, queued, stub_kea
+from netbox_kea.tests.kea_stub import _subnet_stats, kea_client, queued, stub_kea
 
 
 def _mock_http_response(json_data, status_code=200):
@@ -60,91 +61,93 @@ class TestKeaClientInit(TestCase):
     """Tests for KeaClient.__init__ validation."""
 
     def test_basic_init_sets_url(self):
-        client = KeaClient(url="http://kea:8000")
+        client = kea_client(url="http://kea:8000")
         self.assertEqual(client.url, "http://kea:8000")
 
     def test_default_timeout(self):
-        client = KeaClient(url="http://kea:8000")
+        client = kea_client(url="http://kea:8000")
         self.assertEqual(client.timeout, 30)
 
     def test_custom_timeout(self):
-        client = KeaClient(url="http://kea:8000", timeout=10)
+        client = kea_client(url="http://kea:8000", timeout=10)
         self.assertEqual(client.timeout, 10)
 
     def test_cert_without_key_raises(self):
         with self.assertRaises(ValueError):
-            KeaClient(url="http://kea:8000", client_cert="/cert.pem")
+            kea_client(url="http://kea:8000", client_cert="/cert.pem")
 
     def test_key_without_cert_raises(self):
         with self.assertRaises(ValueError):
-            KeaClient(url="http://kea:8000", client_key="/key.pem")
+            kea_client(url="http://kea:8000", client_key="/key.pem")
 
     def test_cert_and_key_together_accepted(self):
-        client = KeaClient(url="http://kea:8000", client_cert="/cert.pem", client_key="/key.pem")
+        client = kea_client(url="http://kea:8000", client_cert="/cert.pem", client_key="/key.pem")
         self.assertEqual(client._session.cert, ("/cert.pem", "/key.pem"))
 
     def test_basic_auth_configured(self):
-        client = KeaClient(url="http://kea:8000", username="admin", password="secret")
+        client = kea_client(url="http://kea:8000", username="admin", password="secret")
         self.assertIsNotNone(client._session.auth)
 
     def test_no_auth_when_username_only(self):
         # Partial auth — no password means no auth header set
-        client = KeaClient(url="http://kea:8000", username="admin")
+        client = kea_client(url="http://kea:8000", username="admin")
         self.assertIsNone(client._session.auth)
 
     def test_ssl_verify_false(self):
-        client = KeaClient(url="http://kea:8000", verify=False)
+        client = kea_client(url="http://kea:8000", verify=False)
         self.assertFalse(client._session.verify)
 
     def test_ssl_verify_path(self):
-        client = KeaClient(url="http://kea:8000", verify="/etc/ssl/ca.pem")
+        client = kea_client(url="http://kea:8000", verify="/etc/ssl/ca.pem")
         self.assertEqual(client._session.verify, "/etc/ssl/ca.pem")
 
     def test_no_verify_arg_leaves_session_default(self):
-        client = KeaClient(url="http://kea:8000")
+        client = kea_client(url="http://kea:8000")
         # requests.Session defaults verify to True; we do not override it when verify=None
         self.assertTrue(client._session.verify)
 
     def test_clone_copies_url_and_timeout(self):
         """clone() produces a new KeaClient with the same url and timeout."""
-        client = KeaClient(url="http://kea:8000", timeout=15)
+        client = kea_client(url="http://kea:8000", timeout=15)
         cloned = client.clone()
         self.assertEqual(cloned.url, "http://kea:8000")
         self.assertEqual(cloned.timeout, 15)
 
     def test_clone_has_independent_session(self):
         """clone() creates a new requests.Session, not a reference to the original."""
-        client = KeaClient(url="http://kea:8000")
+        client = kea_client(url="http://kea:8000")
         cloned = client.clone()
         self.assertIsNot(cloned._session, client._session)
 
     def test_clone_copies_session_auth(self):
         """clone() copies auth credentials from the original session."""
-        client = KeaClient(url="http://kea:8000", username="admin", password="secret")
+        client = kea_client(url="http://kea:8000", username="admin", password="secret")
         cloned = client.clone()
         self.assertEqual(cloned._session.auth, client._session.auth)
 
     def test_clone_copies_session_verify(self):
         """clone() copies the SSL verify setting."""
-        client = KeaClient(url="http://kea:8000", verify="/etc/ssl/ca.pem")
+        client = kea_client(url="http://kea:8000", verify="/etc/ssl/ca.pem")
         cloned = client.clone()
         self.assertEqual(cloned._session.verify, "/etc/ssl/ca.pem")
 
     def test_clone_copies_session_cert(self):
         """clone() copies the client cert tuple."""
-        client = KeaClient(url="http://kea:8000", client_cert="/cert.pem", client_key="/key.pem")
+        client = kea_client(url="http://kea:8000", client_cert="/cert.pem", client_key="/key.pem")
         cloned = client.clone()
         self.assertEqual(cloned._session.cert, client._session.cert)
 
     def test_clone_preserves_send_service(self):
         """clone() carries send_service so a cloned worker-thread client stays direct."""
-        self.assertFalse(KeaClient(url="http://kea:8000", send_service=False).clone().send_service)
-        self.assertTrue(KeaClient(url="http://kea:8000").clone().send_service)
+        self.assertFalse(kea_client(url="http://kea:8000", send_service=False).clone().send_service)
+        self.assertTrue(kea_client(url="http://kea:8000").clone().send_service)
 
+
+class TestKeaClientCommand(TestCase):
     """Tests for KeaClient.command()."""
 
     def setUp(self):
-        self.client = KeaClient(url="http://kea:8000")
+        self.client = kea_client(url="http://kea:8000")
 
     def _patched_post(self, json_data):
         """Patch session.post to return *json_data*."""
@@ -153,13 +156,13 @@ class TestKeaClientInit(TestCase):
     def test_command_returns_response_list(self):
         resp = [{"result": 0, "arguments": {"leases": []}, "text": "ok"}]
         with self._patched_post(resp):
-            result = self.client.command("lease4-get-all", service=["dhcp4"])
+            result = self.client.command(KeaCommand.LEASE4_GET_ALL, 4)
         self.assertEqual(result, resp)
 
     def test_command_sends_correct_body(self):
         resp = [{"result": 0, "text": "ok"}]
         with patch.object(self.client._session, "post", return_value=_mock_http_response(resp)) as mock_post:
-            self.client.command("status-get", service=["dhcp4"], arguments={"extra": 1})
+            self.client.command(KeaCommand.STATUS_GET, 4, arguments={"extra": 1})
 
         call_kwargs = mock_post.call_args
         sent_json = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
@@ -170,37 +173,37 @@ class TestKeaClientInit(TestCase):
     def test_command_omits_service_when_none(self):
         resp = [{"result": 0, "text": "ok"}]
         with patch.object(self.client._session, "post", return_value=_mock_http_response(resp)) as mock_post:
-            self.client.command("list-commands")
+            self.client.command(KeaCommand.LIST_COMMANDS, None)
         sent_json = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
         self.assertNotIn("service", sent_json)
 
     def test_command_omits_service_when_send_service_false(self):
         """A direct-daemon client (send_service=False) drops a supplied service from the body."""
-        client = KeaClient(url="http://kea-daemon:8000", send_service=False)
+        client = kea_client(url="http://kea-daemon:8000", send_service=False)
         resp = [{"result": 0, "text": "ok"}]
         with patch.object(client._session, "post", return_value=_mock_http_response(resp)) as mock_post:
-            client.command("lease4-get", service=["dhcp4"])
+            client.command(KeaCommand.LEASE4_GET, 4)
         sent_json = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
         self.assertNotIn("service", sent_json)
 
     def test_command_omits_arguments_when_none(self):
         resp = [{"result": 0, "text": "ok"}]
         with patch.object(self.client._session, "post", return_value=_mock_http_response(resp)) as mock_post:
-            self.client.command("list-commands")
+            self.client.command(KeaCommand.LIST_COMMANDS, None)
         sent_json = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
         self.assertNotIn("arguments", sent_json)
 
-    def test_command_raises_kea_exception_on_error_code(self):
+    def test_command_raises_kea_exception_on_a_failure_result(self):
         resp = [{"result": 1, "text": "unknown command"}]
         with self._patched_post(resp):
             with self.assertRaises(KeaException):
-                self.client.command("bad-command")
+                self.client.command(KeaCommand.LIST_COMMANDS, None)
 
-    def test_command_raises_kea_exception_with_correct_response(self):
+    def test_the_kea_exception_carries_the_failing_reply(self):
         resp = [{"result": 2, "text": "not found"}]
         with self._patched_post(resp):
             try:
-                self.client.command("something")
+                self.client.command(KeaCommand.VERSION_GET, None)
                 self.fail("Expected KeaException")
             except KeaException as exc:
                 self.assertEqual(exc.response["result"], 2)
@@ -208,20 +211,20 @@ class TestKeaClientInit(TestCase):
     def test_command_check_none_skips_validation(self):
         resp = [{"result": 1, "text": "error but accepted"}]
         with self._patched_post(resp):
-            result = self.client.command("whatever", check=None)
+            result = self.client.command(KeaCommand.VERSION_GET, None, check=None)
         self.assertEqual(result, resp)
 
     def test_command_custom_ok_codes(self):
         resp = [{"result": 3, "text": "empty"}]
         with self._patched_post(resp):
-            result = self.client.command("lease4-get", service=["dhcp4"], check=(0, 3))
+            result = self.client.command(KeaCommand.LEASE4_GET, 4, check=(0, 3))
         self.assertEqual(result, resp)
 
     def test_command_http_error_raises(self):
         mock_resp = _mock_http_response({}, status_code=500)
         with patch.object(self.client._session, "post", return_value=mock_resp):
             with self.assertRaises(requests.HTTPError):
-                self.client.command("something")
+                self.client.command(KeaCommand.VERSION_GET, None)
 
     def test_command_raises_value_error_on_non_list_json(self):
         with patch.object(
@@ -230,26 +233,26 @@ class TestKeaClientInit(TestCase):
             return_value=_mock_http_response({"result": 0, "text": "ok"}),
         ):
             with self.assertRaises(ValueError):
-                self.client.command("something")
+                self.client.command(KeaCommand.VERSION_GET, None)
 
     def test_command_uses_timeout(self):
         resp = [{"result": 0, "text": "ok"}]
         with patch.object(self.client._session, "post", return_value=_mock_http_response(resp)) as mock_post:
-            self.client.command("list-commands")
+            self.client.command(KeaCommand.LIST_COMMANDS, None)
         call_kwargs = mock_post.call_args.kwargs
         self.assertEqual(call_kwargs.get("timeout"), 30)
 
-    def test_command_multiple_services(self):
+    def test_command_returns_every_reply_of_a_multi_entry_response(self):
         resp = [{"result": 0, "text": "ok"}, {"result": 0, "text": "ok"}]
         with self._patched_post(resp):
-            result = self.client.command("status-get", service=["dhcp4", "dhcp6"])
+            result = self.client.command(KeaCommand.STATUS_GET, None)
         self.assertEqual(len(result), 2)
 
     def test_command_raises_on_second_failed_response(self):
         resp = [{"result": 0, "text": "ok"}, {"result": 1, "text": "failed"}]
         with self._patched_post(resp):
             with self.assertRaises(KeaException) as ctx:
-                self.client.command("status-get", service=["dhcp4", "dhcp6"])
+                self.client.command(KeaCommand.STATUS_GET, None)
         self.assertEqual(ctx.exception.index, 1)
 
 
@@ -337,10 +340,10 @@ class TestCheckResponse(TestCase):
 
 
 class TestGetAvailableCommands(TestCase):
-    """Tests for KeaClient.get_available_commands(service) -> set[str]."""
+    """Tests for KeaClient.get_available_commands(family) -> set[str]."""
 
     def setUp(self):
-        self.client = KeaClient(url="http://kea:8000")
+        self.client = kea_client(url="http://kea:8000")
 
     def _patched_post(self, json_data):
         return patch.object(self.client._session, "post", return_value=_mock_http_response(json_data))
@@ -348,7 +351,7 @@ class TestGetAvailableCommands(TestCase):
     def test_returns_set_of_command_names(self):
         resp = [{"result": 0, "arguments": ["reservation-add", "reservation-get-page", "reservation-del"]}]
         with self._patched_post(resp):
-            result = self.client.get_available_commands("dhcp4")
+            result = self.client.get_available_commands(4)
         self.assertIsInstance(result, set)
         self.assertIn("reservation-add", result)
         self.assertIn("reservation-get-page", result)
@@ -357,13 +360,13 @@ class TestGetAvailableCommands(TestCase):
     def test_handles_empty_arguments(self):
         resp = [{"result": 0, "arguments": []}]
         with self._patched_post(resp):
-            result = self.client.get_available_commands("dhcp4")
+            result = self.client.get_available_commands(4)
         self.assertEqual(result, set())
 
     def test_sends_list_commands_to_correct_service(self):
         resp = [{"result": 0, "arguments": ["reservation-add"]}]
         with patch.object(self.client._session, "post", return_value=_mock_http_response(resp)) as mock_post:
-            self.client.get_available_commands("dhcp4")
+            self.client.get_available_commands(4)
         sent_json = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
         self.assertEqual(sent_json["command"], "list-commands")
         self.assertEqual(sent_json["service"], ["dhcp4"])
@@ -371,7 +374,7 @@ class TestGetAvailableCommands(TestCase):
     def test_works_for_dhcp6_service(self):
         resp = [{"result": 0, "arguments": ["reservation-add", "reservation-get-page"]}]
         with patch.object(self.client._session, "post", return_value=_mock_http_response(resp)) as mock_post:
-            result = self.client.get_available_commands("dhcp6")
+            result = self.client.get_available_commands(6)
         self.assertIsInstance(result, set)
         sent_json = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
         self.assertEqual(sent_json["service"], ["dhcp6"])
@@ -401,7 +404,7 @@ class TestSubnetAdd(TestCase):
     """KeaClient.subnet_add sends one subnet{v}-add and does not persist. config_write covers the payload."""
 
     def setUp(self):
-        self.client = KeaClient(url="http://kea:8000")
+        self.client = kea_client(url="http://kea:8000")
 
     def test_sends_one_command_without_a_persist_step(self):
         with stub_kea({"subnet4-add": {"result": 0, "text": "IPv4 subnet added"}}) as kea:
@@ -442,7 +445,7 @@ class TestLeaseWipe(TestCase):
     """Tests for KeaClient.lease_wipe()."""
 
     def setUp(self):
-        self.client = KeaClient(url="http://kea:8000")
+        self.client = kea_client(url="http://kea:8000")
 
     def _cmds(self, mock_post):
         return [(c.kwargs.get("json") or c[1]["json"])["command"] for c in mock_post.call_args_list]
@@ -522,7 +525,7 @@ class TestDHCPDisable(TestCase):
     """Tests for KeaClient.dhcp_disable()."""
 
     def setUp(self):
-        self.client = KeaClient(url="http://kea:8000")
+        self.client = kea_client(url="http://kea:8000")
 
     def _payload(self, mock_post):
         return mock_post.call_args_list[0].kwargs.get("json") or mock_post.call_args_list[0][1]["json"]
@@ -534,7 +537,7 @@ class TestDHCPDisable(TestCase):
             "post",
             side_effect=_side_effects(_DHCP_DISABLE_RESP),
         ) as mock_post:
-            self.client.dhcp_disable("dhcp4")
+            self.client.dhcp_disable(4)
         payload = self._payload(mock_post)
         self.assertEqual(payload["command"], "dhcp-disable")
         self.assertEqual(payload["service"], ["dhcp4"])
@@ -546,7 +549,7 @@ class TestDHCPDisable(TestCase):
             "post",
             side_effect=_side_effects(_DHCP_DISABLE_RESP),
         ) as mock_post:
-            self.client.dhcp_disable("dhcp4")
+            self.client.dhcp_disable(4)
         payload = self._payload(mock_post)
         self.assertNotIn("arguments", payload)
 
@@ -557,7 +560,7 @@ class TestDHCPDisable(TestCase):
             "post",
             side_effect=_side_effects(_DHCP_DISABLE_RESP),
         ) as mock_post:
-            self.client.dhcp_disable("dhcp4", max_period=300)
+            self.client.dhcp_disable(4, max_period=300)
         payload = self._payload(mock_post)
         self.assertIn("arguments", payload)
         self.assertEqual(payload["arguments"]["max-period"], 300)
@@ -570,7 +573,7 @@ class TestDHCPDisable(TestCase):
             side_effect=_side_effects([{"result": 1, "text": "server busy"}]),
         ):
             with self.assertRaises(KeaException):
-                self.client.dhcp_disable("dhcp4")
+                self.client.dhcp_disable(4)
 
     def test_dhcp_disable_works_for_dhcp6(self):
         """dhcp-disable can target the dhcp6 service."""
@@ -579,7 +582,7 @@ class TestDHCPDisable(TestCase):
             "post",
             side_effect=_side_effects(_DHCP_DISABLE_RESP),
         ) as mock_post:
-            self.client.dhcp_disable("dhcp6")
+            self.client.dhcp_disable(6)
         payload = self._payload(mock_post)
         self.assertEqual(payload["service"], ["dhcp6"])
 
@@ -590,7 +593,7 @@ class TestDHCPDisable(TestCase):
             "post",
             side_effect=_side_effects(_DHCP_DISABLE_RESP),
         ):
-            result = self.client.dhcp_disable("dhcp4")
+            result = self.client.dhcp_disable(4)
         self.assertIsNone(result)
 
 
@@ -598,7 +601,7 @@ class TestDHCPEnable(TestCase):
     """Tests for KeaClient.dhcp_enable()."""
 
     def setUp(self):
-        self.client = KeaClient(url="http://kea:8000")
+        self.client = kea_client(url="http://kea:8000")
 
     def _payload(self, mock_post):
         return mock_post.call_args_list[0].kwargs.get("json") or mock_post.call_args_list[0][1]["json"]
@@ -610,7 +613,7 @@ class TestDHCPEnable(TestCase):
             "post",
             side_effect=_side_effects(_DHCP_ENABLE_RESP),
         ) as mock_post:
-            self.client.dhcp_enable("dhcp4")
+            self.client.dhcp_enable(4)
         payload = self._payload(mock_post)
         self.assertEqual(payload["command"], "dhcp-enable")
         self.assertEqual(payload["service"], ["dhcp4"])
@@ -622,7 +625,7 @@ class TestDHCPEnable(TestCase):
             "post",
             side_effect=_side_effects(_DHCP_ENABLE_RESP),
         ) as mock_post:
-            self.client.dhcp_enable("dhcp4")
+            self.client.dhcp_enable(4)
         payload = self._payload(mock_post)
         self.assertNotIn("arguments", payload)
 
@@ -634,7 +637,7 @@ class TestDHCPEnable(TestCase):
             side_effect=_side_effects([{"result": 1, "text": "already enabled"}]),
         ):
             with self.assertRaises(KeaException):
-                self.client.dhcp_enable("dhcp4")
+                self.client.dhcp_enable(4)
 
     def test_dhcp_enable_works_for_dhcp6(self):
         """dhcp-enable can target the dhcp6 service."""
@@ -643,7 +646,7 @@ class TestDHCPEnable(TestCase):
             "post",
             side_effect=_side_effects(_DHCP_ENABLE_RESP),
         ) as mock_post:
-            self.client.dhcp_enable("dhcp6")
+            self.client.dhcp_enable(6)
         payload = self._payload(mock_post)
         self.assertEqual(payload["service"], ["dhcp6"])
 
@@ -654,7 +657,7 @@ class TestDHCPEnable(TestCase):
             "post",
             side_effect=_side_effects(_DHCP_ENABLE_RESP),
         ):
-            result = self.client.dhcp_enable("dhcp4")
+            result = self.client.dhcp_enable(4)
         self.assertIsNone(result)
 
 
@@ -683,7 +686,7 @@ class TestLeaseUpdate(TestCase):
     """Tests for KeaClient.lease_update()."""
 
     def setUp(self):
-        self.client = KeaClient(url="http://kea:8000")
+        self.client = kea_client(url="http://kea:8000")
 
     def _payloads(self, mock_post):
         return [(c.kwargs.get("json") or c[1]["json"]) for c in mock_post.call_args_list]
@@ -814,7 +817,7 @@ class TestLeaseAdd(TestCase):
     """Tests for KeaClient.lease_add(version, lease) -> None."""
 
     def setUp(self):
-        self.client = KeaClient(url="http://kea:8000")
+        self.client = kea_client(url="http://kea:8000")
 
     def _payloads(self, mock_post):
         return [(c.kwargs.get("json") or c[1]["json"]) for c in mock_post.call_args_list]
@@ -868,7 +871,7 @@ class TestNetworkSubnetAdd(TestCase):
     """Tests for KeaClient.network_subnet_add(version, name, subnet_id) -> None."""
 
     def setUp(self):
-        self.client = KeaClient(url="http://kea:8000")
+        self.client = kea_client(url="http://kea:8000")
 
     def test_sends_one_command_with_name_and_id_without_a_persist_step(self):
         """network4-subnet-add is sent with name and id in arguments, and nothing after it."""
@@ -895,7 +898,7 @@ class TestNetworkSubnetDel(TestCase):
     """KeaClient.network_subnet_del sends one network{v}-subnet-del and does not persist."""
 
     def setUp(self):
-        self.client = KeaClient(url="http://kea:8000")
+        self.client = kea_client(url="http://kea:8000")
 
     def test_sends_one_command_with_name_and_id_without_a_persist_step(self):
         removed = {"result": 0, "text": "IPv4 subnet 10.0.5.0/24 (id 5) is now removed from shared network 'prod-net'"}
@@ -917,6 +920,37 @@ class TestNetworkSubnetDel(TestCase):
     def test_a_malformed_reply_raises_runtime_error(self):
         with stub_kea({"network4-subnet-del": [_OK[0], _OK[0]]}), self.assertRaises(RuntimeError):
             self.client.network_subnet_del(4, "prod-net", 5)
+
+
+class TestConfigChangeNotification(TestCase):
+    """A failed cache invalidation does not stop a live configuration change or its persist step."""
+
+    def test_a_failing_invalidation_is_logged_and_the_change_is_still_sent_and_persisted(self) -> None:
+        invalidations: list[str] = []
+
+        def fail() -> None:
+            invalidations.append("invalidated")
+            raise ConnectionError("cache unreachable")
+
+        client = kea_client(url="http://kea:8000", on_config_change=fail)
+        responses = {
+            "network4-add": _OK,
+            "config-get": {"result": 0, "arguments": {"Dhcp4": {}}},
+            "config-test": {"result": 0},
+            "config-write": {"result": 0},
+        }
+        with stub_kea(responses) as kea, self.assertLogs("netbox_kea.kea", level="ERROR") as logs:
+            client.network_add(4, "prod-net")
+            persisted = client.persist(4)
+
+        self.assertEqual(kea.commands(), ["network4-add", "config-get", "config-test", "config-write"])
+        self.assertEqual(persisted.persistence, "persisted")
+        self.assertEqual(invalidations, ["invalidated", "invalidated"])
+        self.assertEqual(
+            [record.getMessage() for record in logs.records],
+            ["Configuration changed for DHCPv4, but cache invalidation failed"] * 2,
+        )
+        self.assertTrue(all(record.exc_info for record in logs.records))
 
 
 # ---------------------------------------------------------------------------
@@ -954,7 +988,7 @@ class TestLeaseGetByIp(TestCase):
     """Tests for KeaClient.lease_get_by_ip()."""
 
     def setUp(self):
-        self.client = KeaClient(url="http://kea:8000")
+        self.client = kea_client(url="http://kea:8000")
 
     def _payload(self, mock_post):
         return mock_post.call_args.kwargs.get("json") or mock_post.call_args[1]["json"]
@@ -972,7 +1006,7 @@ class TestLeaseGetByIp(TestCase):
                 self.search = (version, selector, value, state)
                 return leases
 
-        client = SearchClient(url="http://kea:8000")
+        client = SearchClient(url="http://kea:8000", write_guard=branching.bind())
 
         result = client.lease_get_by_ip(version=4, ip_address="192.168.1.10")
 
@@ -1078,7 +1112,7 @@ class TestLeaseSearch(TestCase):
     """Tests for KeaClient.lease_search()."""
 
     def setUp(self):
-        self.client = KeaClient(url="http://kea:8000")
+        self.client = kea_client(url="http://kea:8000")
 
     @patch("requests.Session.post")
     def test_rejects_selector_that_the_address_family_does_not_support(self, mock_post):
@@ -1185,7 +1219,7 @@ class TestLeaseSearch(TestCase):
                 self.client.lease_search(4, "hostname", "host.example.invalid")
 
     def test_large_subnet_is_rejected_before_get_all(self):
-        client = KeaClient(url="http://kea:8000", max_unpaged_leases=100)
+        client = kea_client(url="http://kea:8000", max_unpaged_leases=100)
         with stub_kea({"stat-lease4-get": _subnet_stats(4, 12, assigned=101)}) as kea:
             with self.assertRaisesRegex(LeaseQueryTooBroad, "101.*100"):
                 client.lease_search(4, "subnet_id", 12)
@@ -1193,7 +1227,7 @@ class TestLeaseSearch(TestCase):
         self.assertEqual(kea.commands(), ["stat-lease4-get"])
 
     def test_state_qualifier_uses_the_subnet_scoped_state_command(self):
-        client = KeaClient(url="http://kea:8000", max_unpaged_leases=100)
+        client = kea_client(url="http://kea:8000", max_unpaged_leases=100)
         for version in (4, 6):
             lease = {"ip-address": "198.18.0.10" if version == 4 else "2001:db8::10", "state": 1}
             with (
@@ -1254,7 +1288,7 @@ class TestLeaseSearch(TestCase):
                 self.assertEqual(kea.commands(), ["stat-lease4-get"])
 
     def test_missing_state_command_fails_closed_when_unmeasured(self):
-        client = KeaClient(url="http://kea:8000", max_unpaged_leases=None)
+        client = kea_client(url="http://kea:8000", max_unpaged_leases=None)
         with stub_kea(
             {
                 "lease4-get-by-state": {"result": 2, "text": "unknown command"},
@@ -1270,7 +1304,7 @@ class TestLeaseSearch(TestCase):
         for version in (4, 6):
             for limit in (100, None):
                 with self.subTest(version=version, limit=limit):
-                    client = KeaClient(url="http://kea:8000", max_unpaged_leases=limit)
+                    client = kea_client(url="http://kea:8000", max_unpaged_leases=limit)
                     active = {"ip-address": "198.18.0.1" if version == 4 else "2001:db8::1", "state": 0}
                     retained = [
                         {"ip-address": f"198.18.1.{index}" if version == 4 else f"2001:db8:1::{index:x}", "state": 2}
@@ -1293,7 +1327,7 @@ class TestLeaseSearch(TestCase):
                             self.assertEqual(kea.commands(), commands)
 
     def test_missing_state_command_fails_closed_when_only_filtered_count_is_bounded(self):
-        client = KeaClient(url="http://kea:8000", max_unpaged_leases=100)
+        client = kea_client(url="http://kea:8000", max_unpaged_leases=100)
         with stub_kea(
             {
                 "stat-lease4-get": _subnet_stats(4, 12, assigned=201, declined=1),
@@ -1338,7 +1372,7 @@ class TestLeaseSearch(TestCase):
                     self.client.lease_search(4, "subnet_id", 12)
 
     def test_v6_delegated_prefixes_contribute_to_the_guard(self):
-        client = KeaClient(url="http://kea:8000", max_unpaged_leases=100)
+        client = kea_client(url="http://kea:8000", max_unpaged_leases=100)
         with stub_kea({"stat-lease6-get": _subnet_stats(6, 12, assigned=0, declined=0, assigned_pds=101)}) as kea:
             with self.assertRaisesRegex(LeaseQueryTooBroad, "101.*100"):
                 client.lease_search(6, "subnet_id", 12, state=0)
@@ -1474,7 +1508,7 @@ class TestLeaseSearch(TestCase):
         self.assertEqual(subnet_id, 21)
 
     def test_explicitly_disabled_guard_skips_statistics(self):
-        client = KeaClient(url="http://kea:8000", max_unpaged_leases=None)
+        client = kea_client(url="http://kea:8000", max_unpaged_leases=None)
         lease = {"ip-address": "198.18.0.10", "state": 0}
         with stub_kea({"lease4-get-all": {"result": 0, "arguments": {"leases": [lease]}}}) as kea:
             result = client.lease_search(4, "subnet_id", 12)
@@ -1510,7 +1544,7 @@ class TestSubnetGet(TestCase):
     """Tests for KeaClient.subnet_get()."""
 
     def setUp(self):
-        self.client = KeaClient(url="http://kea:8000")
+        self.client = kea_client(url="http://kea:8000")
 
     def test_returns_full_subnet_dict(self):
         """subnet_get returns the complete subnet dict including relay and option-data."""
@@ -1604,7 +1638,7 @@ class TestSubnetDefinition(TestCase):
     """KeaClient.subnet_definition reads one Subnet for an update. Two reads of the same Subnet are equal."""
 
     def setUp(self):
-        self.client = KeaClient(url="http://kea:8000")
+        self.client = kea_client(url="http://kea:8000")
 
     def test_two_reads_of_the_same_subnet_are_equal_and_a_changed_subnet_is_not(self):
         live = {"id": 42, "subnet": "10.0.0.5/24", "pools": [], "valid-lifetime": 3600}
@@ -1643,7 +1677,7 @@ class TestSubnetUpdate(TestCase):
     """KeaClient.subnet_update sends the Subnet that it read with the form fields, and does not persist."""
 
     def setUp(self):
-        self.client = KeaClient(url="http://kea:8000")
+        self.client = kea_client(url="http://kea:8000")
 
     def _sent(self, live: dict, version: int = 4, **fields) -> dict:
         """Return the Subnet that subnet{v}-update sends for *live* and the form *fields*."""
@@ -1835,20 +1869,20 @@ class TestKeaClientContextManager(TestCase):
     """KeaClient supports context manager protocol for resource cleanup."""
 
     def test_close_closes_session(self):
-        client = KeaClient(url="http://kea:8000")
+        client = kea_client(url="http://kea:8000")
         with patch.object(client._session, "close") as mock_close:
             client.close()
             mock_close.assert_called_once()
 
     def test_context_manager_calls_close(self):
-        client = KeaClient(url="http://kea:8000")
+        client = kea_client(url="http://kea:8000")
         with patch.object(client, "close") as mock_close:
             with client:
                 pass
             mock_close.assert_called_once()
 
     def test_clone_supports_context_manager(self):
-        client = KeaClient(url="http://kea:8000")
+        client = kea_client(url="http://kea:8000")
         with client.clone() as worker:
             self.assertIsInstance(worker, KeaClient)
             self.assertEqual(worker.url, client.url)
@@ -1858,7 +1892,7 @@ class TestConfigGetShapeGuard(TestCase):
     """Methods that call config-get raise KeaException on malformed arguments."""
 
     def setUp(self):
-        self.client = KeaClient(url="http://kea:8000")
+        self.client = kea_client(url="http://kea:8000")
 
     def _null_args_response(self):
         return _mock_http_response([{"result": 0, "arguments": None}])
@@ -1874,7 +1908,7 @@ class TestLeaseGetPage(TestCase):
     """Tests for KeaClient.lease_get_page()."""
 
     def setUp(self):
-        self.client = KeaClient(url="http://kea:8000")
+        self.client = kea_client(url="http://kea:8000")
 
     def test_explicit_cursor_is_sent_without_assuming_backend_order(self):
         first = {"ip-address": "198.18.1.10"}
@@ -1994,7 +2028,7 @@ class TestLeaseGetAllPagination(TestCase):
     """Tests for KeaClient.lease_get_all() pagination and edge-case handling."""
 
     def setUp(self):
-        self.client = KeaClient(url="http://kea:8000")
+        self.client = kea_client(url="http://kea:8000")
 
     def _page_response(self, leases, count=None, result=0):
         args = {"leases": leases}
@@ -2192,29 +2226,29 @@ class TestPersistConfigFlag(TestCase):
 
     def test_default_persist_config_is_true(self):
         """KeaClient defaults to persist_config=True."""
-        client = KeaClient(url="http://kea:8000")
+        client = kea_client(url="http://kea:8000")
         self.assertTrue(client.persist_config)
 
     def test_persist_config_false_stored(self):
         """KeaClient stores persist_config=False when passed."""
-        client = KeaClient(url="http://kea:8000", persist_config=False)
+        client = kea_client(url="http://kea:8000", persist_config=False)
         self.assertFalse(client.persist_config)
 
     def test_clone_propagates_persist_config_false(self):
         """clone() copies persist_config=False to the new instance."""
-        client = KeaClient(url="http://kea:8000", persist_config=False)
+        client = kea_client(url="http://kea:8000", persist_config=False)
         cloned = client.clone()
         self.assertFalse(cloned.persist_config)
 
     def test_clone_propagates_persist_config_true(self):
         """clone() copies persist_config=True (default) to the new instance."""
-        client = KeaClient(url="http://kea:8000", persist_config=True)
+        client = kea_client(url="http://kea:8000", persist_config=True)
         cloned = client.clone()
         self.assertTrue(cloned.persist_config)
 
     def test_persist_config_false_sends_no_persist_step(self):
         """persist() sends nothing when persist_config=False."""
-        client = KeaClient(url="http://kea:8000", persist_config=False)
+        client = kea_client(url="http://kea:8000", persist_config=False)
         with stub_kea({}) as kea:
             self.assertEqual(client.persist(4).persistence, "not-requested")
         self.assertEqual(kea.commands(), [])
@@ -2229,20 +2263,20 @@ class TestGetAvailableCommandsMalformed(TestCase):
     """get_available_commands raises RuntimeError on empty / non-dict response."""
 
     def setUp(self):
-        self.client = KeaClient(url="http://kea:8000")
+        self.client = kea_client(url="http://kea:8000")
 
     def test_empty_list_raises_runtime_error(self):
         """Empty response list hits the 'not resp' branch and raises RuntimeError."""
         with patch.object(self.client._session, "post", return_value=_mock_http_response([])):
             with self.assertRaises(RuntimeError):
-                self.client.get_available_commands("dhcp4")
+                self.client.get_available_commands(4)
 
 
 class TestLeaseUpdateGuards(TestCase):
     """lease_update guards on result=3 and non-dict arguments."""
 
     def setUp(self):
-        self.client = KeaClient(url="http://kea:8000")
+        self.client = kea_client(url="http://kea:8000")
 
     def test_result3_raises_kea_exception(self):
         """command() returning result=3 directly (bypassing check_response) raises KeaException."""
@@ -2268,7 +2302,7 @@ class TestLeaseGetByIpNonDictArguments(TestCase):
     """lease_get_by_ip uses the canonical lease-search response validation."""
 
     def setUp(self):
-        self.client = KeaClient(url="http://kea:8000")
+        self.client = kea_client(url="http://kea:8000")
 
     def test_non_dict_arguments_raises_runtime_error(self):
         """A result with null arguments is a malformed Kea response."""
@@ -2282,7 +2316,7 @@ class TestLeaseGetAllMalformedArguments(TestCase):
     """lease_get_all raises RuntimeError when arguments is not a dict or leases is not a list."""
 
     def setUp(self):
-        self.client = KeaClient(url="http://kea:8000")
+        self.client = kea_client(url="http://kea:8000")
 
     @patch("requests.Session.post")
     def test_arguments_not_dict_raises_runtime_error(self, mock_post):
@@ -2299,10 +2333,3 @@ class TestLeaseGetAllMalformedArguments(TestCase):
         with self.assertRaises(RuntimeError) as cm:
             self.client.lease_get_all(version=4)
         self.assertIn("leases", str(cm.exception))
-
-
-class TestConfigPhaseCommand(TestCase):
-    def test_config_set_requires_an_explicit_configuration(self):
-        with stub_kea({}) as kea, self.assertRaises(ValueError):
-            KeaClient(url="http://kea:8000")._config_phase_command("config-set", "dhcp4")
-        self.assertEqual(kea.commands(), [])

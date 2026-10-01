@@ -11,7 +11,7 @@ from utilities.views import ViewTab, register_model_view
 from .. import forms, server_configuration, tables
 from ..constants import Family
 from ..filtersets import ServerFilterSet
-from ..kea import KeaClient, KeaException, KeaResponse
+from ..kea import KeaClient, KeaCommand, KeaException, KeaResponse
 from ..models import Server
 from ..utilities import (
     format_duration,
@@ -149,10 +149,10 @@ class ServerStatusView(generic.ObjectView):
 
     def _get_ca_status(self, client: KeaClient) -> dict[str, Any]:
         """Get the control agent status."""
-        status = client.command("status-get")
+        status = client.command(KeaCommand.STATUS_GET, None)
         args = _response_arguments(status, "status-get", require_nonempty=True)
 
-        version = client.command("version-get")
+        version = client.command(KeaCommand.VERSION_GET, None)
         version_args = _response_arguments(version, "version-get", require_nonempty=True)
 
         return {
@@ -179,8 +179,8 @@ class ServerStatusView(generic.ObjectView):
         for svc, version in services:
             try:
                 svc_client = server.get_client(version=version)
-                status = svc_client.command("status-get", service=[svc])
-                version_resp = svc_client.command("version-get", service=[svc])
+                status = svc_client.command(KeaCommand.STATUS_GET, version)
+                version_resp = svc_client.command(KeaCommand.VERSION_GET, version)
 
                 args = _response_arguments(status, f"status-get for service {svc}")
                 version_args = _response_arguments(version_resp, f"version-get for service {svc}")

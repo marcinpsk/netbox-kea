@@ -15,10 +15,11 @@ import pytest
 import requests
 from playwright.sync_api import Page
 
-from ..conftest import REQUEST_TIMEOUT, TimeoutSession
+from ..conftest import REQUEST_TIMEOUT, NoBranchGuard, TimeoutSession
 
 # This is linked from netbox_kea to avoid import errors
-from ..kea import KeaClient
+from ..constants import Family
+from ..kea import KeaClient, KeaCommand, KeaResponse
 
 #: `/users/config/` is bounded like every other NetBox call, and CI has been seen to
 #: answer it slowly, so the browser suite states the shared bound rather than its own.
@@ -40,9 +41,9 @@ def requests_session(nb_api: pynetbox.api) -> Iterator[requests.Session]:
 
 
 @pytest.fixture(autouse=True)
-def clear_leases(kea_client: KeaClient) -> None:
-    kea_client.command("lease4-wipe", service=["dhcp4"], check=(0, 3))
-    kea_client.command("lease6-wipe", service=["dhcp6"], check=(0, 3))
+def clear_leases(kea_client: "_DualEndpointKeaClient") -> None:
+    kea_client.command("lease4-wipe", 4, check=(0, 3))
+    kea_client.command("lease6-wipe", 6, check=(0, 3))
 
 
 @pytest.fixture(autouse=True)
@@ -130,23 +131,28 @@ def with_test_server_only4(nb_api: pynetbox.api, kea_url: str, page: Page, netbo
 
 
 class _DualEndpointKeaClient:
-    """Test-side client for Kea 3.0 (no Control Agent): routes each service to its own daemon socket."""
+    """Test-side client for Kea 3.0 (no Control Agent): routes each family to its own daemon socket.
+
+    It takes the wire name, because the unit suite loads test_workflows.py standalone, where KeaCommand
+    cannot be imported. The name must be a KeaCommand value: the harness sends only what the plugin sends.
+    """
 
     def __init__(self, dhcp4: KeaClient, dhcp6: KeaClient) -> None:
-        self._clients = {"dhcp4": dhcp4, "dhcp6": dhcp6}
+        self._clients: dict[Family, KeaClient] = {4: dhcp4, 6: dhcp6}
 
-    def command(self, command, service=None, arguments=None, check=(0,)):
-        services = service or ["dhcp4"]
-        if len(services) != 1:
-            raise ValueError(f"Kea 3.0 has no Control Agent: route one service per call, got {services!r}")
-        svc = services[0]
-        return self._clients[svc].command(command, service=[svc], arguments=arguments, check=check)
+    def command(
+        self, name: str, family: Family, arguments: dict[str, Any] | None = None, check=(0,)
+    ) -> list[KeaResponse]:
+        return self._clients[family].command(KeaCommand(name), family, arguments=arguments, check=check)
 
 
 @pytest.fixture
 def kea_client(kea_control_urls: dict[int, str]) -> Iterator[_DualEndpointKeaClient]:
     # Kea 3.0: two daemons, each on its own host-exposed HTTP control socket.
-    with KeaClient(kea_control_urls[4]) as dhcp4, KeaClient(kea_control_urls[6]) as dhcp6:
+    with (
+        KeaClient(kea_control_urls[4], write_guard=NoBranchGuard()) as dhcp4,
+        KeaClient(kea_control_urls[6], write_guard=NoBranchGuard()) as dhcp6,
+    ):
         yield _DualEndpointKeaClient(dhcp4, dhcp6)
 
 

@@ -13,9 +13,9 @@ from pathlib import Path
 from django.test import TestCase, override_settings
 
 from netbox_kea import server_configuration
-from netbox_kea.kea import KeaClient, KeaException
+from netbox_kea.kea import KeaException
 from netbox_kea.subnet_catalogue import CompleteCatalogueSnapshot, for_synchronization
-from netbox_kea.tests.kea_stub import _network_absent, _network_present, queued, stub_kea
+from netbox_kea.tests.kea_stub import _network_absent, _network_present, kea_client, queued, stub_kea
 from netbox_kea.tests.utils import _PLUGINS_CONFIG, _make_db_server
 
 _RECORDINGS = Path(__file__).with_name("kea_recordings")
@@ -41,7 +41,7 @@ def test_the_targeted_shared_network_read_parses_both_recorded_replies():
     for family in (4, 6):
         recorded = _recording(family)[f"network{family}-get"]
         with stub_kea({f"network{family}-get": queued(recorded["present"], recorded["absent"])}) as kea:
-            client = KeaClient("http://kea.example.com", send_service=False)
+            client = kea_client("http://kea.example.com", send_service=False)
             assert client.shared_network_exists(family, "office") is True
             assert client.shared_network_exists(family, "absent") is False
         assert [body["arguments"] for body in kea.bodies(f"network{family}-get")] == [
@@ -65,8 +65,8 @@ def test_the_shared_network_stub_replies_match_the_recorded_ones():
 def test_the_control_agent_forwarding_failure_is_recognized_only_through_an_agent():
     recording = json.loads((_RECORDINGS / "control-agent.json").read_text())
     assert recording["kea-version"].startswith("3.0.")
-    agent = KeaClient("http://kea.example.com", send_service=True)
-    daemon = KeaClient("http://kea.example.com", send_service=False)
+    agent = kea_client("http://kea.example.com", send_service=True)
+    daemon = kea_client("http://kea.example.com", send_service=False)
     for family in (4, 6):
         other = 6 if family == 4 else 4
         for command in (f"network{family}-add", f"network{family}-del"):

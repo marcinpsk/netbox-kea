@@ -1,0 +1,21 @@
+{% extends 'base/layout.html' %}
+
+{% block title %}Change refused{% endblock %}
+
+{% block content %}
+<div class="row my-5">
+  <div class="col-md-8 offset-md-2 col-lg-6 offset-lg-3">
+    <div class="card border-warning">
+      <h2 class="card-header text-warning">
+        <i class="mdi mdi-source-branch me-2" aria-hidden="true"></i>Change refused
+      </h2>
+      <div class="card-body">
+        <p class="mb-0">{{ refusal }}</p>
+      </div>
+      <div class="card-footer text-end">
+        <a href="{{ main_url }}" class="btn btn-primary">Switch to main</a>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

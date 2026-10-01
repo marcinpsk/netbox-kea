@@ -7,7 +7,6 @@ from __future__ import annotations
 import logging
 from collections import defaultdict
 
-from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.contrib.contenttypes.models import ContentType
@@ -27,11 +26,6 @@ from ..models import Server, SyncConfig
 logger = logging.getLogger(__name__)
 
 _JOB_HISTORY_COUNT = 5  # rows shown in the per-server tab mini-table
-
-
-def _configured_default_interval() -> int:
-    """Return the sync interval from PLUGINS_CONFIG, falling back to 5."""
-    return settings.PLUGINS_CONFIG.get("netbox_kea", {}).get("sync_interval_minutes", 5)
 
 
 def get_recent_jobs_for_servers(
@@ -158,7 +152,7 @@ class SyncJobsView(LoginRequiredMixin, View):
 
     def get(self, request):
         """Render the sync jobs overview page with config form and server table."""
-        sync_cfg = SyncConfig.get(default_interval=_configured_default_interval())
+        sync_cfg = SyncConfig.get()
         form = forms.SyncConfigForm(
             initial={
                 "interval_minutes": sync_cfg.interval_minutes,
@@ -184,45 +178,21 @@ class SyncJobsView(LoginRequiredMixin, View):
         )
 
     def post(self, request):
-        """Process SyncConfig form submission and re-schedule the background job."""
+        """Save the SyncConfig form; the job reads the new values on its next run."""
         if not request.user.has_perm("netbox_kea.change_syncconfig"):
             return HttpResponseForbidden()
 
         form = forms.SyncConfigForm(request.POST)
         if form.is_valid():
-            try:
-                sync_cfg = SyncConfig.get(default_interval=_configured_default_interval())
-                sync_cfg.interval_minutes = form.cleaned_data["interval_minutes"]
-                sync_cfg.sync_enabled = form.cleaned_data["sync_enabled"]
-                sync_cfg.sync_leases_enabled = form.cleaned_data["sync_leases_enabled"]
-                sync_cfg.sync_reservations_enabled = form.cleaned_data["sync_reservations_enabled"]
-                sync_cfg.sync_prefixes_enabled = form.cleaned_data["sync_prefixes_enabled"]
-                sync_cfg.sync_ip_ranges_enabled = form.cleaned_data["sync_ip_ranges_enabled"]
-                sync_cfg.save()
-            except Exception:
-                logger.exception("Failed to save SyncConfig")
-                messages.error(request, "An internal error occurred")
-                servers = list(Server.objects.restrict(request.user, "view").order_by("name"))
-                allowed_server_pks = set(Server.objects.restrict(request.user, "change").values_list("pk", flat=True))
-                latest_jobs = _get_latest_jobs(servers)
-                return render(
-                    request,
-                    self.template_name,
-                    {
-                        "form": form,
-                        "servers": servers,
-                        "latest_jobs": latest_jobs,
-                        "allowed_server_pks": allowed_server_pks,
-                    },
-                )
-            try:
-                from netbox.registry import registry
-
-                if KeaIpamSyncJob in registry["system_jobs"]:
-                    registry["system_jobs"][KeaIpamSyncJob]["interval"] = sync_cfg.interval_minutes
-            except Exception:
-                logger.exception("Could not update KeaIpamSyncJob interval in registry after config change")
-            messages.success(request, "Sync configuration saved.")
+            sync_cfg = SyncConfig.get()
+            sync_cfg.interval_minutes = form.cleaned_data["interval_minutes"]
+            sync_cfg.sync_enabled = form.cleaned_data["sync_enabled"]
+            sync_cfg.sync_leases_enabled = form.cleaned_data["sync_leases_enabled"]
+            sync_cfg.sync_reservations_enabled = form.cleaned_data["sync_reservations_enabled"]
+            sync_cfg.sync_prefixes_enabled = form.cleaned_data["sync_prefixes_enabled"]
+            sync_cfg.sync_ip_ranges_enabled = form.cleaned_data["sync_ip_ranges_enabled"]
+            sync_cfg.save()
+            messages.success(request, "Sync configuration saved. A new interval applies after the next scheduled run.")
             return HttpResponseRedirect(reverse("plugins:netbox_kea:sync_jobs"))
 
         servers = list(Server.objects.restrict(request.user, "view").order_by("name"))
@@ -255,7 +225,7 @@ class ServerSyncStatusView(generic.ObjectView):
         latest = recent_jobs[0] if recent_jobs else None
 
         jobs_list_url = reverse("core:job_list") + f"?object_type=netbox_kea.server&object_id={instance.pk}"
-        sync_cfg = SyncConfig.get(default_interval=_configured_default_interval())
+        sync_cfg = SyncConfig.get()
         return {
             "recent_jobs": recent_jobs,
             "latest_job": latest,
