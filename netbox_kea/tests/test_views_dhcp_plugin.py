@@ -23,10 +23,10 @@ from netbox_kea.kea import KeaClient, KeaException
 from netbox_kea.views import dhcp_plugin_sync as dps
 
 from .kea_stub import _res_page, _subnet_list, stub_kea
-from .utils import _make_db_server
+from .utils import _make_db_server, plugins_config
 
 DHCP_PLUGIN = "netbox_dhcp"
-_PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30}}
+_PLUGINS_CONFIG = plugins_config()
 
 
 def _request_version(body: dict) -> int:

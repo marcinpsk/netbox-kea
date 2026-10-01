@@ -19,11 +19,11 @@ from ipam.models import VRF
 from netbox_kea.graphql import ServerType
 from netbox_kea.models import Server
 
-from .utils import _make_db_server
+from .utils import _make_db_server, plugins_config
 
 User = get_user_model()
 
-_PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30}}
+_PLUGINS_CONFIG = plugins_config()
 
 #: Never publish a credential over GraphQL. custom_field_data is NetBox's own JSON
 #: store, which CustomFieldsMixin exposes as ``custom_fields``.
