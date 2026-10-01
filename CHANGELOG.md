@@ -13,6 +13,209 @@ forked, and predate its conventional-commit history.
 
 <!-- version list -->
 
+## v1.12.0 (2026-10-01)
+
+### Bug Fixes
+
+- A Reservation mutation requires exactly one reply from Kea
+  ([`b76b07f`](https://github.com/marcinpsk/netbox-kea/commit/b76b07ff020c642b1c8b8136ff8571f7422177ec))
+
+- Every KeaClient must carry a write guard
+  ([`4deb722`](https://github.com/marcinpsk/netbox-kea/commit/4deb7225720bf7bf7a8bfb600c2db9cc6dbf503f))
+
+- KeaIpamSyncJob.enqueue_once accepts a positional interval
+  ([`6491095`](https://github.com/marcinpsk/netbox-kea/commit/64910951733a83e11a346d1963e40337cef2f3bd))
+
+- Keep every netbox_kea model in main with a constant resolver
+  ([`09eb53b`](https://github.com/marcinpsk/netbox-kea/commit/09eb53b041b0d7df46d43dbfedafabd1ab1d3211))
+
+- Let an error in the SyncConfig save fail as a server error
+  ([`66a0709`](https://github.com/marcinpsk/netbox-kea/commit/66a070915fe79d02e243b89f8e19c5f25fd40718))
+
+- Make the branch banner a navbar button, because NetBox renders the navbar twice
+  ([`3a856c3`](https://github.com/marcinpsk/netbox-kea/commit/3a856c33d05e872d48176d4c4cef847cf7d31d5a))
+
+- Migration 0018 refuses an invalid sync_interval_minutes by name
+  ([`818efc3`](https://github.com/marcinpsk/netbox-kea/commit/818efc38a304310decd21c8b4706d4a1ba08c4e6))
+
+- Read the sync interval from SyncConfig when the job is scheduled
+  ([`dd4e44c`](https://github.com/marcinpsk/netbox-kea/commit/dd4e44c8e3d5d51b8108d89f54a294c82000b5fa))
+
+- Refuse a Kea configuration write before the cache invalidation
+  ([`9780e03`](https://github.com/marcinpsk/netbox-kea/commit/9780e0317cbf98014ce0faaf9dda21b7f980e304))
+
+### Chores
+
+- **deps**: Bump the uv group across 1 directory with 3 updates
+  ([`37cd8d1`](https://github.com/marcinpsk/netbox-kea/commit/37cd8d102e284e6672e1030c2199627a644c2bf0))
+
+### Continuous Integration
+
+- Pin the NetBox release and netbox-branching once, and reuse the integration steps
+  ([`f383043`](https://github.com/marcinpsk/netbox-kea/commit/f383043f6514ae68f33a3776ee20af203848a03a))
+
+- Read the coverage settings from pyproject in the branching-test job
+  ([`4972f71`](https://github.com/marcinpsk/netbox-kea/commit/4972f718766049e63a6ece02d925a97e84e63b91))
+
+- Run the branching browser tests on the netbox-branching harness variant
+  ([`40fbd87`](https://github.com/marcinpsk/netbox-kea/commit/40fbd87abb3693f676043741e7ae576803320da9))
+
+- Run the netbox-branching tests with NetBox 4.7.0 and netbox-branching 1.2.1
+  ([`e94c957`](https://github.com/marcinpsk/netbox-kea/commit/e94c95725cbc20af83234625b37a2cf2bbf43ac2))
+
+- Upload the branching-test coverage to Codecov
+  ([`9f3bfcd`](https://github.com/marcinpsk/netbox-kea/commit/9f3bfcd3584a826e215e9dc34d6b7ca3920e089f))
+
+### Documentation
+
+- Delete, do not merge, a pre-upgrade branch that changed a Kea server password
+  ([`3a5c1f0`](https://github.com/marcinpsk/netbox-kea/commit/3a5c1f0e14abd827786009a95e47a28642a10f9b))
+
+- Describe the increment 4 branching sinks
+  ([`dbb6efd`](https://github.com/marcinpsk/netbox-kea/commit/dbb6efdb33bf355dfaec6337cbb08a79294caa64))
+
+- Drop an em-dash from the KeaClient paragraph in AGENTS.md
+  ([`35af538`](https://github.com/marcinpsk/netbox-kea/commit/35af5385dcd10d0a978146111daec3de6424ef12))
+
+- Reflow the increment 3 note, add the GraphQL case and the issue numbers
+  ([`20cd0f7`](https://github.com/marcinpsk/netbox-kea/commit/20cd0f7eadc3449bfd69542b453c1690a86f52c1))
+
+- Say in AGENTS.md that every KeaClient takes a write guard
+  ([`a917e4b`](https://github.com/marcinpsk/netbox-kea/commit/a917e4b2ce876e098c8d64d438510ba9af0cb008))
+
+- Say in the README that a branch refuses plugin writes outside a web request too
+  ([`5206294`](https://github.com/marcinpsk/netbox-kea/commit/5206294e06e4d34b96162016bc7c68e3084fd3a9))
+
+- Say that the plugin refuses changes in a branch, and record increment 3
+  ([`c8b72b9`](https://github.com/marcinpsk/netbox-kea/commit/c8b72b9f689d344cc87169e857f1b13e1657baf3))
+
+- Say the migration reads PLUGINS_CONFIG once to create the SyncConfig row
+  ([`fbb1659`](https://github.com/marcinpsk/netbox-kea/commit/fbb165960b48a26efd1c486b77883a18c318755e))
+
+- Say the Sync Jobs page sets the sync interval, not NetBox admin
+  ([`eb0df49`](https://github.com/marcinpsk/netbox-kea/commit/eb0df49439fc82afa52080a1c43ba86357bdbb91))
+
+- Say where the branching browser tests run, and what the banner is
+  ([`b92a535`](https://github.com/marcinpsk/netbox-kea/commit/b92a5358c5ef81ed83416b6b9152d240966b57f1))
+
+- Say which unusable branch selections get netbox-branching's HTTP 400
+  ([`04d1542`](https://github.com/marcinpsk/netbox-kea/commit/04d1542d11f2b1e88b4c64f6c499037b206556f2))
+
+- State the sync VRF protection and the partial netbox-branching support
+  ([`4772200`](https://github.com/marcinpsk/netbox-kea/commit/477220053fd5f015f3b4453cd432ad74338bec4f))
+
+### Features
+
+- Create the SyncConfig row in a migration, so a GET of a sync page writes nothing
+  ([`1f08395`](https://github.com/marcinpsk/netbox-kea/commit/1f0839587615c6f7e4aa39a10ccaac10082264e3))
+
+- Fake every netbox_kea migration on a branch, and check it
+  ([`c3fb487`](https://github.com/marcinpsk/netbox-kea/commit/c3fb4876a7e5e2007d72c62dff08771a09262fe4))
+
+- KeaClient.command() takes a KeaCommand member and a target family
+  ([`5ecbb7a`](https://github.com/marcinpsk/netbox-kea/commit/5ecbb7a3409bf71bb166e2dd9da4effbf1bfcaf7))
+
+- KeaIpamSyncJob fails in a branch before any read
+  ([`ed0a3c3`](https://github.com/marcinpsk/netbox-kea/commit/ed0a3c3d3cbbb7f715e371c241d93bb8804b9db4))
+
+- Keep netbox_kea rows in main when netbox-branching is installed
+  ([`ed93a49`](https://github.com/marcinpsk/netbox-kea/commit/ed93a490b2d5fb729995179d893f0c9f462a73dc))
+
+- Protect a VRF that a Server syncs into
+  ([`cad0731`](https://github.com/marcinpsk/netbox-kea/commit/cad0731c07632223e0b717fd6ee405e1377edda1))
+
+- Refuse a save or a delete of a netbox_kea row in a branch
+  ([`4e2f4d3`](https://github.com/marcinpsk/netbox-kea/commit/4e2f4d33f4c72a4ae471ef0052d6542b31c95ba4))
+
+- Refuse plugin changes in a branch, and name the sources of plugin responses
+  ([`606f6c9`](https://github.com/marcinpsk/netbox-kea/commit/606f6c96fd67740f0bc4afdb13c06e726cb3f85e))
+
+- Show a branch banner on plugin pages, and no reservation links on the IP panel
+  ([`1d3355d`](https://github.com/marcinpsk/netbox-kea/commit/1d3355df62c9b9f219b71884dd3fb994cdb83656))
+
+- The Kea transport refuses a write command in a branch
+  ([`4b5907a`](https://github.com/marcinpsk/netbox-kea/commit/4b5907abda55963c5acc7504716e5a266097cd5f))
+
+### Refactoring
+
+- Drop the Reservation reply checks that command() already makes
+  ([`d881e5f`](https://github.com/marcinpsk/netbox-kea/commit/d881e5f3364d6b77a0c4c81b0f80e34671ce7c53))
+
+- KeaCommand.is_write names the write kind once
+  ([`4438948`](https://github.com/marcinpsk/netbox-kea/commit/4438948ec2a14a15b57205ea9b18751b5305e00e))
+
+- Keep the branch-refusal receivers in branching.py
+  ([`450d158`](https://github.com/marcinpsk/netbox-kea/commit/450d158e64cf077969ab4b3cfa47ec1268f61fe6))
+
+- Take SAFE_METHODS from REST framework, and name each refusal code once
+  ([`479b080`](https://github.com/marcinpsk/netbox-kea/commit/479b080812890f389c870b9cc821b64ca1200190))
+
+### Testing
+
+- A failed cache invalidation is logged, and the change is still sent and persisted
+  ([`096fa6b`](https://github.com/marcinpsk/netbox-kea/commit/096fa6bf4c21bf7ffdeb2512396126d9bcd7f415))
+
+- A merge that deletes a VRF a Server now syncs into fails and changes nothing
+  ([`bfe373a`](https://github.com/marcinpsk/netbox-kea/commit/bfe373ade70c84a0c4329afcf64d05458a7c6d9f))
+
+- A REST view outside the plugin gets netbox-branching's 400 for an unready branch header
+  ([`cf1b639`](https://github.com/marcinpsk/netbox-kea/commit/cf1b6390ab7cede9a67f8384a29e79d82239797a))
+
+- Add a netbox-branching harness variant and browser tests for Sync all
+  ([`b608b80`](https://github.com/marcinpsk/netbox-kea/commit/b608b80bf2bea890930029a3373f266e03b730f3))
+
+- Add archived, failed and empty-cookie rows to the selector table
+  ([`7a19222`](https://github.com/marcinpsk/netbox-kea/commit/7a1922259505a30c9eef717db82bf0e2333ac1c0))
+
+- An empty reply to reservation-add raises before the persist step
+  ([`7764ba3`](https://github.com/marcinpsk/netbox-kea/commit/7764ba3253fabf83e1a1b40bc02d580cacb071f1))
+
+- BranchActive from a view outside the plugin also gets the 409
+  ([`c3916bc`](https://github.com/marcinpsk/netbox-kea/commit/c3916bc1d7bfcb8511847ebcfce8096ab9d880c6))
+
+- Browser tests compare the state from before the page loads
+  ([`7494e9b`](https://github.com/marcinpsk/netbox-kea/commit/7494e9b871b631134512aef0dd21bbf430a60fa3))
+
+- Guard 1 sends every method to every plugin URL in a provisioned branch
+  ([`bb09994`](https://github.com/marcinpsk/netbox-kea/commit/bb09994dd714a53670c51694263673d02ad3f2fe))
+
+- Guard 1 sends POST, PUT, PATCH and DELETE to every plugin route
+  ([`b475ec0`](https://github.com/marcinpsk/netbox-kea/commit/b475ec06e2150555dd72bdb7368a0f2a81e6a1a3))
+
+- Let the test settings and the CI configuration writer load netbox-branching
+  ([`6f511fe`](https://github.com/marcinpsk/netbox-kea/commit/6f511fe3e2a5f5efda96f493466381b7754e3c59))
+
+- Name three KeaClient.command() tests after what they assert
+  ([`28c2f84`](https://github.com/marcinpsk/netbox-kea/commit/28c2f845bbae7d1a06f66f867aaef1c0d3ef54f1))
+
+- Pass timeout= to the CI configuration writer run
+  ([`5024170`](https://github.com/marcinpsk/netbox-kea/commit/502417068223175286f33bc811b64655cda7badf))
+
+- Prove the SyncConfig row on a fresh database comes from migration 0018
+  ([`cb57cba`](https://github.com/marcinpsk/netbox-kea/commit/cb57cbadd6bc600074f8fbc6296e8e5f3dc904eb))
+
+- Put the KeaClient.command() tests in their own class
+  ([`ec0a5c0`](https://github.com/marcinpsk/netbox-kea/commit/ec0a5c09ba0049f9262f07207556b226971fe31f))
+
+- Remove an unused Kea command helper that used the old command() signature
+  ([`af0249a`](https://github.com/marcinpsk/netbox-kea/commit/af0249a856ed97acbbf559324caad3f21ab3d94f))
+
+- The boundary scanner reports a KeaCommand attribute that is not a member
+  ([`93ac74a`](https://github.com/marcinpsk/netbox-kea/commit/93ac74a80970ce98307aecdae285f47afca20859))
+
+- The boundary scanner treats a mapping-pattern capture as a rebinding
+  ([`fdd80de`](https://github.com/marcinpsk/netbox-kea/commit/fdd80de29a265a5a3076841b5a7546a3dd61fb9f))
+
+- The reservation boundary scanner resolves a name only through its kea import
+  ([`7c600f3`](https://github.com/marcinpsk/netbox-kea/commit/7c600f3a55722d99aa967193236f2cf7cd2d63ba))
+
+- Type the cache-invalidation refusal test, so mypy checks its body
+  ([`6c3b7bc`](https://github.com/marcinpsk/netbox-kea/commit/6c3b7bc0ec8f2b54c7e1d1e71b71fc9c9efaa89d))
+
+- Type the guard 4 helpers with Sequence, as SeparateDatabaseAndState holds them
+  ([`082adc7`](https://github.com/marcinpsk/netbox-kea/commit/082adc7f82cf58b45351c5117c6fe430e44aa204))
+
+
 ## v1.11.0 (2026-10-01)
 
 ### Bug Fixes
