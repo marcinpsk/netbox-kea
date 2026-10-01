@@ -26,7 +26,7 @@ from .integrations import dhcp_plugin
 from .ipam_marker import MarkerKind, parse_marker, render_marker, rewrite_marker, status_kind
 from .kea import KeaException, lease_fields
 from .models import IPAMOwnershipLink, IPAMOwnershipSource, next_confirmation_number
-from .reservations import InSubnetReservationScope, Reservation
+from .reservations import TRAVERSAL_DIAGNOSTIC_CODES, InSubnetReservationScope, Reservation
 from .subnet_catalogue import CatalogueUnavailable
 from .sync import (
     DuplicateNetBoxRowsError,
@@ -140,6 +140,8 @@ class SyncReport:
 
     created: int = 0
     updated: int = 0
+    # IP address ownership links removed by stale cleanup, including the last link of a removed address.
+    cleaned: int = 0
     removed: int = 0
     deprecated: int = 0
     errors: int = 0
@@ -152,6 +154,8 @@ class SyncReport:
     # The valid records of the snapshots: the old stale cleanup reads them until #214.
     lease_records: list[dict[str, Any]] = field(default_factory=list)
     reservation_records: list[Reservation] = field(default_factory=list)
+    quarantined_reservations: int = 0
+    reservation_traversal_truncated: bool = False
     # Global and addressless Reservations, which write no IPAM row: the job counts them as skipped.
     skipped_reservations: list[Reservation] = field(default_factory=list)
 
@@ -485,6 +489,10 @@ def _reservation_reports(
     except (OSError, ValueError, RuntimeError) as exc:
         report.fail_snapshot(RESERVATION, what, exc)
         return {}
+    report.quarantined_reservations = sum(
+        diagnostic.code not in TRAVERSAL_DIAGNOSTIC_CODES for diagnostic in snapshot.diagnostics
+    )
+    report.reservation_traversal_truncated = snapshot.traversal_truncated
     if snapshot.diagnostics or not snapshot.complete:
         # Each diagnostic is a Reservation or a page that the snapshot could not read.
         report.errors += len(snapshot.diagnostics)
@@ -800,6 +808,8 @@ def _remove_stale_links(
         lambda stale: f"stale {source} link of {stale.address} of Server {server.name}",
     )
     for stale, outcome in rows:
+        if outcome in {"removed", "unlinked", "updated", "unchanged"}:
+            report.cleaned += 1
         if outcome == "removed":
             report.removed += 1
         elif outcome == "deprecated":
