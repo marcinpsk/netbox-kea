@@ -15,10 +15,11 @@ from ipam.models import IPAddress as NbIP
 
 from netbox_kea.models import Server
 from netbox_kea.template_extensions import IPAddressKeaPanel
+from netbox_kea.tests.utils import plugins_config
 
 User = get_user_model()
 
-_PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30}}
+_PLUGINS_CONFIG = plugins_config()
 
 
 def _make_server(name, dhcp4=True, dhcp6=False):

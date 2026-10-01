@@ -44,7 +44,7 @@ from .kea_stub import (
     queued,
     stub_kea,
 )
-from .utils import _PLUGINS_CONFIG, _make_db_server, _ViewTestBase
+from .utils import _PLUGINS_CONFIG, _make_db_server, _ViewTestBase, plugins_config
 
 #: The HTMX error template renders a uuid4 reference ID, so a test that stops at the
 #: label also passes when that ID is missing.
@@ -68,7 +68,7 @@ def _assert_no_error_template(test, response):
 #: The lease-query guard is off, so a Subnet lease search issues no stat-lease{v}-get
 #: preflight and needs none registered. Tests that register only the lease command name
 #: this dependency here instead of inheriting the value from the shared fixture.
-_UNGUARDED_PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30, "lease_query_max_unpaged_leases": 0}}
+_UNGUARDED_PLUGINS_CONFIG = plugins_config(lease_query_max_unpaged_leases=0)
 
 
 def _lease_stub(responses: dict):
@@ -376,7 +376,7 @@ class TestLeaseSearchPaths(_ViewTestBase):
         self.assertEqual(body["arguments"]["hw-address"], "aa:bb:cc:dd:ee:ff")
         self.assertEqual(body["service"], ["dhcp4"])
 
-    @override_settings(PLUGINS_CONFIG={"netbox_kea": {"kea_timeout": 30, "lease_query_max_unpaged_leases": 100}})
+    @override_settings(PLUGINS_CONFIG=plugins_config(lease_query_max_unpaged_leases=100))
     def test_a_guard_rejected_subnet_query_renders_the_bound_form(self):
         """The guard handler reads `form` and `form.cleaned_data`, so both must be bound.
 
@@ -632,7 +632,7 @@ class TestLeaseSearchPaths(_ViewTestBase):
 
         self.assertEqual(len(closed_clients), 1)
 
-    @override_settings(PLUGINS_CONFIG={"netbox_kea": {"kea_timeout": 30, "lease_query_max_unpaged_leases": 1000}})
+    @override_settings(PLUGINS_CONFIG=plugins_config())
     def test_search_by_subnet_id_and_state_filters_in_kea(self):
         lease = dict(self._LEASE4, state=1)
         with _lease_stub(
@@ -652,7 +652,7 @@ class TestLeaseSearchPaths(_ViewTestBase):
             {"subnet-id": 1, "state": 1},
         )
 
-    @override_settings(PLUGINS_CONFIG={"netbox_kea": {"kea_timeout": 30, "lease_query_max_unpaged_leases": 100}})
+    @override_settings(PLUGINS_CONFIG=plugins_config(lease_query_max_unpaged_leases=100))
     def test_large_subnet_search_prompts_for_a_state_without_get_all(self):
         with _lease_stub(
             {
@@ -761,7 +761,7 @@ class TestLeaseExport(_ViewTestBase):
         self.assertEqual(response.status_code, 302)
         self._assert_no_none_pk_redirect(response)
 
-    @override_settings(PLUGINS_CONFIG={"netbox_kea": {"kea_timeout": 30, "lease_query_max_unpaged_leases": 100}})
+    @override_settings(PLUGINS_CONFIG=plugins_config(lease_query_max_unpaged_leases=100))
     def test_export_by_subnet_uses_the_guarded_subnet_query(self):
         """A Subnet export must not rely on global lease-page ordering."""
         leases = [
@@ -1496,7 +1496,7 @@ class TestLeaseSearchHostBitsSubnet(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG={"netbox_kea": {"kea_timeout": 30}})
+@override_settings(PLUGINS_CONFIG=plugins_config())
 class TestLeaseAddView(_ViewTestBase):
     """Tests for ServerLease4AddView and ServerLease6AddView."""
 
@@ -1612,7 +1612,7 @@ class TestLeaseAddView(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG={"netbox_kea": {"kea_timeout": 30}})
+@override_settings(PLUGINS_CONFIG=plugins_config())
 class TestLeaseAddSyncToNetBox(_ViewTestBase):
     """Tests for the sync_to_netbox checkbox on ServerLease4/6AddView."""
 
@@ -1729,7 +1729,7 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG={"netbox_kea": {"kea_timeout": 30}})
+@override_settings(PLUGINS_CONFIG=plugins_config())
 class TestBulkLeaseImportView(_ViewTestBase):
     """Tests for ServerLease4/6BulkImportView."""
 
@@ -2195,7 +2195,7 @@ class TestFetchLeasesFromServer(_ViewTestBase):
         leases = self._call(constants.BY_SUBNET_ID, q="1", resp=resp)
         self.assertIsInstance(leases, list)
 
-    @override_settings(PLUGINS_CONFIG={"netbox_kea": {"kea_timeout": 30, "lease_query_max_unpaged_leases": 100}})
+    @override_settings(PLUGINS_CONFIG=plugins_config(lease_query_max_unpaged_leases=100))
     def test_subnet_state_is_applied_by_kea(self):
         from netbox_kea import constants
         from netbox_kea.views.combined import _fetch_leases_from_server

@@ -12,9 +12,10 @@ import ipaddress
 from collections.abc import Iterable
 from typing import get_args, get_origin, get_type_hints
 
-from django.test import TestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
 
 from .kea_stub import _typed_reservation
+from .utils import plugins_config
 
 
 def _sync_reservation(raw: dict, **kwargs):
@@ -753,9 +754,9 @@ class TestSyncMacAddressWithHostname(TestCase):
 # P4 — Stale IP Cleanup
 # ─────────────────────────────────────────────────────────────────────────────
 
-_STALE_PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30, "stale_ip_cleanup": "remove"}}
-_DEPRECATE_PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30, "stale_ip_cleanup": "deprecate"}}
-_NONE_PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30, "stale_ip_cleanup": "none"}}
+_STALE_PLUGINS_CONFIG = plugins_config()
+_DEPRECATE_PLUGINS_CONFIG = plugins_config(stale_ip_cleanup="deprecate")
+_NONE_PLUGINS_CONFIG = plugins_config(stale_ip_cleanup="none")
 
 
 class TestCleanupStaleIps(TestCase):
@@ -910,7 +911,7 @@ class TestSyncLeaseWithStaleCleanup(TestCase):
             description="Synced from Kea DHCP lease",
         )
 
-    @override_settings(PLUGINS_CONFIG={"netbox_kea": {"kea_timeout": 30}})
+    @override_settings(PLUGINS_CONFIG=plugins_config())
     def test_removes_old_ip_by_default(self):
         from ipam.models import IPAddress as NbIP
 
@@ -1023,54 +1024,16 @@ class TestNetboxDnsAvailable(TestCase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@override_settings(PLUGINS_CONFIG={"netbox_kea": {"kea_timeout": 30, "stale_ip_cleanup": "unknown"}})
-class TestCleanupStaleIpsUnknownMode(TestCase):
-    """An unknown stale_ip_cleanup mode fails the old cleanup and the reconciliation the same way."""
-
-    _HOSTNAME = "moving-device.example.com"
-    _OLD_IP = "10.30.0.11"
-    _NEW_IP = "10.30.0.99"
-    _MESSAGE = "stale_ip_cleanup must be one of remove, deprecate, none, not 'unknown'"
-
-    def setUp(self):
-        from ipam.models import IPAddress as NbIP
-
-        self.old = NbIP.objects.create(
-            address=f"{self._OLD_IP}/32",
-            status="dhcp",
-            dns_name=self._HOSTNAME,
-            description="Synced from Kea DHCP lease",
-        )
-
-    def test_the_lease_sync_raises_and_keeps_the_stale_ip(self):
-        from ipam.models import IPAddress as NbIP
-
-        from netbox_kea.sync import sync_lease_to_netbox
-
-        with self.assertRaisesMessage(ValueError, self._MESSAGE):
-            sync_lease_to_netbox({"ip-address": self._NEW_IP, "hostname": self._HOSTNAME, "subnet-id": 1})
-        self.assertTrue(NbIP.objects.filter(pk=self.old.pk).exists())
-
-    def test_the_batch_cleanup_raises(self):
-        from netbox_kea.sync import cleanup_stale_ips_batch
-
-        with self.assertRaisesMessage(ValueError, self._MESSAGE):
-            cleanup_stale_ips_batch([{"ip-address": self._NEW_IP, "hostname": self._HOSTNAME}])
+class TestCleanupStaleIpsUnknownMode(SimpleTestCase):
+    """The old cleanup refuses an unknown mode argument; NetBox refuses an unknown configured mode at startup."""
 
     def test_a_direct_call_with_an_unknown_mode_raises(self):
         from netbox_kea.sync import _cleanup_stale_ips
 
-        with self.assertRaisesMessage(ValueError, self._MESSAGE):
-            _cleanup_stale_ips(self._NEW_IP, self._HOSTNAME, mode="unknown")
-
-    def test_the_reconciliation_raises_with_the_same_message(self):
-        from netbox_kea.ipam_reconciliation import LeasePhase, reconcile
-
-        from .utils import _make_db_server
-
-        phase = LeasePhase(max_leases=None, subnet_prefix_lengths={}, reservation_addresses=None)
-        with self.assertRaisesMessage(ValueError, self._MESSAGE):
-            reconcile(_make_db_server(name="owner"), 4, [phase])
+        with self.assertRaisesMessage(
+            ValueError, "stale_ip_cleanup must be one of remove, deprecate, none, not 'unknown'"
+        ):
+            _cleanup_stale_ips("10.30.0.99", "moving-device.example.com", mode="unknown")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

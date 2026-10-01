@@ -24,6 +24,7 @@ from functools import cached_property
 from typing import TYPE_CHECKING, cast
 
 from .constants import STALE_CLEANUP_MODES, StaleCleanupMode
+from .plugin_settings import plugin_setting
 from .reservations import (
     GlobalReservationScope,
     InSubnetReservationScope,
@@ -271,11 +272,8 @@ def _stale_cleanup_mode(value: str) -> StaleCleanupMode:
 
 
 def _get_stale_cleanup_mode() -> StaleCleanupMode:
-    """Return the configured stale IP cleanup mode from PLUGINS_CONFIG; ``"remove"`` when it is not set."""
-    from django.conf import settings
-
-    config = getattr(settings, "PLUGINS_CONFIG", {}).get("netbox_kea", {})
-    return _stale_cleanup_mode(config.get("stale_ip_cleanup", "remove"))
+    """Return the configured stale IP cleanup mode."""
+    return plugin_setting("stale_ip_cleanup")
 
 
 def _cleanup_stale_ips(

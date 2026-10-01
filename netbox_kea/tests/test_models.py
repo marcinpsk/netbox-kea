@@ -27,17 +27,17 @@ from netbox.models import NetBoxModel
 
 import netbox_kea
 from netbox_kea.kea import KeaClient, KeaCommand
-from netbox_kea.models import KeaDhcpLink, Server, SyncConfig, _get_kea_timeout, _get_max_unpaged_leases
+from netbox_kea.models import KeaDhcpLink, Server, SyncConfig
 from netbox_kea.reservations import MAX_IDENTITY_LENGTH
 from netbox_kea.tests.kea_stub import stub_kea
-from netbox_kea.tests.utils import _make_db_server
+from netbox_kea.tests.utils import _make_db_server, plugins_config
 
 _SEED = importlib.import_module("netbox_kea.migrations.0018_seed_syncconfig")
 
 _VERSION_OK = {"result": 0, "arguments": {"version": "2.5.0"}}
 
 # Default PLUGINS_CONFIG used across model tests so we don't need full NetBox config.
-_PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30}}
+_PLUGINS_CONFIG = plugins_config()
 
 
 def _make_server(**kwargs) -> Server:
@@ -132,18 +132,18 @@ class TestServerGetClient(SimpleTestCase):
         client = server.get_client()
         self.assertEqual(client.timeout, 30)
 
-    @override_settings(PLUGINS_CONFIG={"netbox_kea": {"kea_timeout": 5}})
+    @override_settings(PLUGINS_CONFIG=plugins_config(kea_timeout=5))
     def test_get_client_custom_timeout(self):
         server = _make_server()
         client = server.get_client()
         self.assertEqual(client.timeout, 5)
 
-    @override_settings(PLUGINS_CONFIG={"netbox_kea": {"lease_query_max_unpaged_leases": 250}})
+    @override_settings(PLUGINS_CONFIG=plugins_config(lease_query_max_unpaged_leases=250))
     def test_get_client_uses_configured_unpaged_lease_limit(self):
         client = _make_server().get_client()
         self.assertEqual(client.max_unpaged_leases, 250)
 
-    @override_settings(PLUGINS_CONFIG={"netbox_kea": {"lease_query_max_unpaged_leases": 0}})
+    @override_settings(PLUGINS_CONFIG=plugins_config(lease_query_max_unpaged_leases=0))
     def test_get_client_can_explicitly_disable_unpaged_lease_guard(self):
         client = _make_server().get_client()
         self.assertIsNone(client.max_unpaged_leases)
@@ -711,79 +711,6 @@ class TestServerSyncEnabled(TestCase):
         self.assertFalse(server.sync_enabled)
 
 
-class TestGetKeaTimeout(SimpleTestCase):
-    """Tests for _get_kea_timeout() helper."""
-
-    @override_settings(PLUGINS_CONFIG={"netbox_kea": {"kea_timeout": 10}})
-    def test_returns_configured_value(self):
-        self.assertEqual(_get_kea_timeout(), 10)
-
-    @override_settings(PLUGINS_CONFIG={"netbox_kea": {}})
-    def test_returns_default_when_key_missing(self):
-        self.assertEqual(_get_kea_timeout(), 30)
-
-    @override_settings(PLUGINS_CONFIG={})
-    def test_returns_default_when_netbox_kea_section_missing(self):
-        self.assertEqual(_get_kea_timeout(), 30)
-
-    @override_settings(PLUGINS_CONFIG={"netbox_kea": None})
-    def test_returns_default_when_netbox_kea_is_none(self):
-        """PLUGINS_CONFIG["netbox_kea"]=None must not raise AttributeError."""
-        self.assertEqual(_get_kea_timeout(), 30)
-
-    @override_settings(PLUGINS_CONFIG=None)
-    def test_returns_default_when_plugins_config_is_none(self):
-        self.assertEqual(_get_kea_timeout(), 30)
-
-    @override_settings(PLUGINS_CONFIG="not-a-dict")
-    def test_returns_default_when_plugins_config_is_not_dict(self):
-        self.assertEqual(_get_kea_timeout(), 30)
-
-    @override_settings(PLUGINS_CONFIG={"netbox_kea": {"kea_timeout": "abc"}})
-    def test_returns_default_when_kea_timeout_is_non_numeric_string(self):
-        self.assertEqual(_get_kea_timeout(), 30)
-
-    @override_settings(PLUGINS_CONFIG={"netbox_kea": {"kea_timeout": "15"}})
-    def test_accepts_numeric_string(self):
-        self.assertEqual(_get_kea_timeout(), 15)
-
-    @override_settings(PLUGINS_CONFIG={"netbox_kea": {"kea_timeout": None}})
-    def test_returns_default_when_kea_timeout_is_none(self):
-        self.assertEqual(_get_kea_timeout(), 30)
-
-    def test_custom_default(self):
-        with self.settings(PLUGINS_CONFIG={}):
-            self.assertEqual(_get_kea_timeout(default=60), 60)
-
-
-class TestGetMaxUnpagedLeases(SimpleTestCase):
-    """Tests for the unpaged Subnet lease-query safety setting."""
-
-    @override_settings(PLUGINS_CONFIG={"netbox_kea": {"lease_query_max_unpaged_leases": "250"}})
-    def test_accepts_a_numeric_string(self):
-        self.assertEqual(_get_max_unpaged_leases(), 250)
-
-    @override_settings(PLUGINS_CONFIG={"netbox_kea": {"lease_query_max_unpaged_leases": 0}})
-    def test_zero_disables_the_guard(self):
-        self.assertIsNone(_get_max_unpaged_leases())
-
-    @override_settings(PLUGINS_CONFIG={"netbox_kea": {"lease_query_max_unpaged_leases": -1}})
-    def test_negative_value_uses_the_default(self):
-        self.assertEqual(_get_max_unpaged_leases(), 1000)
-
-    @override_settings(PLUGINS_CONFIG={"netbox_kea": {"lease_query_max_unpaged_leases": True}})
-    def test_boolean_uses_the_default(self):
-        self.assertEqual(_get_max_unpaged_leases(), 1000)
-
-    @override_settings(PLUGINS_CONFIG={"netbox_kea": {"lease_query_max_unpaged_leases": 2.5}})
-    def test_fractional_value_uses_the_default(self):
-        self.assertEqual(_get_max_unpaged_leases(), 1000)
-
-    @override_settings(PLUGINS_CONFIG={"netbox_kea": {"lease_query_max_unpaged_leases": "invalid"}})
-    def test_malformed_string_uses_the_default(self):
-        self.assertEqual(_get_max_unpaged_leases(), 1000)
-
-
 class TestKeaDhcpLinkIdentity(TestCase):
     """A link row carries exactly one Kea identity kind.
 
@@ -1130,15 +1057,9 @@ class TestSyncConfigSeedMigration(_MigrationTestCase):
         "sync_prefixes_enabled": True,
         "sync_ip_ranges_enabled": False,
     }
-    _CONFIG = {
-        "netbox_kea": {
-            "kea_timeout": 30,
-            "sync_interval_minutes": 17,
-            "sync_enabled": False,
-            "sync_leases_enabled": False,
-            "sync_ip_ranges_enabled": False,
-        }
-    }
+    _CONFIG = plugins_config(
+        sync_interval_minutes=17, sync_enabled=False, sync_leases_enabled=False, sync_ip_ranges_enabled=False
+    )
 
     def _roll_back(self):
         """Migrate netbox_kea back to the release before the seed, and return that SyncConfig model."""

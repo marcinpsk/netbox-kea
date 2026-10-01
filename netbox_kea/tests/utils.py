@@ -15,7 +15,9 @@ from django.db import connection
 from django.test import Client, TestCase, override_settings
 from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
+from utilities.release import load_release_data
 
+from netbox_kea import NetBoxKeaConfig
 from netbox_kea.models import Server
 
 from .kea_stub import stub_kea
@@ -23,8 +25,15 @@ from .kea_stub import stub_kea
 if TYPE_CHECKING:
     from django.test.client import _MonkeyPatchedWSGIResponse
 
-# Minimal PLUGINS_CONFIG for tests that do not exercise the Subnet lease-query guard.
-_PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30, "lease_query_max_unpaged_leases": 0}}
+
+def plugins_config(**settings) -> dict:
+    """Return PLUGINS_CONFIG as NetBox builds it at startup from *settings*: validated, with the defaults filled in."""
+    NetBoxKeaConfig.validate(settings, load_release_data().version)
+    return {"netbox_kea": settings}
+
+
+# PLUGINS_CONFIG for tests that do not exercise the Subnet lease-query guard.
+_PLUGINS_CONFIG = plugins_config(lease_query_max_unpaged_leases=0)
 
 User = get_user_model()
 

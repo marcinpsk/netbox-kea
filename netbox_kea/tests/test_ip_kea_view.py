@@ -17,10 +17,11 @@ from django.test import TestCase, override_settings
 from django.urls import reverse
 
 from netbox_kea.models import Server
+from netbox_kea.tests.utils import plugins_config
 
 User = get_user_model()
 
-_PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30}}
+_PLUGINS_CONFIG = plugins_config()
 
 
 def _make_server(name, dhcp4=True, dhcp6=False):

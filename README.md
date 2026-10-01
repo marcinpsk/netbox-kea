@@ -214,13 +214,19 @@ All settings are under `PLUGINS_CONFIG["netbox_kea"]`:
 |---|---|---|
 | `kea_timeout` | `30` | HTTP request timeout in seconds for Kea API calls |
 | `lease_query_max_unpaged_leases` | `1000` | Reject an unpaged Subnet lease query when its Kea statistics count exceeds this limit. Set to `0` to disable this safety check |
-| `stale_ip_cleanup` | `"remove"` | What to do with stale IPs after sync: `"remove"` (delete), `"deprecate"` (set status=deprecated), `"none"` (skip). NetBox refuses to start with any other value |
+| `stale_ip_cleanup` | `"remove"` | What to do with stale IPs after sync: `"remove"` (delete), `"deprecate"` (set status=deprecated), `"none"` (skip) |
 | `sync_interval_minutes` | `5` | Initial interval of the background sync job (minutes). Edit it later on the **Sync Jobs** page |
+| `sync_enabled` | `True` | Initial state of the global sync switch. Edit it later on the **Sync Jobs** page |
 | `sync_leases_enabled` | `True` | Sync active DHCP leases to NetBox IPAM |
 | `sync_reservations_enabled` | `True` | Sync Kea reservations to NetBox IPAM |
 | `sync_prefixes_enabled` | `True` | Sync Kea subnets to NetBox IPAM as IP Prefixes |
 | `sync_ip_ranges_enabled` | `True` | Sync Kea pools to NetBox IPAM as IP Ranges |
 | `sync_max_leases_per_server` | `50000` | Hard cap on leases fetched per server per sync run. Set to `0` for no limit |
+
+NetBox refuses to start when one of these settings has a value of the wrong type or outside its range.
+The error names the setting, the allowed values, and the given value. A number must be an integer, not a string
+or a boolean. `kea_timeout` must be at least 1, `sync_interval_minutes` must be from 1 to 1440, and the other
+numbers must be at least 0.
 
 `./manage.py migrate` reads `sync_interval_minutes`, `sync_enabled` and the four `sync_*_enabled`
 toggles once, when it creates the Sync Configuration. After that, the **Sync Jobs** page holds these values,

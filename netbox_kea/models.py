@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import get_args
 
 import requests
-from django.conf import settings
 from django.contrib.contenttypes.fields import GenericForeignKey
 from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator
@@ -22,46 +21,20 @@ from netbox.models.features import JobsMixin
 from . import branching
 from .constants import Family
 from .kea import KeaClient, KeaCommand, KeaException
+from .plugin_settings import plugin_setting
 from .reservations import MAX_IDENTITY_LENGTH
 
 logger = logging.getLogger(__name__)
 
 
-def _get_kea_timeout(default: int = 30) -> int:
-    """Return kea_timeout from PLUGINS_CONFIG, coerced to int with a safe fallback."""
-    plugins_config = getattr(settings, "PLUGINS_CONFIG", {})
-    if not isinstance(plugins_config, dict):
-        return default
-    raw = (plugins_config.get("netbox_kea") or {}).get("kea_timeout", default)
-    try:
-        return int(raw)
-    except (TypeError, ValueError):
-        return default
+def _get_kea_timeout() -> int:
+    """Return the Kea request timeout in seconds."""
+    return plugin_setting("kea_timeout")
 
 
-def _get_max_unpaged_leases(default: int = 1000) -> int | None:
-    """Return the Subnet lease-query guard limit, or ``None`` when disabled."""
-    plugins_config = getattr(settings, "PLUGINS_CONFIG", {})
-    if not isinstance(plugins_config, dict):
-        return default
-    plugin_config = plugins_config.get("netbox_kea") or {}
-    if not isinstance(plugin_config, dict):
-        return default
-    raw = plugin_config.get("lease_query_max_unpaged_leases", default)
-    if isinstance(raw, bool):
-        return default
-    if isinstance(raw, int):
-        value = raw
-    elif isinstance(raw, str):
-        try:
-            value = int(raw)
-        except ValueError:
-            return default
-    else:
-        return default
-    if value == 0:
-        return None
-    return value if value > 0 else default
+def _get_max_unpaged_leases() -> int | None:
+    """Return the Subnet lease-query guard limit, or ``None`` when it is disabled."""
+    return plugin_setting("lease_query_max_unpaged_leases") or None
 
 
 class Server(JobsMixin, NetBoxModel):
