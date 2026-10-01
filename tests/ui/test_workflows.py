@@ -25,9 +25,9 @@ if TYPE_CHECKING:
     # package to resolve against. Keep every cross-module import behind this guard.
     from .conftest import _DualEndpointKeaClient
 
-#: Mirrors ``_KEA_DESC_PREFIX`` in netbox_kea/sync.py. This suite cannot import the
+#: Mirrors ``render_marker("reservation")`` in netbox_kea/ipam_marker.py. This suite cannot import the
 #: package (it needs Django), so a guard in the unit suite keeps the two in step.
-_KEA_SYNC_DESCRIPTION_PREFIX = "Synced from Kea DHCP"
+_KEA_SYNC_RESERVATION_DESCRIPTION = "[kea-sync: reservation]"
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -1066,7 +1066,7 @@ class TestReservationCRUD:
         hostname: str,
     ) -> int | None:
         """Return the one NetBox IP ID with the complete state-test identity."""
-        description = f"{_KEA_SYNC_DESCRIPTION_PREFIX} reservation"
+        description = _KEA_SYNC_RESERVATION_DESCRIPTION
         found = nb_http.get(
             f"{netbox_url}/api/ipam/ip-addresses/",
             params={"address": address, "dns_name": hostname, "description": description},

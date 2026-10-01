@@ -2112,20 +2112,21 @@ async def test_cycle():
     assert _unguarded_finally_cleanups(source) == ["cleanup"]
 
 
-def test_the_browser_suite_mirrors_the_kea_sync_description_prefix():
-    """The browser cleanup deletes by this prefix, so a drift would widen what it removes.
+def test_the_browser_suite_mirrors_the_kea_sync_reservation_description():
+    """The browser cleanup deletes by this description, so a drift would change what it removes.
 
     ``tests/ui`` cannot import the package, so the literal is duplicated there. This is
     the check that keeps the copy honest.
     """
-    from netbox_kea.sync import _KEA_DESC_PREFIX
+    from netbox_kea.ipam_marker import render_marker
 
+    expected = render_marker("reservation")
     source = (_BROWSER_SUITE / "test_workflows.py").read_text()
-    match = re.search(r'^_KEA_SYNC_DESCRIPTION_PREFIX = "([^"]*)"$', source, re.MULTILINE)
-    assert match, "The browser suite no longer defines _KEA_SYNC_DESCRIPTION_PREFIX."
-    assert match.group(1) == _KEA_DESC_PREFIX, (
-        f"The browser suite mirrors {match.group(1)!r} but netbox_kea/sync.py writes "
-        f"{_KEA_DESC_PREFIX!r}. Its NetBox cleanup would match the wrong rows."
+    match = re.search(r'^_KEA_SYNC_RESERVATION_DESCRIPTION = "([^"]*)"$', source, re.MULTILINE)
+    assert match, "The browser suite no longer defines _KEA_SYNC_RESERVATION_DESCRIPTION."
+    assert match.group(1) == expected, (
+        f"The browser suite mirrors {match.group(1)!r} but netbox_kea/ipam_marker.py writes "
+        f"{expected!r}. Its NetBox cleanup would match the wrong rows."
     )
 
 
@@ -2322,7 +2323,7 @@ def test_netbox_ip_precleanup_uses_the_complete_test_identity():
                     "id": 23,
                     "address": "198.18.0.10/24",
                     "dns_name": "e2e-state-test",
-                    "description": "Synced from Kea DHCP reservation",
+                    "description": "[kea-sync: reservation]",
                 }
             ],
         }
@@ -2344,7 +2345,7 @@ def test_netbox_ip_precleanup_uses_the_complete_test_identity():
                 "params": {
                     "address": "198.18.0.10",
                     "dns_name": "e2e-state-test",
-                    "description": "Synced from Kea DHCP reservation",
+                    "description": "[kea-sync: reservation]",
                 },
                 "timeout": 5,
             },
@@ -2363,7 +2364,7 @@ def test_netbox_ip_precleanup_rejects_a_row_outside_the_test_identity():
                     "id": 29,
                     "address": "198.18.0.10/24",
                     "dns_name": "operator-owned",
-                    "description": "Synced from Kea DHCP reservation",
+                    "description": "[kea-sync: reservation]",
                 }
             ],
         }

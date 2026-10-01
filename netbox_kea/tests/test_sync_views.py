@@ -432,7 +432,7 @@ class TestReservation4BulkSyncView(_SyncViewBase):
             address="10.0.13.2/32",
             status="reserved",
             dns_name="shared-bulk",
-            description="Synced from Kea DHCP reservation",
+            description="[kea-sync: reservation]",
         )
         # No Kea record holds this address, so cleanup must remove it. Without it the
         # two assertions below also pass when cleanup never runs.
@@ -440,7 +440,7 @@ class TestReservation4BulkSyncView(_SyncViewBase):
             address="10.0.13.99/32",
             status="reserved",
             dns_name="shared-bulk",
-            description="Synced from Kea DHCP reservation",
+            description="[kea-sync: reservation]",
         )
         hosts = [
             {
@@ -694,7 +694,7 @@ class TestReservationCheckNetboxIPView(_SyncViewBase):
         self.assertEqual(response.content.decode().strip(), "")
 
     def test_info_alert_for_kea_managed_ip(self):
-        NbIP.objects.create(address="10.0.40.1/24", status="reserved", description="Synced from Kea DHCP reservation")
+        NbIP.objects.create(address="10.0.40.1/24", status="reserved", description="[kea-sync: reservation]")
         response = self.client.get(self._url(), {"ip": "10.0.40.1"})
         body = response.content.decode()
         self.assertIn("alert-info", body)

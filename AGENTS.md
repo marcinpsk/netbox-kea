@@ -160,6 +160,7 @@ URL request
   → kea.py              (HTTP POST to each daemon's / control socket)
   → sync.py             (bridges Kea data to NetBox IPAM)
   → ipam_reconciliation.py (IPAM Ownership links, stale cleanup, per-row savepoints; ADR 0006)
+  → ipam_marker.py     (the `[kea-sync: <kind>]` description marker: parse, rewrite, legacy text; ADR 0006)
   → jobs.py             (KeaIpamSyncJob — periodic background sync)
   → tables.py           (non-model GenericTable renders enriched dicts)
   → template            (django-tables2 + HTMX for pagination)

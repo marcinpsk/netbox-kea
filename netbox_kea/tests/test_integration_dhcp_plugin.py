@@ -1170,7 +1170,10 @@ class DhcpPluginReservationSnapshotImportTest(TestCase):
         self.assertEqual(summary.errors, 0, summary.warnings)
         res = HostReservation.objects.get(hostname="g6-pd")
         self.assertIsNone(res.subnet)
-        self.assertEqual([str(prefix.prefix) for prefix in res.ipv6_prefixes.all()], ["2001:db8:d00d::/56"])
+        self.assertEqual(
+            [(str(prefix.prefix), prefix.description) for prefix in res.ipv6_prefixes.all()],
+            [("2001:db8:d00d::/56", "[kea-sync: delegated prefix]")],
+        )
 
     def test_reimport_clears_dropped_delegated_prefixes(self):
         """Kea no longer delegates the prefix, so the imported record must not keep it."""
@@ -1294,7 +1297,7 @@ class DhcpPluginStaleCleanupGuardTest(TestCase):
             address="10.77.0.51/24",
             status="dhcp",
             dns_name="mover",
-            description="Synced from Kea DHCP lease",
+            description="[kea-sync: lease]",
         )
 
         # Device "moved" to a third IP → cleanup runs for hostname "mover".

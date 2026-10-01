@@ -179,11 +179,11 @@ class TestSyncLeaseToNetbox(TestCase):
         ip_obj, _, _ = sync_lease_to_netbox(self._LEASE)
         self.assertTrue(str(ip_obj.address).endswith("/24"))
 
-    def test_description_contains_kea(self):
+    def test_description_is_the_lease_marker(self):
         from netbox_kea.sync import sync_lease_to_netbox
 
         ip_obj, _, _ = sync_lease_to_netbox(self._LEASE)
-        self.assertIn("Kea", ip_obj.description)
+        self.assertEqual(ip_obj.description, "[kea-sync: lease]")
 
     def test_works_without_hostname(self):
         """Leases without a hostname field must not error."""
@@ -306,10 +306,9 @@ class TestSyncReservationToNetbox(TestCase):
         self.assertFalse(created)
         self.assertFalse(changed)
 
-    def test_description_contains_kea(self):
-
+    def test_description_is_the_reservation_marker(self):
         ip_obj, _, _ = _sync_reservation(self._RESERVATION)
-        self.assertIn("Kea", ip_obj.description)
+        self.assertEqual(ip_obj.description, "[kea-sync: reservation]")
 
     def test_updates_existing_active_ip_downgrades_to_reserved_with_reservation_sync(self):
         """An existing 'active' IP + reservation sync alone → 'reserved' (no lease context)."""
@@ -577,7 +576,7 @@ class TestSyncLeaseStatusSemantics(TestCase):
 
         from netbox_kea.sync import sync_lease_to_netbox
 
-        NbIP.objects.create(address="10.10.0.50/32", status="reserved", description="Synced from Kea DHCP reservation")
+        NbIP.objects.create(address="10.10.0.50/32", status="reserved", description="[kea-sync: reservation]")
         ip_obj, _, _ = sync_lease_to_netbox(self._LEASE)
         self.assertEqual(ip_obj.status, "active")
 
@@ -587,7 +586,7 @@ class TestSyncLeaseStatusSemantics(TestCase):
 
         from netbox_kea.sync import sync_lease_to_netbox
 
-        NbIP.objects.create(address="10.10.0.50/32", status="active", description="Synced from Kea DHCP lease")
+        NbIP.objects.create(address="10.10.0.50/32", status="active", description="[kea-sync: lease]")
         ip_obj, _, _ = sync_lease_to_netbox(self._LEASE)
         self.assertEqual(ip_obj.status, "dhcp")
 
@@ -611,7 +610,7 @@ class TestSyncReservationStatusSemantics(TestCase):
         """IP was dhcp (from a lease sync), now also has a reservation → active."""
         from ipam.models import IPAddress as NbIP
 
-        NbIP.objects.create(address="10.10.0.60/32", status="dhcp", description="Synced from Kea DHCP lease")
+        NbIP.objects.create(address="10.10.0.60/32", status="dhcp", description="[kea-sync: lease]")
         ip_obj, _, _ = _sync_reservation(self._RESERVATION)
         self.assertEqual(ip_obj.status, "active")
 
@@ -619,7 +618,7 @@ class TestSyncReservationStatusSemantics(TestCase):
         """Re-syncing a reservation when IP is 'active' downgrades to 'reserved'; no lease → not active."""
         from ipam.models import IPAddress as NbIP
 
-        NbIP.objects.create(address="10.10.0.60/32", status="active", description="Synced from Kea DHCP lease")
+        NbIP.objects.create(address="10.10.0.60/32", status="active", description="[kea-sync: lease]")
         ip_obj, _, _ = _sync_reservation(self._RESERVATION)
         self.assertEqual(ip_obj.status, "reserved")
 
@@ -765,7 +764,7 @@ class TestCleanupStaleIps(TestCase):
     _HOSTNAME = "moving-device.example.com"
     _OLD_IP = "10.30.0.10"
     _NEW_IP = "10.30.0.20"
-    _KEA_DESC = "Synced from Kea DHCP lease"
+    _KEA_DESC = "[kea-sync: lease]"
 
     def _create_old_ip(self, status="dhcp", description=None):
         from ipam.models import IPAddress as NbIP
@@ -826,10 +825,22 @@ class TestCleanupStaleIps(TestCase):
     def test_skips_ips_without_kea_description(self):
         from ipam.models import IPAddress as NbIP
 
-        self._create_old_ip(description="Manually assigned by ops team")
-        count = self._call(mode="remove")
-        self.assertEqual(count, 0)
-        self.assertTrue(NbIP.objects.filter(address__net_host=self._OLD_IP).exists())
+        for description in ("Manually assigned by ops team", "rack 4 [kea-sync: lease]", "[kea-sync: lease ]"):
+            with self.subTest(description=description):
+                NbIP.objects.all().delete()
+                self._create_old_ip(description=description)
+                count = self._call(mode="remove")
+                self.assertEqual(count, 0)
+                self.assertTrue(NbIP.objects.filter(address__net_host=self._OLD_IP).exists())
+
+    def test_removes_marked_ips_with_a_note_or_a_legacy_marker(self):
+        from ipam.models import IPAddress as NbIP
+
+        for description in ("[kea-sync: reservation] rack 4", "Synced from Kea DHCP lease", "Synced from Kea DHCP x"):
+            with self.subTest(description=description):
+                self._create_old_ip(description=description)
+                self.assertEqual(self._call(mode="remove"), 1)
+                self.assertFalse(NbIP.objects.filter(address__net_host=self._OLD_IP).exists())
 
     def test_skips_ips_with_different_hostname(self):
         from ipam.models import IPAddress as NbIP
@@ -908,7 +919,7 @@ class TestSyncLeaseWithStaleCleanup(TestCase):
             address=f"{self._OLD_IP}/32",
             status=status,
             dns_name="migrated-host.example.com",
-            description="Synced from Kea DHCP lease",
+            description="[kea-sync: lease]",
         )
 
     @override_settings(PLUGINS_CONFIG=plugins_config())
@@ -973,7 +984,7 @@ class TestSyncReservationWithStaleCleanup(TestCase):
             address=f"{self._OLD_IP}/32",
             status="reserved",
             dns_name="moved-device.example.com",
-            description="Synced from Kea DHCP reservation",
+            description="[kea-sync: reservation]",
         )
 
     @override_settings(PLUGINS_CONFIG=_STALE_PLUGINS_CONFIG)
@@ -1182,7 +1193,7 @@ class TestSyncMacAddressImportErrors(TestCase):
 class TestCleanupStaleIpsBatch(TestCase):
     """cleanup_stale_ips_batch accumulates IPs per hostname and runs cleanup once."""
 
-    _KEA_DESC = "Synced from Kea DHCP lease"
+    _KEA_DESC = "[kea-sync: lease]"
 
     @override_settings(PLUGINS_CONFIG=_STALE_PLUGINS_CONFIG)
     def test_batch_rejects_malformed_hostname(self):
@@ -1483,7 +1494,7 @@ class TestCleanupStaleIpsBatch(TestCase):
 class TestSyncCleanupParameter(TestCase):
     """cleanup=False suppresses per-record stale-IP cleanup."""
 
-    _KEA_DESC = "Synced from Kea DHCP lease"
+    _KEA_DESC = "[kea-sync: lease]"
 
     @override_settings(PLUGINS_CONFIG=_STALE_PLUGINS_CONFIG)
     def test_lease_sync_cleanup_false_preserves_stale_ip(self):
@@ -1534,7 +1545,7 @@ class TestSyncCleanupParameter(TestCase):
             address="10.72.0.10/32",
             status="reserved",
             dns_name="rsv-host.example.com",
-            description="Synced from Kea DHCP reservation",
+            description="[kea-sync: reservation]",
         )
         _sync_reservation(
             {"ip-address": "10.72.0.20", "hostname": "rsv-host.example.com", "hw-address": "bb:cc:dd:ee:00:01"},
@@ -1577,7 +1588,7 @@ class TestSyncSubnetToNetboxPrefix(TestCase):
     def test_sets_description_and_status_on_create(self):
         prefix_obj, created, _ = self._sync("10.2.0.0/24")
         self.assertTrue(created)
-        self.assertEqual(prefix_obj.description, "Synced from Kea DHCP subnet")
+        self.assertEqual(prefix_obj.description, "[kea-sync: subnet]")
         self.assertEqual(prefix_obj.status, "active")
 
     def test_updates_description_when_existing_is_empty(self):
@@ -1587,7 +1598,7 @@ class TestSyncSubnetToNetboxPrefix(TestCase):
         prefix_obj, created, did_update = self._sync("10.3.0.0/24")
         self.assertFalse(created)
         self.assertTrue(did_update)
-        self.assertEqual(prefix_obj.description, "Synced from Kea DHCP subnet")
+        self.assertEqual(prefix_obj.description, "[kea-sync: subnet]")
 
     def test_does_not_overwrite_existing_description(self):
         from ipam.models import Prefix
@@ -1739,7 +1750,7 @@ class TestSyncPoolToNetboxIPRange(TestCase):
         result = self._sync("192.168.11.50-192.168.11.100", "192.168.11.0/24")
         self.assertIsNotNone(result)
         range_obj, _, _ = result
-        self.assertEqual(range_obj.description, "Synced from Kea DHCP pool")
+        self.assertEqual(range_obj.description, "[kea-sync: pool]")
         self.assertEqual(range_obj.status, "active")
 
     def test_duplicate_ranges_with_different_masks_raise_and_change_nothing(self):
@@ -1925,7 +1936,7 @@ class TestMaskCorrection(TestCase):
         NbIP.objects.create(
             address="192.168.10.30/32",
             status="dhcp",
-            description="Synced from Kea DHCP lease",
+            description="[kea-sync: lease]",
         )
         lease = {"ip-address": "192.168.10.30", "hostname": "h", "subnet-id": 1}
         ip_obj, created, changed = sync_lease_to_netbox(lease, subnet_prefix_map={1: 24})
@@ -1953,7 +1964,7 @@ class TestMaskCorrection(TestCase):
         NbIP.objects.create(
             address="192.168.10.50/32",
             status="reserved",
-            description="Synced from Kea DHCP reservation",
+            description="[kea-sync: reservation]",
         )
         reservation = {
             "ip-address": "192.168.10.50",
@@ -1975,7 +1986,7 @@ class TestMaskCorrection(TestCase):
             address="192.168.10.60/24",
             status="dhcp",
             dns_name="h",
-            description="Synced from Kea DHCP lease",
+            description="[kea-sync: lease]",
         )
         lease = {"ip-address": "192.168.10.60", "hostname": "h", "subnet-id": 1}
         _, created, changed = sync_lease_to_netbox(lease, subnet_prefix_map={1: 24})
@@ -1986,25 +1997,6 @@ class TestMaskCorrection(TestCase):
 # ─────────────────────────────────────────────────────────────────────────────
 # TestStatusDescription — description tracks the semantic status
 # ─────────────────────────────────────────────────────────────────────────────
-
-
-class TestStatusDescription(TestCase):
-    """_status_description maps status → Kea-sync description label."""
-
-    def test_dhcp_is_lease(self):
-        from netbox_kea.sync import _status_description
-
-        self.assertEqual(_status_description("dhcp"), "Synced from Kea DHCP lease")
-
-    def test_reserved_is_reservation(self):
-        from netbox_kea.sync import _status_description
-
-        self.assertEqual(_status_description("reserved"), "Synced from Kea DHCP reservation")
-
-    def test_active_is_lease_plus_reservation(self):
-        from netbox_kea.sync import _status_description
-
-        self.assertEqual(_status_description("active"), "Synced from Kea DHCP lease + reservation")
 
 
 class TestDescriptionSelfHeal(TestCase):
@@ -2021,7 +2013,7 @@ class TestDescriptionSelfHeal(TestCase):
             address="10.63.125.140/24",
             status="dhcp",
             dns_name="h",
-            description="Synced from Kea DHCP lease",
+            description="[kea-sync: lease]",
         )
         reservation = {
             "ip-address": "10.63.125.140",
@@ -2034,7 +2026,7 @@ class TestDescriptionSelfHeal(TestCase):
         self.assertFalse(created)
         self.assertTrue(changed)
         self.assertEqual(ip_obj.status, "reserved")
-        self.assertEqual(ip_obj.description, "Synced from Kea DHCP reservation")
+        self.assertEqual(ip_obj.description, "[kea-sync: reservation]")
 
     def test_active_heals_to_lease_plus_reservation(self):
         from ipam.models import IPAddress as NbIP
@@ -2043,7 +2035,7 @@ class TestDescriptionSelfHeal(TestCase):
             address="10.63.125.141/24",
             status="dhcp",
             dns_name="h",
-            description="Synced from Kea DHCP lease",
+            description="[kea-sync: lease]",
         )
         reservation = {
             "ip-address": "10.63.125.141",
@@ -2054,7 +2046,7 @@ class TestDescriptionSelfHeal(TestCase):
         # Two-pass: IP also has a lease this run → status active.
         ip_obj, _, _ = _sync_reservation(reservation, lease_ips=frozenset({"10.63.125.141"}))
         self.assertEqual(ip_obj.status, "active")
-        self.assertEqual(ip_obj.description, "Synced from Kea DHCP lease + reservation")
+        self.assertEqual(ip_obj.description, "[kea-sync: lease + reservation]")
 
     def test_manual_description_is_not_overwritten(self):
         from ipam.models import IPAddress as NbIP
@@ -2073,6 +2065,46 @@ class TestDescriptionSelfHeal(TestCase):
         }
         ip_obj, _, _ = _sync_reservation(reservation, lease_ips=frozenset())
         self.assertEqual(ip_obj.description, "Customer gateway — do not touch")
+
+    def test_an_operator_note_after_the_marker_survives_the_status_change(self):
+        from ipam.models import IPAddress as NbIP
+
+        from netbox_kea.sync import sync_lease_to_netbox
+
+        for description, expected in (
+            ("[kea-sync: lease] printer on floor 2", "[kea-sync: reservation] printer on floor 2"),
+            ("Synced from Kea DHCP lease printer on floor 2", "[kea-sync: reservation] printer on floor 2"),
+        ):
+            with self.subTest(description=description):
+                NbIP.objects.all().delete()
+                NbIP.objects.create(address="10.63.125.143/24", status="dhcp", dns_name="h", description=description)
+                reservation = {"ip-address": "10.63.125.143", "flex-id": "note", "hostname": "h", "subnet-id": 1}
+
+                ip_obj, _, _ = _sync_reservation(reservation, lease_ips=frozenset())
+
+                self.assertEqual((ip_obj.status, ip_obj.description), ("reserved", expected))
+                lease = {"ip-address": "10.63.125.143", "hostname": "h", "subnet-id": 1}
+                ip_obj, _, _ = sync_lease_to_netbox(lease, cleanup=False, reservation_ips=frozenset({"10.63.125.143"}))
+                ip_obj.refresh_from_db()
+                self.assertEqual(
+                    ip_obj.description, expected.replace("[kea-sync: reservation]", "[kea-sync: lease + reservation]")
+                )
+
+    def test_a_note_that_does_not_fit_with_the_new_marker_keeps_the_description(self):
+        from ipam.models import IPAddress as NbIP
+
+        description = "[kea-sync: lease] " + "n" * (200 - len("[kea-sync: lease] "))
+        NbIP.objects.create(address="10.63.125.144/24", status="dhcp", dns_name="h", description=description)
+        reservation = {"ip-address": "10.63.125.144", "flex-id": "long", "hostname": "renamed", "subnet-id": 1}
+
+        with self.assertLogs("netbox_kea.sync", "WARNING") as logs:
+            ip_obj, _, changed = _sync_reservation(reservation, lease_ips=frozenset({"10.63.125.144"}))
+
+        self.assertTrue(changed)
+        ip_obj.refresh_from_db()
+        self.assertEqual((ip_obj.status, ip_obj.dns_name, ip_obj.description), ("active", "renamed", description))
+        self.assertEqual(len(logs.output), 1)
+        self.assertIn("keeps its description", logs.output[0])
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2096,16 +2128,18 @@ class TestIsKeaManagedIP(TestCase):
 
         from netbox_kea.sync import is_kea_managed_ip
 
-        ip = NbIP(address="10.0.0.2/24", status="active", description="Synced from Kea DHCP lease")
-        self.assertTrue(is_kea_managed_ip(ip))
+        for description in ("[kea-sync: lease]", "[kea-sync: lease] note", "Synced from Kea DHCP lease"):
+            ip = NbIP(address="10.0.0.2/24", status="active", description=description)
+            self.assertTrue(is_kea_managed_ip(ip), description)
 
     def test_foreign_description_is_not_managed(self):
         from ipam.models import IPAddress as NbIP
 
         from netbox_kea.sync import is_kea_managed_ip
 
-        ip = NbIP(address="10.0.0.3/24", status="active", description="Router loopback")
-        self.assertFalse(is_kea_managed_ip(ip))
+        for description in ("Router loopback", "rack 4 [kea-sync: lease]", "[kea-sync: lease ]"):
+            ip = NbIP(address="10.0.0.3/24", status="active", description=description)
+            self.assertFalse(is_kea_managed_ip(ip), description)
 
 
 class TestReservationForeignIPProtection(TestCase):
@@ -2114,7 +2148,7 @@ class TestReservationForeignIPProtection(TestCase):
     Acceptance criteria from issue #64 (Option A):
     - "Router loopback" IP is never overwritten by a bulk sync run.
     - blank-description IP is claimed normally.
-    - "Synced from Kea DHCP lease" IP is updated normally.
+    - "[kea-sync: lease]" IP is updated normally.
     """
 
     _RESERVATION = {
@@ -2167,7 +2201,7 @@ class TestReservationForeignIPProtection(TestCase):
     def test_kea_managed_ip_is_updated(self):
         from ipam.models import IPAddress as NbIP
 
-        NbIP.objects.create(address="192.168.51.200/32", status="active", description="Synced from Kea DHCP lease")
+        NbIP.objects.create(address="192.168.51.200/32", status="active", description="[kea-sync: lease]")
         ip_obj, created, changed = _sync_reservation(self._RESERVATION)
         self.assertFalse(created)
         self.assertTrue(changed)
@@ -2214,7 +2248,7 @@ class TestReservationForeignIPProtection(TestCase):
         ip_obj.refresh_from_db()
         # The IP is now owned by Kea — description rewritten to the managed marker.
         self.assertTrue(is_kea_managed_ip(ip_obj))
-        self.assertTrue(ip_obj.description.startswith("Synced from Kea DHCP"))
+        self.assertEqual(ip_obj.description, "[kea-sync: reservation]")
 
         # A later unattended (force=False) sync no longer treats it as foreign.
         conflicts: list[str] = []
@@ -2353,7 +2387,7 @@ class TestCleanupBatchProtectedIdsComputedOnce(TestCase):
     tables via ``sys4_referenced_ip_ids`` — an N× full-table scan during large syncs.
     """
 
-    _KEA_DESC = "Synced from Kea DHCP lease"
+    _KEA_DESC = "[kea-sync: lease]"
 
     def _make_stale(self, host, ip):
         from ipam.models import IPAddress as NbIP
