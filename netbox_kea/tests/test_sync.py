@@ -1056,6 +1056,15 @@ class TestSyncMacAddressErrors(TestCase):
         _sync_mac_address("not-a-mac", hostname="test-host")
         # No exception should propagate — AddrFormatError is caught and logged.
 
+    def test_the_log_message_does_not_contain_the_mac_address(self):
+        from netbox_kea.sync import _sync_mac_address
+
+        with self.assertLogs("netbox_kea.sync", "DEBUG") as logs:
+            _sync_mac_address("aa:bb:cc:dd:ee:zz", hostname="test-host")
+
+        self.assertEqual([record.levelname for record in logs.records], ["DEBUG"])
+        self.assertNotIn("aa:bb:cc:dd:ee:zz", logs.records[0].getMessage())
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Additional coverage tests — lines missed in earlier batches
