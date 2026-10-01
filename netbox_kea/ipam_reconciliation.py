@@ -269,11 +269,18 @@ def _lease_report(
     address = ipaddress.ip_address(fields.address)
     if address.version != family:
         raise ValueError("The lease address does not match the claim family")
+    subnet_id = fields.subnet_id
+    if (
+        isinstance(subnet_id, bool)
+        or not isinstance(subnet_id, int)
+        or not subnet_catalogue.MIN_SUBNET_ID <= subnet_id <= subnet_catalogue.MAX_SUBNET_ID
+    ):
+        raise ValueError("The lease Subnet ID must be an integer in the Kea Subnet ID range")
     hostname = _record_hostname(lease)
     if subnet_prefix_lengths is not None:
-        if fields.subnet_id not in subnet_prefix_lengths:
+        if subnet_id not in subnet_prefix_lengths:
             raise ValueError("The lease Subnet ID is absent from the Subnet Catalogue")
-        prefix_length = subnet_prefix_lengths[fields.subnet_id]
+        prefix_length = subnet_prefix_lengths[subnet_id]
     else:
         prefix = (
             Prefix.objects.filter(vrf_id=server.sync_vrf_id, prefix__net_contains_or_equals=str(address))

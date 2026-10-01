@@ -158,6 +158,34 @@ class JobLeasePhaseOwnershipTest(TestCase):
         self.assertEqual(str(_row().address), "10.0.0.5/24")
         self.assertFalse(NbIP.objects.filter(address__net_host="10.0.0.8").exists())
 
+    def test_malformed_subnet_id_does_not_abort_valid_leases_or_reservations(self):
+        server = _server("owner")
+        for index, subnet_id in enumerate(([], {}, True, False, 1.0, "1", None, 0, -1, 4_294_967_295)):
+            address = f"10.0.0.{20 + index}"
+            with self.subTest(subnet_id=subnet_id):
+                report = _reconcile(
+                    server,
+                    [_lease(address, **{"subnet-id": subnet_id}), _lease()],
+                    [_reservation("10.0.0.9")],
+                )
+                self.assertEqual(report.errors, 1)
+                self.assertEqual(report.incomplete, {"lease"})
+                self.assertFalse(NbIP.objects.filter(address__net_host=address).exists())
+                self.assertEqual(str(_row().address), "10.0.0.5/24")
+                self.assertEqual(_row("10.0.0.9").status, "reserved")
+                self.assertEqual(set(_links(_row())), {"owner"})
+                self.assertEqual(set(_links(_row("10.0.0.9"), "reservation")), {"owner"})
+
+    def test_unavailable_catalogue_fallback_still_rejects_a_malformed_subnet_id(self):
+        server = _server("owner")
+        phase = LeasePhase(max_leases=None, subnet_prefix_lengths=None)
+        with _kea([_lease("10.0.0.8", **{"subnet-id": []}), _lease()]):
+            report = reconcile(server, 4, [phase])
+        self.assertEqual(report.errors, 1)
+        self.assertEqual(report.incomplete, {"lease"})
+        self.assertFalse(NbIP.objects.filter(address__net_host="10.0.0.8").exists())
+        self.assertEqual(str(_row().address), "10.0.0.5/32")
+
     def test_explicit_unavailable_catalogue_fallback_uses_only_the_server_vrf(self):
         vrf = VRF.objects.create(name="fallback-vrf")
         server = _server("owner", sync_vrf=vrf)

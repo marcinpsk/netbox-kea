@@ -52,3 +52,5 @@ First add the failing real HTTP regression with a second Server's `/24` ownershi
 Adversarial review ratified revision r1 against the acceptance conditions above, with no unresolved design blocker. The first HTTP regression failed on the persisted ownership facts: the claim stored `/32` while the Kea Subnet and existing owner reported `/24`. Implementation starts after this ratification and red proof. The complete change then receives Standards and Spec review, a full native test run and coverage verification before push.
 
 The shared builder correction passed the HTTP regression and 425 focused tests, including the job and real lock races. Focused coverage executed all 118 changed production statements. Missing-authority and unknown-ID tests verify refusal without guessed ownership writes.
+
+A subsequent boundary regression exposed malformed Subnet IDs that could abort the Server run. The builder now validates the integer type and existing Kea bounds before lookup or fallback. Valid leases and Reservations continue after a malformed lease. The focused suite passed 429 tests and covered all 121 changed production statements.

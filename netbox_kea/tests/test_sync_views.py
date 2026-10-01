@@ -108,6 +108,38 @@ class _SyncViewBase(TestCase):
 class TestLease4SyncView(_SyncViewBase):
     """POST to server_lease4_sync creates/updates a NetBox IPAddress."""
 
+    def test_malformed_lease_subnet_id_returns_a_generic_error_without_claiming(self):
+        from netbox_kea.models import IPAMOwnershipLink
+
+        for index, subnet_id in enumerate(([], {}, True, False, 1.0, "1", None, 0, -1, 4_294_967_295)):
+            address = f"198.18.0.{20 + index}"
+            with (
+                self.subTest(subnet_id=subnet_id),
+                stub_kea(
+                    {
+                        **_catalogue_responses(4, 1, "198.18.0.0/24"),
+                        "lease4-get": _lease_get("host.example.com", **{"subnet-id": subnet_id}),
+                    }
+                ),
+            ):
+                response = self.client.post(self._url(), {"ip_address": address})
+                self.assertContains(response, "Sync error: see server logs", status_code=500)
+                self.assertFalse(NbIP.objects.filter(address__net_host=address).exists())
+                self.assertFalse(IPAMOwnershipLink.objects.filter(ip_address__address__net_host=address).exists())
+
+    def test_highest_valid_kea_subnet_id_can_be_claimed(self):
+        from netbox_kea.models import IPAMOwnershipLink
+
+        with stub_kea(
+            {
+                **_catalogue_responses(4, 4_294_967_294, "198.18.0.0/24"),
+                "lease4-get": _lease_get("host.example.com", **{"subnet-id": 4_294_967_294}),
+            }
+        ):
+            response = self.client.post(self._url(), {"ip_address": "198.18.0.10"})
+        self.assertContains(response, "198.18.0.10/24")
+        self.assertEqual(IPAMOwnershipLink.objects.get(server=self.server).facts["prefix_length"], 24)
+
     def test_unavailable_catalogue_returns_a_generic_error_without_claiming(self):
         from netbox_kea.models import IPAMOwnershipLink
 
