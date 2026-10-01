@@ -1,0 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
+# SPDX-License-Identifier: Apache-2.0
+# Replaces opengrep's built-in ignore list, which skips every tests/ directory.
+:include .gitignore
+.opengrep/tests/

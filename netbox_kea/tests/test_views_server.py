@@ -677,7 +677,7 @@ class TestServerFilterForm(_ViewTestBase):
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestKeaChangeMixinPermission(_ViewTestBase):
-    """Lines 243-246: _KeaChangeMixin returns 403 for view-only users."""
+    """_KeaChangeMixin returns 403 for view-only users."""
 
     def test_view_only_user_gets_403_on_mutation_view(self):
         """User with 'view' but not 'change' on Server gets 403 from _KeaChangeMixin."""
@@ -709,7 +709,7 @@ class TestKeaChangeMixinPermission(_ViewTestBase):
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestStatusViewNullArgs(_ViewTestBase):
-    """Lines 317-318, 322-323, 352-357: status-get returns empty/null arguments."""
+    """ServerStatusView: status-get returns empty or null arguments."""
 
     def _url(self):
         return reverse("plugins:netbox_kea:server_status", args=[self.server.pk])
@@ -960,7 +960,7 @@ class TestGetGlobalOptionsGenericException(_ViewTestBase):
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestBulkDeletePermission(_ViewTestBase):
-    """Line 800: POST without bulk_delete_lease_from_server permission returns 403."""
+    """POST without bulk_delete_lease_from_server permission returns 403."""
 
     def test_user_without_bulk_delete_perm_gets_403(self):
         from users.models import ObjectPermission
@@ -982,13 +982,13 @@ class TestBulkDeletePermission(_ViewTestBase):
 
 
 # ---------------------------------------------------------------------------
-# _KeaChangeMixin — elif branch (lines 245-246): pk is None + no change_server perm
+# _KeaChangeMixin — pk is None + no change_server perm
 # ---------------------------------------------------------------------------
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestKeaChangeMixinNoPk(_ViewTestBase):
-    """Lines 245-246: dispatch with no pk kwarg + user lacking change_server perm → 403."""
+    """dispatch with no pk kwarg + user lacking change_server perm → 403."""
 
     def test_no_pk_no_perm_returns_403(self):
         from django.http import HttpResponse
@@ -1013,13 +1013,13 @@ class TestKeaChangeMixinNoPk(_ViewTestBase):
 
 
 # ---------------------------------------------------------------------------
-# ServerStatusView — null version_args (lines 323, 357)
+# ServerStatusView — null version-get arguments
 # ---------------------------------------------------------------------------
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestStatusViewNullVersionArgs(_ViewTestBase):
-    """Lines 323, 357: version-get returns None arguments → RuntimeError caught internally."""
+    """version-get returns None arguments → RuntimeError caught internally."""
 
     def test_ca_version_get_null_args_returns_200(self):
         """CA version-get returns None args → RuntimeError caught in get_extra_context."""

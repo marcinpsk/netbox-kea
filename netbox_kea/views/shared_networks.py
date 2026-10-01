@@ -1,7 +1,5 @@
-import logging
 from typing import Any
 
-import requests
 from django.contrib import messages
 from django.http import HttpResponse
 from django.http.request import HttpRequest
@@ -11,26 +9,18 @@ from django.views import View
 from netbox.views import generic
 from utilities.views import register_model_view
 
-from .. import forms, server_configuration, tables
+from .. import config_write, forms, server_configuration, tables
 from ..constants import Family
-from ..kea import AmbiguousConfigSetError, KeaException, PartialPersistError
 from ..models import Server
-from ..utilities import (
-    check_dhcp_enabled,
-    kea_error_hint,
-)
+from ..utilities import check_dhcp_enabled
 from ._base import (
-    _LIVE_NOT_PERSISTED,
     ConditionalLoginRequiredMixin,
     _diagnostic_messages,
     _KeaChangeMixin,
+    _run_config_change,
     _shared_network_row,
-    _subnet_option_fields,
 )
 from .subnets import _SUBNETS_TAB, subnets_nav_context
-
-logger = logging.getLogger(__name__)
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Shared Networks views
@@ -156,23 +146,11 @@ class BaseServerSharedNetworkAddView(_KeaChangeMixin, ConditionalLoginRequiredMi
                 },
             )
         name = form.cleaned_data["name"]
-        try:
-            client = server.get_client(version=self.dhcp_version)
-            client.network_add(version=self.dhcp_version, name=name)
-            messages.success(request, f"Shared network '{name}' created.")
-        except PartialPersistError as exc:
-            logger.warning("network%d-add partial persist for %s: %s", self.dhcp_version, server, exc)
-            messages.warning(
-                request,
-                f"Shared network '{name}' created on the live server but config persistence failed. "
-                "Manual reconciliation may be required.",
-            )
-        except KeaException as exc:
-            logger.warning("network%d-add failed for %s: %s", self.dhcp_version, server, exc)
-            messages.error(request, f"Kea error: {kea_error_hint(exc)}")
-        except (requests.RequestException, ValueError):
-            logger.exception("Transport error adding shared network for %s", server)
-            messages.error(request, "An internal error occurred.")
+        _run_config_change(
+            request,
+            f"Shared network '{name}' created.",
+            lambda: config_write.add_shared_network(server, self.dhcp_version, name),
+        )
         return redirect(self._success_url(server))
 
 
@@ -221,23 +199,11 @@ class BaseServerSharedNetworkDeleteView(_KeaChangeMixin, ConditionalLoginRequire
     def post(self, request: HttpRequest, pk: int, network_name: str) -> HttpResponse:
         """Delete the shared network."""
         server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
-        try:
-            client = server.get_client(version=self.dhcp_version)
-            client.network_del(version=self.dhcp_version, name=network_name)
-            messages.success(request, f"Shared network '{network_name}' deleted.")
-        except PartialPersistError as exc:
-            logger.warning("network%d-del partial persist for %s: %s", self.dhcp_version, server, exc)
-            messages.warning(
-                request,
-                f"Shared network '{network_name}' deleted on the live server but config persistence failed. "
-                "Manual reconciliation may be required.",
-            )
-        except KeaException as exc:
-            logger.warning("network%d-del failed for %s: %s", self.dhcp_version, server, exc)
-            messages.error(request, f"Kea error: {kea_error_hint(exc)}")
-        except (requests.RequestException, ValueError):
-            logger.exception("Transport error deleting shared network for %s", server)
-            messages.error(request, "An internal error occurred.")
+        _run_config_change(
+            request,
+            f"Shared network '{network_name}' deleted.",
+            lambda: config_write.delete_shared_network(server, self.dhcp_version, network_name),
+        )
         return redirect(self._success_url(server))
 
 
@@ -272,23 +238,14 @@ class BaseServerSharedNetworkEditView(_KeaChangeMixin, ConditionalLoginRequiredM
             configuration.diagnostics,
             messages.ERROR if not configuration.available else messages.WARNING,
         )
-        network = next((network for network in configuration.shared_networks if network.name == network_name), None)
-
-        if not configuration.shared_networks_complete or network is None or not network.complete:
+        shown = server_configuration.shown_shared_network(configuration, network_name)
+        if shown is None:
             messages.error(request, f"Shared network '{network_name}' not found or could not be retrieved.")
             return redirect(self._success_url(server))
 
-        option_fields = _subnet_option_fields(network.options, self.dhcp_version)
-        initial: dict[str, Any] = {
-            "name": network_name,
-            "description": network.description or "",
-            "interface": network.interface or "",
-            "relay_addresses": ", ".join(str(address) for address in network.relay_addresses),
-            "dns_servers": option_fields.get("dns_servers", ""),
-            "ntp_servers": option_fields.get("ntp_servers", ""),
-        }
-
-        form = forms.SharedNetworkEditForm(initial=initial)
+        form = forms.SharedNetworkEditForm(
+            initial={"name": network_name, **forms.SharedNetworkEditForm.initial_for(shown)}
+        )
         return render(
             request,
             "netbox_kea/server_shared_network_edit.html",
@@ -320,67 +277,12 @@ class BaseServerSharedNetworkEditView(_KeaChangeMixin, ConditionalLoginRequiredM
                 },
             )
 
-        cd = form.cleaned_data
-        relay_addresses = (
-            [s.strip() for s in cd["relay_addresses"].split(",") if s.strip()] if cd["relay_addresses"] else []
-        )
-        dns_servers = [address for address in cd["dns_servers"].split(",") if address]
-        ntp_servers = [address for address in cd["ntp_servers"].split(",") if address]
-
-        configuration = server_configuration.for_verification(server, self.dhcp_version)
-        _diagnostic_messages(
+        edit, shown = form.to_edit(), form.shown()
+        _run_config_change(
             request,
-            configuration.diagnostics,
-            messages.ERROR if not configuration.available else messages.WARNING,
+            f"Shared network '{network_name}' updated.",
+            lambda: config_write.edit_shared_network(server, self.dhcp_version, network_name, edit, shown=shown),
         )
-        network = next((network for network in configuration.shared_networks if network.name == network_name), None)
-        if (
-            not configuration.available
-            or not configuration.shared_networks_complete
-            or network is None
-            or not network.complete
-        ):
-            logger.warning(
-                "Failed to reload current Shared Network %r on server %s. The update was aborted.",
-                network_name,
-                server.pk,
-            )
-            messages.error(request, "Could not reload current network state; update aborted to prevent data loss.")
-            return render(
-                request,
-                "netbox_kea/server_shared_network_edit.html",
-                {
-                    "object": server,
-                    "form": form,
-                    "network_name": network_name,
-                    "dhcp_version": self.dhcp_version,
-                    "cancel_url": self._success_url(server),
-                    "tab": self.tab,
-                },
-            )
-
-        try:
-            client = server.get_client(version=self.dhcp_version)
-            client.network_update(
-                version=self.dhcp_version,
-                name=network_name,
-                description=cd.get("description") or "",
-                interface=cd.get("interface") or "",
-                relay_addresses=relay_addresses,
-                dns_servers=dns_servers,
-                ntp_servers=ntp_servers,
-            )
-            messages.success(request, f"Shared network '{network_name}' updated.")
-        except AmbiguousConfigSetError:
-            messages.warning(request, "Kea did not confirm the change. Check the server configuration before retrying.")
-        except PartialPersistError:
-            messages.warning(request, _LIVE_NOT_PERSISTED)
-        except KeaException as exc:
-            logger.warning("network_update failed for %s on server %s: %s", network_name, pk, exc)
-            messages.error(request, f"Kea error: {kea_error_hint(exc)}")
-        except (requests.RequestException, ValueError):
-            logger.exception("Transport error updating shared network '%s' on server %s", network_name, pk)
-            messages.error(request, "An internal error occurred.")
         return redirect(self._success_url(server))
 
 

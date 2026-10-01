@@ -359,32 +359,20 @@ def _sync_subnet_entry(
     if sync_ip_ranges:
         pools = subnet.configuration.pools if subnet.configuration is not None else ()
         for pool in pools:
-            pool_str = pool.range
             try:
-                result = sync_pool_to_netbox_ip_range(pool_str, subnet.network, vrf=vrf)
-                if result is _POOL_TOO_LARGE:
-                    # Intentional skip; not an error.
-                    pass
-                elif result is None:
-                    logger.warning(
-                        "Failed to parse pool %s in subnet %s from server %s",
-                        pool_str,
-                        subnet_cidr,
-                        server_name,
-                    )
-                    stats["prefix_errors"] += 1
-                else:
+                result = sync_pool_to_netbox_ip_range(pool, subnet.network, vrf=vrf)
+                if result is not _POOL_TOO_LARGE:
                     _, created, did_update = result
                     if created:
                         stats["created"] += 1
                     elif did_update:
                         stats["updated"] += 1
-            except DuplicateNetBoxRowsError as exc:
-                logger.exception("Failed to sync pool %s from server %s", pool_str, server_name)
+            except DuplicateNetBoxRowsError as exc:  # noqa: PERF203
+                logger.exception("Failed to sync pool %s from server %s", pool.range, server_name)
                 stats["prefix_errors"] += 1
                 duplicates.append(exc)
             except Exception:
-                logger.exception("Failed to sync pool %s from server %s", pool_str, server_name)
+                logger.exception("Failed to sync pool %s from server %s", pool.range, server_name)
                 stats["prefix_errors"] += 1
 
 

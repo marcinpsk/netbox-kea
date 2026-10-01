@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import json
 import re
 import string
 from collections import Counter
@@ -27,78 +28,14 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 _BASELINE_PATH = Path(__file__).with_name("kea_wire_discipline_baseline.txt")
 _OWNERS = frozenset({"kea.py", "server_configuration.py", "subnet_catalogue.py", "reservations.py", "dhcp_options.py"})
 
-# Frozen from owner command sites and hyphenated literals in the follow-up brief.
+_RECORDINGS = Path(__file__).with_name("kea_recordings")
+# Every command the harness Kea lists; scripts/record_kea_config_get.py records them.
 WIRE_COMMANDS = frozenset(
-    {
-        "config-get",
-        "config-set",
-        "config-test",
-        "config-write",
-        "dhcp-disable",
-        "dhcp-enable",
-        "ha-heartbeat",
-        "lease4-add",
-        "lease4-del",
-        "lease4-get",
-        "lease4-get-all",
-        "lease4-get-by-client-id",
-        "lease4-get-by-hostname",
-        "lease4-get-by-hw-address",
-        "lease4-get-by-state",
-        "lease4-get-page",
-        "lease4-update",
-        "lease4-wipe",
-        "lease6-add",
-        "lease6-del",
-        "lease6-get",
-        "lease6-get-all",
-        "lease6-get-by-duid",
-        "lease6-get-by-hostname",
-        "lease6-get-by-state",
-        "lease6-get-page",
-        "lease6-update",
-        "lease6-wipe",
-        "list-commands",
-        "network4-add",
-        "network4-del",
-        "network4-list",
-        "network4-subnet-add",
-        "network4-subnet-del",
-        "network6-add",
-        "network6-del",
-        "network6-list",
-        "network6-subnet-add",
-        "network6-subnet-del",
-        "reservation-add",
-        "reservation-del",
-        "reservation-get",
-        "reservation-get-by-hostname",
-        "reservation-get-page",
-        "reservation-update",
-        "stat-lease4-get",
-        "stat-lease6-get",
-        "statistic-get-all",
-        "status-get",
-        "subnet4-add",
-        "subnet4-del",
-        "subnet4-delta-add",
-        "subnet4-delta-del",
-        "subnet4-get",
-        "subnet4-list",
-        "subnet4-pool-add",
-        "subnet4-pool-del",
-        "subnet4-update",
-        "subnet6-add",
-        "subnet6-del",
-        "subnet6-delta-add",
-        "subnet6-delta-del",
-        "subnet6-get",
-        "subnet6-list",
-        "subnet6-pool-add",
-        "subnet6-pool-del",
-        "subnet6-update",
-        "version-get",
-    }
+    command
+    for family in (4, 6)
+    for command in json.loads((_RECORDINGS / f"dhcp{family}.json").read_text(encoding="utf-8"))["list-commands"][
+        "arguments"
+    ]
 )
 
 WIRE_PAYLOAD_KEYS = frozenset(

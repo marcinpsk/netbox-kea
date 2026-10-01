@@ -24,12 +24,7 @@ coverage:
 # test_views_dhcp_plugin.py, gated on apps.is_installed("netbox_dhcp")). Those
 # tests still RUN and gate correctness in CI when present; ignore only excludes
 # these files from the CI coverage *metric*. Paths are repo-root-relative globs.
-#
-# The test suite itself is also ignored: you measure coverage *of* the code under
-# test, not of the tests. (pyproject's `omit` does this for local runs, but CI runs
-# pytest from the NetBox checkout, so coverage.py never reads our pyproject — hence
-# excluding here, where Codecov applies it regardless of how coverage.xml was made.)
+# All other coverage settings live in pyproject's [tool.coverage.*] tables.
 ignore:
   - "netbox_kea/integrations/dhcp_plugin.py"
   - "netbox_kea/views/dhcp_plugin_sync.py"
-  - "netbox_kea/tests"

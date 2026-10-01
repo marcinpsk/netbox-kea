@@ -1609,6 +1609,35 @@ class TestSubnetCatalogueJob(TestCase):
             "/ipam/ip-ranges/?start_address=198.18.0.10&end_address=198.18.0.20&vrf_id=null",
         )
 
+    def test_a_failed_pool_counts_an_error_and_the_next_pool_still_syncs(self):
+        from netbox_kea import sync
+
+        real_sync = sync.sync_pool_to_netbox_ip_range
+
+        def fail_first_pool(pool, subnet, vrf=None):
+            if pool.range == "198.18.0.10-198.18.0.20":
+                raise RuntimeError("IPRange save failed")
+            return real_sync(pool, subnet, vrf=vrf)
+
+        # NetBox saves an IPRange without validation, so no row state makes the save fail inside a test transaction.
+        with (
+            patch.object(sync, "sync_pool_to_netbox_ip_range", autospec=True, side_effect=fail_first_pool),
+            self.assertLogs("netbox_kea.jobs", level="ERROR") as logs,
+        ):
+            summary, _ = self._run(
+                self._responses(("198.18.0.10-198.18.0.20", "198.18.0.100-198.18.0.110")), failed=True
+            )
+        self.assertEqual(
+            [(str(r.start_address), str(r.end_address)) for r in IPRange.objects.all()],
+            [("198.18.0.100/24", "198.18.0.110/24")],
+        )
+        self.assertEqual(summary[0]["created"], 2)
+        self.assertEqual(summary[0]["prefix_errors"], 1)
+        self.assertEqual(summary[0]["errors"], 0)
+        self.assertTrue(
+            any("Failed to sync pool 198.18.0.10-198.18.0.20 from server" in line for line in logs.output), logs.output
+        )
+
     def _assert_duplicate_logged(self, kea_object, list_url):
         """The job log names the Kea object and the filtered list URL, but no row pk."""
         from core.dataclasses import JobLogEntry

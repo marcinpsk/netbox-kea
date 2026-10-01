@@ -1,5 +1,4 @@
-import logging
-from contextlib import contextmanager
+from collections.abc import Callable
 from typing import Any, cast
 from urllib.parse import urlencode as _urlencode
 
@@ -13,20 +12,15 @@ from django.urls import reverse
 from django.views import View
 from utilities.views import register_model_view
 
-from .. import forms, server_configuration
+from .. import config_write, forms, server_configuration
+from ..config_write import ConfigChangeOutcome
 from ..constants import Family
 from ..dhcp_options import DHCPOption, DHCPOptionConflict, DHCPOptionNameChange
-from ..kea import AmbiguousConfigSetError, KeaConfigTestError, KeaException, PartialPersistError
+from ..kea import KeaException
 from ..models import Server
-from ..utilities import (
-    OptionalViewTab,
-    check_dhcp_enabled,
-    kea_error_hint,
-)
-from ._base import _LIVE_NOT_PERSISTED, ConditionalLoginRequiredMixin, _diagnostic_messages, _KeaChangeMixin
-from .subnets import _SUBNETS_TAB
-
-logger = logging.getLogger(__name__)
+from ..utilities import OptionalViewTab, check_dhcp_enabled
+from ._base import ConditionalLoginRequiredMixin, _diagnostic_messages, _KeaChangeMixin, _run_config_change
+from .subnets import _NO_SUBNET_CIDR, _SUBNETS_TAB, _displayed_subnet
 
 # One Config tab for both sections and both families; ServerOptionDef4View owns it.
 _CONFIG_TAB = OptionalViewTab(label="Config", weight=1050, is_enabled=lambda s: s.dhcp4 or s.dhcp6)
@@ -51,47 +45,14 @@ def config_nav_context(server_pk: int, section: str, dhcp_version: Family) -> di
     }
 
 
-@contextmanager
-def _kea_options_mutation(request: HttpRequest, subject: str):
-    """Context manager that catches and surfaces standard Kea mutation exceptions.
-
-    Usage::
-
-        with _kea_options_mutation(request, f"subnet {subnet_id}"):
-            client = server.get_client(version=v)
-            client.some_operation(...)
-            messages.success(request, "Done.")
-        return redirect(return_url)
-
-    The success message is only set when no exception is raised; on error the
-    context manager sets an appropriate ``messages.warning`` / ``messages.error``
-    and execution continues after the ``with`` block (so ``return redirect(...)``
-    is always reached).
-    """
+def _run_option_change(request: HttpRequest, confirmed: str, change: Callable[[], ConfigChangeOutcome]) -> None:
+    """Run a DHCP Option change. A stale or renamed option row is a form error, not a Configuration Change result."""
     try:
-        yield
-    except AmbiguousConfigSetError as exc:
-        logger.warning("Options mutation for %s has no confirmed config-set reply: %s", subject, exc)
-        messages.warning(request, "Kea did not confirm the change. Check the server configuration before retrying.")
-    except PartialPersistError as exc:
-        logger.warning("Options mutation applied but not persisted for %s: %s", subject, exc)
-        messages.warning(request, _LIVE_NOT_PERSISTED)
-    except KeaConfigTestError:
-        logger.warning("Config-test rejected options changes for %s", subject)
-        messages.error(request, "Config validation failed. No changes were applied.")
-    except KeaException as exc:
-        logger.exception("Kea error during options mutation for %s", subject)
-        messages.error(request, kea_error_hint(exc))
-    except requests.RequestException:
-        logger.exception("Transport error during options mutation for %s", subject)
-        messages.error(request, "Transport error communicating with Kea.")
+        _run_config_change(request, confirmed, change)
     except DHCPOptionConflict:
         messages.error(request, "DHCP Options changed or are ambiguous. Reload the form before saving.")
     except DHCPOptionNameChange:
         messages.error(request, "A coded DHCP Option cannot be renamed. Delete it and add a new option instead.")
-    except ValueError:
-        logger.exception("Invalid Kea client configuration for %s", subject)
-        messages.error(request, "Invalid Kea client configuration.")
 
 
 class _BaseSubnetOptionsEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
@@ -120,12 +81,34 @@ class _BaseSubnetOptionsEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
             pk=pk,
         )
         return_url = reverse(f"plugins:netbox_kea:server_subnets{self.dhcp_version}", args=[pk])
+        catalogue, verified = _displayed_subnet(request, server, self.dhcp_version, subnet_id)
+        if verified is None:
+            reason = ", because the subnet_cmds hook is not loaded" if not catalogue.subnet_cmds_available else ""
+            messages.error(
+                request,
+                f"Kea did not confirm the identity of Subnet {subnet_id}{reason}. "
+                "NetBox changes the DHCP Options of a Subnet only after Kea confirms its identity.",
+            )
+            return redirect(return_url)
         subnet = self._get_subnet_from_config(request, server, subnet_id)
         if subnet is None:
             messages.error(request, "Could not load subnet configuration from Kea. The form cannot be displayed.")
             return redirect(return_url)
         initial = [opt.form_initial() for opt in subnet.configuration.options]
         formset = forms.SubnetOptionsFormSet(initial=initial)
+        form = forms.SubnetConfirmForm(initial={"subnet_cidr": subnet.declared_cidr}, family=self.dhcp_version)
+        return self._render(request, server, subnet_id, subnet.declared_cidr, formset, form, return_url)
+
+    def _render(
+        self,
+        request: HttpRequest,
+        server: Server,
+        subnet_id: int,
+        subnet_cidr: str,
+        formset: Any,
+        form: forms.SubnetConfirmForm,
+        return_url: str,
+    ) -> HttpResponse:
         return render(
             request,
             "netbox_kea/server_subnet_options_edit.html",
@@ -133,9 +116,10 @@ class _BaseSubnetOptionsEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
                 "object": server,
                 "server": server,
                 "subnet_id": subnet_id,
-                "subnet_cidr": subnet.declared_cidr,
+                "subnet_cidr": subnet_cidr,
                 "dhcp_version": self.dhcp_version,
                 "formset": formset,
+                "form": form,
                 "return_url": return_url,
                 "tab": self.tab,
             },
@@ -151,36 +135,19 @@ class _BaseSubnetOptionsEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
             args=[pk],
         )
         formset = forms.SubnetOptionsFormSet(request.POST)
+        form = forms.SubnetConfirmForm(request.POST, family=self.dhcp_version)
+        if not form.is_valid():
+            messages.error(request, _NO_SUBNET_CIDR)
+            return redirect(return_url)
+        cidr: str = form.cleaned_data["subnet_cidr"]
         if not formset.is_valid():
-            subnet_cidr = ""
-            subnet = self._get_subnet_from_config(request, server, subnet_id)
-            if subnet is not None:
-                subnet_cidr = subnet.declared_cidr
-            return render(
-                request,
-                "netbox_kea/server_subnet_options_edit.html",
-                {
-                    "object": server,
-                    "server": server,
-                    "subnet_id": subnet_id,
-                    "subnet_cidr": subnet_cidr,
-                    "dhcp_version": self.dhcp_version,
-                    "formset": formset,
-                    "return_url": return_url,
-                    "tab": self.tab,
-                },
-            )
-
-        options = [form.cleaned_data for form in formset.forms if form.cleaned_data]
-
-        with _kea_options_mutation(request, f"subnet {subnet_id} on server {pk}"):
-            client = server.get_client(version=self.dhcp_version)
-            client.subnet_update_options(
-                version=self.dhcp_version,
-                subnet_id=subnet_id,
-                options=options,
-            )
-            messages.success(request, f"Subnet {subnet_id} options updated.")
+            return self._render(request, server, subnet_id, cidr, formset, form, return_url)
+        rows = [row.cleaned_data for row in formset.forms if row.cleaned_data]
+        _run_option_change(
+            request,
+            f"Subnet {subnet_id} options updated.",
+            lambda: config_write.set_subnet_options(server, self.dhcp_version, subnet_id, cidr, rows),
+        )
         return redirect(return_url)
 
 
@@ -261,12 +228,12 @@ class _BaseServerOptionsEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
                 },
             )
 
-        options = [form.cleaned_data for form in formset.forms if form.cleaned_data]
-
-        with _kea_options_mutation(request, f"dhcp{self.dhcp_version} server options on server {pk}"):
-            client = server.get_client(version=self.dhcp_version)
-            client.server_update_options(version=self.dhcp_version, options=options)
-            messages.success(request, f"DHCPv{self.dhcp_version} server options updated.")
+        rows = [row.cleaned_data for row in formset.forms if row.cleaned_data]
+        _run_option_change(
+            request,
+            f"DHCPv{self.dhcp_version} server options updated.",
+            lambda: config_write.set_server_options(server, self.dhcp_version, rows),
+        )
         return redirect(return_url)
 
 
@@ -507,10 +474,11 @@ class BaseServerOptionDefAddView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
         }
         if form.cleaned_data.get("array"):
             option_def["array"] = True
-        with _kea_options_mutation(request, f"Option Definition add on server {server}"):
-            client = server.get_client(version=self.dhcp_version)
-            client.option_def_add(version=self.dhcp_version, option_def=option_def)
-            messages.success(request, f"Option definition '{option_def['name']}' (code {option_def['code']}) added.")
+        _run_config_change(
+            request,
+            f"Option definition '{option_def['name']}' (code {option_def['code']}) added.",
+            lambda: config_write.add_option_definition(server, self.dhcp_version, option_def),
+        )
         return redirect(self._success_url(server))
 
 
@@ -559,10 +527,11 @@ class BaseServerOptionDefDeleteView(_KeaChangeMixin, ConditionalLoginRequiredMix
     def post(self, request: HttpRequest, pk: int, code: int, space: str) -> HttpResponse:
         """Delete the option definition."""
         server = get_object_or_404(Server.objects.restrict(request.user, "change"), pk=pk)
-        with _kea_options_mutation(request, f"Option Definition delete code={code} space={space} on server {server}"):
-            client = server.get_client(version=self.dhcp_version)
-            client.option_def_del(version=self.dhcp_version, code=code, space=space)
-            messages.success(request, f"Option definition code={code} space={space} deleted.")
+        _run_config_change(
+            request,
+            f"Option definition code={code} space={space} deleted.",
+            lambda: config_write.delete_option_definition(server, self.dhcp_version, code, space),
+        )
         return redirect(self._success_url(server))
 
 

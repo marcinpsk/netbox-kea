@@ -3,14 +3,25 @@ import ipaddress
 import json
 import logging
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from typing import Any, Literal, NamedTuple, TypedDict, cast
 
 import requests
 from requests.models import HTTPBasicAuth
 
 from . import constants
-from .constants import Family, IPNetworkValue
-from .dhcp_options import DHCPOption, FormManagedOption, form_managed_options, merge_option_form_rows
+from .constants import Family, IPNetworkValue, Persistence
+from .dhcp_options import (
+    DHCPOption,
+    InvalidAddress,
+    address_list,
+    form_managed_entry,
+    form_managed_options,
+    form_shows,
+    merge_option_form_rows,
+    parse_dhcp_options,
+)
+from .pools import parse_pool
 from .reservations import (
     RESERVATION_PAGE_FETCH_FAILED,
     RESERVATION_PAGE_LIMIT_REACHED,
@@ -26,7 +37,6 @@ from .reservations import (
     ReservationDiagnostic,
     ReservationIdentity,
     ReservationMutationResult,
-    ReservationPersistence,
     ReservationScope,
     ReservationSnapshot,
     _exact_reservation,
@@ -140,6 +150,17 @@ def _reservation_get_arguments(response: list[KeaResponse]) -> dict[str, Any] | 
     if not isinstance(arguments, dict):
         raise RuntimeError("reservation-get returned malformed arguments.")
     return arguments
+
+
+# A Pool change is ``subnet{v}-delta-add`` or ``subnet{v}-delta-del``.
+PoolAction = Literal["add", "del"]
+
+
+class PersistResult(NamedTuple):
+    """The persistence state that one persist step reached, and why it failed."""
+
+    persistence: Persistence
+    diagnostics: tuple[str, ...] = ()
 
 
 class LeasePage(NamedTuple):
@@ -311,59 +332,47 @@ def _configured_subnet_id_for_network(
     return None
 
 
-def _managed_option_matcher(version: int, managed: FormManagedOption) -> Callable[[dict[str, Any]], bool]:
-    """Return a predicate for one managed option in the family's default space."""
-
-    def matches(option: dict[str, Any]) -> bool:
-        if option.get("space") not in (None, f"dhcp{version}") or option.get("client-classes"):
-            return False
-        if option.get("code") is not None:
-            return option.get("code") == managed.code
-        return option.get("name") == managed.name
-
-    return matches
-
-
 def _replace_managed_option(
-    options: list[dict[str, Any]],
-    version: int,
-    field: str,
-    data: str | None,
-    *,
-    single_value: bool = False,
+    options: list[dict[str, Any]], version: int, field: str, data: str | None
 ) -> list[dict[str, Any]]:
-    """Set one form-managed option to *data*, or remove it when *data* is empty.
+    """Set the entry that the form field *field* manages to *data*, or remove it when *data* is empty.
 
-    The form edits the value only. Delivery flags stay as they are. An entry the
-    form cannot show (empty data, binary-encoded, or a list where the
-    form holds one value) is kept when the field is empty. Form text is CSV, so a
-    new value drops a csv-format flag that described the old encoding.
+    The form edits the value only. Delivery flags stay as they are. An entry whose value the form cannot show
+    (empty data, binary-encoded, or a router list for the one gateway) is kept when the field is empty. Form text is
+    CSV, so a new value drops a csv-format flag that described the old encoding.
+
+    Raises:
+        MalformedConfiguration: If an entry is not a valid DHCP Option, or more than one entry fits the field.
+
     """
     if data is None:
         return options
-    managed = form_managed_options(version)[field]
-    is_managed = _managed_option_matcher(version, managed)
-    existing = next((option for option in options if is_managed(option)), None)
-    kept = [option for option in options if not is_managed(option)]
+    try:
+        parsed = parse_dhcp_options(options)
+        index = form_managed_entry(parsed, version, field)
+    except ValueError as exc:
+        raise MalformedConfiguration(str(exc)) from exc
+    kept = [option for position, option in enumerate(options) if position != index]
     if data:
-        replacement = dict(existing) if existing else {"name": managed.name}
-        old_data = replacement.get("data")
-        unchanged = (
-            isinstance(old_data, str)
-            and replacement.get("csv-format") is not False
-            and [value.strip() for value in data.split(",")] == [value.strip() for value in old_data.split(",")]
-        )
+        replacement = dict(options[index]) if index is not None else {"name": form_managed_options(version)[field].name}
+        unchanged = replacement.get("csv-format") is not False and _same_addresses(data, replacement.get("data"))
         if not unchanged:
             replacement.pop("csv-format", None)
             replacement["data"] = data
         return [*kept, replacement]
-    if existing is not None and (
-        not existing.get("data")
-        or existing.get("csv-format") is False
-        or (single_value and "," in str(existing.get("data", "")))
-    ):
-        return [*kept, existing]
+    if index is not None and (not parsed[index].data or not form_shows(parsed[index], field)):
+        return [*kept, options[index]]
     return kept
+
+
+def _same_addresses(data: str, old_data: Any) -> bool:
+    """Return whether *old_data* holds the addresses of *data*, in another text form or the same one."""
+    if not isinstance(old_data, str):
+        return False
+    try:
+        return address_list(data) == address_list(old_data)
+    except InvalidAddress:
+        return False
 
 
 def shared_network_description(network: dict[str, Any]) -> str | None:
@@ -385,14 +394,22 @@ def shared_network_description(network: dict[str, Any]) -> str | None:
     return comment if isinstance(comment, str) else None
 
 
+def description_as_shown(text: str) -> str:
+    """Return *text* as a text input shows it and Django cleans it: without line breaks and outer spaces."""
+    return text.replace("\r", "").replace("\n", "").strip()
+
+
 def _set_shared_network_description(network: dict[str, Any], description: str) -> None:
     """Write *description* as ``user-context.comment`` and keep every other user-context key.
 
     An empty *description* keeps a comment the form cannot show, the same as a binary option.
     A *description* equal to the comment as a text input shows it keeps the comment unchanged.
     """
-    existing = shared_network_description(network)
-    if existing is not None and description == existing.replace("\r", "").replace("\n", "").strip():
+    try:
+        existing = shared_network_description(network)
+    except ValueError as exc:
+        raise MalformedConfiguration(str(exc)) from exc
+    if existing is not None and description == description_as_shown(existing):
         return
     context = dict(network.get("user-context") or {})
     if description:
@@ -405,12 +422,248 @@ def _set_shared_network_description(network: dict[str, Any], description: str) -
         network.pop("user-context", None)
 
 
+class MalformedConfiguration(RuntimeError):
+    """The running configuration from ``config-get`` has a shape that NetBox cannot edit safely."""
+
+
+class CandidateTargetMissing(Exception):
+    """The candidate configuration has no object that the edit names."""
+
+
 def _config_entries(container: dict[str, Any], key: str, service: str) -> list[dict[str, Any]]:
-    """Return the objects listed at *key* in a live configuration, or raise ``KeaException``."""
+    """Return the objects listed at *key* in a live configuration, or raise ``MalformedConfiguration``."""
     entries = container.get(key, [])
     if not isinstance(entries, list) or not all(isinstance(entry, dict) for entry in entries):
-        raise KeaException({"result": -1, "text": f"config-get returned a malformed {key} list for {service}"})
+        raise MalformedConfiguration(f"config-get returned a malformed {key} list for {service}.")
     return entries
+
+
+def _config_options(container: dict[str, Any], service: str) -> list[dict[str, Any]]:
+    """Return the ``option-data`` of *container* after a check that each entry is a valid DHCP Option."""
+    options = _config_entries(container, "option-data", service)
+    try:
+        parse_dhcp_options(options)
+    except ValueError as exc:
+        raise MalformedConfiguration(f"config-get returned a malformed option-data list for {service}.") from exc
+    return options
+
+
+@dataclass(frozen=True)
+class SharedNetworkEdit:
+    """The Shared Network fields that the edit form manages. An empty value removes the field.
+
+    The values that the form showed have the same type, so that an operation can compare them with the live values.
+    """
+
+    description: str
+    interface: str
+    relay_addresses: tuple[str, ...]
+    dns_servers: tuple[str, ...]
+    ntp_servers: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class SubnetFields:
+    """The Subnet fields that the add form and the edit form both set.
+
+    An empty value leaves the field out of a new Subnet. It removes the field from an edited Subnet, except a DHCP
+    Option value that the edit form cannot show.
+    """
+
+    pools: tuple[str, ...]
+    gateway: str
+    dns_servers: tuple[str, ...]
+    ntp_servers: tuple[str, ...]
+    ddns_qualifying_suffix: str
+
+
+@dataclass(frozen=True)
+class SubnetEdit:
+    """The Subnet fields that the edit form manages: the *fields* of both forms, the lifetimes and the timers.
+
+    A lifetime or a timer of None keeps the live value. The values that the form showed have the same type, and there
+    None is a value that Kea does not set.
+    """
+
+    fields: SubnetFields
+    valid_lifetime: int | None
+    min_valid_lifetime: int | None
+    max_valid_lifetime: int | None
+    renew_timer: int | None
+    rebind_timer: int | None
+
+    def written_by(self, edit: "SubnetEdit") -> "SubnetEdit":
+        """Return these values with None for each lifetime and timer that *edit* keeps, because it cannot change them."""
+
+        def written(value: int | None, new: int | None) -> int | None:
+            return None if new is None else value
+
+        return SubnetEdit(
+            fields=self.fields,
+            valid_lifetime=written(self.valid_lifetime, edit.valid_lifetime),
+            min_valid_lifetime=written(self.min_valid_lifetime, edit.min_valid_lifetime),
+            max_valid_lifetime=written(self.max_valid_lifetime, edit.max_valid_lifetime),
+            renew_timer=written(self.renew_timer, edit.renew_timer),
+            rebind_timer=written(self.rebind_timer, edit.rebind_timer),
+        )
+
+
+@dataclass(frozen=True)
+class SubnetDefinition:
+    """One Subnet as ``subnet{v}-get`` returned it. Two reads are equal when Kea returned the same Subnet."""
+
+    family: Family
+    subnet_id: int
+    network: IPNetworkValue
+    # The reply entry as sorted JSON text, so that the value is immutable and compares by content.
+    entry: str
+
+    def edited(self, edit: SubnetEdit) -> dict[str, Any]:
+        """Return the Subnet with the fields of *edit*, and every other field that Kea returned.
+
+        Raises:
+            MalformedConfiguration: If the Subnet has a value that the edit cannot keep or replace safely.
+
+        """
+        subnet = json.loads(self.entry)
+        # Kea adds a read-only metadata key to some replies, so the update does not send it back.
+        subnet.pop("metadata", None)
+        fields = edit.fields
+        options = subnet.get("option-data", [])
+        if self.family == 4:
+            options = _replace_managed_option(options, 4, "gateway", fields.gateway)
+        options = _replace_managed_option(options, self.family, "dns_servers", ", ".join(fields.dns_servers))
+        subnet["option-data"] = _replace_managed_option(
+            options, self.family, "ntp_servers", ", ".join(fields.ntp_servers)
+        )
+        if fields.ddns_qualifying_suffix:
+            subnet["ddns-qualifying-suffix"] = fields.ddns_qualifying_suffix
+        else:
+            subnet.pop("ddns-qualifying-suffix", None)
+        live_pools = self._pools_by_range(subnet.get("pools", []))
+        subnet["pools"] = [{**live_pools.get(pool, {}), "pool": pool} for pool in fields.pools]
+        # A Subnet takes the *-lifetime keys; valid-lft is a lease field that Kea refuses here.
+        for key, value in (
+            ("valid-lifetime", edit.valid_lifetime),
+            ("min-valid-lifetime", edit.min_valid_lifetime),
+            ("max-valid-lifetime", edit.max_valid_lifetime),
+            ("renew-timer", edit.renew_timer),
+            ("rebind-timer", edit.rebind_timer),
+        ):
+            if value is not None:
+                subnet[key] = value
+        return subnet
+
+    def _pools_by_range(self, pools: list[Any]) -> dict[str, dict[str, Any]]:
+        """Return each live Pool entry by its range text, so that a kept Pool keeps its Pool-level fields.
+
+        Raises:
+            MalformedConfiguration: If a live Pool entry is not an object or has no range in the Subnet.
+
+        """
+        by_range: dict[str, dict[str, Any]] = {}
+        for entry in pools:
+            if not isinstance(entry, dict):
+                raise MalformedConfiguration(
+                    f"subnet{self.family}-get returned a non-object Pool entry for Subnet {self.subnet_id}."
+                )
+            try:
+                by_range[parse_pool(entry.get("pool"), self.network).range] = entry
+            except ValueError as exc:
+                raise MalformedConfiguration(
+                    f"subnet{self.family}-get returned a malformed Pool {entry.get('pool')!r} for Subnet "
+                    f"{self.subnet_id}."
+                ) from exc
+        return by_range
+
+
+class CandidateConfiguration:
+    """The running configuration of one daemon from ``config-get``, which a read-modify-write edits in place.
+
+    Every field that Kea returned stays, so a ``config-set`` of it keeps the fields that NetBox does not model.
+    An edit raises ``MalformedConfiguration`` for a configuration that it cannot edit safely, and
+    ``CandidateTargetMissing`` when the object it names is absent. An error in the submitted rows propagates.
+    """
+
+    def __init__(self, family: Family, arguments: dict[str, Any]) -> None:
+        """Keep *arguments*, the ``config-get`` arguments without ``hash``.
+
+        Raises:
+            MalformedConfiguration: If the ``Dhcp{v}`` block is not an object.
+
+        """
+        daemon = arguments.get(f"Dhcp{family}")
+        if not isinstance(daemon, dict):
+            raise MalformedConfiguration(f"config-get returned a non-object Dhcp{family} for dhcp{family}.")
+        self.family = family
+        self.service = f"dhcp{family}"
+        self.arguments = arguments
+        self._daemon = daemon
+
+    def set_global_options(self, rows: list[dict[str, Any]]) -> None:
+        """Merge the options form *rows* into the server-global DHCP Options."""
+        self._daemon["option-data"] = merge_option_form_rows(rows, _config_options(self._daemon, self.service))
+
+    def set_subnet_options(self, subnet_id: int, network: IPNetworkValue, rows: list[dict[str, Any]]) -> None:
+        """Merge the options form *rows* into the Subnet with *subnet_id*, only while that ID names *network*."""
+        subnet_key = f"subnet{self.family}"
+        subnets = list(_config_entries(self._daemon, subnet_key, self.service))
+        for shared_network in _config_entries(self._daemon, "shared-networks", self.service):
+            subnets.extend(_config_entries(shared_network, subnet_key, self.service))
+        matches = [subnet for subnet in subnets if _is_subnet_id(subnet.get("id"), subnet_id)]
+        if len(matches) > 1:
+            raise MalformedConfiguration(f"config-get declares more than one Subnet with ID {subnet_id}.")
+        if not matches:
+            raise CandidateTargetMissing
+        try:
+            declared = subnet_network(matches[0].get("subnet"), self.family)
+        except ValueError as exc:
+            raise MalformedConfiguration(f"config-get returned Subnet {subnet_id} without a valid CIDR.") from exc
+        if declared != network:
+            raise CandidateTargetMissing
+        matches[0]["option-data"] = merge_option_form_rows(rows, _config_options(matches[0], self.service))
+
+    def add_option_definition(self, option_def: dict[str, Any]) -> None:
+        """Append *option_def* to the Option Definitions."""
+        self._daemon["option-def"] = [*_config_entries(self._daemon, "option-def", self.service), option_def]
+
+    def delete_option_definition(self, code: int, space: str) -> None:
+        """Remove the Option Definitions with *code* in *space*."""
+        definitions = _config_entries(self._daemon, "option-def", self.service)
+        kept = [entry for entry in definitions if not (entry.get("code") == code and entry.get("space") == space)]
+        if len(kept) == len(definitions):
+            raise CandidateTargetMissing
+        self._daemon["option-def"] = kept
+
+    def edit_shared_network(self, name: str, edit: SharedNetworkEdit) -> None:
+        """Set the managed fields of the Shared Network *name*, and keep every other field."""
+        matches = [
+            network
+            for network in _config_entries(self._daemon, "shared-networks", self.service)
+            if network.get("name") == name
+        ]
+        if len(matches) > 1:
+            raise MalformedConfiguration(f"config-get declares more than one Shared Network named {name!r}.")
+        if not matches:
+            raise CandidateTargetMissing
+        network = matches[0]
+        _set_shared_network_description(network, edit.description)
+        if edit.interface:
+            network["interface"] = edit.interface
+        else:
+            network.pop("interface", None)
+        if edit.relay_addresses:
+            network["relay"] = {"ip-addresses": list(edit.relay_addresses)}
+        else:
+            network.pop("relay", None)
+        options = list(_config_entries(network, "option-data", self.service))
+        options = _replace_managed_option(options, self.family, "dns_servers", ",".join(edit.dns_servers))
+        options = _replace_managed_option(options, self.family, "ntp_servers", ",".join(edit.ntp_servers))
+        network["option-data"] = options
+
+
+def _is_subnet_id(value: Any, subnet_id: int) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value == subnet_id
 
 
 class KeaClient:
@@ -974,20 +1227,6 @@ class KeaClient:
         if not response or not isinstance(response[0], dict) or response[0].get("result") != 0:
             raise RuntimeError(f"{command} returned a malformed success response.")
 
-    def _reservation_mutation_persistence(
-        self,
-        version: int,
-    ) -> ReservationPersistence:
-        """Persist one confirmed Reservation mutation and report its outcome."""
-        if not self.persist_config:
-            return "not-requested"
-        try:
-            self._persist_config(f"dhcp{version}")
-        except (PartialPersistError, RuntimeError):
-            logger.warning("Could not persist a confirmed DHCPv%s Reservation mutation", version, exc_info=True)
-            return "failed"
-        return "persisted"
-
     def _verify_reservation(
         self,
         intended: Reservation | None,
@@ -1019,12 +1258,13 @@ class KeaClient:
             reservation.family,
             {"reservation": raw},
         )
-        persistence = self._reservation_mutation_persistence(reservation.family)
+        persisted = self.persist(reservation.family)
         return ReservationMutationResult(
             previous=None,
             intended=reservation,
             application="applied",
-            persistence=persistence,
+            persistence=persisted.persistence,
+            persistence_diagnostics=persisted.diagnostics,
             verification=self._verify_reservation(reservation, reservation, catalogue),
         )
 
@@ -1075,12 +1315,13 @@ class KeaClient:
             target.family,
             {"reservation": merged},
         )
-        persistence = self._reservation_mutation_persistence(target.family)
+        persisted = self.persist(target.family)
         return ReservationMutationResult(
             previous=current,
             intended=intended,
             application="applied",
-            persistence=persistence,
+            persistence=persisted.persistence,
+            persistence_diagnostics=persisted.diagnostics,
             verification=self._verify_reservation(intended, target, catalogue),
         )
 
@@ -1103,12 +1344,13 @@ class KeaClient:
                 "identifier": target.identity.value,
             },
         )
-        persistence = self._reservation_mutation_persistence(target.family)
+        persisted = self.persist(target.family)
         return ReservationMutationResult(
             previous=current,
             intended=None,
             application="applied",
-            persistence=persistence,
+            persistence=persisted.persistence,
+            persistence_diagnostics=persisted.diagnostics,
             verification=self._verify_reservation(None, target, catalogue),
         )
 
@@ -1147,423 +1389,171 @@ class KeaClient:
 
         return _configured_subnet_id_for_network(subnet_collections, version, network)
 
-    def subnet_add(
-        self,
-        version: int,
-        subnet_cidr: str,
-        subnet_id: int,
-        pools: list[str] | None = None,
-        gateway: str | None = None,
-        dns_servers: list[str] | None = None,
-        ntp_servers: list[str] | None = None,
-        ddns_qualifying_suffix: str | None = None,
-    ) -> None:
-        """Add a new subnet to Kea and persist the change.
-
-        Args:
-            version: DHCP version (4 or 6).
-            subnet_cidr: Subnet in CIDR notation, e.g. ``"10.0.0.0/24"``.
-            subnet_id: Kea subnet ID, allocated by the Subnet Catalogue's ``prepare_creation``.
-            pools: Optional list of initial pool ranges (e.g. ``["10.0.0.100-10.0.0.200"]``).
-            gateway: Optional default gateway IP (sets option ``routers``; DHCPv4 only).
-            dns_servers: Optional list of DNS server IPs.
-            ntp_servers: Optional list of NTP server IPs (option 42 / 31 are address arrays).
-            ddns_qualifying_suffix: Optional DDNS qualifying suffix for dynamic DNS updates.
+    def subnet_add(self, version: Family, subnet_id: int, cidr: str, fields: SubnetFields) -> None:
+        """Send one ``subnet{v}-add`` for the Subnet *cidr* with *subnet_id*. It does not persist.
 
         Raises:
-            KeaException: If Kea rejects the ``subnet{v}-add`` command. Kea did not apply it.
-            PartialPersistError: If the subnet is live but not persisted.
-            KeaConfigPersistError: A ``PartialPersistError`` for a live subnet that ``config-test`` rejected.
+            KeaException: If Kea returns a failure result.
+            RuntimeError: If the reply is malformed.
 
         """
+        command = f"subnet{version}-add"
         service = f"dhcp{version}"
-        subnet_def: dict[str, Any] = {"subnet": subnet_cidr, "id": subnet_id}
-        if pools:
-            subnet_def["pools"] = [{"pool": p} for p in pools]
+        subnet: dict[str, Any] = {"subnet": cidr, "id": subnet_id}
+        if fields.pools:
+            subnet["pools"] = [{"pool": pool} for pool in fields.pools]
         managed = form_managed_options(version)
         option_data: list[dict[str, str]] = []
-        if gateway and version == 4:
-            option_data.append({"name": managed["gateway"].name, "data": gateway})
-        if dns_servers:
-            option_data.append({"name": managed["dns_servers"].name, "data": ", ".join(dns_servers)})
-        if ntp_servers:
-            option_data.append({"name": managed["ntp_servers"].name, "data": ", ".join(ntp_servers)})
+        if fields.gateway and version == 4:
+            option_data.append({"name": managed["gateway"].name, "data": fields.gateway})
+        if fields.dns_servers:
+            option_data.append({"name": managed["dns_servers"].name, "data": ", ".join(fields.dns_servers)})
+        if fields.ntp_servers:
+            option_data.append({"name": managed["ntp_servers"].name, "data": ", ".join(fields.ntp_servers)})
         if option_data:
-            subnet_def["option-data"] = option_data
-        if ddns_qualifying_suffix:
-            subnet_def["ddns-qualifying-suffix"] = ddns_qualifying_suffix
+            subnet["option-data"] = option_data
+        if fields.ddns_qualifying_suffix:
+            subnet["ddns-qualifying-suffix"] = fields.ddns_qualifying_suffix
+        response = self._config_mutation_command(command, service, {f"subnet{version}": [subnet]}, check=None)
+        _one_reply(command, service, response)
+
+    def subnet_del(self, version: Family, subnet_id: int) -> None:
+        """Send one ``subnet{v}-del``. It does not persist.
+
+        Raises:
+            KeaException: If Kea returns a failure result.
+            RuntimeError: If the reply is malformed.
+
+        """
+        command = f"subnet{version}-del"
+        service = f"dhcp{version}"
+        response = self._config_mutation_command(command, service, {"id": subnet_id}, check=None)
+        _one_reply(command, service, response)
+
+    def shared_network_exists(self, version: Family, name: str) -> bool:
+        """Return whether the daemon has a Shared Network named *name*.
+
+        Raises:
+            KeaException: If Kea returns a result other than 0 (found) or 3 (not found).
+            RuntimeError: If the reply is malformed or names another Shared Network.
+
+        """
+        command = f"network{version}-get"
+        response = self.command(command, service=[f"dhcp{version}"], arguments={"name": name}, check=None)
+        reply = _one_reply(command, f"dhcp{version}", response, (0, 3))
+        if reply["result"] == 3:
+            return False
+        arguments = reply.get("arguments")
+        networks = arguments.get("shared-networks") if isinstance(arguments, dict) else None
+        if (
+            not isinstance(networks, list)
+            or len(networks) != 1
+            or not isinstance(networks[0], dict)
+            or networks[0].get("name") != name
+        ):
+            raise RuntimeError(f"{command} returned a malformed Shared Network for {name!r}.")
+        return True
+
+    def network_add(self, version: Family, name: str) -> None:
+        """Send one ``network{v}-add`` for an empty Shared Network. It does not persist.
+
+        Raises:
+            KeaException: If Kea returns a failure result.
+            RuntimeError: If the reply is malformed.
+
+        """
+        command = f"network{version}-add"
+        service = f"dhcp{version}"
+        response = self._config_mutation_command(command, service, {"shared-networks": [{"name": name}]}, check=None)
+        _one_reply(command, service, response)
+
+    def network_del(self, version: Family, name: str) -> None:
+        """Send one ``network{v}-del``. Member Subnets stay and leave the Shared Network. It does not persist.
+
+        Raises:
+            KeaException: If Kea returns a failure result.
+            RuntimeError: If the reply is malformed.
+
+        """
+        command = f"network{version}-del"
+        service = f"dhcp{version}"
+        response = self._config_mutation_command(command, service, {"name": name}, check=None)
+        _one_reply(command, service, response)
+
+    def forwarding_failed(self, exc: "KeaException", version: Family) -> bool:
+        """Return whether a Control Agent answered that it could not forward a command to the daemon.
+
+        The agent sends this answer also when it loses the daemon's reply, so the daemon can have run the command.
+        """
+        text = exc.response.get("text")
+        return (
+            self.send_service
+            and exc.response.get("result") == 1
+            and isinstance(text, str)
+            and text.startswith(f"unable to forward command to the dhcp{version} service")
+        )
+
+    def network_subnet_add(self, version: Family, name: str, subnet_id: int) -> None:
+        """Send one ``network{v}-subnet-add`` that moves the Subnet into the Shared Network *name*. It does not persist.
+
+        Raises:
+            KeaException: If Kea returns a failure result.
+            RuntimeError: If the reply is malformed.
+
+        """
+        command = f"network{version}-subnet-add"
+        service = f"dhcp{version}"
+        response = self._config_mutation_command(command, service, {"name": name, "id": subnet_id}, check=None)
+        _one_reply(command, service, response)
+
+    def network_subnet_del(self, version: Family, name: str, subnet_id: int) -> None:
+        """Send one ``network{v}-subnet-del``. The Subnet stays, outside any Shared Network. It does not persist.
+
+        Raises:
+            KeaException: If Kea returns a failure result.
+            RuntimeError: If the reply is malformed.
+
+        """
+        command = f"network{version}-subnet-del"
+        service = f"dhcp{version}"
+        response = self._config_mutation_command(command, service, {"name": name, "id": subnet_id}, check=None)
+        _one_reply(command, service, response)
+
+    def subnet_definition(self, version: Family, subnet_id: int) -> SubnetDefinition:
+        """Send one ``subnet{v}-get`` and return the Subnet with *subnet_id*, for an update.
+
+        Raises:
+            KeaException: If Kea returns a failure result, or no Subnet.
+            RuntimeError: If the reply is malformed, names another Subnet ID, or has no valid CIDR or option-data.
+
+        """
+        entry = self.subnet_get(version, subnet_id)
+        if not _is_subnet_id(entry.get("id"), subnet_id):
+            raise RuntimeError(f"subnet{version}-get returned another Subnet for ID {subnet_id}.")
         try:
-            self._config_mutation_command(f"subnet{version}-add", service, {f"subnet{version}": [subnet_def]})
-        except (requests.RequestException, ValueError) as transport_exc:
-            # The add is ours only when the probe finds the CIDR under the ID we sent.
-            if self._find_subnet_id_by_cidr(version, subnet_cidr) == subnet_id:
-                raise PartialPersistError(service, transport_exc) from transport_exc
-            raise
-        self._persist_config(service)
+            network = subnet_network(entry.get("subnet"), version)
+        except ValueError as exc:
+            raise RuntimeError(f"subnet{version}-get returned Subnet {subnet_id} without a valid CIDR.") from exc
+        options = entry.get("option-data", [])
+        if not isinstance(options, list) or not all(isinstance(option, dict) for option in options):
+            raise RuntimeError(f"subnet{version}-get returned Subnet {subnet_id} with a malformed option-data list.")
+        return SubnetDefinition(version, subnet_id, network, json.dumps(entry, sort_keys=True))
 
-    def subnet_del(self, version: int, subnet_id: int) -> None:
-        """Delete an existing subnet from Kea and persist the change.
+    def subnet_update(self, family: Family, subnet: dict[str, Any]) -> None:
+        """Send one ``subnet{v}-update`` of *subnet*, as ``SubnetDefinition.edited`` built it. It does not persist.
 
-        Args:
-            version: DHCP version (4 or 6).
-            subnet_id: Kea subnet ID to delete.
+        ``subnet{v}-update`` replaces the whole Subnet, so *subnet* holds every field that the read returned.
 
         Raises:
-            KeaException: If Kea returns a non-zero result code.
+            KeaException: If Kea returns a failure result.
+            RuntimeError: If the reply is malformed.
 
         """
-        service = f"dhcp{version}"
-        self._config_mutation_command(
-            f"subnet{version}-del",
-            service,
-            {"id": subnet_id},
-        )
-        self._persist_config(service)
-
-    def network_add(self, version: int, name: str, options: list[dict] | None = None) -> None:
-        """Create a new shared network in Kea and persist the change.
-
-        Args:
-            version: DHCP version (4 or 6).
-            name: Unique name for the shared network.
-            options: Optional list of option-data dicts.
-
-        Raises:
-            KeaException: If Kea returns a non-zero result code.
-
-        """
-        service = f"dhcp{version}"
-        network_def: dict[str, Any] = {"name": name}
-        if options:
-            network_def["option-data"] = options
-        self._config_mutation_command(
-            f"network{version}-add",
-            service,
-            {"shared-networks": [network_def]},
-        )
-        self._persist_config(service)
-
-    def network_del(self, version: int, name: str) -> None:
-        """Delete a shared network from Kea and persist the change.
-
-        Subnets that were members of the deleted network fall back to the global
-        address pool (Kea behaviour).
-
-        Args:
-            version: DHCP version (4 or 6).
-            name: Name of the shared network to delete.
-
-        Raises:
-            KeaException: If Kea returns a non-zero result code.
-
-        """
-        service = f"dhcp{version}"
-        self._config_mutation_command(
-            f"network{version}-del",
-            service,
-            {"name": name},
-        )
-        self._persist_config(service)
-
-    def network_update(
-        self,
-        version: int,
-        name: str,
-        description: str | None = None,
-        interface: str | None = None,
-        relay_addresses: list[str] | None = None,
-        dns_servers: list[str] | None = None,
-        ntp_servers: list[str] | None = None,
-    ) -> None:
-        """Update a shared network's properties via config-get → config-test → config-set → config-write.
-
-        Only provided (non-None) fields are modified; others are left unchanged. DNS
-        and NTP updates preserve all unmanaged DHCP Options and existing option metadata.
-        Raises ``KeaException`` if *name* is not found in the config.
-        Raises ``KeaConfigTestError`` if config-test validation fails.
-        Raises ``PartialPersistError`` if config-write fails after a successful config-set (change
-        is live but will not survive restart).
-        """
-        service, config, daemon = self._config_for_update(version)
-
-        network: dict[str, Any] | None = None
-        for sn in _config_entries(daemon, "shared-networks", service):
-            if sn.get("name") == name:
-                network = sn
-                break
-        if network is None:
-            raise KeaException({"result": 3, "text": f"Shared network '{name}' not found in config"})
-
-        if description is not None:
-            _set_shared_network_description(network, description)
-        if interface is not None:
-            if interface:
-                network["interface"] = interface
-            else:
-                network.pop("interface", None)
-        if relay_addresses is not None:
-            if relay_addresses:
-                network["relay"] = {"ip-addresses": relay_addresses}
-            else:
-                network.pop("relay", None)
-        if dns_servers is not None or ntp_servers is not None:
-            options = list(_config_entries(network, "option-data", service))
-            if dns_servers is not None:
-                options = _replace_managed_option(options, version, "dns_servers", ",".join(dns_servers))
-            if ntp_servers is not None:
-                options = _replace_managed_option(options, version, "ntp_servers", ",".join(ntp_servers))
-            network["option-data"] = options
-
-        self._apply_config(service, config)
-
-    def network_subnet_add(self, version: int, name: str, subnet_id: int) -> None:
-        """Move an existing subnet into a shared network.
-
-        Args:
-            version: DHCP version (4 or 6).
-            name: Shared network name.
-            subnet_id: Kea subnet ID to assign.
-
-        Raises:
-            KeaException: If Kea returns a non-zero result code.
-
-        """
-        service = f"dhcp{version}"
-        self._config_mutation_command(
-            f"network{version}-subnet-add",
-            service,
-            {"name": name, "id": subnet_id},
-        )
-        self._persist_config(service)
-
-    def network_subnet_del(self, version: int, name: str, subnet_id: int) -> None:
-        """Remove a subnet from a shared network (subnet remains, reverts to global pool).
-
-        Args:
-            version: DHCP version (4 or 6).
-            name: Shared network name.
-            subnet_id: Kea subnet ID to remove from the network.
-
-        Raises:
-            KeaException: If Kea returns a non-zero result code.
-
-        """
-        service = f"dhcp{version}"
-        self._config_mutation_command(
-            f"network{version}-subnet-del",
-            service,
-            {"name": name, "id": subnet_id},
-        )
-        self._persist_config(service)
-
-    def subnet_update(
-        self,
-        version: int,
-        subnet_id: int,
-        subnet_cidr: str,
-        pools: list[str] | None = None,
-        gateway: str | None = None,
-        dns_servers: list[str] | None = None,
-        ntp_servers: list[str] | None = None,
-        ddns_qualifying_suffix: str | None = None,
-        valid_lft: int | None = None,
-        min_valid_lft: int | None = None,
-        max_valid_lft: int | None = None,
-        renew_timer: int | None = None,
-        rebind_timer: int | None = None,
-    ) -> None:
-        """Update an existing subnet's configuration in Kea and persist the change.
-
-        Performs a read-modify-write: fetches the live subnet via ``subnet_get()``, merges
-        only the form-managed fields onto it, then sends the complete merged object to
-        ``subnet{v}-update``.  This preserves Kea-managed fields — relay config, allocator
-        settings, client-class, reservations, and any ``option-data`` entries not owned by
-        this form — that Kea would otherwise clear if we sent a partial object.
-
-        Args:
-            version: DHCP version (4 or 6).
-            subnet_id: Kea subnet ID of the subnet to update.
-            subnet_cidr: Subnet in CIDR notation (immutable identifier, still required by Kea).
-            pools: List of pool range strings.  ``None`` = omit (Kea keeps existing);
-                ``[]`` = explicitly clear all pools.
-            gateway: Default gateway IP (option ``routers``, DHCPv4 only).
-                ``None`` preserves the option; ``""`` clears its displayed value.
-            dns_servers: List of DNS server IP strings. ``None`` preserves the option;
-                ``[]`` clears its displayed value.
-            ntp_servers: List of NTP server IP strings. ``None`` preserves the option;
-                ``[]`` clears its displayed value.
-            ddns_qualifying_suffix: DDNS qualifying suffix.  ``None`` = omit (Kea keeps
-                existing); ``""`` = explicitly clear; a value sets it.
-            valid_lft: Preferred lease lifetime in seconds (sent as ``valid-lifetime``).
-            min_valid_lft: Minimum lease lifetime in seconds (sent as ``min-valid-lifetime``).
-            max_valid_lft: Maximum lease lifetime in seconds (sent as ``max-valid-lifetime``).
-            renew_timer: T1 renew timer in seconds (sent as ``renew-timer``).
-            rebind_timer: T2 rebind timer in seconds (sent as ``rebind-timer``).
-
-        Raises:
-            KeaException: If Kea returns a non-zero result code.
-
-        """
-        service = f"dhcp{version}"
-        subnet_key = f"subnet{version}"
-        # Read live subnet so we can merge — Kea's subnet{v}-update replaces the full
-        # object, so we must send ALL fields to avoid silently clearing relay, allocator,
-        # client-class, reservations, and any option-data not managed by this form.
-        subnet_def = self.subnet_get(version, subnet_id)
-        live_cidr = subnet_def.get("subnet")
-        if not isinstance(live_cidr, str):
-            raise RuntimeError(f"subnet{version}-get returned a non-string 'subnet' field for id={subnet_id}")
-        if ipaddress.ip_network(live_cidr, strict=False) != ipaddress.ip_network(subnet_cidr, strict=False):
-            raise ValueError("Subnet CIDR does not match the live subnet.")
-        subnet_def.pop("metadata", None)  # Kea adds a read-only metadata key in some responses
-
-        # Keep the CIDR returned by Kea; edits cannot change the subnet identity.
-        subnet_def["id"] = subnet_id
-
-        # option-data: replace only the entries this form manages; keep every other entry.
-        options = list(subnet_def.get("option-data") or [])
-        if version == 4:
-            options = _replace_managed_option(options, 4, "gateway", gateway, single_value=True)
-        options = _replace_managed_option(
-            options, version, "dns_servers", None if dns_servers is None else ", ".join(dns_servers)
-        )
-        options = _replace_managed_option(
-            options, version, "ntp_servers", None if ntp_servers is None else ", ".join(ntp_servers)
-        )
-        subnet_def["option-data"] = options
-
-        # ddns-qualifying-suffix: None = omit (Kea keeps existing); "" = explicitly clear; a value sets it.
-        if ddns_qualifying_suffix is not None:
-            if ddns_qualifying_suffix:
-                subnet_def["ddns-qualifying-suffix"] = ddns_qualifying_suffix
-            else:
-                subnet_def.pop("ddns-qualifying-suffix", None)
-
-        # pools: replace only when the caller explicitly passes a value
-        if pools is not None:
-            subnet_def["pools"] = [{"pool": p} for p in pools]
-
-        # Lifetime / timer fields: override only when explicitly provided, otherwise
-        # the live value (already present in subnet_def from subnet_get) is kept.
-        # Subnet scope uses `*-lifetime`; `valid-lft` is a lease field Kea rejects here.
-        for value, kea_key in [
-            (valid_lft, "valid-lifetime"),
-            (min_valid_lft, "min-valid-lifetime"),
-            (max_valid_lft, "max-valid-lifetime"),
-            (renew_timer, "renew-timer"),
-            (rebind_timer, "rebind-timer"),
-        ]:
-            if value is not None:
-                subnet_def[kea_key] = value
-
-        self._config_mutation_command(
-            f"subnet{version}-update",
-            service,
-            {subnet_key: [subnet_def]},
-        )
-        self._persist_config(service)
-
-    def subnet_update_options(self, version: int, subnet_id: int, options: list[dict[str, Any]]) -> None:
-        """Merge form rows into a subnet's option-data via config-get → config-test → config-set → config-write.
-
-        Free Kea has no option-set hook, so the only supported approach is a full
-        read-modify-write cycle: fetch the current config, merge the submitted rows
-        onto the subnet's ``option-data`` by original identity, then validate, apply
-        and persist the modified config.
-
-        Args:
-            version: DHCP version (4 or 6).
-            subnet_id: Kea subnet ID.
-            options: Cleaned form rows covering every live option by original identity.
-                Set ``DELETE`` on an existing row to remove it.
-
-        Raises:
-            KeaException: If ``subnet_id`` is not found, or if ``config-test`` fails.
-            DHCPOptionConflict: If a row's original identity is missing, ambiguous, or submitted twice.
-            PartialPersistError: If ``config-write`` fails after a successful ``config-set``.
-
-        """
-        subnet_key = f"subnet{version}"
-        service, config, daemon = self._config_for_update(version)
-
-        subnet = None
-        for s in _config_entries(daemon, subnet_key, service):
-            if s.get("id") == subnet_id:
-                subnet = s
-                break
-        if subnet is None:
-            for sn in _config_entries(daemon, "shared-networks", service):
-                for s in _config_entries(sn, subnet_key, service):
-                    if s.get("id") == subnet_id:
-                        subnet = s
-                        break
-                if subnet is not None:
-                    break
-        if subnet is None:
-            raise KeaException({"result": 3, "text": f"Subnet id {subnet_id} not found in config"})
-
-        subnet["option-data"] = merge_option_form_rows(options, subnet.get("option-data", []))
-        self._apply_config(service, config)
-
-    def server_update_options(self, version: int, options: list[dict[str, Any]]) -> None:
-        """Merge form rows into server-level option-data via config-get → config-test → config-set → config-write.
-
-        Merges onto the ``option-data`` list at the ``Dhcp{v}`` level (not per-subnet)
-        by original identity.
-        Uses the same read-modify-write pipeline as :meth:`subnet_update_options`.
-
-        Args:
-            version: DHCP version (4 or 6).
-            options: Cleaned form rows covering every live option by original identity.
-                Set ``DELETE`` on an existing row to remove it.
-
-        Raises:
-            KeaException: If ``config-test`` fails.
-            DHCPOptionConflict: If a row's original identity is missing, ambiguous, or submitted twice.
-            PartialPersistError: If ``config-write`` fails after a successful ``config-set``.
-
-        """
-        service, config, daemon = self._config_for_update(version)
-        daemon["option-data"] = merge_option_form_rows(options, daemon.get("option-data", []))
-        self._apply_config(service, config)
-
-    def option_def_add(self, version: int, option_def: dict) -> None:
-        """Append a new option-def entry via config-get → config-test → config-set → config-write.
-
-        Args:
-            version: DHCP version (4 or 6).
-            option_def: A dict with keys ``name``, ``code``, ``type``, ``space``,
-                and optionally ``array``, ``encapsulate``, ``record-types``.
-
-        Raises:
-            KeaException: If ``config-test`` fails.
-            PartialPersistError: If ``config-write`` fails after a successful ``config-set``.
-
-        """
-        service, config, daemon = self._config_for_update(version)
-        daemon["option-def"] = [*_config_entries(daemon, "option-def", service), option_def]
-        self._apply_config(service, config)
-
-    def option_def_del(self, version: int, code: int, space: str) -> None:
-        """Remove an option-def entry by code+space via config-get → config-test → config-set → config-write.
-
-        Args:
-            version: DHCP version (4 or 6).
-            code: Option code of the entry to remove.
-            space: Option space of the entry to remove.
-
-        Raises:
-            KeaConfigTestError: If ``config-test`` fails before the mutation is applied.
-            PartialPersistError: If ``config-write`` fails after a successful ``config-set``.
-
-        """
-        service, config, daemon = self._config_for_update(version)
-        defs = _config_entries(daemon, "option-def", service)
-        new_defs = [d for d in defs if not (d.get("code") == code and d.get("space") == space)]
-        if len(new_defs) == len(defs):
-            raise KeaException({"result": 3, "text": f"option-def code={code} space={space} not found"})
-        daemon["option-def"] = new_defs
-        self._apply_config(service, config)
+        command = f"subnet{family}-update"
+        service = f"dhcp{family}"
+        arguments = {f"subnet{family}": [subnet]}
+        response = self._config_mutation_command(command, service, arguments, check=None)
+        _one_reply(command, service, response)
 
     def lease_wipe(self, version: int, subnet_id: int) -> None:
         """Delete all leases in a subnet using the ``lease{v}-wipe`` command.
@@ -1995,81 +1985,19 @@ class KeaClient:
         """
         self.command("dhcp-enable", service=[service])
 
-    def pool_add(self, version: int, subnet_id: int, pool: str) -> None:
-        """Add a pool to an existing subnet and persist the change.
-
-        Supports both Kea 2.x (``subnet{v}-pool-add``) and Kea 3.x
-        (``subnet{v}-delta-add``). The delta command requires the subnet CIDR,
-        which is fetched automatically when the pool-add command is unavailable.
-
-        Args:
-            version: DHCP version (4 or 6).
-            subnet_id: Kea subnet ID to add the pool to.
-            pool: Pool range string (e.g. ``"10.0.0.50-10.0.0.99"`` or CIDR ``"10.0.0.0/28"``).
+    def pool_change(self, version: Family, action: PoolAction, subnet_id: int, declared_cidr: str, pool: str) -> None:
+        """Send one ``subnet{v}-delta-{action}`` for the Pool of the Subnet. It does not persist.
 
         Raises:
-            KeaException: If Kea returns a non-zero result code for either command.
-            RuntimeError: If the delta-add path's ``get_subnet_cidr`` lookup gets a
-                malformed ``subnet{version}-get`` response.
-            ValueError: If the delta-add path's ``get_subnet_cidr`` lookup returns a
-                CIDR that doesn't match *version*'s address family.
+            KeaException: If Kea returns a failure result.
+            RuntimeError: If the reply is malformed.
 
         """
+        command = f"subnet{version}-delta-{action}"
         service = f"dhcp{version}"
-        subnet_key = f"subnet{version}"
-        available = self.get_available_commands(service)
-        if f"subnet{version}-pool-add" in available:
-            self._config_mutation_command(
-                f"subnet{version}-pool-add",
-                service,
-                {subnet_key: [{"id": subnet_id, "pools": [{"pool": pool}]}]},
-            )
-        else:
-            subnet_cidr = self.get_subnet_cidr(version, subnet_id)
-            self._config_mutation_command(
-                f"subnet{version}-delta-add",
-                service,
-                {subnet_key: [{"id": subnet_id, "subnet": subnet_cidr, "pools": [{"pool": pool}]}]},
-            )
-        self._persist_config(service)
-
-    def pool_del(self, version: int, subnet_id: int, pool: str) -> None:
-        """Remove a pool from an existing subnet and persist the change.
-
-        Supports both Kea 2.x (``subnet{v}-pool-del``) and Kea 3.x
-        (``subnet{v}-delta-del``). The delta command requires the subnet CIDR,
-        which is fetched automatically when the pool-del command is unavailable.
-
-        Args:
-            version: DHCP version (4 or 6).
-            subnet_id: Kea subnet ID to remove the pool from.
-            pool: Pool range string identifying the pool to delete.
-
-        Raises:
-            KeaException: If Kea returns a non-zero result code for either command.
-            RuntimeError: If the delta-del path's ``get_subnet_cidr`` lookup gets a
-                malformed ``subnet{version}-get`` response.
-            ValueError: If the delta-del path's ``get_subnet_cidr`` lookup returns a
-                CIDR that doesn't match *version*'s address family.
-
-        """
-        service = f"dhcp{version}"
-        subnet_key = f"subnet{version}"
-        available = self.get_available_commands(service)
-        if f"subnet{version}-pool-del" in available:
-            self._config_mutation_command(
-                f"subnet{version}-pool-del",
-                service,
-                {subnet_key: [{"id": subnet_id, "pools": [{"pool": pool}]}]},
-            )
-        else:
-            subnet_cidr = self.get_subnet_cidr(version, subnet_id)
-            self._config_mutation_command(
-                f"subnet{version}-delta-del",
-                service,
-                {subnet_key: [{"id": subnet_id, "subnet": subnet_cidr, "pools": [{"pool": pool}]}]},
-            )
-        self._persist_config(service)
+        subnet = {"id": subnet_id, "subnet": declared_cidr, "pools": [{"pool": pool}]}
+        response = self._config_mutation_command(command, service, {f"subnet{version}": [subnet]}, check=None)
+        _one_reply(command, service, response)
 
     def _config_phase_command(self, command: str, service: str, arguments: dict[str, Any] | None = None) -> None:
         """Require one well-formed success reply for a single-service config phase."""
@@ -2079,196 +2007,85 @@ class KeaClient:
             response = self._config_mutation_command(command, service, arguments, check=None)
         else:
             response = self.command(command, service=[service], arguments=arguments, check=None)
-        if (
-            len(response) != 1
-            or not isinstance(response[0], dict)
-            or not isinstance(response[0].get("result"), int)
-            or isinstance(response[0].get("result"), bool)
-        ):
-            raise RuntimeError(f"{command} did not return one valid result for {service}.")
-        check_response(response, (0,))
+        _one_reply(command, service, response)
 
-    def _config_for_update(self, version: int) -> tuple[str, dict[str, Any], dict[str, Any]]:
-        """Return the service, the live config without ``hash``, and its validated ``Dhcp{v}`` block."""
-        service = f"dhcp{version}"
-        resp = self.command("config-get", service=[service])
-        config = resp[0].get("arguments") if resp and isinstance(resp[0], dict) else None
-        if not isinstance(config, dict):
-            raise KeaException({"result": -1, "text": f"config-get returned unexpected arguments for {service}"})
-        # Kea 2.4+ adds "hash"; config-test and config-set reject it.
-        config.pop("hash", None)
-        daemon = config.get(f"Dhcp{version}")
-        if not isinstance(daemon, dict):
-            raise KeaException({"result": -1, "text": f"config-get returned a non-object Dhcp{version} for {service}"})
-        return service, config, daemon
-
-    def _apply_config(self, service: str, config: dict) -> None:
-        """Validate, apply, and persist a modified config dict.
-
-        Used by read-modify-write methods (e.g. ``subnet_update_options``,
-        ``server_update_options``, ``option_def_add/del``) that mutate a config
-        obtained from ``config-get`` and need to push it back.
-
-        Flow: ``config-test`` → ``config-set`` → ``config-write``.
-
-        Args:
-            service: Kea service name (e.g. ``"dhcp4"``).
-            config: The full config dict (already mutated) to apply.
+    def config_candidate(self, version: Family) -> CandidateConfiguration:
+        """Send one ``config-get`` and return the running configuration, for a read-modify-write.
 
         Raises:
-            KeaConfigTestError: If ``config-test`` fails (result != 2).
-            PartialPersistError: If ``config-write`` fails after ``config-set``.
+            KeaException: If Kea returns a failure result.
+            RuntimeError: If the reply is malformed.
+            MalformedConfiguration: If the ``Dhcp{v}`` block is not an object.
 
         """
-        try:
-            self._config_phase_command("config-test", service, config)
-        except KeaException as exc:
-            if exc.unsupported_command:
-                logger.debug("config-test not supported for service %s — skipping pre-flight check", service)
-            else:
-                logger.warning("config-test failed for service %s — aborting config-set", service)
-                raise KeaConfigTestError(service, exc) from exc
-        except (requests.RequestException, ValueError, RuntimeError) as exc:
-            logger.warning(
-                "config-test transport/parse error for service %s — aborting config-set",
-                service,
-            )
-            raise KeaConfigTestError(service, exc) from exc
-        try:
-            self._config_phase_command("config-set", service, config)
-        except (requests.RequestException, ValueError, RuntimeError) as exc:
-            logger.warning(
-                "config-set transport/parse error for service %s — change may be live but unpersisted", service
-            )
-            raise AmbiguousConfigSetError(service, exc) from exc
-        if self.persist_config:
-            try:
-                self._config_phase_command("config-write", service)
-            except (KeaException, requests.RequestException, ValueError, RuntimeError) as exc:
-                logger.warning("config-write failed for service %s — change not persisted to disk", service)
-                raise PartialPersistError(service, exc) from exc
-        else:
-            logger.debug("persist_config disabled for service %s — skipping config-write after config-set", service)
+        command, service = "config-get", f"dhcp{version}"
+        reply = _one_reply(command, service, self.command(command, service=[service], check=None))
+        arguments = reply.get("arguments")
+        if not isinstance(arguments, dict):
+            raise RuntimeError(f"{command} returned no configuration object for {service}.")
+        # Kea 2.4+ adds "hash"; config-test and config-set reject it.
+        arguments.pop("hash", None)
+        return CandidateConfiguration(version, arguments)
 
-    def _persist_config(self, service: str) -> None:
-        """Validate the current running config and persist it to disk.
+    def config_test(self, candidate: CandidateConfiguration) -> None:
+        """Send one ``config-test`` of *candidate*. It changes nothing.
 
-        Flow:
-        1. ``config-get`` — fetch the live in-memory config (which already reflects
-           any mutation applied via Kea-native commands like ``subnet4-delta-add``).
-        2. ``config-test`` with that config as ``arguments`` — validate it.  Kea
-           requires the config to be passed as arguments; calling ``config-test``
-           without arguments always returns result 1 "Missing mandatory 'arguments'
-           parameter."  Result 2 (command not supported) is silently skipped.  Any
-           other non-zero result raises :exc:`KeaConfigPersistError`.
-        3. ``config-write`` — persist the validated config to disk.  Failure raises
-           :exc:`PartialPersistError` (change is live but will be lost on restart).
+        Raises:
+            KeaException: If Kea returns a failure result.
+            RuntimeError: If the reply is malformed.
+
+        """
+        self._config_phase_command("config-test", candidate.service, candidate.arguments)
+
+    def config_set(self, candidate: CandidateConfiguration) -> None:
+        """Send one ``config-set`` of *candidate*. It does not persist.
+
+        Raises:
+            KeaException: If Kea returns a failure result.
+            RuntimeError: If the reply is malformed.
+
+        """
+        self._config_phase_command("config-set", candidate.service, candidate.arguments)
+
+    def persist(self, version: Family) -> PersistResult:
+        """Write the running configuration to disk: ``config-get``, ``config-test`` of it, then ``config-write``.
+
+        It never raises. ``failed`` means that NetBox cannot confirm that the disk copy holds the running
+        configuration. A failed phase stops the step, so NetBox never writes a configuration it could not test.
         """
         if not self.persist_config:
-            logger.debug("persist_config disabled for service %s — skipping config-write", service)
-            return
-        # Step 1: fetch the current in-memory config so we can validate and write it.
+            return PersistResult("not-requested")
+        service = f"dhcp{version}"
+        # requests errors are OSError subclasses; a missing TLS file raises a plain OSError.
         try:
-            resp = self.command("config-get", service=[service])
-        except (KeaException, requests.RequestException, ValueError):
-            logger.warning("config-get failed for service %s — skipping validation, attempting config-write", service)
-            resp = None
-
-        config: dict | None = None
-        if resp is not None:
-            if isinstance(resp, list) and resp and isinstance(resp[0], dict):
-                raw = resp[0].get("arguments")
-            else:
-                raw = resp.get("arguments") if isinstance(resp, dict) else None
-            if isinstance(raw, dict):
-                config = {k: v for k, v in raw.items() if k != "hash"}
-            else:
-                logger.warning(
-                    "config-get for service %s returned unexpected arguments shape: %s", service, type(raw).__name__
-                )
-
-        # Step 2: config-test — pass the live config as arguments (required by Kea).
-        if config is not None:
-            try:
-                self._config_phase_command("config-test", service, config)
-            except KeaException as exc:
-                if exc.unsupported_command:
-                    logger.debug("config-test not supported for service %s — skipping pre-flight check", service)
-                else:
-                    logger.warning("config-test failed for service %s — aborting config-write", service)
-                    raise KeaConfigPersistError(service, exc) from exc
-            except (requests.RequestException, ValueError, RuntimeError) as exc:
-                logger.warning(
-                    "config-test transport error for service %s — aborting config-write", service, exc_info=True
-                )
-                raise KeaConfigPersistError(service, exc) from exc
-
-        # Step 3: write to disk.
+            candidate = self.config_candidate(version)
+        except (KeaException, OSError, ValueError, RuntimeError):
+            logger.warning("config-get failed for %s, so config-write was not sent", service, exc_info=True)
+            return PersistResult("failed", ("Kea did not return its running configuration, so it was not saved.",))
+        try:
+            self.config_test(candidate)
+        except KeaException as exc:
+            if not exc.unsupported_command:
+                logger.warning("config-test rejected the running configuration of %s: %s", service, exc)
+                return PersistResult("failed", (f"config-test rejected the running configuration: {exc.reply_text}",))
+        except (OSError, ValueError, RuntimeError):
+            logger.warning("config-test failed for %s, so config-write was not sent", service, exc_info=True)
+            return PersistResult("failed", ("config-test did not return a usable reply, so nothing was saved.",))
         try:
             self._config_phase_command("config-write", service)
-        except (KeaException, requests.RequestException, ValueError, RuntimeError) as exc:
-            logger.warning(
-                "config-write failed for service %s — change is live but not persisted to disk",
-                service,
-            )
-            raise PartialPersistError(service, exc) from exc
-
-    def get_subnet_cidr(self, version: int, subnet_id: int) -> str:
-        """Fetch the CIDR string for *subnet_id* from Kea (e.g. ``"10.0.0.0/24"``).
-
-        Args:
-            version: DHCP version (4 or 6).
-            subnet_id: Kea subnet ID to look up.
-
-        Returns:
-            Subnet CIDR string.
-
-        Raises:
-            KeaException: If Kea reports the subnet as not found (result code 3).
-            RuntimeError: If the response itself is malformed (missing/wrong-typed
-                ``arguments``, ``subnet{v}``, subnet entry, or ``subnet`` field —
-                including an empty ``subnet{v}`` list despite a result-0 response).
-            ValueError: If ``subnet`` is a string but not a CIDR of the requested
-                family.
-
-        """
-        service = f"dhcp{version}"
-        subnet_key = f"subnet{version}"
-        resp = self.command(
-            f"subnet{version}-get",
-            service=[service],
-            arguments={"id": subnet_id},
-            check=(0, 3),
-        )
-        if not resp or not isinstance(resp[0], dict):
-            raise RuntimeError(f"subnet{version}-get returned malformed response: {resp!r}")
-        if resp[0].get("result") == 3:
-            raise KeaException(resp[0], index=0)
-        arguments = resp[0].get("arguments")
-        if not isinstance(arguments, dict):
-            raise RuntimeError(f"subnet{version}-get returned malformed arguments: {resp[0]!r}")
-        subnets = arguments.get(subnet_key)
-        if not isinstance(subnets, list):
-            raise RuntimeError(f"subnet{version}-get returned a non-list {subnet_key!r}: {subnets!r}")
-        if not subnets:
-            raise RuntimeError(f"subnet{version}-get returned an empty {subnet_key!r} despite result=0: {resp[0]!r}")
-        if not isinstance(subnets[0], dict):
-            raise RuntimeError(f"subnet{version}-get returned a non-dict subnet entry: {subnets[0]!r}")
-        cidr = subnets[0].get("subnet")
-        if not isinstance(cidr, str) or not cidr:
-            raise RuntimeError(f"subnet{version}-get response missing 'subnet' field for id={subnet_id}")
-        try:
-            subnet_network(cidr, version)
-        except ValueError as exc:
-            raise ValueError(f"subnet{version}-get returned a CIDR not matching IPv{version}: {cidr!r}") from exc
-        return cidr
+        except KeaException as exc:
+            logger.warning("config-write failed for %s: %s", service, exc)
+            return PersistResult("failed", (f"config-write failed: {exc.reply_text}",))
+        except (OSError, ValueError, RuntimeError):
+            logger.warning("The config-write reply of %s was lost or unreadable", service, exc_info=True)
+            return PersistResult("failed", ("The reply to config-write was lost or unreadable.",))
+        return PersistResult("persisted")
 
     def subnet_get(self, version: int, subnet_id: int) -> dict:
         """Fetch the full subnet config dict for *subnet_id* from Kea.
 
-        Unlike :meth:`get_subnet_cidr`, this method returns the complete
-        subnet object (id, subnet, pools, option-data, relay, allocator, ...)
-        enabling a read-modify-write cycle without losing live-only fields.
+        The complete subnet object (id, subnet, pools, option-data, relay, allocator, ...)
+        enables a read-modify-write cycle without losing live-only fields.
 
         Args:
             version: DHCP version (4 or 6).
@@ -2305,26 +2122,6 @@ class KeaClient:
             raise RuntimeError(f"subnet{version}-get returned an invalid subnet")
         return dict(subnets[0])
 
-    def _find_subnet_id_by_cidr(self, version: int, cidr: str) -> int | None:
-        """Search the running Kea config for a subnet matching *cidr*.
-
-        Returns the Kea subnet ID if found, or ``None`` if the subnet does not
-        exist or if the config-get probe itself fails.  Used as a best-effort
-        disambiguation probe after a transport error on ``subnet{v}-add`` to
-        detect whether the command was actually processed by Kea.
-
-        """
-        try:
-            return self.configured_subnet_id_from_cidr(version, cidr)
-        except (KeaException, requests.RequestException, RuntimeError, ValueError):
-            logger.debug(
-                "_find_subnet_id_by_cidr: config-get failed for cidr=%s version=%s",
-                cidr,
-                version,
-                exc_info=True,
-            )
-            return None
-
 
 class KeaException(Exception):
     """Raised when a Kea API response contains an unexpected result code."""
@@ -2344,88 +2141,24 @@ class KeaException(Exception):
         """Return whether Kea rejected an unsupported command."""
         return self.response.get("result") == 2
 
-
-class KeaConfigTestError(KeaException):
-    """Raised when ``config-test`` fails before any mutation has been applied.
-
-    The Kea configuration is unchanged — no data has been written.
-    The original :exc:`KeaException` from config-test is stored in ``__cause__``.
-
-    Used by ``_apply_config`` (read-modify-write methods such as
-    ``subnet_update_options`` and ``server_update_options``) where config-test
-    is run *before* ``config-set``, so a failure means the running config is
-    still intact.
-    """
-
-    def __init__(self, service: str, cause: Exception) -> None:
-        response: KeaResponse = {
-            "result": -1,
-            "text": f"config-test failed for service {service!r} — mutation was not applied",
-            "arguments": [],
-        }
-        super().__init__(response, msg=f"config-test error for {service!r}")
-        self.service = service
+    @property
+    def reply_text(self) -> str:
+        """Return the text of Kea's failure reply, or its result code when the reply has no text."""
+        text = self.response.get("text")
+        return text if isinstance(text, str) and text else f"result {self.response.get('result')}"
 
 
-class PartialPersistError(KeaException):
-    """Raised when a Kea mutation is live but was not written to disk.
-
-    The change is applied in memory but will be lost on Kea restart.  This class
-    reports a failed config-write; subclasses report the other causes.
-    The original exception from the failed phase is stored in ``__cause__``.
-    """
-
-    def __init__(self, service: str, cause: Exception) -> None:
-        response: KeaResponse = {
-            "result": -1,
-            "text": f"config-write failed for service {service!r} — change is live but not persisted to disk",
-            "arguments": [],
-        }
-        super().__init__(response, msg=f"partial persist error for {service!r}")
-        self.service = service
-
-
-class KeaConfigPersistError(PartialPersistError):
-    """Raised when ``_persist_config`` rejects the already-live config via ``config-test``.
-
-    The mutation IS already applied to the running daemon (the change is live in
-    memory) but config-test found the resulting config invalid, so config-write
-    was skipped.  The change **will be lost on daemon restart**.
-
-    Inherits from :exc:`PartialPersistError` because a caller must treat both the
-    same way: the change is live but not written to disk.  Distinct from
-    :exc:`KeaConfigTestError`, which is raised before any mutation is applied.
-    """
-
-    def __init__(self, service: str, cause: Exception) -> None:
-        super().__init__(service, cause)
-        rejected_text = (
-            f"config-test rejected the running config for service {service!r}; "
-            "mutation is live but config-write was skipped"
-        )
-        self.response["text"] = rejected_text
-        self.args = (f"config persist error for {service!r}: {rejected_text}",)
-
-
-class AmbiguousConfigSetError(PartialPersistError):
-    """Raised when a config-set reply is lost or malformed.
-
-    The change *may* be live but we cannot confirm — the transport or JSON
-    parsing failed after sending the config-set command.  Distinct from
-    :exc:`PartialPersistError` where we *know* the mutation succeeded but
-    config-write failed.
-
-    Inherits from :exc:`PartialPersistError` so existing ``except
-    PartialPersistError`` handlers still catch it.  Callers that need to
-    distinguish ambiguous-set from definite-write-failure can catch this
-    subclass first.
-    """
-
-    def __init__(self, service: str, cause: Exception) -> None:
-        super().__init__(service, cause)
-        ambiguous_text = f"config-set reply lost/malformed for service {service!r} — change may or may not be live"
-        self.response["text"] = ambiguous_text
-        self.args = (f"partial persist error for {service!r}: {ambiguous_text}",)
+def _one_reply(command: str, service: str, response: list[KeaResponse], ok_codes: Sequence[int] = (0,)) -> KeaResponse:
+    """Return the one reply of a single-service command, or raise when it is malformed or its result is not ok."""
+    if (
+        len(response) != 1
+        or not isinstance(response[0], dict)
+        or not isinstance(response[0].get("result"), int)
+        or isinstance(response[0].get("result"), bool)
+    ):
+        raise RuntimeError(f"{command} did not return one valid result for {service}.")
+    check_response(response, ok_codes)
+    return response[0]
 
 
 def check_response(resp: list[KeaResponse], ok_codes: Sequence[int]) -> None:

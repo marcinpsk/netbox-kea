@@ -50,8 +50,10 @@ _REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 def _catalogue(family: Family, subnet_id: int, cidr: str) -> CatalogueSnapshot:
     subnet = VerifiedSubnet(
         identity=SubnetIdentity(subnet_id=subnet_id, network=ip_network(cidr)),
+        declared_cidr=cidr,
         configuration=None,
         shared_network=None,
+        membership_known=True,
     )
     # Identity-only: the fixture carries no configuration, which is all a Reservation
     # Scope needs verified.
@@ -1203,6 +1205,56 @@ class TestReservationMutation(SimpleTestCase):
         self.assertEqual(result.application, "applied")
         self.assertEqual(result.persistence, "failed")
         self.assertEqual(result.verification, "verified")
+
+    def test_create_reports_a_config_test_rejection_of_the_live_configuration(self):
+        raw = {"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:ff", "ip-address": "198.18.0.20"}
+        with stub_kea(
+            {
+                **_persistence_responses(4),
+                "reservation-add": {"result": 0},
+                "reservation-get": _res_get(raw),
+                "config-test": {"result": 1, "text": "invalid pool"},
+            }
+        ) as kea:
+            result = self.kea.reservation_create(self.reservation, self.catalogue)
+
+        self.assertEqual(result.application, "applied")
+        self.assertEqual(result.persistence, "failed")
+        self.assertEqual(len(result.persistence_diagnostics), 1)
+        self.assertIn("config-test", result.persistence_diagnostics[0])
+        self.assertIn("invalid pool", result.persistence_diagnostics[0])
+        self.assertNotIn("config-write", kea.commands())
+
+    def test_delete_does_not_write_the_configuration_when_config_get_fails(self):
+        raw = {"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:ff", "ip-address": "198.18.0.20"}
+        with stub_kea(
+            {
+                **_persistence_responses(4),
+                "reservation-get": queued(_res_get(raw), {"result": 3}),
+                "reservation-del": {"result": 0},
+                "config-get": {"result": 1, "text": "config-get failed"},
+            }
+        ) as kea:
+            result = self.kea.reservation_delete(self.reservation, self.catalogue)
+
+        self.assertEqual(result.application, "applied")
+        self.assertEqual(result.persistence, "failed")
+        self.assertIn("running configuration", result.persistence_diagnostics[0])
+        self.assertNotIn("config-write", kea.commands())
+
+    def test_create_reports_no_diagnostic_when_persisted(self):
+        raw = {"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:ff", "ip-address": "198.18.0.20"}
+        with stub_kea(
+            {
+                **_persistence_responses(4),
+                "reservation-add": {"result": 0},
+                "reservation-get": _res_get(raw),
+            }
+        ):
+            result = self.kea.reservation_create(self.reservation, self.catalogue)
+
+        self.assertEqual(result.persistence, "persisted")
+        self.assertEqual(result.persistence_diagnostics, ())
 
     def test_create_reports_verification_failure_without_losing_applied_state(self):
         with stub_kea(

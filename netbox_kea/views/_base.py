@@ -1,5 +1,6 @@
 import logging
 import re
+from collections.abc import Callable
 from typing import Any, TypeVar, cast
 from urllib.parse import parse_qsl, urlparse
 from urllib.parse import urlencode as _urlencode
@@ -12,8 +13,9 @@ from django.http.request import HttpRequest
 from django.urls import reverse
 from netbox.tables import BaseTable
 
+from ..config_write import ConfigChangeOutcome, ConfigChangeRejected, RejectionReason
 from ..constants import Family
-from ..dhcp_options import DHCPOption, form_managed_options
+from ..dhcp_options import DHCPOption
 from ..kea import KeaException
 from ..models import Server
 from ..server_configuration import Diagnostic, SharedNetwork
@@ -29,13 +31,19 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseTable)
+OutcomeT = TypeVar("OutcomeT", bound=ConfigChangeOutcome)
 
 # Allowed characters in a pool range/CIDR string (digits, dots, colons, letters a-f, slash, hyphen).
 # Protects the <path:pool> URL parameter from injection before it reaches the Kea API.
 _POOL_RE = re.compile(r"^[0-9a-fA-F.:/-]{3,100}$")
 
-# The warning for a PartialPersistError: the change is live, but Kea did not write it to disk.
-_LIVE_NOT_PERSISTED = "Change applied but may not survive a Kea restart (not written to disk)."
+_UNCONFIRMED = "Kea did not confirm the change. Check the server configuration before retrying."
+_REJECTED: dict[RejectionReason, str] = {
+    "kea-rejected": "Kea rejected the change.",
+    "config-test-rejected": "Kea's config-test rejected the change, so it was not applied.",
+    "not-sent": "The change was not sent to Kea.",
+    "invalid-client-configuration": "The change was not sent to Kea, because the Server settings are not valid.",
+}
 
 
 def _strip_empty_params(path: str) -> str:
@@ -74,6 +82,34 @@ class _KeaChangeMixin:
         elif not cast(PermissionsMixin, request.user).has_perm("netbox_kea.change_server"):
             return HttpResponseForbidden("You do not have permission to modify Kea server data.")
         return super().dispatch(request, *args, **kwargs)  # type: ignore[misc]
+
+
+def _run_config_change(
+    request: HttpRequest, confirmed: str | Callable[[OutcomeT], str], change: Callable[[], OutcomeT]
+) -> OutcomeT | None:
+    """Run one Configuration Change, show one message for its outcome or its rejection, and return the outcome.
+
+    *confirmed* is the message for a change that Kea applied, such as "Shared network 'x' created.", or a function
+    that builds it from the outcome. Returns None after a rejection.
+    """
+    try:
+        outcome = change()
+    except ConfigChangeRejected as rejection:
+        messages.error(request, " ".join((_REJECTED[rejection.reason], *rejection.diagnostics)))
+        return None
+    if outcome.application == "unknown":
+        # Never claim the change is live: the disk warning names the running configuration only.
+        not_saved = ("Kea also could not save its running configuration to disk.",)
+        parts = (_UNCONFIRMED, *(not_saved if outcome.persistence == "failed" else ()), *outcome.diagnostics)
+        messages.warning(request, " ".join(parts))
+        return outcome
+    text = confirmed if isinstance(confirmed, str) else confirmed(outcome)
+    if outcome.persistence == "failed":
+        restart = "It is live, but it may not survive a Kea restart, because Kea did not save it to disk."
+        messages.warning(request, " ".join((text, restart, *outcome.diagnostics)))
+    else:
+        messages.success(request, text)
+    return outcome
 
 
 def _option_payload(option: DHCPOption) -> dict[str, Any]:
@@ -116,7 +152,7 @@ def _catalogue_subnet_row(
         "identity_verified": isinstance(subnet, VerifiedSubnet),
         "configuration_available": configuration is not None,
         "can_change": can_change and isinstance(subnet, VerifiedSubnet),
-        "can_edit_options": can_change and configuration is not None,
+        "can_edit_options": can_change and isinstance(subnet, VerifiedSubnet) and configuration is not None,
         "ddns_qualifying_suffix": configuration.settings.ddns_qualifying_suffix if configuration else None,
         "options": format_option_data(
             [_option_payload(option) for option in configuration.options] if configuration else [],
@@ -182,35 +218,3 @@ def _enrich_subnet_statistics(rows: list[dict[str, Any]], server: Server, versio
                 row.update(stats[row["id"]])
     except (KeaException, requests.RequestException, KeyError, ValueError, TypeError, RuntimeError):
         logger.debug("stat_cmds hook unavailable or failed", exc_info=True)
-
-
-def _form_option_field(option: DHCPOption, version: Family) -> str | None:
-    """Return the form field a default-space option maps to, by code first.
-
-    Class-tagged and binary-encoded entries are not shown: the form has no
-    field for a tag and no way to enter binary data.
-    """
-    if option.space not in (None, f"dhcp{version}") or option.client_classes or option.csv_format is False:
-        return None
-    field = next(
-        (
-            managed.field
-            for managed in form_managed_options(version).values()
-            if (managed.code == option.code if option.code is not None else managed.name == option.name)
-        ),
-        None,
-    )
-    # The gateway field holds one address; a router array has no form representation.
-    if field == "gateway" and "," in option.data:
-        return None
-    return field
-
-
-def _subnet_option_fields(options: tuple[DHCPOption, ...], version: Family) -> dict[str, str]:
-    """Project DHCP Option values onto the Subnet form fields."""
-    fields: dict[str, str] = {}
-    for option in options:
-        field = _form_option_field(option, version)
-        if field is not None:
-            fields[field] = option.data
-    return fields

@@ -101,6 +101,10 @@ _NON_WIRE_HYPHENATED = {
     "kea-reservation-subnet-cidrs": "NetBox custom-field name",
     "utf-8": "Transfer document encoding",
     "stat-lease": "Static fragment of a family-specific command f-string",
+    "kea-rejected": "Configuration Change rejection reason",
+    "config-test-rejected": "Configuration Change rejection reason",
+    "not-sent": "Configuration Change rejection reason",
+    "invalid-client-configuration": "Configuration Change rejection reason",
 }
 
 
@@ -165,7 +169,7 @@ def test_production_literal_has_source_location_and_scope():
         "hw-address",
         "total-addresses",
         "total-nas",
-        "ha-heartbeat",
+        "network4-get",
         "statistic-get-all",
         "network4-list",
         "network6-list",
@@ -232,7 +236,8 @@ def test_wire_fstrings_allow_fixed_command_segments(expression):
     assert len(wd.scan_source(f"value = {expression}")) == 1
 
 
-@pytest.mark.parametrize("command", sorted(wd.WIRE_COMMANDS))
+# A command with no hyphen, such as shutdown, has no family prefix.
+@pytest.mark.parametrize("command", sorted(command for command in wd.WIRE_COMMANDS if "-" in command))
 def test_every_command_family_has_dynamic_guard_coverage(command):
     for prefix in {command.split("-", 1)[0], command.rsplit("-", 1)[0]}:
         source = f'client.command(f"{prefix}-{{operation}}", service=services)'
