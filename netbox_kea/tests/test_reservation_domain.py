@@ -1609,6 +1609,8 @@ class TestRawRecordBoundary(SimpleTestCase):
                 rebound.add(node.arg)
             elif isinstance(node, _NAMED_BINDINGS) and node.name:
                 rebound.add(node.name)
+            elif isinstance(node, ast.MatchMapping) and node.rest:
+                rebound.add(node.rest)
             elif isinstance(node, (ast.Global, ast.Nonlocal)):
                 rebound.update(node.names)
         return imported - rebound
@@ -1738,6 +1740,10 @@ class TestRawRecordBoundary(SimpleTestCase):
             ("map parameter", "def send(client, LEASE_GET_ALL):\n    client.command(LEASE_GET_ALL[4], 4)\n"),
             ("map assignment", "LEASE_GET_ALL = ops\nclient.command(LEASE_GET_ALL[4], 4)\n"),
             ("map, no import", "client.command(LEASE_GET_ALL[4], 4)\n"),
+            (
+                "map, mapping capture",
+                "match ops:\n    case {**LEASE_GET_ALL}:\n        client.command(LEASE_GET_ALL[4], 4)\n",
+            ),
             ("enum parameter", "def send(client, KeaCommand):\n    client.command(KeaCommand.CONFIG_GET, 4)\n"),
             ("enum non-member", "client.command(KeaCommand.chosen, 4)\n"),
         ):
