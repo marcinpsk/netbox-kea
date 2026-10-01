@@ -12,14 +12,15 @@ from __future__ import annotations
 import hashlib
 import ipaddress
 import logging
-from collections.abc import Callable, Collection, Iterable, Iterator, Sequence
+from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypeVar, cast
 
 from django.db import DatabaseError, connection, transaction
 from django.db.models import F
-from ipam.models import IPAddress
+from ipam.models import IPAddress, Prefix
 
+from . import subnet_catalogue
 from .constants import Family, StaleCleanupMode
 from .integrations import dhcp_plugin
 from .ipam_marker import parse_marker, render_marker, status_kind
@@ -33,7 +34,6 @@ from .sync import (
     _get_stale_cleanup_mode,
     _ip_description,
     _record_hostname,
-    _resolve_prefix_length,
     _sync_mac_address,
 )
 
@@ -71,10 +71,14 @@ _LOCK_CLASS = _int4("netbox_kea.ipam_reconciliation")
 
 @dataclass(frozen=True)
 class LeasePhase:
-    """The lease phase of one reconcile call: the Server's lease snapshot of the family."""
+    """The lease phase of one reconcile call: the Server's lease snapshot of the family.
+
+    A mask mapping is the available Kea authority, even when empty. ``None`` selects the job's unavailable-catalogue
+    fallback to Prefixes in the Server's VRF, then host masks.
+    """
 
     max_leases: int | None
-    subnet_prefix_lengths: dict[int, int]
+    subnet_prefix_lengths: Mapping[int, int] | None
     source: ClassVar[str] = LEASE
 
 
@@ -162,6 +166,130 @@ _Outcome = Literal["created", "updated", "unchanged", "conflict", "disagreement"
 
 class _RowRefused(Exception):
     """The row does not identify one object, so the run cannot decide it: two rows, or an address that moved."""
+
+
+@dataclass(frozen=True)
+class AddressClaim:
+    """The outcome and locked-row snapshot for one canonical address."""
+
+    address: str
+    outcome: _Outcome | Literal["error", "not-applicable"]
+    ip: IPAddress | None = None
+
+    @property
+    def synchronized(self) -> bool:
+        """Return whether the run applied this address's report."""
+        return self.outcome in {"created", "updated", "unchanged"} and self.ip is not None
+
+
+@dataclass(frozen=True)
+class ClaimResult:
+    """Per-address outcomes from one claim, including addresses whose row failed."""
+
+    addresses: dict[str, AddressClaim]
+
+    @property
+    def primary(self) -> IPAddress | None:
+        """Return the first successfully synchronized row for the aggregate badge."""
+        return next((result.ip for result in self.addresses.values() if result.synchronized), None)
+
+    @property
+    def synchronized_addresses(self) -> frozenset[str]:
+        """Return only the addresses whose reports were applied."""
+        return frozenset(address for address, result in self.addresses.items() if result.synchronized)
+
+
+def claim(server: Server, family: Family, records: Sequence[dict[str, Any] | Reservation], force: bool) -> ClaimResult:
+    """Claim one source's records in the Server's VRF, with per-address outcomes and no stale cleanup.
+
+    A call contains leases or Reservations, never both. All records are validated and grouped before any write.
+    Lease masks come from the live Kea Subnet Catalogue. Reservations carry their verified Subnet mask.
+    """
+    if family not in (4, 6) or isinstance(family, bool):
+        raise ValueError("The address family must be 4 or 6")
+    if not records:
+        return ClaimResult({})
+    lease_records = isinstance(records[0], dict)
+    if any(isinstance(record, dict) != lease_records for record in records):
+        raise ValueError("A claim takes one source: leases or Reservations, not both")
+    source = LEASE if lease_records else RESERVATION
+    subnet_prefix_lengths = {}
+    if lease_records:
+        catalogue = subnet_catalogue.for_synchronization(server, family)
+        subnet_prefix_lengths = {subnet.subnet_id: subnet.network.prefixlen for subnet in catalogue.subnets}
+    reports = _claim_reports(server, family, records, subnet_prefix_lengths)
+    outcomes = {address: AddressClaim(address, "error") for address in reports}
+
+    def apply(row: _Report) -> AddressClaim:
+        outcome = _claim(server, family, source, row, force=force)
+        ip = IPAddress.objects.filter(vrf_id=server.sync_vrf_id, address__net_host=row.address).first()
+        if row.facts is None and not row.disagreement and outcome == "unchanged":
+            return AddressClaim(row.address, "not-applicable", ip)
+        return AddressClaim(row.address, outcome, ip)
+
+    report = SyncReport()
+    for row, result in _each_row(reports.values(), report, source, apply, lambda row: row.address):
+        outcomes[row.address] = result
+        if result.outcome != "conflict":
+            for hardware, hostname in row.mac_addresses:
+                _sync_mac_address(hardware, hostname)
+    return ClaimResult(outcomes)
+
+
+def _claim_reports(
+    server: Server,
+    family: Family,
+    records: Sequence[dict[str, Any] | Reservation],
+    subnet_prefix_lengths: Mapping[int, int],
+) -> dict[str, _Report]:
+    """Validate and aggregate one call before acquiring locks or changing objects."""
+    reports: dict[str, _Report] = {}
+    for record in records:
+        if isinstance(record, dict):
+            _add_report(reports, _lease_report(server, family, record, subnet_prefix_lengths))
+        else:
+            if record.family != family:
+                raise ValueError("The Reservation does not match the claim family")
+            facts = None
+            mac_addresses: tuple[tuple[str, str], ...] = ()
+            if isinstance(record.scope, InSubnetReservationScope):
+                facts = _Facts(record.hostname, record.scope.subnet.network.prefixlen)
+                if (hardware := record.identity.hardware_address) is not None:
+                    mac_addresses = ((hardware, record.hostname),)
+            for address in record.addresses:
+                _add_report(reports, _Report(str(address), facts, mac_addresses))
+    return reports
+
+
+def _lease_report(
+    server: Server, family: Family, lease: dict[str, Any], subnet_prefix_lengths: Mapping[int, int] | None
+) -> _Report:
+    """Resolve lease facts from Kea, or the job's explicit unavailable-catalogue fallback."""
+    fields = lease_fields(lease)
+    address = ipaddress.ip_address(fields.address)
+    if address.version != family:
+        raise ValueError("The lease address does not match the claim family")
+    subnet_id = fields.subnet_id
+    if (
+        isinstance(subnet_id, bool)
+        or not isinstance(subnet_id, int)
+        or not subnet_catalogue.MIN_SUBNET_ID <= subnet_id <= subnet_catalogue.MAX_SUBNET_ID
+    ):
+        raise ValueError("The lease Subnet ID must be an integer in the Kea Subnet ID range")
+    hostname = _record_hostname(lease)
+    if subnet_prefix_lengths is not None:
+        if subnet_id not in subnet_prefix_lengths:
+            raise ValueError("The lease Subnet ID is absent from the Subnet Catalogue")
+        prefix_length = subnet_prefix_lengths[subnet_id]
+    else:
+        prefix = (
+            Prefix.objects.filter(vrf_id=server.sync_vrf_id, prefix__net_contains_or_equals=str(address))
+            .order_by("-prefix__net_mask_length")
+            .first()
+        )
+        prefix_length = prefix.prefix.prefixlen if prefix is not None else address.max_prefixlen
+    mac_addresses = ((fields.hw_address, hostname),) if fields.hw_address else ()
+    return _Report(str(address), _Facts(hostname, prefix_length), mac_addresses)
 
 
 def reconcile(server: Server, family: Family, phases: Sequence[Phase]) -> SyncReport:
@@ -268,14 +396,12 @@ def _lease_reports(server: Server, family: Family, phase: LeasePhase, report: Sy
         # The snapshot already validated each address.
         address = str(ipaddress.ip_address(fields.address))
         try:
-            hostname = _record_hostname(lease)
-        except RuntimeError as exc:
+            row = _lease_report(server, family, lease, phase.subnet_prefix_lengths)
+        except (ValueError, RuntimeError) as exc:
             report.fail_row(LEASE, f"lease {address}", exc)
             continue
         report.lease_records.append(lease)
-        facts = _Facts(hostname, _resolve_prefix_length(address, fields.subnet_id, phase.subnet_prefix_lengths))
-        mac_addresses = ((fields.hw_address, hostname),) if fields.hw_address else ()
-        _add_report(reports, _Report(address, facts, mac_addresses))
+        _add_report(reports, row)
     return reports
 
 
@@ -384,7 +510,7 @@ def _is_owned_description(description: str) -> bool:
     return parse_marker(description) is not None
 
 
-def _claim(server: Server, family: Family, source: str, report: _Report) -> _Outcome:
+def _claim(server: Server, family: Family, source: str, report: _Report, *, force: bool = False) -> _Outcome:
     """Link one reported address under its identity lock, and apply the report when no owner disagrees."""
     vrf_id = server.sync_vrf_id
     _lock_identity(vrf_id, report.address)
@@ -415,8 +541,27 @@ def _claim(server: Server, family: Family, source: str, report: _Report) -> _Out
     if not _is_owned_description(ip.description):
         # A blank or curated description: the object is not owned, and an operator edit released it.
         IPAMOwnershipLink.objects.filter(pk__in=[link.pk for link in links]).delete()
-        # A Global Reservation does not want to change the object, so an object that it never linked is no conflict.
-        return "unchanged" if facts is None and not report.disagreement and not links else "conflict"
+        if report.disagreement:
+            return "disagreement"
+        if not force or facts is None:
+            # A Global Reservation does not change an object that it never linked.
+            return "unchanged" if facts is None and not links else "conflict"
+        links = []
+    return _apply_claim(server, family, source, report, ip, links, force=force)
+
+
+def _apply_claim(
+    server: Server,
+    family: Family,
+    source: str,
+    report: _Report,
+    ip: IPAddress,
+    links: list[IPAMOwnershipLink],
+    *,
+    force: bool,
+) -> _Outcome:
+    """Compare owners before applying facts or an explicit takeover to the locked row."""
+    facts = report.facts
     own = next((link for link in links if _is_own_link(link, server, family, source)), None)
     others = _drop_superseded_stale_links([link for link in links if link is not own])
     if report.disagreement:
@@ -432,7 +577,7 @@ def _claim(server: Server, family: Family, source: str, report: _Report) -> _Out
         return "disagreement"
 
     status = _status(_live_sources(others) | {source})
-    description = _ip_description(ip.description, status, claim=False)
+    description = _ip_description(ip.description, status, claim=force)
     if description is None:
         # The new marker and the operator note do not fit: the object stays as it is, and the owner keeps its link.
         _store_link(own, server, family, source, ip, facts.stored(), stale_mark=_kept_mark(own))

@@ -27,7 +27,7 @@ from ..reservation_transfer import (
     resolve_import_proposal,
 )
 from ..reservations import TRAVERSAL_DIAGNOSTIC_CODES
-from ..subnet_catalogue import MutationScope
+from ..subnet_catalogue import CatalogueUnavailable, MutationScope
 from ..utilities import (
     kea_error_hint,
     parse_lease_csv,
@@ -39,14 +39,9 @@ logger = logging.getLogger(__name__)
 
 
 class _BaseSyncView(ConditionalLoginRequiredMixin, View):
-    """POST-only HTMX endpoint that syncs a Kea lease/reservation to a NetBox IPAddress.
+    """Claim a live lease and return its per-address synchronization result."""
 
-    Returns a small HTML badge fragment.
-    Subclasses set ``_status`` to ``"active"`` (leases) or ``"reserved"``
-    (reservations) and call the appropriate sync helper.
-    """
-
-    _status: str = "active"
+    dhcp_version: Family
 
     def post(self, request: HttpRequest, pk: int) -> HttpResponse:
         if not (request.user.has_perm("ipam.add_ipaddress") and request.user.has_perm("ipam.change_ipaddress")):
@@ -67,15 +62,20 @@ class _BaseSyncView(ConditionalLoginRequiredMixin, View):
         if data is None:
             return HttpResponse("Could not fetch live data from Kea.", status=400)
         try:
-            nb_ip, _created, _changed = self._sync(data)
-        except (ValueError, IntegrityError, ValidationError, OperationalError, ProgrammingError):
+            from ..ipam_reconciliation import claim
+
+            result = claim(server, self.dhcp_version, [data], force=True)
+            outcome = next(iter(result.addresses.values()))
+            if outcome.outcome == "error":
+                return HttpResponse("Sync error: see server logs for details.", status=500)
+        except (CatalogueUnavailable, ValueError, IntegrityError, ValidationError, OperationalError, ProgrammingError):
             logger.exception("Sync error for ip=%s", ip_str)
             return HttpResponse("Sync error: see server logs for details.", status=500)
 
         return render(
             request,
-            "netbox_kea/inc/sync_badge.html",
-            {"nb_ip": nb_ip},
+            "netbox_kea/inc/claim_results.html",
+            {"claim_result": result},
         )
 
     def _fetch_live_data(self, server: "Server", ip_str: str) -> "dict | None":
@@ -85,12 +85,11 @@ class _BaseSyncView(ConditionalLoginRequiredMixin, View):
         """
         return None
 
-    def _sync(self, data: dict):
-        raise NotImplementedError
-
 
 class ServerLease4SyncView(_BaseSyncView):
-    """Sync a single DHCPv4 lease to a NetBox IPAddress (status=active)."""
+    """Claim a DHCPv4 lease in the Server's sync VRF."""
+
+    dhcp_version: Family = 4
 
     def _fetch_live_data(self, server: "Server", ip_str: str) -> "dict | None":
         try:
@@ -102,15 +101,11 @@ class ServerLease4SyncView(_BaseSyncView):
         else:
             return lease or None
 
-    def _sync(self, data: dict):
-        from ..sync import sync_lease_to_netbox
-
-        # Per-row Sync button = explicit user intent → override foreign-IP guard.
-        return sync_lease_to_netbox(data, force=True)
-
 
 class ServerLease6SyncView(_BaseSyncView):
-    """Sync a single DHCPv6 lease to a NetBox IPAddress (status=active)."""
+    """Claim a DHCPv6 lease in the Server's sync VRF."""
+
+    dhcp_version: Family = 6
 
     def _fetch_live_data(self, server: "Server", ip_str: str) -> "dict | None":
         try:
@@ -121,12 +116,6 @@ class ServerLease6SyncView(_BaseSyncView):
             return None
         else:
             return lease or None
-
-    def _sync(self, data: dict):
-        from ..sync import sync_lease_to_netbox
-
-        # Per-row Sync button = explicit user intent → override foreign-IP guard.
-        return sync_lease_to_netbox(data, force=True)
 
 
 class _BaseReservationSyncView(ConditionalLoginRequiredMixin, View):
@@ -145,9 +134,13 @@ class _BaseReservationSyncView(ConditionalLoginRequiredMixin, View):
                 _client,
                 _catalogue,
             ):
-                from ..sync import sync_reservation_to_netbox
+                from ..ipam_reconciliation import claim
+                from ..sync import reservation_synchronization_state
 
-                result = sync_reservation_to_netbox(reservation, cleanup=False, force=True)
+                result = claim(server, self.dhcp_version, [reservation], force=True)
+                state = reservation_synchronization_state(
+                    reservation, synchronized_addresses=result.synchronized_addresses
+                )
         except KeaException as exc:
             logger.exception("Kea error synchronizing a DHCPv%s Reservation", self.dhcp_version)
             return HttpResponse(f"Reservation synchronization failed: {kea_error_hint(exc)}", status=500)
@@ -156,13 +149,14 @@ class _BaseReservationSyncView(ConditionalLoginRequiredMixin, View):
             return HttpResponse("Reservation synchronization failed. See server logs.", status=500)
         return render(
             request,
-            "netbox_kea/inc/reservation_sync_badge.html",
+            "netbox_kea/inc/claim_results.html",
             {
+                "claim_result": result,
                 "record": {
-                    "sync_state": result.state,
+                    "sync_state": state,
                     "netbox_ip_url": result.primary.get_absolute_url() if result.primary else "",
                     "sync_url": None,
-                }
+                },
             },
         )
 

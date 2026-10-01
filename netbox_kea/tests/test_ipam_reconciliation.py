@@ -15,11 +15,19 @@ from contextlib import suppress
 from core.exceptions import JobFailed
 from django.db import connection, connections, transaction
 from django.test import TestCase, TransactionTestCase, override_settings
-from ipam.models import VRF
+from ipam.models import VRF, Prefix
 from ipam.models import IPAddress as NbIP
 
 from netbox_kea import subnet_catalogue
-from netbox_kea.ipam_reconciliation import LeasePhase, ReservationPhase, SyncReport, _lock_identity, reconcile
+from netbox_kea.ipam_reconciliation import (
+    ClaimResult,
+    LeasePhase,
+    ReservationPhase,
+    SyncReport,
+    _lock_identity,
+    claim,
+    reconcile,
+)
 from netbox_kea.jobs import KeaIpamSyncJob
 from netbox_kea.models import (
     CONFIRMATION_SEQUENCE,
@@ -120,6 +128,81 @@ def _run_job(server, leases: list[dict], reservations: list[dict] | None = None)
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG_CLEANUP)
 class JobLeasePhaseOwnershipTest(TestCase):
     """The job's lease phase: cleanup and lookup stay inside the Server's ownership and sync_vrf."""
+
+    def test_unknown_subnet_marks_the_phase_incomplete_and_keeps_stale_links(self):
+        server = _server("owner")
+        _reconcile(server, [_lease()])
+        existing = _row()
+        for mapping in ({}, {1: 24}):
+            with self.subTest(mapping=mapping), _kea([_lease("10.0.0.8", **{"subnet-id": 2})]):
+                report = reconcile(
+                    server,
+                    4,
+                    [
+                        LeasePhase(max_leases=None, subnet_prefix_lengths=mapping),
+                        ReservationPhase(subnet_catalogue.for_synchronization(server, 4)),
+                    ],
+                )
+            self.assertEqual(report.errors, 1)
+            self.assertIn("lease", report.incomplete)
+            self.assertTrue(NbIP.objects.filter(pk=existing.pk).exists())
+            self.assertFalse(NbIP.objects.filter(address__net_host="10.0.0.8").exists())
+            self.assertEqual(set(_links(existing)), {"owner"})
+
+    def test_valid_lease_still_applies_when_another_lease_has_an_unknown_subnet(self):
+        server = _server("owner")
+        report = _reconcile(server, [_lease(), _lease("10.0.0.8", **{"subnet-id": 2})])
+        self.assertEqual(report.errors, 1)
+        self.assertEqual(report.created, 1)
+        self.assertIn("lease", report.incomplete)
+        self.assertEqual(str(_row().address), "10.0.0.5/24")
+        self.assertFalse(NbIP.objects.filter(address__net_host="10.0.0.8").exists())
+
+    def test_malformed_subnet_id_does_not_abort_valid_leases_or_reservations(self):
+        server = _server("owner")
+        for index, subnet_id in enumerate(([], {}, True, False, 1.0, "1", None, 0, -1, 4_294_967_295)):
+            address = f"10.0.0.{20 + index}"
+            with self.subTest(subnet_id=subnet_id):
+                report = _reconcile(
+                    server,
+                    [_lease(address, **{"subnet-id": subnet_id}), _lease()],
+                    [_reservation("10.0.0.9")],
+                )
+                self.assertEqual(report.errors, 1)
+                self.assertEqual(report.incomplete, {"lease"})
+                self.assertFalse(NbIP.objects.filter(address__net_host=address).exists())
+                self.assertEqual(str(_row().address), "10.0.0.5/24")
+                self.assertEqual(_row("10.0.0.9").status, "reserved")
+                self.assertEqual(set(_links(_row())), {"owner"})
+                self.assertEqual(set(_links(_row("10.0.0.9"), "reservation")), {"owner"})
+
+    def test_unavailable_catalogue_fallback_still_rejects_a_malformed_subnet_id(self):
+        server = _server("owner")
+        phase = LeasePhase(max_leases=None, subnet_prefix_lengths=None)
+        with _kea([_lease("10.0.0.8", **{"subnet-id": []}), _lease()]):
+            report = reconcile(server, 4, [phase])
+        self.assertEqual(report.errors, 1)
+        self.assertEqual(report.incomplete, {"lease"})
+        self.assertFalse(NbIP.objects.filter(address__net_host="10.0.0.8").exists())
+        self.assertEqual(str(_row().address), "10.0.0.5/32")
+
+    def test_explicit_unavailable_catalogue_fallback_uses_only_the_server_vrf(self):
+        vrf = VRF.objects.create(name="fallback-vrf")
+        server = _server("owner", sync_vrf=vrf)
+        Prefix.objects.create(prefix="10.0.0.5/32")
+        Prefix.objects.create(prefix="10.0.0.0/24", vrf=vrf)
+        phase = LeasePhase(max_leases=None, subnet_prefix_lengths=None)
+        with _kea([_lease()]):
+            report = reconcile(server, 4, [phase])
+        self.assertEqual(report.errors, 0)
+        self.assertEqual(str(_row().address), "10.0.0.5/24")
+        Prefix.objects.create(prefix="10.0.0.5/32", vrf=vrf)
+        with _kea([_lease()]):
+            reconcile(server, 4, [phase])
+        self.assertEqual(str(_row().address), "10.0.0.5/32")
+        with _kea([_lease("10.1.0.1")]):
+            reconcile(server, 4, [phase])
+        self.assertEqual(str(_row("10.1.0.1").address), "10.1.0.1/32")
 
     def test_one_servers_run_keeps_the_row_of_another_server_with_the_same_hostname(self):
         first, second = _server("first"), _server("second")
@@ -1239,3 +1322,85 @@ class LeasePhaseConcurrencyTest(TransactionTestCase):
         self.assertEqual(self.results["cleanup"], 0)
         self.assertTrue(NbIP.objects.filter(pk=ip.pk).exists())
         self.assertEqual(set(_links(ip)), {"owner"})
+
+    def _claim_result(self, name: str) -> ClaimResult:
+        result = self.results[name]
+        if not isinstance(result, ClaimResult):
+            self.fail(f"{name} did not return claim results: {result!r}")
+        return result
+
+    def test_claim_and_reconcile_create_one_row_under_the_same_identity_lock(self):
+        first, second = _server("claim-owner"), _server("reconcile-owner")
+        holder = self._hold("LOCK TABLE ipam_ipaddress IN SHARE MODE", [])
+        with _kea([_lease(hostname="host")]):
+            self._start("claim", lambda: claim(first, 4, [_lease(hostname="host")], force=False))
+            self._start("reconcile", lambda: reconcile(second, 4, [_lease_phase()]))
+            self._wait_for_lock_waits(2)
+            holder.commit()
+            self._join()
+        self.assertEqual(NbIP.objects.filter(address__net_host=ADDRESS).count(), 1)
+        self.assertEqual(set(_links(_row())), {"claim-owner", "reconcile-owner"})
+        outcome = self._claim_result("claim").addresses[ADDRESS].outcome
+        self.assertIn(outcome, {"created", "unchanged"})
+        self.assertEqual(int(outcome == "created") + self._report("reconcile").created, 1)
+        self.assertEqual(self._report("reconcile").disagreements, set())
+
+    def test_claim_confirmation_after_reconcile_cutoff_survives_cleanup(self):
+        server = _server("owner")
+        _reconcile(server, [_lease(hostname="host")])
+        ip = _row()
+        before = _links(ip)["owner"].confirmation
+        holder = self._hold("SELECT id FROM ipam_ipaddress WHERE id = %s FOR UPDATE", [ip.pk])
+        with _kea():
+            phases = _phases(server)
+            self._start("claim", lambda: claim(server, 4, [_lease(hostname="host")], force=False))
+            self._wait_for_lock_waits(1)
+            self._start("cleanup", lambda: reconcile(server, 4, phases))
+            self._wait_for_lock_waits(2)
+            holder.commit()
+            self._join()
+        self.assertEqual(self._claim_result("claim").addresses[ADDRESS].outcome, "unchanged")
+        self.assertEqual(self._report("cleanup").removed, 0)
+        self.assertTrue(NbIP.objects.filter(pk=ip.pk).exists())
+        self.assertGreater(_links(ip)["owner"].confirmation, before)
+
+    def test_claim_reads_operator_release_from_the_locked_row_after_commit(self):
+        server = _server("owner")
+        _reconcile(server, [_lease(hostname="host")])
+        ip = _row()
+        operator = self._hold("UPDATE ipam_ipaddress SET description = 'Printer on floor 2' WHERE id = %s", [ip.pk])
+        with _kea():
+            self._start("claim", lambda: claim(server, 4, [_lease(hostname="renamed")], force=False))
+            self._wait_for_lock_waits(1)
+            operator.commit()
+            committed = NbIP.objects.values().get(pk=ip.pk)
+            self._join()
+        self.assertEqual(self._claim_result("claim").addresses[ADDRESS].outcome, "conflict")
+        self.assertEqual(_links(ip), {})
+        self.assertEqual(NbIP.objects.values().get(pk=ip.pk), committed)
+        self.assertEqual(_row().description, "Printer on floor 2")
+
+    def test_claim_row_lock_error_does_not_fail_other_addresses_or_clean_up(self):
+        server = _server("owner")
+        _reconcile(server, [_lease("10.0.0.1", "one"), _lease("10.0.0.2", "two"), _lease("10.0.0.9", "stale")])
+        blocked = _row("10.0.0.1")
+        before = NbIP.objects.values().get(pk=blocked.pk)
+        self._hold("SELECT id FROM ipam_ipaddress WHERE id = %s FOR UPDATE", [blocked.pk])
+
+        def run():
+            with connection.cursor() as cursor:
+                cursor.execute("SET lock_timeout = '500ms'")
+            return claim(server, 4, [_lease("10.0.0.1", "one-b"), _lease("10.0.0.2", "two-b")], force=False)
+
+        with _kea():
+            self._start("claim", run)
+            self._wait_for_lock_waits(1)
+            self._join()
+        outcomes = self._claim_result("claim").addresses
+        self.assertEqual(
+            {address: result.outcome for address, result in outcomes.items()},
+            {"10.0.0.1": "error", "10.0.0.2": "updated"},
+        )
+        self.assertEqual(NbIP.objects.values().get(pk=blocked.pk), before)
+        self.assertEqual(_row("10.0.0.2").dns_name, "two-b")
+        self.assertEqual(set(_links(_row("10.0.0.9"))), {"owner"})
