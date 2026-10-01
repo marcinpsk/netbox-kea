@@ -1170,7 +1170,10 @@ class DhcpPluginReservationSnapshotImportTest(TestCase):
         self.assertEqual(summary.errors, 0, summary.warnings)
         res = HostReservation.objects.get(hostname="g6-pd")
         self.assertIsNone(res.subnet)
-        self.assertEqual([str(prefix.prefix) for prefix in res.ipv6_prefixes.all()], ["2001:db8:d00d::/56"])
+        self.assertEqual(
+            [(str(prefix.prefix), prefix.description) for prefix in res.ipv6_prefixes.all()],
+            [("2001:db8:d00d::/56", "[kea-sync: delegated prefix]")],
+        )
 
     def test_reimport_clears_dropped_delegated_prefixes(self):
         """Kea no longer delegates the prefix, so the imported record must not keep it."""
@@ -1294,7 +1297,7 @@ class DhcpPluginStaleCleanupGuardTest(TestCase):
             address="10.77.0.51/24",
             status="dhcp",
             dns_name="mover",
-            description="Synced from Kea DHCP lease",
+            description="[kea-sync: lease]",
         )
 
         # Device "moved" to a third IP → cleanup runs for hostname "mover".
@@ -1308,10 +1311,12 @@ class DhcpPluginStaleCleanupGuardTest(TestCase):
     def test_reconciliation_never_removes_or_deprecates_a_referenced_ip(self):
         from ipam.models import IPAddress
 
+        from netbox_kea import subnet_catalogue
         from netbox_kea.integrations import dhcp_plugin
-        from netbox_kea.ipam_reconciliation import LeasePhase, reconcile
+        from netbox_kea.ipam_reconciliation import LeasePhase, ReservationPhase, reconcile
         from netbox_kea.models import IPAMOwnershipLink
 
+        from .kea_stub import _catalogue_responses_for_subnets
         from .test_jobs import _lease_page
 
         conf = {
@@ -1325,17 +1330,24 @@ class DhcpPluginStaleCleanupGuardTest(TestCase):
         }
         dhcp_plugin.import_server_config(self.server, parse_dhcp_config(conf, 4), _reservation_snapshot(conf, 4))
         referenced = IPAddress.objects.get(address="10.77.0.50/24")
-        phase = LeasePhase(max_leases=None, subnet_prefix_lengths={1: 24}, reservation_addresses=None)
+        lease_phase = LeasePhase(max_leases=None, subnet_prefix_lengths={1: 24})
         lease = {"ip-address": "10.77.0.50", "hostname": "pc", "subnet-id": 1}
+        empty_kea = {
+            **_catalogue_responses_for_subnets(4, [{"id": 1, "subnet": "10.77.0.0/24"}]),
+            "lease4-get-page": _lease_page([]),
+            "reservation-get-page": _res_page([]),
+        }
         for mode in ("remove", "deprecate"):
             with self.subTest(mode), override_settings(PLUGINS_CONFIG=plugins_config(stale_ip_cleanup=mode)):
                 with stub_kea({"lease4-get-page": _lease_page([lease])}):
-                    reconcile(self.server, 4, [phase])
+                    reconcile(self.server, 4, [lease_phase])
                 self.assertTrue(IPAMOwnershipLink.objects.filter(ip_address=referenced).exists())
                 claimed_status = IPAddress.objects.get(pk=referenced.pk).status
 
-                with stub_kea({"lease4-get-page": _lease_page([])}):
-                    report = reconcile(self.server, 4, [phase])
+                # Both phases run, so the cleanup decides the last link of the Server.
+                with stub_kea(empty_kea):
+                    reservation_phase = ReservationPhase(subnet_catalogue.for_synchronization(self.server, 4))
+                    report = reconcile(self.server, 4, [lease_phase, reservation_phase])
 
                 self.assertEqual((report.removed, report.deprecated), (0, 0))
                 self.assertEqual(IPAddress.objects.get(pk=referenced.pk).status, claimed_status)

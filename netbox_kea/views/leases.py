@@ -77,7 +77,8 @@ def _run_lease_sync_to_netbox(request: HttpRequest, lease: dict, ip_address: str
         if conflicts:
             messages.warning(
                 request,
-                f"Lease created, but NetBox IPAM sync was skipped: {ip_address} already exists and is not Kea-managed.",
+                f"Lease created, but NetBox IPAM sync was skipped: {ip_address} already exists and is not Kea-managed,"
+                " or its note leaves no room for the new sync marker.",
             )
         else:
             nb_action = "created" if nb_created else "updated" if nb_changed else "already up to date"

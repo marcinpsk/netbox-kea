@@ -75,7 +75,7 @@ class TestTypedReservationSynchronization(TestCase):
         IPAddress.objects.create(
             address="2001:db8::20/64",
             status="reserved",
-            description="Synced from Kea DHCP reservation",
+            description="[kea-sync: reservation]",
         )
 
         state = reservation_synchronization_state(reservation)

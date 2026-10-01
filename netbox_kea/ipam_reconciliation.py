@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """IPAM Reconciliation (ADR 0006): the one owner of IPAM Ownership links, stale cleanup and per-row savepoints.
 
-``reconcile`` runs the complete phases of one Server and family. It links every owned object that a phase
-reports, and a complete phase removes its own stale links. Each row runs in its own transaction, or in a
+``reconcile`` runs the lease and Reservation phases of one Server and family. It links every owned object that a
+phase reports, and a complete phase removes its own stale links. Each row runs in its own transaction, or in a
 savepoint when the caller holds a transaction, under a transaction-level advisory lock on the object identity.
 """
 
@@ -12,9 +12,9 @@ from __future__ import annotations
 import hashlib
 import ipaddress
 import logging
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Callable, Collection, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Any, Literal, TypeVar
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypeVar, cast
 
 import requests
 from django.db import DatabaseError, connection, transaction
@@ -23,27 +23,40 @@ from ipam.models import IPAddress
 
 from .constants import Family, StaleCleanupMode
 from .integrations import dhcp_plugin
+from .ipam_marker import parse_marker, render_marker, status_kind
 from .kea import KeaException, lease_fields
 from .models import IPAMOwnershipLink, IPAMOwnershipSource, next_confirmation_number
+from .reservations import InSubnetReservationScope, Reservation
+from .subnet_catalogue import CatalogueUnavailable
 from .sync import (
-    _KEA_DESC_PREFIX,
     _apply_ip_fields,
     _apply_ip_mask,
-    _compute_ip_status,
     _get_stale_cleanup_mode,
+    _ip_description,
     _record_hostname,
     _resolve_prefix_length,
-    _status_description,
     _sync_mac_address,
 )
 
 if TYPE_CHECKING:
     from .models import Server
+    from .subnet_catalogue import CompleteCatalogueSnapshot
 
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 R = TypeVar("R")
+
+# The type check sees a TextChoices member as its (value, label) tuple; at runtime it is the str value.
+LEASE = cast("str", IPAMOwnershipSource.LEASE)
+RESERVATION = cast("str", IPAMOwnershipSource.RESERVATION)
+
+# The status of an IP address from the sources of its live links.
+_STATUSES: dict[frozenset[str], str] = {
+    frozenset({LEASE, RESERVATION}): "active",
+    frozenset({LEASE}): "dhcp",
+    frozenset({RESERVATION}): "reserved",
+}
 
 # How many row failures of one reconcile call the log names; the error count stays exact.
 _ROW_ERROR_LOG_LIMIT = 10
@@ -59,15 +72,26 @@ _LOCK_CLASS = _int4("netbox_kea.ipam_reconciliation")
 
 @dataclass(frozen=True)
 class LeasePhase:
-    """The lease phase of one reconcile call: the Server's complete lease snapshot of the family.
-
-    ``reservation_addresses`` is the complete Reservation snapshot of the same run, or ``None`` when it is not
-    complete. The lease status is ``active`` for these addresses (bridge until the Reservation phase moves, #209).
-    """
+    """The lease phase of one reconcile call: the Server's lease snapshot of the family."""
 
     max_leases: int | None
     subnet_prefix_lengths: dict[int, int]
-    reservation_addresses: frozenset[str] | None
+    source: ClassVar[str] = LEASE
+
+
+@dataclass(frozen=True)
+class ReservationPhase:
+    """The Reservation phase of one reconcile call: the Server's Reservation snapshot of the family.
+
+    The snapshot reads the Reservations against *catalogue*. ``None`` means that the Subnet Catalogue is unavailable,
+    so the phase has no snapshot.
+    """
+
+    catalogue: CompleteCatalogueSnapshot | None
+    source: ClassVar[str] = RESERVATION
+
+
+Phase = LeasePhase | ReservationPhase
 
 
 @dataclass
@@ -81,22 +105,29 @@ class SyncReport:
     errors: int = 0
     conflicts: set[str] = field(default_factory=set)
     disagreements: set[str] = field(default_factory=set)
-    complete: bool = True
-    # The valid lease records of the snapshot and their canonical addresses: the old Reservation phase and stale
-    # cleanup read them until #214.
+    # The sources of the phases that are not complete: the snapshot is partial or failed, or a row failed.
+    incomplete: set[str] = field(default_factory=set)
+    # The valid records of the snapshots: the old stale cleanup reads them until #214.
     lease_records: list[dict[str, Any]] = field(default_factory=list)
-    lease_addresses: set[str] = field(default_factory=set)
+    reservation_records: list[Reservation] = field(default_factory=list)
+    # Global and addressless Reservations, which write no IPAM row: the job counts them as skipped.
+    skipped_reservations: list[Reservation] = field(default_factory=list)
 
-    def fail_snapshot(self, what: str, exc: BaseException) -> None:
-        """Count one snapshot that could not be read, which makes the phase incomplete, and log it."""
-        self.errors += 1
-        self.complete = False
-        logger.warning("%s failed: %s", what, exc)
+    @property
+    def complete(self) -> bool:
+        """Return whether every phase of the call is complete."""
+        return not self.incomplete
 
-    def fail_row(self, what: str, exc: BaseException) -> None:
-        """Count one failed row, which makes the phase incomplete, and log the first failures."""
+    def fail_snapshot(self, source: str, what: str, exc: BaseException) -> None:
+        """Count one snapshot that could not be read, which makes its phase incomplete, and log it."""
         self.errors += 1
-        self.complete = False
+        self.incomplete.add(source)
+        logger.warning("%s failed: %s", what, exc, exc_info=exc)
+
+    def fail_row(self, source: str, what: str, exc: BaseException) -> None:
+        """Count one failed row, which makes its phase incomplete, and log the first failures."""
+        self.errors += 1
+        self.incomplete.add(source)
         if self.errors <= _ROW_ERROR_LOG_LIMIT:
             logger.warning("IPAM reconciliation of %s failed: %s", what, exc, exc_info=exc)
         elif self.errors == _ROW_ERROR_LOG_LIMIT + 1:
@@ -104,7 +135,7 @@ class SyncReport:
 
 
 @dataclass(frozen=True)
-class _LeaseFacts:
+class _Facts:
     hostname: str
     prefix_length: int
 
@@ -113,12 +144,18 @@ class _LeaseFacts:
 
 
 @dataclass(frozen=True)
-class _LeaseReport:
-    """Everything one lease phase reports for one address. No facts: it reported the address twice, differently."""
+class _Report:
+    """Everything one phase reports for one address.
+
+    Without facts, the phase does not apply the report: it reported the address twice with different facts
+    (``disagreement``), or only Global Reservations report the address.
+    """
 
     address: str
-    facts: _LeaseFacts | None
-    records: tuple[dict[str, Any], ...]
+    facts: _Facts | None
+    # The (hardware address, hostname) pairs of the records, for the DCIM MAC address sync.
+    mac_addresses: tuple[tuple[str, str], ...] = ()
+    disagreement: bool = False
 
 
 _Outcome = Literal["created", "updated", "unchanged", "conflict", "disagreement"]
@@ -128,18 +165,23 @@ class _RowRefused(Exception):
     """The row does not identify one object, so the run cannot decide it: two rows, or an address that moved."""
 
 
-def reconcile(server: Server, family: Family, phases: Sequence[LeasePhase]) -> SyncReport:
+def reconcile(server: Server, family: Family, phases: Sequence[Phase]) -> SyncReport:
     """Run *phases* for one Server and family: link what they report, then remove the stale links of each complete one.
 
-    The claims of all phases run before any link is removed. Writes go to main only: the job refuses to run in a
-    branch.
+    The claims of all phases run before any link is removed. The last link of the Server to an IP address goes only
+    when the call runs a complete lease phase and a complete Reservation phase. Writes go to main only: the job refuses
+    to run in a branch.
     """
+    if len({phase.source for phase in phases}) != len(phases):
+        raise ValueError("reconcile takes at most one phase of each source")
     mode = _get_stale_cleanup_mode()
     report = SyncReport()
-    cutoffs = [_claim_leases(server, family, phase, report) for phase in phases]
-    for cutoff in cutoffs:
-        if cutoff is not None and report.complete:
-            _remove_stale_lease_links(server, family, cutoff, mode, report)
+    cutoffs = {phase.source: _run_phase(server, family, phase, report) for phase in phases}
+    complete = {source for source, cutoff in cutoffs.items() if cutoff is not None}
+    last_links_go = complete >= {LEASE, RESERVATION}
+    for source, cutoff in cutoffs.items():
+        if cutoff is not None:
+            _remove_stale_links(server, family, source, cutoff, mode, last_links_go, report)
     logger.info(
         "Server %s (v%s): IPAM reconciliation created=%d updated=%d removed=%d deprecated=%d conflicts=%d"
         " disagreements=%d errors=%d complete=%s",
@@ -164,7 +206,7 @@ def _lock_identity(vrf_id: int | None, address: str) -> None:
 
 
 def _each_row(
-    rows: Iterable[T], report: SyncReport, work: Callable[[T], R], name: Callable[[T], str]
+    rows: Iterable[T], report: SyncReport, source: str, work: Callable[[T], R], name: Callable[[T], str]
 ) -> Iterator[tuple[T, R]]:
     """Run *work* for each row in its own transaction or savepoint; a database error fails only that row."""
     for row in rows:
@@ -172,20 +214,44 @@ def _each_row(
             with transaction.atomic():
                 outcome = work(row)
         except (DatabaseError, _RowRefused) as exc:
-            report.fail_row(name(row), exc)
+            report.fail_row(source, name(row), exc)
             continue
         yield row, outcome
 
 
-def _claim_leases(server: Server, family: Family, phase: LeasePhase, report: SyncReport) -> int | None:
-    """Link every lease that the snapshot reports. Return the phase's cutoff number, or None without a snapshot."""
+def _run_phase(server: Server, family: Family, phase: Phase, report: SyncReport) -> int | None:
+    """Link everything that *phase* reports. Return its cutoff number when the phase is complete, else None.
+
+    The cutoff number comes before the snapshot request, so a claim that confirms a link after it keeps the link.
+    """
     cutoff = next_confirmation_number()
+    if isinstance(phase, LeasePhase):
+        reports = _lease_reports(server, family, phase, report)
+    else:
+        reports = _reservation_reports(server, family, phase, report)
+    rows = _each_row(
+        reports.values(),
+        report,
+        phase.source,
+        lambda row: _claim(server, family, phase.source, row),
+        lambda row: f"{phase.source} {row.address} of Server {server.name}",
+    )
+    for row, outcome in rows:
+        _count(report, row.address, outcome)
+        if outcome != "conflict":
+            for hw_address, hostname in row.mac_addresses:
+                _sync_mac_address(hw_address, hostname)
+    return None if phase.source in report.incomplete else cutoff
+
+
+def _lease_reports(server: Server, family: Family, phase: LeasePhase, report: SyncReport) -> dict[str, _Report]:
+    """Read the lease snapshot and group its valid records by canonical address."""
     try:
         client = server.get_client(version=family)
         collection = client.lease_get_all(version=family, max_leases=phase.max_leases)
     except (KeaException, requests.RequestException, ValueError, RuntimeError) as exc:
-        report.fail_snapshot(f"Server {server.name} (v{family}): the lease snapshot", exc)
-        return None
+        report.fail_snapshot(LEASE, f"Server {server.name} (v{family}): the lease snapshot", exc)
+        return {}
     logger.info("Server %s (v%s): fetched %d leases", server.name, family, len(collection.leases))
     if collection.truncated:
         logger.warning(
@@ -194,46 +260,108 @@ def _claim_leases(server: Server, family: Family, phase: LeasePhase, report: Syn
             family,
             phase.max_leases,
         )
-        report.complete = False
+        report.incomplete.add(LEASE)
 
-    reports = _lease_reports(collection.leases, phase, report)
-    rows = _each_row(
-        reports.values(),
-        report,
-        lambda lease: _claim_lease(server, family, lease, phase),
-        lambda lease: f"lease {lease.address} of Server {server.name}",
-    )
-    for lease, outcome in rows:
-        _count(report, lease.address, outcome)
-        if outcome != "conflict":
-            for record in lease.records:
-                if hw_address := lease_fields(record).hw_address:
-                    _sync_mac_address(hw_address, _record_hostname(record))
-    return cutoff
-
-
-def _lease_reports(leases: list[dict[str, Any]], phase: LeasePhase, report: SyncReport) -> dict[str, _LeaseReport]:
-    """Group the valid lease records by canonical address. The snapshot already validated each address."""
-    reports: dict[str, _LeaseReport] = {}
-    for lease in leases:
+    reports: dict[str, _Report] = {}
+    for lease in collection.leases:
         fields = lease_fields(lease)
+        # The snapshot already validated each address.
         address = str(ipaddress.ip_address(fields.address))
         try:
             hostname = _record_hostname(lease)
         except RuntimeError as exc:
-            report.fail_row(f"lease {address}", exc)
+            report.fail_row(LEASE, f"lease {address}", exc)
             continue
         report.lease_records.append(lease)
-        report.lease_addresses.add(address)
-        prefix_length = _resolve_prefix_length(address, fields.subnet_id, phase.subnet_prefix_lengths)
-        facts = _LeaseFacts(hostname, prefix_length)
-        earlier = reports.get(address)
-        if earlier is None:
-            reports[address] = _LeaseReport(address, facts, (lease,))
-        else:
-            same = earlier.facts == facts
-            reports[address] = replace(earlier, facts=facts if same else None, records=(*earlier.records, lease))
+        facts = _Facts(hostname, _resolve_prefix_length(address, fields.subnet_id, phase.subnet_prefix_lengths))
+        mac_addresses = ((fields.hw_address, hostname),) if fields.hw_address else ()
+        _add_report(reports, _Report(address, facts, mac_addresses))
     return reports
+
+
+def _reservation_reports(
+    server: Server, family: Family, phase: ReservationPhase, report: SyncReport
+) -> dict[str, _Report]:
+    """Read the Reservation snapshot and group the allocation addresses of its Reservations by address.
+
+    A Global Reservation reports its addresses without facts: the job writes no IPAM row for it (ADR 0002).
+    """
+    what = f"Server {server.name} (v{family}): the Reservation snapshot"
+    if phase.catalogue is None:
+        report.fail_snapshot(RESERVATION, what, CatalogueUnavailable("The Subnet Catalogue is unavailable."))
+        return {}
+    try:
+        client = server.get_client(version=family)
+        snapshot = client.reservation_snapshot(family, phase.catalogue)
+    except KeaException as exc:
+        if not exc.unsupported_command:
+            report.fail_snapshot(RESERVATION, what, exc)
+            return {}
+        # Without host_cmds the Server has no Reservation to read. Nothing failed, but the phase is not complete.
+        logger.warning(
+            "Server %s (v%s): host_cmds is unavailable; the Reservation phase is skipped", server.name, family
+        )
+        report.incomplete.add(RESERVATION)
+        return {}
+    except (requests.RequestException, ValueError, RuntimeError) as exc:
+        report.fail_snapshot(RESERVATION, what, exc)
+        return {}
+    if snapshot.diagnostics or not snapshot.complete:
+        # Each diagnostic is a Reservation or a page that the snapshot could not read.
+        report.errors += len(snapshot.diagnostics)
+        report.incomplete.add(RESERVATION)
+        logger.warning("%s is incomplete: %d diagnostic(s)", what, len(snapshot.diagnostics))
+
+    reports: dict[str, _Report] = {}
+    for reservation in snapshot.records:
+        facts: _Facts | None = None
+        mac_addresses: tuple[tuple[str, str], ...] = ()
+        if isinstance(reservation.scope, InSubnetReservationScope) and reservation.addresses:
+            report.reservation_records.append(reservation)
+            facts = _Facts(reservation.hostname, reservation.scope.subnet.network.prefixlen)
+            if (hw_address := reservation.identity.hardware_address) is not None:
+                mac_addresses = ((hw_address, reservation.hostname),)
+        else:
+            report.skipped_reservations.append(reservation)
+        for address in reservation.addresses:
+            _add_report(reports, _Report(str(address), facts, mac_addresses))
+    logger.info(
+        "Server %s (v%s): fetched %d Reservations; %d of them are Global or reserve no address",
+        server.name,
+        family,
+        len(snapshot.records),
+        len(report.skipped_reservations),
+    )
+    return reports
+
+
+def _add_report(reports: dict[str, _Report], new: _Report) -> None:
+    """Add one record's report of an address. Records whose facts do not merge make the report a disagreement."""
+    earlier = reports.get(new.address)
+    if earlier is None:
+        reports[new.address] = new
+        return
+    mac_addresses = earlier.mac_addresses + new.mac_addresses
+    if earlier.facts is None and not earlier.disagreement:
+        reports[new.address] = replace(new, mac_addresses=mac_addresses)
+    elif new.facts is None:
+        reports[new.address] = replace(earlier, mac_addresses=mac_addresses)
+    elif earlier.facts is not None and (merged := _merge(earlier.facts, new.facts)) is not None:
+        reports[new.address] = replace(earlier, facts=merged, mac_addresses=mac_addresses)
+    else:
+        reports[new.address] = _Report(new.address, None, mac_addresses, disagreement=True)
+
+
+def _merge(facts: _Facts, other: _Facts) -> _Facts | None:
+    """Return the facts of two reports of one source, or None when they disagree.
+
+    The prefix lengths must be equal. An empty hostname makes no claim, so the result takes the non-empty one.
+    """
+    if facts.prefix_length != other.prefix_length:
+        return None
+    if facts.hostname and other.hostname and facts.hostname != other.hostname:
+        return None
+    return replace(facts, hostname=facts.hostname or other.hostname)
 
 
 def _count(report: SyncReport, address: str, outcome: _Outcome) -> None:
@@ -248,37 +376,38 @@ def _count(report: SyncReport, address: str, outcome: _Outcome) -> None:
 
 
 def _host(address: Any) -> str:
-    """Return the canonical host text of a NetBox address, the same text as a lease report's address."""
+    """Return the canonical host text of a NetBox address, the same text as a phase report's address."""
     return str(ipaddress.ip_address(str(address.ip)))
 
 
 def _is_owned_description(description: str) -> bool:
-    return description.startswith(_KEA_DESC_PREFIX)
+    return parse_marker(description) is not None
 
 
-def _claim_lease(server: Server, family: Family, lease: _LeaseReport, phase: LeasePhase) -> _Outcome:
+def _claim(server: Server, family: Family, source: str, report: _Report) -> _Outcome:
     """Link one reported address under its identity lock, and apply the report when no owner disagrees."""
     vrf_id = server.sync_vrf_id
-    _lock_identity(vrf_id, lease.address)
+    _lock_identity(vrf_id, report.address)
     rows = list(
-        IPAddress.objects.select_for_update().filter(vrf_id=vrf_id, address__net_host=lease.address).order_by("pk")[:2]
+        IPAddress.objects.select_for_update().filter(vrf_id=vrf_id, address__net_host=report.address).order_by("pk")[:2]
     )
     if len(rows) > 1:
-        raise _RowRefused(f"more than one IP address {lease.address} in the sync VRF")
-    facts = lease.facts
+        raise _RowRefused(f"more than one IP address {report.address} in the sync VRF")
+    facts = report.facts
     if not rows:
         if facts is None:
-            return "disagreement"
-        status = _compute_ip_status("lease", None, ip_str=lease.address, other_source_ips=phase.reservation_addresses)
+            # A phase that disagrees with itself, or a Global Reservation, creates no object.
+            return "disagreement" if report.disagreement else "unchanged"
+        status = _status({source})
         ip = IPAddress(
-            address=f"{lease.address}/{facts.prefix_length}",
+            address=f"{report.address}/{facts.prefix_length}",
             vrf_id=vrf_id,
             status=status,
             dns_name=facts.hostname,
-            description=_status_description(status),
+            description=render_marker(status_kind(status)),
         )
         ip.save()
-        _store_link(None, server, family, ip, facts.stored(), stale_mark=None)
+        _store_link(None, server, family, source, ip, facts.stored(), stale_mark=None)
         return "created"
 
     ip = rows[0]
@@ -286,28 +415,104 @@ def _claim_lease(server: Server, family: Family, lease: _LeaseReport, phase: Lea
     if not _is_owned_description(ip.description):
         # A blank or curated description: the object is not owned, and an operator edit released it.
         IPAMOwnershipLink.objects.filter(pk__in=[link.pk for link in links]).delete()
-        return "conflict"
-    own = next((link for link in links if _is_own_lease_link(link, server, family)), None)
-    others = [link for link in links if link is not own]
-    _drop_superseded_stale_links(others)
-    if facts is None:
-        _store_link(own, server, family, ip, own.facts if own else None, stale_mark=_kept_mark(own))
+        # A Global Reservation does not want to change the object, so an object that it never linked is no conflict.
+        return "unchanged" if facts is None and not report.disagreement and not links else "conflict"
+    own = next((link for link in links if _is_own_link(link, server, family, source)), None)
+    others = _drop_superseded_stale_links([link for link in links if link is not own])
+    if report.disagreement:
+        _store_link(own, server, family, source, ip, own.facts if own else None, stale_mark=_kept_mark(own))
         return "disagreement"
-    if any(link.facts != facts.stored() for link in others if link.stale_mark is None and link.facts is not None):
-        _store_link(own, server, family, ip, facts.stored(), stale_mark=_kept_mark(own))
+    if facts is None:
+        # A Global Reservation links the object without facts and does not change it (ADR 0002).
+        _store_link(own, server, family, source, ip, None, stale_mark=_kept_mark(own))
+        return "unchanged"
+    applied = _applied_facts(source, facts, others)
+    if applied is None:
+        _store_link(own, server, family, source, ip, facts.stored(), stale_mark=_kept_mark(own))
         return "disagreement"
 
-    status = _compute_ip_status("lease", ip.status, ip_str=lease.address, other_source_ips=phase.reservation_addresses)
-    changed = _apply_ip_fields(ip, status=status, hostname=facts.hostname)
-    changed = _apply_ip_mask(ip, lease.address, facts.prefix_length) or changed
+    status = _status(_live_sources(others) | {source})
+    description = _ip_description(ip.description, status, claim=False)
+    if description is None:
+        # The new marker and the operator note do not fit: the object stays as it is, and the owner keeps its link.
+        _store_link(own, server, family, source, ip, facts.stored(), stale_mark=_kept_mark(own))
+        return "conflict"
+    changed = _apply_ip_fields(ip, status=status, hostname=applied.hostname, description=description)
+    changed = _apply_ip_mask(ip, report.address, applied.prefix_length) or changed
     if changed:
         ip.save()
-    _store_link(own, server, family, ip, facts.stored(), stale_mark=None)
+    _store_link(own, server, family, source, ip, facts.stored(), stale_mark=None)
     return "updated" if changed else "unchanged"
 
 
-def _is_own_lease_link(link: IPAMOwnershipLink, server: Server, family: Family) -> bool:
-    return link.server_id == server.pk and link.family == family and link.source == IPAMOwnershipSource.LEASE
+def _applied_facts(source: str, facts: _Facts, others: Iterable[IPAMOwnershipLink]) -> _Facts | None:
+    """Return the facts that a report of *source* applies to the object, or None when a live link disagrees.
+
+    All owners compare the prefix length. Only owners of the same source compare the hostname, and an empty hostname
+    makes no claim: a lease and a Reservation of one address often name the host differently. The hostname of a live
+    Reservation link wins, so a lease does not change the DNS name then.
+    """
+    hostname = facts.hostname
+    for link in others:
+        if not _is_live(link):
+            continue
+        theirs = _Facts(**link.facts)
+        if theirs.prefix_length != facts.prefix_length:
+            return None
+        if link.source == source:
+            if _merge(facts, theirs) is None:
+                return None
+        elif link.source == RESERVATION and theirs.hostname:
+            hostname = ""
+    return replace(facts, hostname=hostname)
+
+
+def _is_live(link: IPAMOwnershipLink) -> bool:
+    """Return whether the link takes part in the fact comparison and the status: it has facts and no stale mark."""
+    return link.facts is not None and link.stale_mark is None
+
+
+def _live_sources(links: Iterable[IPAMOwnershipLink]) -> set[str]:
+    return {link.source for link in links if _is_live(link)}
+
+
+def _status(sources: Collection[str]) -> str:
+    """Return the IP address status for the sources of its live links; the caller passes at least one."""
+    return _STATUSES[frozenset(sources)]
+
+
+def _restatus(ip: IPAddress, links: Sequence[IPAMOwnershipLink]) -> _Outcome:
+    """Give an owned object the status and the hostname of its live *links*. Without a live link, it stays as it is.
+
+    When the new marker and the operator note do not fit, the object stays as it is and the result is a conflict.
+    """
+    sources = _live_sources(links)
+    if not sources:
+        return "unchanged"
+    status = _status(sources)
+    description = _ip_description(ip.description, status, claim=False)
+    if description is None:
+        return "conflict"
+    if not _apply_ip_fields(ip, status=status, hostname=_implied_hostname(links), description=description):
+        return "unchanged"
+    ip.save()
+    return "updated"
+
+
+def _implied_hostname(links: Sequence[IPAMOwnershipLink]) -> str:
+    """Return the hostname of the live *links* under the rule of :func:`_applied_facts`: a Reservation hostname wins.
+
+    An empty result changes no DNS name: the live links of the winning source name no host, or different hosts.
+    """
+    for source in (RESERVATION, LEASE):
+        names = {link.facts["hostname"] for link in links if _is_live(link) and link.source == source} - {""}
+        if names:
+            return names.pop() if len(names) == 1 else ""
+    return ""
+
+
+def _is_own_link(link: IPAMOwnershipLink, server: Server, family: Family, source: str) -> bool:
+    return link.server_id == server.pk and link.family == family and link.source == source
 
 
 def _kept_mark(link: IPAMOwnershipLink | None) -> int | None:
@@ -319,17 +524,22 @@ def _marked_and_unconfirmed(link: IPAMOwnershipLink) -> bool:
     return link.stale_mark is not None and link.confirmation <= link.stale_mark
 
 
-def _drop_superseded_stale_links(others: list[IPAMOwnershipLink]) -> None:
-    """Another owner links the object, so a stale link goes unless its own owner confirmed it after the mark."""
-    superseded = [link.pk for link in others if _marked_and_unconfirmed(link)]
+def _drop_superseded_stale_links(others: list[IPAMOwnershipLink]) -> list[IPAMOwnershipLink]:
+    """Another owner links the object, so a stale link goes unless its own owner confirmed it after the mark.
+
+    Return the links that stay.
+    """
+    superseded = [link for link in others if _marked_and_unconfirmed(link)]
     if superseded:
-        IPAMOwnershipLink.objects.filter(pk__in=superseded).delete()
+        IPAMOwnershipLink.objects.filter(pk__in=[link.pk for link in superseded]).delete()
+    return [link for link in others if link not in superseded]
 
 
 def _store_link(
     link: IPAMOwnershipLink | None,
     server: Server,
     family: Family,
+    source: str,
     ip: IPAddress,
     facts: dict[str, Any] | None,
     *,
@@ -341,7 +551,7 @@ def _store_link(
         IPAMOwnershipLink.objects.create(
             server=server,
             family=family,
-            source=IPAMOwnershipSource.LEASE,
+            source=source,
             ip_address=ip,
             facts=facts,
             confirmation=confirmation,
@@ -362,14 +572,23 @@ class _StaleLink:
     address: str
 
 
-def _remove_stale_lease_links(
-    server: Server, family: Family, cutoff: int, mode: StaleCleanupMode, report: SyncReport
+def _remove_stale_links(
+    server: Server,
+    family: Family,
+    source: str,
+    cutoff: int,
+    mode: StaleCleanupMode,
+    last_links_go: bool,
+    report: SyncReport,
 ) -> None:
-    """Remove the links of a complete phase that no run confirmed since *cutoff*; the last link follows *mode*."""
+    """Remove the links of a complete phase that no run confirmed since *cutoff*.
+
+    The last link of the Server to an object goes only when *last_links_go*. The last link of an object follows *mode*.
+    """
     candidates = [
         _StaleLink(pk, ip_pk, vrf_id, _host(address))
         for pk, ip_pk, vrf_id, address in IPAMOwnershipLink.objects.filter(
-            server=server, family=family, source=IPAMOwnershipSource.LEASE, confirmation__lt=cutoff
+            server=server, family=family, source=source, confirmation__lt=cutoff
         )
         .exclude(stale_mark__isnull=False, confirmation__lte=F("stale_mark"))
         .values_list("pk", "ip_address", "ip_address__vrf", "ip_address__address")
@@ -380,19 +599,24 @@ def _remove_stale_lease_links(
     rows = _each_row(
         candidates,
         report,
-        lambda stale: _remove_stale_link(stale, cutoff, mode, referenced),
-        lambda stale: f"stale link of {stale.address} of Server {server.name}",
+        source,
+        lambda stale: _remove_stale_link(stale, cutoff, mode, last_links_go, referenced),
+        lambda stale: f"stale {source} link of {stale.address} of Server {server.name}",
     )
     for stale, outcome in rows:
         if outcome == "removed":
             report.removed += 1
         elif outcome == "deprecated":
             report.deprecated += 1
+        elif outcome == "updated":
+            report.updated += 1
         elif outcome == "conflict":
             report.conflicts.add(stale.address)
 
 
-def _remove_stale_link(stale: _StaleLink, cutoff: int, mode: StaleCleanupMode, referenced: set[int]) -> str:
+def _remove_stale_link(
+    stale: _StaleLink, cutoff: int, mode: StaleCleanupMode, last_links_go: bool, referenced: set[int]
+) -> str:
     """Decide one stale link under the identity lock and the row lock of its object."""
     _lock_identity(stale.vrf_id, stale.address)
     ip = IPAddress.objects.select_for_update().filter(pk=stale.ip_pk).first()
@@ -404,8 +628,17 @@ def _remove_stale_link(stale: _StaleLink, cutoff: int, mode: StaleCleanupMode, r
     if not _is_owned_description(ip.description):
         IPAMOwnershipLink.objects.filter(ip_address=ip).delete()
         return "conflict"
-    last = not IPAMOwnershipLink.objects.filter(ip_address=ip).exclude(pk=link.pk).exists()
-    if not last or mode == "none" or ip.pk in referenced:
+    others = list(IPAMOwnershipLink.objects.filter(ip_address=ip).exclude(pk=link.pk))
+    if not last_links_go and not any(other.server_id == link.server_id for other in others):
+        # The last link of its Server: a later call with a complete lease and Reservation phase decides.
+        return "kept"
+    if others:
+        outcome = _restatus(ip, others)
+        if outcome != "conflict":
+            # On a conflict the link stays, so the status still matches the links and the next run tries again.
+            link.delete()
+        return outcome
+    if mode == "none" or ip.pk in referenced:
         link.delete()
         return "unlinked"
     if mode == "remove":

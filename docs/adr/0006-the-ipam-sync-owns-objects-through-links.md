@@ -39,21 +39,60 @@ requires exactly one. The source is `lease`, `reservation`, `subnet`, `pool` or 
 unique per `(server, family, source, object)`. Each link also stores the facts that its owner last reported for
 the object.
 
-An object is owned when it has at least one link and its description still starts with the marker. An operator who
-removes the marker from the start of the description releases the object. A note after the marker does not. The
+An object is owned when it has at least one link and its description still starts with the marker. The marker is a
+block at the start of the description: `[kea-sync: <kind>]`. The kind is `lease`, `reservation`,
+`lease + reservation`, `subnet`, `delegated prefix` or `pool`. An operator can write a note after the block, usually
+after one space. A description that is only the block has no trailing space. `netbox_kea/ipam_marker.py` owns this
+format, and every reader and writer of the marker uses it.
+
+The sync reads and rewrites only the block. It never adds or removes a space: it keeps whatever follows the block,
+byte for byte, also text directly after it, such as `, rack 4` in `[kea-sync: lease], rack 4`. An operator releases
+the object when the description does not start with a well-formed block of a known kind (or with the legacy marker
+below): the block is missing, moved or malformed, for example `[kea-sync: lease ]` or `rack 4 [kea-sync: lease]`. A
+note after the block does not release the object. A block of another known kind is still a marker: an edit from
+`[kea-sync: lease]` to `[kea-sync: pool]` does not release the object, and the next write rewrites the kind. The
 next run drops the links and reports a conflict. It does not remove or deprecate the released object, even when it
-drops the last link. The `lease + reservation` status comes from the links of the object.
+drops the last link.
+
+The NetBox description holds at most 200 characters. When the new block and the kept text do not fit, the run does
+not change the object and does not cut the text. It keeps and confirms the link of its owner, as after an owner
+disagreement, and reports a conflict. When a cleanup removes a link that is not the last one and the new status
+does not fit, the stale link stays and the run reports a conflict. The next run tries again.
+
+A description that starts with the legacy text `Synced from Kea DHCP` is also a marker. The legacy marker is that
+text followed by the longest known kind that matches (` lease + reservation` before ` lease`). The kind counts only
+when the text after it is empty or starts with a character that is not a letter, a digit, `-` or `_`. Otherwise, as
+in `Synced from Kea DHCP leases`, the legacy marker names no kind and all text after `Synced from Kea DHCP` is kept.
+The next write that rewrites the description replaces the legacy marker with the block, and keeps the text after it.
+For example, `Synced from Kea DHCP lease my note` becomes `[kea-sync: lease] my note`. Adoption (see Upgrade) uses
+the same recognizer.
 
 A blank description is not the marker. When a run reports an object that has no link and no marker, the run
 reports a conflict and does not change the object. Only a forced `claim` writes the marker over it and links it.
 
 Several Servers can own one object, for example the two members of a Kea HA pair. A run compares the facts that its
-phase reports with the facts stored on the other links of the object. When they differ, the object keeps its
-current facts, the run stores its own facts on its link, and it reports an owner disagreement. When one phase
-reports one object twice with different facts, for example two Reservations in overlapping Subnets, the run does
-not create or change that object, and does not change the facts that an existing link of that owner stored before.
-It reports an owner disagreement. The phase still reports the object, so it keeps a link to it (see Stale objects).
-When the disagreeing link goes, the next run of a remaining owner applies its facts.
+phase reports with the facts stored on the live links of the other owners. A link is live when it has facts and no
+stale mark. All owners compare the prefix length. Only owners of the same source compare the hostname, and an empty
+hostname makes no claim: a lease and a Reservation of one address often name the host differently, for example
+`printer.example.com` and `printer`. The hostname of a live Reservation link wins, so a lease does not change the
+DNS name of such an object. When the facts differ, the object keeps its current facts, the run stores its own facts
+on its link, and it reports an owner disagreement. One phase compares two reports of one object with the rule for
+owners of the same source: the prefix lengths must be equal, and an empty hostname makes no claim. When the reports
+agree, the phase applies the non-empty hostname. When they disagree, for example two Reservations in overlapping
+Subnets, the run does not create or change that object, and does not change the facts that an existing link of that
+owner stored before. It reports an owner disagreement. The phase still reports the object, so it keeps a link to it
+(see Stale objects). When the disagreeing link goes, the cleanup sets the hostname that the remaining live links
+imply (see the status below), and the next run of a remaining owner applies its other facts.
+
+The status of an IP address comes from the live links of all its owners: `active` (kind `lease + reservation`) with
+at least one lease link and one Reservation link, `dhcp` (kind `lease`) with lease links only, and `reserved` (kind
+`reservation`) with Reservation links only. The links of all Servers count, so two Servers that own one object, one
+through a lease and the other through a Reservation, do not change its status on each run. A run sets the status
+when it applies a report, and when a cleanup removes a link that is not the last one. That cleanup also sets the
+hostname that the remaining live links imply: the hostname of a live Reservation link wins, else that of a live
+lease link. An empty hostname, or live links of that source that name different hosts, change no DNS name. A report
+that the run does not apply, after an owner disagreement or for a Global Reservation, leaves the object unchanged,
+its status included. An object without a live link keeps its status.
 
 ### Identity
 

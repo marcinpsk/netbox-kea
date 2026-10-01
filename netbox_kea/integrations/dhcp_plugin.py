@@ -54,6 +54,7 @@ from django.db import transaction
 
 from ..constants import IPNetworkValue
 from ..dhcp_options import DHCPOption
+from ..ipam_marker import MarkerKind
 from ..kea import subnet_network
 from ..mappers.kea_to_dhcp import (
     ClientClassIntent,
@@ -134,18 +135,16 @@ def _link_model():
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def _ensure_prefix(network: IPNetworkValue, vrf, description: str | None = None):
+def _ensure_prefix(network: IPNetworkValue, vrf, kind: MarkerKind = "subnet"):
     """Get/create the shared ``ipam.Prefix`` for *network* via the IPAM sync helper.
 
     Refreshes the instance from the DB so ``.prefix`` is a ``netaddr.IPNetwork`` and
     not the raw string assigned on create — ``netbox_dhcp`` validators (e.g.
     ``Pool.clean``/``Subnet.clean``) do geometric containment checks that require it.
     """
-    from ..sync import KEA_SUBNET_PREFIX_DESCRIPTION, sync_subnet_to_netbox_prefix
+    from ..sync import sync_subnet_to_netbox_prefix
 
-    prefix_obj, _created, _updated = sync_subnet_to_netbox_prefix(
-        network, vrf=vrf, description=description or KEA_SUBNET_PREFIX_DESCRIPTION
-    )
+    prefix_obj, _created, _updated = sync_subnet_to_netbox_prefix(network, vrf=vrf, kind=kind)
     prefix_obj.refresh_from_db()
     return prefix_obj
 
@@ -232,9 +231,7 @@ def _ensure_delegated_prefixes(reservation: Reservation, vrf) -> list:
     A delegated prefix carries its own length, so a Global Reservation keeps its
     prefixes even though it has no Subnet to size an address from.
     """
-    from ..sync import KEA_DELEGATED_PREFIX_DESCRIPTION
-
-    return [_ensure_prefix(prefix, vrf, KEA_DELEGATED_PREFIX_DESCRIPTION) for prefix in reservation.delegated_prefixes]
+    return [_ensure_prefix(prefix, vrf, "delegated prefix") for prefix in reservation.delegated_prefixes]
 
 
 def _resolve_mac(hw_address: str | None, hostname: str = ""):
