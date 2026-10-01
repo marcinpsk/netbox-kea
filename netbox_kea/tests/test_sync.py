@@ -477,11 +477,6 @@ class TestComputeIpStatus(TestCase):
 
         return _compute_ip_status(desired_from, current_status)
 
-    def _call_two_pass(self, desired_from, current_status, ip_str, other_source_ips):
-        from netbox_kea.sync import _compute_ip_status
-
-        return _compute_ip_status(desired_from, current_status, ip_str=ip_str, other_source_ips=other_source_ips)
-
     # ── lease sync ─────────────────────────────────────────────────────────────
     def test_new_ip_lease_sync_returns_dhcp(self):
         self.assertEqual(self._call("lease", None), "dhcp")
@@ -518,42 +513,6 @@ class TestComputeIpStatus(TestCase):
     def test_existing_reserved_ip_reservation_sync_stays_reserved(self):
         """Re-syncing a reservation keeps the IP reserved (no lease exists)."""
         self.assertEqual(self._call("reservation", "reserved"), "reserved")
-
-    # ── two-pass mode (other_source_ips provided) ──────────────────────────────
-    def test_two_pass_lease_ip_in_reservation_set_returns_active(self):
-        """Lease with matching reservation pre-fetched → active."""
-        self.assertEqual(
-            self._call_two_pass("lease", "active", "1.2.3.4", frozenset(["1.2.3.4"])),
-            "active",
-        )
-
-    def test_two_pass_lease_ip_not_in_reservation_set_returns_dhcp(self):
-        """Lease with no matching reservation → dhcp."""
-        self.assertEqual(
-            self._call_two_pass("lease", "active", "1.2.3.4", frozenset()),
-            "dhcp",
-        )
-
-    def test_two_pass_reservation_ip_in_lease_set_returns_active(self):
-        """Reservation with a matching lease → active."""
-        self.assertEqual(
-            self._call_two_pass("reservation", "reserved", "1.2.3.4", frozenset(["1.2.3.4"])),
-            "active",
-        )
-
-    def test_two_pass_reservation_ip_not_in_lease_set_returns_reserved(self):
-        """Reservation with no matching lease → reserved."""
-        self.assertEqual(
-            self._call_two_pass("reservation", "active", "1.2.3.4", frozenset()),
-            "reserved",
-        )
-
-    def test_two_pass_lease_empty_ip_str_not_in_set_returns_dhcp(self):
-        """Empty ip_str with non-empty set → treated as not found → dhcp."""
-        self.assertEqual(
-            self._call_two_pass("lease", "active", "", frozenset(["1.2.3.4"])),
-            "dhcp",
-        )
 
 
 class TestSyncLeaseStatusSemantics(TestCase):
@@ -2006,7 +1965,7 @@ class TestDescriptionSelfHeal(TestCase):
 
         NbIP.objects.create(
             address="10.63.125.140/24",
-            status="dhcp",
+            status="reserved",
             dns_name="h",
             description="[kea-sync: lease]",
         )
@@ -2016,8 +1975,7 @@ class TestDescriptionSelfHeal(TestCase):
             "hostname": "h",
             "subnet-id": 1,
         }
-        # Two-pass: no matching lease this run → status reserved.
-        ip_obj, created, changed = _sync_reservation(reservation, lease_ips=frozenset())
+        ip_obj, created, changed = _sync_reservation(reservation)
         self.assertFalse(created)
         self.assertTrue(changed)
         self.assertEqual(ip_obj.status, "reserved")
@@ -2038,8 +1996,7 @@ class TestDescriptionSelfHeal(TestCase):
             "hostname": "h",
             "subnet-id": 1,
         }
-        # Two-pass: IP also has a lease this run → status active.
-        ip_obj, _, _ = _sync_reservation(reservation, lease_ips=frozenset({"10.63.125.141"}))
+        ip_obj, _, _ = _sync_reservation(reservation)
         self.assertEqual(ip_obj.status, "active")
         self.assertEqual(ip_obj.description, "[kea-sync: lease + reservation]")
 
@@ -2058,7 +2015,7 @@ class TestDescriptionSelfHeal(TestCase):
             "hostname": "h",
             "subnet-id": 1,
         }
-        ip_obj, _, _ = _sync_reservation(reservation, lease_ips=frozenset())
+        ip_obj, _, _ = _sync_reservation(reservation)
         self.assertEqual(ip_obj.description, "Customer gateway — do not touch")
 
     def test_an_operator_note_after_the_marker_survives_the_status_change(self):
@@ -2072,14 +2029,16 @@ class TestDescriptionSelfHeal(TestCase):
         ):
             with self.subTest(description=description):
                 NbIP.objects.all().delete()
-                NbIP.objects.create(address="10.63.125.143/24", status="dhcp", dns_name="h", description=description)
+                NbIP.objects.create(
+                    address="10.63.125.143/24", status="reserved", dns_name="h", description=description
+                )
                 reservation = {"ip-address": "10.63.125.143", "flex-id": "note", "hostname": "h", "subnet-id": 1}
 
-                ip_obj, _, _ = _sync_reservation(reservation, lease_ips=frozenset())
+                ip_obj, _, _ = _sync_reservation(reservation)
 
                 self.assertEqual((ip_obj.status, ip_obj.description), ("reserved", expected))
                 lease = {"ip-address": "10.63.125.143", "hostname": "h", "subnet-id": 1}
-                ip_obj, _, _ = sync_lease_to_netbox(lease, cleanup=False, reservation_ips=frozenset({"10.63.125.143"}))
+                ip_obj, _, _ = sync_lease_to_netbox(lease, cleanup=False)
                 ip_obj.refresh_from_db()
                 self.assertEqual(
                     ip_obj.description, expected.replace("[kea-sync: reservation]", "[kea-sync: lease + reservation]")
@@ -2093,7 +2052,7 @@ class TestDescriptionSelfHeal(TestCase):
         reservation = {"ip-address": "10.63.125.144", "flex-id": "long", "hostname": "renamed", "subnet-id": 1}
 
         with self.assertLogs("netbox_kea.sync", "WARNING") as logs:
-            ip_obj, _, changed = _sync_reservation(reservation, lease_ips=frozenset({"10.63.125.144"}))
+            ip_obj, _, changed = _sync_reservation(reservation)
 
         self.assertTrue(changed)
         ip_obj.refresh_from_db()
