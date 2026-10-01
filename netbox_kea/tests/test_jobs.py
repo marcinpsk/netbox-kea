@@ -492,6 +492,27 @@ class TestKeaIpamSyncJobRun(TestCase):
         self.assertIn("subnet6-list", kea.commands())
         self.assertIn("lease6-get-page", kea.commands())
 
+    def _run_with_snapshot_oserror(self, command: str) -> MagicMock:
+        # A missing TLS CA file is a plain OSError, not a requests error.
+        self._make_db_server()
+        unavailable = OSError("TLS CA certificate file is unavailable")
+        with _patch_kea(leases4=[_LEASE4], leases6=[_LEASE6], reservations=[_RESV4], responses={command: unavailable}):
+            return self._run()
+
+    def test_a_lease_snapshot_oserror_does_not_stop_the_reservation_phase_or_the_other_family(self):
+        job = self._run_with_snapshot_oserror("lease4-get-page")
+
+        self.assertTrue(NbIP.objects.filter(address__net_host="10.0.0.100").exists())
+        self.assertTrue(NbIP.objects.filter(address__net_host="2001:db8::1").exists())
+        self.assertEqual(job.data["summary"][0]["errors"], 1)
+
+    def test_a_reservation_snapshot_oserror_does_not_stop_the_lease_phase_or_the_other_family(self):
+        job = self._run_with_snapshot_oserror("reservation-get-page")
+
+        self.assertTrue(NbIP.objects.filter(address__net_host="10.0.0.1").exists())
+        self.assertTrue(NbIP.objects.filter(address__net_host="2001:db8::1").exists())
+        self.assertEqual(job.data["summary"][0]["errors"], 2)
+
     def test_catalogue_failure_is_not_reported_as_missing_host_cmds(self):
         self._make_db_server(dhcp6=False)
         with _patch_kea(
