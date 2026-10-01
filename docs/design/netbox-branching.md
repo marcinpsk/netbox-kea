@@ -266,6 +266,50 @@ Without netbox-branching every guard is a no-op and behaviour does not change, e
   (`NBB/__init__.py:133`), and netbox-branching must be listed last, so the resolver is in place
   before any routing decision.
 
+#### Implementation note (2026-09-29, increment 1)
+
+Increment 1 changed how the resolver is built. The contract did not change. `is_branchable(model)`
+returns `False` for every netbox_kea model, historical models included, and `None` for every other
+model. It evaluates no rule at run time. The reasons:
+
+- `supports_branching()` catches any exception from a resolver, logs it, and falls back to the
+  `ChangeLoggingMixin` check (`NBB/utilities.py`, `supports_branching`). A resolver that raises
+  therefore makes `Server` branchable. That fails open.
+- The foreign-key rule must be transitive. `KeaDhcpLink.server` is `CASCADE` to `Server`, so if
+  `Server` needed a branch copy, `KeaDhcpLink` would need one too.
+
+Guard 2 is now the only place that computes the rule, transitively, from the live models. It fails,
+and names the foreign-key path, when a plugin model would need a branch copy. It also asserts that
+`supports_branching()` is `False` for every plugin model.
+
+#### Implementation note (2026-09-30, increment 3)
+
+The middleware follows the contract, with these facts from netbox-branching 1.2.1 at run time:
+
+- An API request whose `X-NetBox-Branch` header names an unready branch does not get NBB's 400.
+  `get_active_branch()` returns its `HttpResponseBadRequest` instead of raising, and the request
+  processor activates that response as the branch, so the first branchable query fails with a 500.
+  For a plugin-owned callback, the middleware returns that 400, whatever the method. A header that
+  names an unknown branch still gets the 400 from NBB's middleware.
+- GraphQL is not a plugin callback, so the same header on a GraphQL request still reaches NBB's own
+  failure: `server_list` answers from main without the sources header, and a branchable field
+  returns a GraphQL error.
+- NBB reads an empty `active_branch` cookie as no branch, so the predicate does too: the cookie
+  counts only when it is not empty.
+- The plugin templates extend five different NetBox templates and share no base. The banner is a
+  `navbar` template extension, the one hook on every page, and it renders only for a plugin-owned
+  callback. The navbar is narrow and NetBox renders it twice, so the banner is a "Kea read-only"
+  button beside netbox-branching's selector; its menu holds the full wording. The 409 page links
+  to the Server list with `?_branch=`, the same target as the HTMX stale-selector refusal.
+- `process_exception` renders `BranchActive` from any view, not only from plugin-owned callbacks.
+- Guard 1 fills each URL pattern itself, because two plugin patterns can share a URL name (#246),
+  and checks that the URL resolves back to the same view. It sends GET, HEAD and OPTIONS, and
+  POST, PUT, PATCH and DELETE, to every plugin URL. Its Kea replies come from `kea_recordings/`; a
+  read may send only the commands that this read-only Kea answers. It found that the format-suffix
+  URLs of the four REST Kea actions (`servers/<pk>/leases4.json` and the like) answer 500 on main,
+  because the action methods take no `format` argument (#245). The guard compares them with main
+  and does not require 200.
+
 ### Sinks
 
 - **Kea transport.** `KeaClient.command()` takes a `KeaCommand` enum member and a target,
@@ -281,6 +325,34 @@ Without netbox-branching every guard is a no-op and behaviour does not change, e
   so queryset `delete()` reaches it. `JobsMixin.delete()` runs its job deletion and the collector
   in one transaction (`NB/netbox/models/features.py:513-520`), so the refusal rolls the job
   deletion back.
+
+#### Implementation note (2026-09-30, increment 4)
+
+The sinks follow the design, with these facts from the code:
+
+- `kea.py` imports nothing from Django: the black-box suite imports it on the host through a
+  symlink. So the transport does not import `branching.py`. Instead, every `KeaClient` must carry a
+  write guard: `write_guard` is a required keyword argument, and `command()` asks it before each
+  write member. `clone()` keeps it.
+- The plugin's own clients come only from `Server.get_client()`, which passes `branching.bind()`, a
+  `BranchBinding` that holds the branch that was active when the client was built. It raises
+  `BranchActive` when that branch is set, or else when a branch is active at call time. Guard 3
+  pins `get_client()` as the only build site in the runtime package, with `branching.bind()` as its
+  guard.
+- A caller outside the plugin that builds its own `KeaClient`, such as a Custom Script, passes its
+  own guard and owns that choice. The contract row for a non-HTTP caller holds for a client from
+  `Server.get_client()`, and for any client whose guard is a `BranchBinding`.
+- `register()` connects the model receivers only when netbox-branching is installed, because a
+  `pre_delete` receiver turns off Django's fast delete. They cover every netbox_kea model from the
+  app registry, the set that the resolver keeps in main.
+- The job guard sets `job.error` and raises `JobFailed`. NetBox saves the error when it marks the
+  job failed.
+- The OpenGrep rules that matched command strings now match `KeaCommand` members.
+- The browser-suite harness client takes a wire name and turns it into a member: the unit suite
+  loads `test_workflows.py` standalone, where `KeaCommand` cannot be imported. The state check of
+  the browser branching test reads the configuration hash from `config-get` and the reservations
+  through `reservation-get-page`, because the plugin sends neither `config-hash-get` nor
+  `reservation-get-all`.
 
 ### Model decisions
 
@@ -360,15 +432,21 @@ tests skipped. With real provisioning, it covers guards 1 to 4 and:
   databases unchanged and zero Kea commands on a refusal;
 - in a branch, a plugin page, a REST read and a GraphQL `server_list` query carry the sources
   header; the IPAddress panel shows its label; a `core.Job` API read carries no sources header;
-- a browser test (Playwright, the existing `tests/ui` harness), with CSRF enforced, clicks the
-  reservation "Sync all" button in three states: branch active; branch merged elsewhere (stale
-  cookie); page opened through the branch selector (`?_branch=<id>` in the URL) and the branch then
-  deleted; stale cookie with the page's Server deleted in main, with `DEBUG=False`. The recovery
-  cases (`test_stale_selector_redirect_shows_refusal`) also run as a user with `view_server`, a user
-  without it (403 page) and an anonymous user (login page). Each case
-  asserts the visible toast, zero Kea commands during the refused POST, zero
-  mutating Kea commands and unchanged rows over the whole interaction, and, in the two stale cases,
-  a final page on main (the Server list, the 403 page or the login page, by authorization);
+- a browser test (Playwright, `tests/ui/test_branching_refusal.py`) clicks the reservation "Sync
+  all" button in these states: branch active; branch merged elsewhere (stale cookie); page opened
+  through the branch selector (`?_branch=<id>` in the URL) and the branch then deleted; stale cookie
+  with the page's Server deleted in main, with `DEBUG=False`. The recovery cases
+  (`test_stale_selector_redirect_shows_refusal`) also run as a user with `view_server`, a user
+  without it (403 page) and an anonymous user (login page). It runs in its own CI job on the
+  netbox-branching variant of the compose harness (`tests/docker/docker-compose.branching.yml`:
+  NetBox 4.7.0, netbox-branching 1.2.1, `DEBUG=False`). The harness is the real deployment shape,
+  and netbox-branching supports NetBox 4.7 only, so the variant is not in the NetBox matrix. Kea is
+  live there, so each case proves by state that nothing changed: the configuration hash,
+  reservations and leases of both daemons, and the NetBox IP addresses, are the same before and
+  after. The claim of zero Kea commands during the refused POST, reads included, belongs to guard 1
+  and the selector table, which count commands with `kea_stub`. Each case also asserts the visible
+  toast and, in the stale cases, a final page on main (the Server list, the 403 page or the login
+  page, by authorization);
 - a Tag on a Server deleted in a branch: the Server change record is in main's changelog and no
   Server ChangeDiff exists; after merge, main's Server has lost the tag, its other fields
   (credentials included) are unchanged, and the Kea stub recorded nothing;

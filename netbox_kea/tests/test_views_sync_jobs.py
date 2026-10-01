@@ -11,7 +11,7 @@ from django.urls import reverse
 from django.utils import timezone
 
 from netbox_kea.models import SyncConfig
-from netbox_kea.tests.utils import _PLUGINS_CONFIG, User, _make_db_server
+from netbox_kea.tests.utils import _PLUGINS_CONFIG, User, _get_with_writes, _make_db_server, _sync_page_urls
 
 _MAKE_JOB_NO_DATA = object()  # sentinel: caller did not pass data at all
 
@@ -70,20 +70,20 @@ class TestSyncJobsView(TestCase):
 
     def test_post_saves_new_interval(self):
         url = reverse("plugins:netbox_kea:sync_jobs")
-        with patch("netbox_kea.views.sync_jobs.KeaIpamSyncJob", autospec=True):
-            response = self.client.post(url, {"interval_minutes": 10, "sync_enabled": True}, follow=True)
+        response = self.client.post(url, {"interval_minutes": 10, "sync_enabled": True}, follow=True)
         self.assertEqual(response.status_code, 200)
-        cfg = SyncConfig.get()
-        self.assertEqual(cfg.interval_minutes, 10)
+        self.assertEqual(SyncConfig.get().interval_minutes, 10)
+        self.assertContains(response, "A new interval applies after the next scheduled run.")
 
-    def test_post_updates_registry_interval(self):
-        url = reverse("plugins:netbox_kea:sync_jobs")
+    def test_post_does_not_touch_the_job_registry(self):
+        """Only the rqworker reads the registry, so the web process must not write it."""
+        from netbox.registry import registry
+
         from netbox_kea.jobs import KeaIpamSyncJob
 
-        fake_registry = {"system_jobs": {KeaIpamSyncJob: {"interval": 5}}}
-        with patch("netbox.registry.registry", fake_registry):
-            self.client.post(url, {"interval_minutes": 15, "sync_enabled": True})
-        self.assertEqual(fake_registry["system_jobs"][KeaIpamSyncJob]["interval"], 15)
+        before = dict(registry["system_jobs"][KeaIpamSyncJob])
+        self.client.post(reverse("plugins:netbox_kea:sync_jobs"), {"interval_minutes": 15, "sync_enabled": True})
+        self.assertEqual(registry["system_jobs"][KeaIpamSyncJob], before)
 
     def test_post_invalid_interval_shows_error(self):
         url = reverse("plugins:netbox_kea:sync_jobs")
@@ -92,21 +92,37 @@ class TestSyncJobsView(TestCase):
         # form re-rendered with errors
         self.assertFalse(response.context["form"].is_valid())
 
-    def test_post_db_error_shows_error_message(self):
-        """SyncConfig DB failure returns generic error without leaking exception details."""
-        from django.db import DatabaseError
-
+    def test_post_without_syncconfig_row_raises(self):
+        """A missing row is a server error, not a message that hides it."""
+        SyncConfig.objects.all().delete()
         url = reverse("plugins:netbox_kea:sync_jobs")
-        with patch("netbox_kea.views.sync_jobs.SyncConfig", autospec=True) as MockConfig:
-            MockConfig.get.side_effect = DatabaseError("db is broken")
-            response = self.client.post(url, {"interval_minutes": 10, "sync_enabled": True}, follow=True)
-        self.assertContains(response, "internal error")
+        with self.assertRaises(SyncConfig.DoesNotExist):
+            self.client.post(url, {"interval_minutes": 10, "sync_enabled": True})
+        self.assertFalse(SyncConfig.objects.exists())
+        response = self.client.get(reverse("plugins:netbox_kea:server_list"))
+        self.assertEqual(list(response.context["messages"]), [])
 
     def test_get_without_login_redirects(self):
         self.client.logout()
         response = self.client.get(reverse("plugins:netbox_kea:sync_jobs"))
         self.assertEqual(response.status_code, 302)
         self.assertIn("/login/", response["Location"])
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestSyncPagesWriteNothingOnGet(TestCase):
+    """A GET of a sync page reads the migrated SyncConfig row and writes no row."""
+
+    def setUp(self):
+        self.client.force_login(User.objects.create_superuser("readonly", "r@r.com", "pass"))
+        self.server = _make_db_server()
+
+    def test_sync_page_get_writes_no_row(self):
+        for url in _sync_page_urls(self.server):
+            with self.subTest(url=url):
+                response, writes = _get_with_writes(self.client, url)
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(writes, [])
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)

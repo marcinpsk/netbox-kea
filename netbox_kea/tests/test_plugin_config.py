@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from django.test import SimpleTestCase, TestCase
+from django.test import TestCase
 
 from netbox_kea.jobs import KeaIpamSyncJob
 
@@ -248,11 +248,14 @@ class TestHealGhostScheduledJobs(TestCase):
         self.assertTrue(Job.objects.filter(pk=job.pk).exists())
 
 
-class TestEnqueueOnceWiring(SimpleTestCase):
+class TestEnqueueOnceWiring(TestCase):
     """The enqueue_once override must heal first, then delegate to NetBox."""
 
     def test_enqueue_once_heals_then_delegates(self):
-        """Ghost-heal runs before super().enqueue_once(), and kwargs pass through."""
+        """Ghost-heal runs before super().enqueue_once(), with the stored interval."""
+        from netbox_kea.models import SyncConfig
+
+        SyncConfig.objects.filter(pk=1).update(interval_minutes=11)
         manager = MagicMock()  # mock-ok: call-order manager (attach_mock/mock_calls)
         sentinel = object()
 
@@ -268,6 +271,6 @@ class TestEnqueueOnceWiring(SimpleTestCase):
 
         # Delegated return value is forwarded unchanged.
         self.assertIs(result, sentinel)
-        # Heal ran before the delegation, and kwargs were forwarded.
+        # Heal ran before the delegation, and the stored interval replaced the passed one.
         self.assertEqual([c[0] for c in manager.mock_calls], ["heal", "enqueue"])
-        mock_super.assert_called_once_with(interval=5)
+        mock_super.assert_called_once_with(None, None, 11)

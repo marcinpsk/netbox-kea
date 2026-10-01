@@ -16,7 +16,7 @@ from .. import config_write, forms, server_configuration
 from ..config_write import ConfigChangeOutcome
 from ..constants import Family
 from ..dhcp_options import DHCPOption, DHCPOptionConflict, DHCPOptionNameChange
-from ..kea import KeaException
+from ..kea import KeaCommand, KeaException
 from ..models import Server
 from ..utilities import OptionalViewTab, check_dhcp_enabled
 from ._base import ConditionalLoginRequiredMixin, _diagnostic_messages, _KeaChangeMixin, _run_config_change
@@ -326,7 +326,7 @@ class CombinedServerStatusBadgeView(ConditionalLoginRequiredMixin, View):
                 continue
             try:
                 client = server.get_client(version=version)
-                client.command("version-get", service=[f"dhcp{version}"])
+                client.command(KeaCommand.VERSION_GET, version)
                 online = True
             except (KeaException, requests.RequestException, OSError, ValueError):
                 online = False
