@@ -1608,7 +1608,8 @@ class TestRawRecordBoundary(SimpleTestCase):
     def _members(node: ast.expr, kea_names: set[str]) -> list[str] | None:
         """Return the wire names that a ``KeaCommand.X`` or a ``kea`` per-family ``NAME[family]`` can send, else None."""
         if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "KeaCommand":
-            return [KeaCommand[node.attr].value] if "KeaCommand" in kea_names else None
+            known = "KeaCommand" in kea_names and node.attr in KeaCommand.__members__
+            return [KeaCommand[node.attr].value] if known else None
         if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name) and node.value.id in kea_names:
             by_family = getattr(kea, node.value.id, None)
             if isinstance(by_family, dict) and all(isinstance(member, KeaCommand) for member in by_family.values()):
@@ -1729,6 +1730,7 @@ class TestRawRecordBoundary(SimpleTestCase):
             ("map assignment", "LEASE_GET_ALL = ops\nclient.command(LEASE_GET_ALL[4], 4)\n"),
             ("map, no import", "client.command(LEASE_GET_ALL[4], 4)\n"),
             ("enum parameter", "def send(client, KeaCommand):\n    client.command(KeaCommand.CONFIG_GET, 4)\n"),
+            ("enum non-member", "client.command(KeaCommand.chosen, 4)\n"),
         ):
             with self.subTest(label):
                 source = binding if label.endswith("no import") else imports + binding
