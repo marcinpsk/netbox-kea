@@ -2044,21 +2044,49 @@ class TestDescriptionSelfHeal(TestCase):
                     ip_obj.description, expected.replace("[kea-sync: reservation]", "[kea-sync: lease + reservation]")
                 )
 
-    def test_a_note_that_does_not_fit_with_the_new_marker_keeps_the_description(self):
+    def test_a_note_that_does_not_fit_with_the_new_marker_leaves_the_object_unchanged(self):
         from ipam.models import IPAddress as NbIP
 
-        description = "[kea-sync: lease] " + "n" * (200 - len("[kea-sync: lease] "))
-        NbIP.objects.create(address="10.63.125.144/24", status="dhcp", dns_name="h", description=description)
-        reservation = {"ip-address": "10.63.125.144", "flex-id": "long", "hostname": "renamed", "subnet-id": 1}
+        from netbox_kea.sync import sync_lease_to_netbox
 
-        with self.assertLogs("netbox_kea.sync", "WARNING") as logs:
-            ip_obj, _, changed = _sync_reservation(reservation)
+        def note(kind: str) -> str:
+            block = f"[kea-sync: {kind}] "
+            return block + "n" * (200 - len(block))
 
-        self.assertTrue(changed)
-        ip_obj.refresh_from_db()
-        self.assertEqual((ip_obj.status, ip_obj.dns_name, ip_obj.description), ("active", "renamed", description))
-        self.assertEqual(len(logs.output), 1)
-        self.assertIn("keeps its description", logs.output[0])
+        address = "10.63.125.144"
+        record = {"ip-address": address, "flex-id": "long", "hostname": "renamed", "subnet-id": 1}
+        cases = (
+            (
+                "reservation",
+                "dhcp",
+                lambda conflicts: _sync_reservation(record, subnet_prefix_map={1: 24}, **conflicts),
+            ),
+            (
+                "lease",
+                "reserved",
+                lambda conflicts: sync_lease_to_netbox(record, cleanup=False, subnet_prefix_map={1: 24}, **conflicts),
+            ),
+        )
+        for path, status, sync in cases:
+            # The new status is active, and "[kea-sync: lease + reservation]" with the note does not fit.
+            description = note("lease" if status == "dhcp" else "reservation")
+            for accumulator in ({"conflicts": []}, {}):
+                with self.subTest(path=path, conflicts="conflicts" in accumulator):
+                    NbIP.objects.all().delete()
+                    NbIP.objects.create(address=f"{address}/32", status=status, dns_name="h", description=description)
+
+                    with self.assertLogs("netbox_kea.sync", "WARNING") as logs:
+                        _, created, changed = sync(accumulator)
+
+                    self.assertEqual((created, changed), (False, False))
+                    row = NbIP.objects.get()
+                    self.assertEqual(
+                        (str(row.address), row.status, row.dns_name, row.description),
+                        (f"{address}/32", status, "h", description),
+                    )
+                    self.assertEqual(accumulator.get("conflicts", [address]), [address])
+                    self.assertEqual(len(logs.output), 1)
+                    self.assertIn(f"{address} stays unchanged", logs.output[0])
 
 
 # ─────────────────────────────────────────────────────────────────────────────

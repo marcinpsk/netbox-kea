@@ -25,7 +25,6 @@ from typing import TYPE_CHECKING, cast
 
 from .constants import STALE_CLEANUP_MODES, StaleCleanupMode
 from .ipam_marker import (
-    DESCRIPTION_MAX_LENGTH,
     MarkerKind,
     marked_description_q,
     parse_marker,
@@ -420,11 +419,12 @@ def is_kea_managed_ip(ip_obj: NbIPAddress) -> bool:
     return _is_kea_managed_description(getattr(ip_obj, "description", "") or "")
 
 
-def _ip_description(description: str, status: str, *, claim: bool) -> str:
+def _ip_description(description: str, status: str, *, claim: bool) -> str | None:
     """Return the description that the sync writes for *status*, or *description* when the sync keeps it.
 
     The sync rewrites only the marker block and keeps the operator note after it. A blank description, or any
-    description when *claim* is ``True``, gets the block alone. The result can exceed the NetBox length limit.
+    description when *claim* is ``True``, gets the block alone. ``None`` means that the new block and the note do not
+    fit, so the sync leaves the object unchanged (see :func:`netbox_kea.ipam_marker.rewrite_marker`).
     """
     kind = status_kind(status)
     marker = parse_marker(description)
@@ -435,25 +435,19 @@ def _ip_description(description: str, status: str, *, claim: bool) -> str:
     return description
 
 
-def _apply_ip_fields(
-    ip_obj: NbIPAddress,
-    status: str,
-    hostname: str,
-    *,
-    claim: bool = False,
-) -> bool:
-    """Apply *status*, *hostname* (dns_name), and the status marker of the description to *ip_obj*.
+def _refuse_overlong(ip_str: str, conflicts: list[str] | None) -> None:
+    """Log an IP address that the sync leaves unchanged because the new marker and the note do not fit."""
+    logger.warning("IP address %s stays unchanged: the new marker and the note do not fit in the description", ip_str)
+    if conflicts is not None:
+        conflicts.append(ip_str)
 
-    The marker kind comes from *status* (see :func:`_ip_description`) and
-    self-heals on every run for Kea-managed IPs, so an IP first created from a
-    lease but later (also) reserved no longer stays marked ``lease``.
 
-    When *claim* is ``True`` (an explicit forced sync), the marker is written even
-    over a foreign (manually-curated) description, so the override is
-    *sticky*: :func:`is_kea_managed_ip` returns ``True`` afterwards and the next
-    unattended sync updates the IP normally instead of re-reporting it as a
-    conflict. When ``False`` (default), a foreign description is preserved.
-    When the marker and the note do not fit in the description, the description stays and a warning is logged.
+def _apply_ip_fields(ip_obj: NbIPAddress, status: str, hostname: str, description: str) -> bool:
+    """Apply *status*, *hostname* (dns_name), and *description* to *ip_obj*.
+
+    The caller gets *description* from :func:`_ip_description`, so the marker kind follows *status* and
+    self-heals on every run: an IP first created from a lease but later (also) reserved no longer stays
+    marked ``lease``.
 
     Returns ``True`` when any field was changed and the object should be saved.
     """
@@ -469,14 +463,7 @@ def _apply_ip_fields(
         ip_obj.dns_name = hostname
         changed = True
 
-    description = _ip_description(ip_obj.description, status, claim=claim)
-    if len(description) > DESCRIPTION_MAX_LENGTH:
-        logger.warning(
-            "IP address %s keeps its description: the marker and the note do not fit in %d characters",
-            ip_obj.address,
-            DESCRIPTION_MAX_LENGTH,
-        )
-    elif ip_obj.description != description:
+    if ip_obj.description != description:
         ip_obj.description = description
         changed = True
 
@@ -584,7 +571,11 @@ def sync_lease_to_netbox(
             return ip_obj, False, False
 
     status = _compute_ip_status("lease", current_status)
-    changed = _apply_ip_fields(ip_obj, status=status, hostname=hostname, claim=force)
+    description = _ip_description(ip_obj.description, status, claim=force)
+    if description is None:
+        _refuse_overlong(ip_str, conflicts)
+        return ip_obj, False, False
+    changed = _apply_ip_fields(ip_obj, status=status, hostname=hostname, description=description)
 
     # Correct the mask on existing Kea-synced IPs (e.g. a legacy /32 that should
     # be /24) from the authoritative Kea subnet prefix length.
@@ -724,7 +715,13 @@ def sync_reservation_to_netbox(
                 continue
 
         status = _compute_ip_status("reservation", current_status)
-        changed = _apply_ip_fields(ip_obj, status=status, hostname=hostname, claim=force)
+        description = _ip_description(ip_obj.description, status, claim=force)
+        if description is None:
+            _refuse_overlong(ip_str, conflicts)
+            if primary_obj is None:
+                primary_obj = ip_obj
+            continue
+        changed = _apply_ip_fields(ip_obj, status=status, hostname=hostname, description=description)
 
         # Correct the mask on existing Kea-synced IPs from the authoritative
         # Kea subnet prefix length (fixes legacy /32 rows).

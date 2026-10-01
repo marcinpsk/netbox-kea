@@ -73,12 +73,14 @@ def render_marker(kind: MarkerKind) -> str:
     return _block(kind)
 
 
-def rewrite_marker(marker: Marker, kind: MarkerKind) -> str:
+def rewrite_marker(marker: Marker, kind: MarkerKind) -> str | None:
     """Return the description with the block of *kind* in place of *marker*, and the text after it unchanged.
 
-    The result can be longer than :data:`DESCRIPTION_MAX_LENGTH`; the caller decides what to do then.
+    Return ``None`` when the result does not fit in :data:`DESCRIPTION_MAX_LENGTH`. The sync then leaves the object
+    unchanged and does not cut the text (ADR 0006).
     """
-    return _block(kind) + marker.rest
+    description = _block(kind) + marker.rest
+    return description if len(description) <= DESCRIPTION_MAX_LENGTH else None
 
 
 def status_kind(status: str) -> MarkerKind:

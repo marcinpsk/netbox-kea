@@ -23,7 +23,7 @@ from ipam.models import IPAddress
 
 from .constants import Family, StaleCleanupMode
 from .integrations import dhcp_plugin
-from .ipam_marker import DESCRIPTION_MAX_LENGTH, parse_marker, render_marker, status_kind
+from .ipam_marker import parse_marker, render_marker, status_kind
 from .kea import KeaException, lease_fields
 from .models import IPAMOwnershipLink, IPAMOwnershipSource, next_confirmation_number
 from .reservations import InSubnetReservationScope, Reservation
@@ -418,11 +418,12 @@ def _claim(server: Server, family: Family, source: str, report: _Report) -> _Out
         return "disagreement"
 
     status = _status(_live_sources(others) | {source})
-    if len(_ip_description(ip.description, status, claim=False)) > DESCRIPTION_MAX_LENGTH:
+    description = _ip_description(ip.description, status, claim=False)
+    if description is None:
         # The new marker and the operator note do not fit: the object stays as it is, and the owner keeps its link.
         _store_link(own, server, family, source, ip, facts.stored(), stale_mark=_kept_mark(own))
         return "conflict"
-    changed = _apply_ip_fields(ip, status=status, hostname=applied.hostname)
+    changed = _apply_ip_fields(ip, status=status, hostname=applied.hostname, description=description)
     changed = _apply_ip_mask(ip, report.address, applied.prefix_length) or changed
     if changed:
         ip.save()
@@ -475,9 +476,10 @@ def _restatus(ip: IPAddress, links: Iterable[IPAMOwnershipLink]) -> _Outcome:
     if not sources:
         return "unchanged"
     status = _status(sources)
-    if len(_ip_description(ip.description, status, claim=False)) > DESCRIPTION_MAX_LENGTH:
+    description = _ip_description(ip.description, status, claim=False)
+    if description is None:
         return "conflict"
-    if not _apply_ip_fields(ip, status=status, hostname=""):
+    if not _apply_ip_fields(ip, status=status, hostname="", description=description):
         return "unchanged"
     ip.save()
     return "updated"

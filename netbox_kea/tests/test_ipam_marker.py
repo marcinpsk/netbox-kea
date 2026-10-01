@@ -103,6 +103,13 @@ def test_each_status_that_the_sync_writes_has_a_kind():
         status_kind("deprecated")
 
 
+def test_a_rewrite_that_does_not_fit_returns_none():
+    block = render_marker("lease + reservation")
+    fitting = Marker("lease", "n" * (DESCRIPTION_MAX_LENGTH - len(block)), legacy=False)
+    assert rewrite_marker(fitting, "lease + reservation") == block + fitting.rest
+    assert rewrite_marker(Marker("lease", fitting.rest + "n", legacy=False), "lease + reservation") is None
+
+
 def test_the_length_limit_is_the_netbox_description_limit():
     for model in (NbIP, Prefix, IPRange):
         assert model._meta.get_field("description").max_length == DESCRIPTION_MAX_LENGTH, model
