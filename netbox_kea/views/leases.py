@@ -43,7 +43,7 @@ from ..reservations import (
     lease_identities,
 )
 from ..signals import lease_added, leases_deleted
-from ..subnet_catalogue import VerifiedSubnet
+from ..subnet_catalogue import CatalogueUnavailable, VerifiedSubnet
 from ..utilities import (
     OptionalViewTab,
     check_dhcp_enabled,
@@ -89,7 +89,7 @@ def _run_lease_sync_to_netbox(
         else:
             nb_action = outcome if outcome in {"created", "updated"} else "already up to date"
             messages.success(request, f"IPAddress {ip_address} {nb_action} in NetBox.")
-    except (ValueError, DatabaseError, ValidationError, requests.RequestException):
+    except (CatalogueUnavailable, ValueError, DatabaseError, ValidationError, requests.RequestException):
         logger.exception("Failed to sync lease %s to NetBox", ip_address)
         messages.warning(request, "Lease created but NetBox IPAM sync failed; see server logs.")
 

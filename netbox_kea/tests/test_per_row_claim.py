@@ -8,12 +8,43 @@ from django.urls import reverse
 from ipam.models import IPAddress
 
 from netbox_kea.models import Server
-from netbox_kea.tests.kea_stub import stub_kea
+from netbox_kea.tests.kea_stub import _catalogue_responses, _catalogue_responses_for_subnets, stub_kea
 from netbox_kea.tests.utils import plugins_config
 
 
 @override_settings(PLUGINS_CONFIG=plugins_config(stale_ip_cleanup="remove"))
 class PerRowLeaseCleanupTest(TestCase):
+    def test_lease_sync_uses_the_same_kea_subnet_facts_as_reconciliation(self):
+        from ipam.models import Prefix
+
+        from netbox_kea.ipam_reconciliation import LeasePhase, reconcile
+        from netbox_kea.models import IPAMOwnershipLink
+        from netbox_kea.tests.test_jobs import _lease_page
+
+        user = get_user_model().objects.create_superuser(username="claim-user", password="example-password")
+        self.client.force_login(user)
+        first = Server.objects.create(name="first-owner", ca_url="https://first.example.com", dhcp4=True, dhcp6=False)
+        second = Server.objects.create(
+            name="second-owner", ca_url="https://second.example.com", dhcp4=True, dhcp6=False
+        )
+        lease = {"ip-address": "198.18.0.10", "hostname": "", "subnet-id": 1, "valid-lft": 3600, "state": 0}
+        phase = LeasePhase(max_leases=None, subnet_prefix_lengths={1: 24})
+        with stub_kea({"lease4-get-page": _lease_page([lease])}):
+            reconcile(second, 4, [phase])
+        self.assertFalse(Prefix.objects.exists())
+        with stub_kea({**_catalogue_responses(4, 1, "198.18.0.0/24"), "lease4-get": {"result": 0, "arguments": lease}}):
+            response = self.client.post(
+                reverse("plugins:netbox_kea:server_lease4_sync", args=[first.pk]), {"ip_address": "198.18.0.10"}
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(IPAMOwnershipLink.objects.get(server=first).facts, {"hostname": "", "prefix_length": 24})
+        self.assertNotContains(response, "Owner disagreement")
+        self.assertContains(response, "198.18.0.10/24")
+        with stub_kea({"lease4-get-page": _lease_page([{**lease, "hostname": "updated.example.com"}])}):
+            report = reconcile(second, 4, [phase])
+        self.assertFalse(report.disagreements)
+        self.assertEqual(IPAddress.objects.get(address__net_host="198.18.0.10").dns_name, "updated.example.com")
+
     def test_lease_sync_keeps_reserved_address_of_the_same_host(self):
         user = get_user_model().objects.create_superuser(username="claim-user", password="example-password")
         self.client.force_login(user)
@@ -26,7 +57,7 @@ class PerRowLeaseCleanupTest(TestCase):
         )
         before = IPAddress.objects.values().get(pk=reserved.pk)
         lease = {"ip-address": "198.18.0.10", "hostname": "host.example.com", "subnet-id": 1, "valid-lft": 3600}
-        with stub_kea({"lease4-get": {"result": 0, "arguments": lease}}):
+        with stub_kea({**_catalogue_responses(4, 1, "198.18.0.0/24"), "lease4-get": {"result": 0, "arguments": lease}}):
             response = self.client.post(
                 reverse("plugins:netbox_kea:server_lease4_sync", args=[server.pk]), {"ip_address": "198.18.0.10"}
             )
@@ -36,10 +67,14 @@ class PerRowLeaseCleanupTest(TestCase):
         self.assertEqual(IPAddress.objects.values().get(pk=reserved.pk), before)
 
 
+@override_settings(PLUGINS_CONFIG=plugins_config())
 class ClaimOwnershipTest(TestCase):
     def setUp(self):
         self.server = Server.objects.create(name="claim-server", ca_url="https://kea.example.com")
         self.lease = {"ip-address": "198.18.0.10", "hostname": "host.example.com", "subnet-id": 1}
+        transport = stub_kea(_catalogue_responses(4, 1, "198.18.0.0/24"))
+        self.kea = transport.__enter__()
+        self.addCleanup(transport.__exit__, None, None, None)
 
     def test_empty_claim_and_addressless_reservation_do_not_write(self):
         from netbox_kea.ipam_reconciliation import claim
@@ -54,6 +89,7 @@ class ClaimOwnershipTest(TestCase):
             self.assertEqual(result.synchronized_addresses, frozenset())
         self.assertFalse(IPAddress.objects.exists())
         self.assertFalse(IPAMOwnershipLink.objects.exists())
+        self.assertEqual(self.kea.commands(), [])
 
     def test_global_reservation_only_links_existing_marker_rows_without_facts(self):
         from ipaddress import ip_address
@@ -105,6 +141,38 @@ class ClaimOwnershipTest(TestCase):
         self.assertEqual(IPAddress.objects.values().get(pk=ip.pk), before)
         self.assertFalse(IPAMOwnershipLink.objects.exists())
 
+    def test_unavailable_catalogue_refuses_force_before_any_ownership_write(self):
+        from netbox_kea.ipam_reconciliation import claim
+        from netbox_kea.models import IPAMOwnershipLink
+        from netbox_kea.subnet_catalogue import CatalogueUnavailable
+
+        ip = IPAddress.objects.create(address="198.18.0.10/24", description="Operator row")
+        before = IPAddress.objects.values().get(pk=ip.pk)
+        with stub_kea({"subnet4-list": {"result": 1}, "config-get": {"result": 1}}):
+            with self.assertRaises(CatalogueUnavailable):
+                claim(self.server, 4, [self.lease], force=True)
+        self.assertEqual(IPAddress.objects.values().get(pk=ip.pk), before)
+        self.assertFalse(IPAMOwnershipLink.objects.exists())
+
+    def test_unknown_subnet_refuses_the_complete_claim_even_when_force_is_set(self):
+        from netbox_kea.ipam_reconciliation import claim
+        from netbox_kea.models import IPAMOwnershipLink
+
+        for subnets in ([], [{"id": 1, "subnet": "198.18.0.0/24"}]):
+            with self.subTest(subnets=subnets), stub_kea(_catalogue_responses_for_subnets(4, subnets)):
+                with self.assertRaisesMessage(ValueError, "Subnet ID"):
+                    claim(self.server, 4, [self.lease, {**self.lease, "subnet-id": 2}], force=True)
+            self.assertFalse(IPAddress.objects.exists())
+            self.assertFalse(IPAMOwnershipLink.objects.exists())
+
+    def test_one_catalogue_read_supplies_all_lease_facts(self):
+        from netbox_kea.ipam_reconciliation import claim
+
+        result = claim(self.server, 4, [self.lease, {**self.lease, "ip-address": "198.18.0.11"}], force=False)
+        self.assertEqual(len(result.synchronized_addresses), 2)
+        self.assertEqual(self.kea.commands().count("subnet4-list"), 1)
+        self.assertEqual(self.kea.commands().count("config-get"), 1)
+
     def test_blank_or_foreign_row_requires_force(self):
         from netbox_kea.ipam_reconciliation import claim
         from netbox_kea.models import IPAMOwnershipLink
@@ -124,10 +192,10 @@ class ClaimOwnershipTest(TestCase):
                 self.assertEqual(ip.description, "[kea-sync: lease]")
                 link = IPAMOwnershipLink.objects.get(ip_address=ip)
                 self.assertEqual((link.server_id, link.family, link.source), (self.server.pk, 4, "lease"))
-                self.assertEqual(link.facts, {"hostname": "host.example.com", "prefix_length": 32})
+                self.assertEqual(link.facts, {"hostname": "host.example.com", "prefix_length": 24})
                 ip.delete()
 
-    def test_longest_prefix_is_scoped_to_the_server_vrf_and_includes_host_prefixes(self):
+    def test_kea_subnet_mask_ignores_netbox_prefixes_in_all_vrfs(self):
         from ipam.models import VRF, Prefix
 
         from netbox_kea.ipam_reconciliation import claim
@@ -136,13 +204,13 @@ class ClaimOwnershipTest(TestCase):
         self.server.sync_vrf = vrf
         self.server.save()
         Prefix.objects.create(prefix="198.18.0.10/32")
-        Prefix.objects.create(prefix="198.18.0.0/24", vrf=vrf)
+        Prefix.objects.create(prefix="198.18.0.0/16", vrf=vrf)
         result = claim(self.server, 4, [self.lease], force=False)
         self.assertEqual(str(result.primary.address), "198.18.0.10/24")
         self.assertEqual(result.primary.vrf_id, vrf.pk)
         Prefix.objects.create(prefix="198.18.0.10/32", vrf=vrf)
         result = claim(self.server, 4, [self.lease], force=False)
-        self.assertEqual(str(result.primary.address), "198.18.0.10/32")
+        self.assertEqual(str(result.primary.address), "198.18.0.10/24")
 
     def test_wrong_family_rejects_the_whole_call_before_writes(self):
         from netbox_kea.ipam_reconciliation import claim
@@ -191,7 +259,7 @@ class ClaimOwnershipTest(TestCase):
         self.assertEqual(IPAddress.objects.values().get(pk=first.primary.pk), before)
         self.assertEqual(
             IPAMOwnershipLink.objects.get(server=self.server).facts,
-            {"hostname": "other.example.com", "prefix_length": 32},
+            {"hostname": "other.example.com", "prefix_length": 24},
         )
 
     def test_owned_marker_note_is_preserved(self):
@@ -232,3 +300,4 @@ class ClaimOwnershipTest(TestCase):
         self.assertEqual(IPAddress.objects.values().get(pk=foreign.pk), before)
         self.assertEqual(set(IPAMOwnershipLink.objects.values_list("family", "source")), {(6, "reservation")})
         self.assertEqual(str(result.primary.address), "2001:db8::21/64")
+        self.assertEqual(self.kea.commands(), [])

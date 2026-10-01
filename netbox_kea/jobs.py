@@ -170,7 +170,7 @@ def _sync_one_server(
         subnet_prefix_map = (
             {subnet.identity.subnet_id: subnet.identity.network.prefixlen for subnet in catalogue.subnets}
             if catalogue is not None
-            else {}
+            else None
         )
         if catalogue is None and sync_leases:
             logger.info(
