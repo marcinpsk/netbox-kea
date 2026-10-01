@@ -169,7 +169,7 @@ These choices had no competing alternative: a `netbox_kea/branching.py` owner; r
 middleware (branch activation runs earlier, in `CoreMiddleware` request processors, and a processor
 cannot refuse, `NB/utilities/request.py:131-142`); a read or write kind on every Kea command,
 checked in `KeaClient.command()` (`kea.py:727-769`, the single HTTP funnel); `KeaIpamSyncJob` stays
-main-only; `SyncConfig` main-only; the ADR 0006 link model branchable; a CI job with a real
+main-only; `SyncConfig` main-only; the ADR 0006 link model main-only; a CI job with a real
 provisioned branch.
 
 | # | Decision | Chosen | Rejected | Evidence and reason |
@@ -187,7 +187,7 @@ provisioned branch.
 | D11 | Stale branch selection | Refuse with 409 `branch_selection_unusable` | Run the request on main, as for every NetBox view | A stale cookie or unready query runs on main (`NBB/utilities.py:548-597`, `NBB/middleware.py:53-89`), which the "no silent fallback" constraint forbids |
 | D12 | Write controls in the UI | A banner; the IPAddress panel hides its add links | Disable mutation controls | 44 mutation views. Refusal already meets condition 1; disabling controls is a follow-up |
 | D13 | Early Server delete guard | `pre_delete` receiver | At `delete()`, because `JobsMixin.delete()` removes jobs before the collector runs | `JobsMixin.delete()` wraps the job deletion and `super().delete()` in one `atomic(using=...)` (`NB/netbox/models/features.py:513-520`), so a `pre_delete` refusal rolls the job deletion back. Reopen if NetBox removes that transaction |
-| D14 | Startup validation of `exempt_models` | None; deferred to the ADR 0006 link model, the first branchable plugin model | Reject exemptions that break the required branchable set | No plugin model is branchable today, so no exemption can break the set |
+| D14 | Startup validation of `exempt_models` | None; every plugin model remains main-only, including the ADR 0006 ownership link | Reject exemptions that break the required branchable set | No plugin model is branchable today, so no exemption can break the set |
 | D15 | Branch table footprint check per request | None | Validate before reads and core actions | Constraint: no branch predates this release. Guard 2 blocks a new branchable model without a design decision |
 | D16 | REST refusal code | `branch_write_refused` | `branch_not_supported` | Reads are supported |
 | D17 | CI variants | netbox-plugin-dhcp present | Present and absent | Nothing in the design differs with the DHCP plugin absent |

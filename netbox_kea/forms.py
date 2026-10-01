@@ -357,7 +357,7 @@ class ServerImportForm(NetBoxModelImportForm):
         queryset=VRF.objects.all(),
         to_field_name="name",
         required=False,
-        help_text="VRF to assign to synced Prefixes, IP Ranges and lease IP Addresses, by name.",
+        help_text="VRF to assign to synced Prefixes, IP Ranges, and lease and reservation IP Addresses, by name.",
     )
 
     def __init__(self, *args, **kwargs):

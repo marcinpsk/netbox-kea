@@ -192,7 +192,7 @@ class Server(JobsMixin, NetBoxModel):
         related_name="+",
         verbose_name="Sync VRF",
         help_text=(
-            "VRF to assign when syncing subnets as Prefixes, pools as IP Ranges and leases as IP Addresses. "
+            "VRF to assign when syncing subnets as Prefixes, pools as IP Ranges, and leases and reservations as IP Addresses. "
             "Leave blank for the global VRF."
         ),
     )
