@@ -1362,9 +1362,8 @@ class KeaClient:
         )
 
     def _reservation_mutation_command(self, command: KeaCommand, version: Family, arguments: dict[str, Any]) -> None:
-        """Apply one Reservation command. command() checks each entry, so only an empty reply is left to refuse."""
-        if not self.command(command, version, arguments=arguments):
-            raise RuntimeError(f"{command.value} returned a malformed success response.")
+        """Apply one Reservation command and require one success reply."""
+        _one_reply(command, version, self.command(command, version, arguments=arguments, check=None))
 
     def _verify_reservation(
         self,

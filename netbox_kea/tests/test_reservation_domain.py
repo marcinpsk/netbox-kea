@@ -981,7 +981,16 @@ class TestReservationMutation(SimpleTestCase):
     def test_create_raises_on_an_empty_reply_and_neither_persists_nor_verifies(self):
         with (
             stub_kea({**_persistence_responses(4), "reservation-add": []}) as kea,
-            self.assertRaisesMessage(RuntimeError, "reservation-add returned a malformed success response."),
+            self.assertRaisesMessage(RuntimeError, "reservation-add did not return one valid result for dhcp4."),
+        ):
+            self.kea.reservation_create(self.reservation, self.catalogue)
+
+        self.assertEqual(kea.commands(), ["reservation-add"])
+
+    def test_create_raises_on_a_reply_with_two_entries_and_neither_persists_nor_verifies(self):
+        with (
+            stub_kea({**_persistence_responses(4), "reservation-add": [{"result": 0}, {"result": 0}]}) as kea,
+            self.assertRaisesMessage(RuntimeError, "reservation-add did not return one valid result for dhcp4."),
         ):
             self.kea.reservation_create(self.reservation, self.catalogue)
 
