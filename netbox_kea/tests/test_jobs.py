@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2025 Marcin Zieba <marcinpsk@gmail.com>
+# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
 """Exercise the sync job through real ORM writes and a Kea HTTP transport stub.
 

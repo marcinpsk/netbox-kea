@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
+# SPDX-License-Identifier: Apache-2.0
 # The netbox-branching variant (docker-compose.branching.yml) loads this file after plugins.py.
 # PLUGINS_CONFIG, with the periodic sync kill-switch, still comes from plugins.py.
 from netbox.configuration.configuration import DATABASES as _DATABASES

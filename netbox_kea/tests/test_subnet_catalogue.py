@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
+# SPDX-License-Identifier: Apache-2.0
 import ipaddress
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event

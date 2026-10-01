@@ -1,3 +1,8 @@
+<!--
+SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
+SPDX-License-Identifier: Apache-2.0
+-->
+
 # CLAUDE.md
 
 Repo guidance for AI coding agents lives in **[AGENTS.md](AGENTS.md)** — the single

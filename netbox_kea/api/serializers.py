@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
+# SPDX-FileCopyrightText: 2023 Devon Mar <devon-mar@users.noreply.github.com>
+# SPDX-License-Identifier: Apache-2.0
 from django.http import QueryDict
 from ipam.api.serializers import VRFSerializer
 from netbox.api.serializers import NetBoxModelSerializer

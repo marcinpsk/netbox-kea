@@ -172,6 +172,22 @@ def test_documented_test_database_is_not_presented_as_a_ci_default():
     )
 
 
+def test_codecov_waits_for_every_coverage_upload_in_ci():
+    """Codecov reports only after each CI job that uploads coverage, so a partial report never fails the patch check."""
+    jobs = yaml.safe_load((REPOSITORY_ROOT / ".github" / "workflows" / "ci.yml").read_text())["jobs"]
+    uploads = sum(
+        "codecov/codecov-action" in str(step.get("uses", "")) for job in jobs.values() for step in job.get("steps", [])
+    )
+    assert uploads, "ci.yml uploads no coverage; this guard would pass without reading anything."
+    assert not [name for name, job in jobs.items() if "strategy" in job and "codecov" in str(job.get("steps"))], (
+        "A matrix job uploads coverage once per leg; count its legs here."
+    )
+
+    codecov = yaml.safe_load((REPOSITORY_ROOT / "codecov.yml").read_text())
+    assert codecov.get("codecov", {}).get("notify", {}).get("after_n_builds") == uploads
+    assert codecov.get("comment", {}).get("after_n_builds") == uploads
+
+
 def test_the_ci_default_guard_reads_the_value_each_claim_names():
     """Fail a claim only for the value it actually names.
 

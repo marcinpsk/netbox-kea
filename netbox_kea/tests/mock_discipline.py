@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2025 Marcin Zieba <marcinpsk@gmail.com>
+# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
 """AST 'mock discipline' guard — flag attribute-fabricating mocks used as object stand-ins.
 
@@ -442,7 +442,7 @@ def save_baseline(counts: dict[str, int], path: Path = _BASELINE_PATH) -> None:
     # REUSE-IgnoreStart — these literals are the *generated* baseline header, not this
     # file's own SPDX tags; without the guard REUSE misparses the embedded identifier.
     header = [
-        "# SPDX-FileCopyrightText: 2025 Marcin Zieba <marcinpsk@gmail.com>",
+        "# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>",
         "# SPDX-License-Identifier: Apache-2.0",
         "# Mock-discipline baseline — grandfathered spec-less MagicMock/Mock usages.",
         "# Each line: <relpath-from-netbox_kea/tests>::<qualname>\\t<allowed-count>.",

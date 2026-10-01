@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2025 Marcin Zieba <marcinpsk@gmail.com>
+# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
 """Django signals emitted by the netbox-kea plugin for lease and reservation events.
 

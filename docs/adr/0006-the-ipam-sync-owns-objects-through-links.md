@@ -3,6 +3,11 @@ status: accepted
 date: 2026-09-27
 ---
 
+<!--
+SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
+SPDX-License-Identifier: Apache-2.0
+-->
+
 # The IPAM synchronization owns NetBox objects through links
 
 ## Context

@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
+SPDX-FileCopyrightText: 2023 Devon Mar <devon-mar@users.noreply.github.com>
+SPDX-License-Identifier: Apache-2.0
+-->
+
 # netbox-kea-ng
 
 [![PyPI](https://img.shields.io/pypi/v/netbox-kea-ng)](https://pypi.org/project/netbox-kea-ng/)
