@@ -60,7 +60,11 @@ def parse_marker(description: str) -> Marker | None:
     rest = description[len(_LEGACY_PHRASE) :]
     for kind in _LEGACY_KINDS:
         if rest.startswith(f" {kind}"):
-            return Marker(kind, rest[len(kind) + 1 :], legacy=True)
+            after = rest[len(kind) + 1 :]
+            if after and (after[0].isalnum() or after[0] in "-_"):
+                # The longest matching kind continues as a word, as in "leases": no kind is named.
+                break
+            return Marker(kind, after, legacy=True)
     return Marker(None, rest, legacy=True)
 
 
