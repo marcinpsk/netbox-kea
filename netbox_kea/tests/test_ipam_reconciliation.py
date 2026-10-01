@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import threading
 import time
+import uuid
 from collections.abc import Callable, Sequence
 from contextlib import suppress
 
 from core.exceptions import JobFailed
+from core.models import Job
 from django.db import connection, connections, transaction
 from django.test import TestCase, TransactionTestCase, override_settings
 from ipam.models import VRF, Prefix
@@ -239,6 +241,44 @@ class JobLeasePhaseOwnershipTest(TestCase):
 
         self.assertEqual(summary["disagreements"], 1)
         self.assertEqual(summary["errors"], 0)
+
+
+@override_settings(PLUGINS_CONFIG=_config("deprecate"))
+class JobDeprecatedIPReleaseTest(TestCase):
+    def test_operator_release_of_deprecated_ip_drops_the_marked_link_and_reports_conflict(self):
+        for source in ("lease", "reservation"):
+            with self.subTest(source=source):
+                server = _server(f"release-{source}", sync_prefixes_enabled=False, sync_ip_ranges_enabled=False)
+                address = "198.18.0.10" if source == "lease" else "198.18.0.20"
+                subnet = {"id": 1, "subnet": "198.18.0.0/24"}
+
+                def run(leases=(), reservations=(), *, server=server, subnet=subnet):
+                    job = Job.objects.create(name="Kea IPAM Sync", job_id=uuid.uuid4(), data={})
+                    with _kea(leases, reservations, subnets=[subnet]):
+                        KeaIpamSyncJob(job).run(server_pk=server.pk)
+                    return job.data["summary"][0]
+
+                run(
+                    [_lease(address)] if source == "lease" else (),
+                    [_reservation(address)] if source == "reservation" else (),
+                )
+                run()
+                ip = NbIP.objects.get(address__net_host=address)
+                link = IPAMOwnershipLink.objects.get(ip_address=ip)
+                self.assertEqual((ip.status, link.source), ("deprecated", source))
+                self.assertIsNotNone(link.stale_mark)
+                self.assertLessEqual(link.confirmation, link.stale_mark)
+                NbIP.objects.filter(pk=ip.pk).update(
+                    description="Operator retained address", dns_name="operator.example.com"
+                )
+                operator_row = NbIP.objects.values().get(pk=ip.pk)
+
+                summary = run()
+
+                self.assertEqual(NbIP.objects.values().get(pk=ip.pk), operator_row)
+                self.assertFalse(IPAMOwnershipLink.objects.filter(ip_address=ip).exists())
+                self.assertEqual(summary["conflicts"], 1)
+                self.assertEqual(summary["conflict_sample"], [address])
 
 
 @override_settings(PLUGINS_CONFIG=_config("remove"))
@@ -1219,7 +1259,7 @@ class _Holder:
 
 
 @override_settings(PLUGINS_CONFIG=_config("remove"))
-class LeasePhaseConcurrencyTest(TransactionTestCase):
+class IPAMPhaseConcurrencyTest(TransactionTestCase):
     """Concurrent runs, row locks and operator edits, each on its own connection, in a fixed order."""
 
     def setUp(self) -> None:
@@ -1400,6 +1440,96 @@ class LeasePhaseConcurrencyTest(TransactionTestCase):
         self.assertEqual(self.results["cleanup"], 0)
         self.assertTrue(NbIP.objects.filter(pk=ip.pk).exists())
         self.assertEqual(set(_links(ip)), {"owner"})
+
+    def test_network_link_confirmed_while_cleanup_waits_for_object_lock_survives(self):
+        from ipam.models import IPRange, Prefix
+
+        from netbox_kea.ipam_reconciliation import PoolPhase, SubnetPhase, read_catalogue
+        from netbox_kea.tests.test_prefix_pool_reconciliation import SUBNET as NETWORK_SUBNET
+
+        for model, lock_sql, field, phase_type in (
+            (Prefix, "SELECT id FROM ipam_prefix WHERE id = %s FOR UPDATE", "prefix", SubnetPhase),
+            (IPRange, "SELECT id FROM ipam_iprange WHERE id = %s FOR UPDATE", "ip_range", PoolPhase),
+        ):
+            with self.subTest(field=field):
+                server = _server(f"confirm-{field}", sync_deprecate_prefixes_and_ranges=True)
+                with stub_kea(_catalogue_responses_for_subnets(4, [NETWORK_SUBNET])):
+                    reconcile(server, 4, [phase_type(read_catalogue(server, 4))])
+                obj = model.objects.get()
+                link = IPAMOwnershipLink.objects.get(**{field: obj})
+                before = model.objects.values().get(pk=obj.pk)
+                holder = self._hold(lock_sql, [obj.pk])
+
+                with stub_kea(_catalogue_responses_for_subnets(4, [])):
+                    phase = phase_type(read_catalogue(server, 4))
+                    self._start(field, lambda server=server, phase=phase: reconcile(server, 4, [phase]))
+                    self._wait_for_lock_waits(1)
+                    holder.cursor.execute(
+                        "UPDATE netbox_kea_ipamownershiplink SET confirmation = nextval(%s) WHERE id = %s "
+                        "RETURNING confirmation",
+                        [CONFIRMATION_SEQUENCE, link.pk],
+                    )
+                    confirmation = holder.cursor.fetchone()[0]
+                    holder.commit()
+                    self._join()
+
+                link.refresh_from_db()
+                report = self._report(field)
+                self.assertGreater(confirmation, phase.observation.cutoff)
+                self.assertEqual(link.confirmation, confirmation)
+                self.assertIsNone(link.stale_mark)
+                self.assertEqual((report.complete, report.deprecated, report.removed), (True, 0, 0))
+                self.assertEqual(model.objects.values().get(pk=obj.pk), before)
+
+    def test_network_identity_changed_while_cleanup_waits_is_not_deprecated(self):
+        from ipam.models import IPRange, Prefix
+
+        from netbox_kea.ipam_reconciliation import PoolPhase, SubnetPhase, read_catalogue
+        from netbox_kea.tests.test_prefix_pool_reconciliation import SUBNET as NETWORK_SUBNET
+
+        for model, lock_sql, update_sql, field, phase_type, assignment, value in (
+            (
+                Prefix,
+                "SELECT id FROM ipam_prefix WHERE id = %s FOR UPDATE",
+                "UPDATE ipam_prefix SET prefix = %s WHERE id = %s",
+                "prefix",
+                SubnetPhase,
+                "prefix",
+                "198.18.1.0/24",
+            ),
+            (
+                IPRange,
+                "SELECT id FROM ipam_iprange WHERE id = %s FOR UPDATE",
+                "UPDATE ipam_iprange SET end_address = %s, size = 21 WHERE id = %s",
+                "ip_range",
+                PoolPhase,
+                "end_address",
+                "198.18.0.30/24",
+            ),
+        ):
+            with self.subTest(field=field):
+                server = _server(f"changed-{field}", sync_deprecate_prefixes_and_ranges=True)
+                with stub_kea(_catalogue_responses_for_subnets(4, [NETWORK_SUBNET])):
+                    reconcile(server, 4, [phase_type(read_catalogue(server, 4))])
+                obj = model.objects.get()
+                link = IPAMOwnershipLink.objects.values().get(**{field: obj})
+                holder = self._hold(lock_sql, [obj.pk])
+
+                with stub_kea(_catalogue_responses_for_subnets(4, [])):
+                    phase = phase_type(read_catalogue(server, 4))
+                    self._start(field, lambda server=server, phase=phase: reconcile(server, 4, [phase]))
+                    self._wait_for_lock_waits(1)
+                    holder.cursor.execute(update_sql, [value, obj.pk])
+                    holder.commit()
+                    self._join()
+
+                obj.refresh_from_db()
+                report = self._report(field)
+                self.assertEqual((report.prefix_errors, report.deprecated, report.removed), (1, 0, 0))
+                self.assertEqual(report.incomplete, {phase.source})
+                self.assertEqual(str(getattr(obj, assignment)), value)
+                self.assertEqual(obj.status, "active")
+                self.assertEqual(IPAMOwnershipLink.objects.values().get(pk=link["id"]), link)
 
     def _claim_result(self, name: str) -> ClaimResult:
         result = self.results[name]

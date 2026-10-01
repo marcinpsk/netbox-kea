@@ -17,7 +17,6 @@ from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypeVar, cast
 
 from django.db import DatabaseError, connection, transaction
-from django.db.models import F
 from ipam.models import IPAddress, IPRange, Prefix
 from netaddr import IPNetwork
 
@@ -789,9 +788,7 @@ def _remove_stale_links(
         _StaleLink(pk, ip_pk, vrf_id, _host(address))
         for pk, ip_pk, vrf_id, address in IPAMOwnershipLink.objects.filter(
             server=server, family=family, source=source, confirmation__lt=cutoff
-        )
-        .exclude(stale_mark__isnull=False, confirmation__lte=F("stale_mark"))
-        .values_list("pk", "ip_address", "ip_address__vrf", "ip_address__address")
+        ).values_list("pk", "ip_address", "ip_address__vrf", "ip_address__address")
     ]
     if not candidates:
         return
@@ -821,13 +818,15 @@ def _remove_stale_link(
     _lock_identity(stale.vrf_id, stale.address)
     ip = IPAddress.objects.select_for_update().filter(pk=stale.ip_pk).first()
     link = IPAMOwnershipLink.objects.filter(pk=stale.pk).first()
-    if ip is None or link is None or link.confirmation >= cutoff or _marked_and_unconfirmed(link):
+    if ip is None or link is None or link.confirmation >= cutoff:
         return "kept"
     if (ip.vrf_id, _host(ip.address)) != (stale.vrf_id, stale.address):
         raise _RowRefused(f"the address of IP address {ip.pk} changed while the cleanup read it")
     if not _is_owned_description(ip.description):
         IPAMOwnershipLink.objects.filter(ip_address=ip).delete()
         return "conflict"
+    if _marked_and_unconfirmed(link):
+        return "kept"
     others = list(IPAMOwnershipLink.objects.filter(ip_address=ip).exclude(pk=link.pk))
     if not last_links_go and not any(other.server_id == link.server_id for other in others):
         # The last link of its Server: a later call with a complete lease and Reservation phase decides.
