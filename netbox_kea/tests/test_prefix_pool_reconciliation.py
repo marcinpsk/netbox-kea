@@ -91,6 +91,153 @@ class PrefixPoolJobTest(TestCase):
         self.assertEqual((pool.status, link.stale_mark, link.facts), ("deprecated", mark, facts))
         self.assertGreater(link.confirmation, mark)
 
+    def test_conflicting_pool_masks_create_no_range_or_ownership_link(self):
+        server = _make_db_server(
+            dhcp6=False, sync_leases_enabled=False, sync_reservations_enabled=False, sync_prefixes_enabled=False
+        )
+        overlapping = [SUBNET, {**SUBNET, "id": 2, "subnet": "198.18.0.0/25"}]
+
+        summary = run_job(server, overlapping)
+
+        self.assertEqual((summary["created"], summary["disagreements"], summary["prefix_errors"]), (0, 1, 0))
+        self.assertFalse(IPRange.objects.exists())
+        self.assertFalse(IPAMOwnershipLink.objects.exists())
+
+    def test_pool_owner_mask_disagreement_keeps_fields_until_the_other_owner_drops_it(self):
+        first = _make_db_server(
+            name="first-mask",
+            dhcp6=False,
+            sync_leases_enabled=False,
+            sync_reservations_enabled=False,
+            sync_prefixes_enabled=False,
+        )
+        second = _make_db_server(
+            name="second-mask",
+            dhcp6=False,
+            sync_leases_enabled=False,
+            sync_reservations_enabled=False,
+            sync_prefixes_enabled=False,
+        )
+        smaller = {**SUBNET, "subnet": "198.18.0.0/25"}
+        run_job(first)
+        pool = IPRange.objects.get()
+        before = IPRange.objects.values().get(pk=pool.pk)
+
+        disagreement = run_job(second, [smaller])
+
+        self.assertEqual(disagreement["disagreements"], 1)
+        self.assertEqual(IPRange.objects.values().get(pk=pool.pk), before)
+        self.assertEqual(IPAMOwnershipLink.objects.get(server=second, ip_range=pool).facts, {"prefix_length": 25})
+        run_job(first, ())
+        accepted = run_job(second, [smaller])
+        pool.refresh_from_db()
+        self.assertEqual((accepted["disagreements"], accepted["updated"]), (0, 1))
+        self.assertEqual((str(pool.start_address), str(pool.end_address)), ("198.18.0.10/25", "198.18.0.20/25"))
+        self.assertEqual(set(IPAMOwnershipLink.objects.values_list("server_id", flat=True)), {second.pk})
+
+    def test_prefix_marker_overflow_confirms_stale_link_without_restoring_object(self):
+        server = _make_db_server(
+            dhcp6=False,
+            sync_leases_enabled=False,
+            sync_reservations_enabled=False,
+            sync_ip_ranges_enabled=False,
+            sync_deprecate_prefixes_and_ranges=True,
+        )
+        run_job(server)
+        run_job(server, ())
+        prefix = Prefix.objects.get()
+        link = IPAMOwnershipLink.objects.get(prefix=prefix)
+        mark = link.stale_mark
+        description = "[kea-sync: pool]" + "n" * 184
+        self.assertEqual(len(description), 200)
+        Prefix.objects.filter(pk=prefix.pk).update(description=description)
+        before = Prefix.objects.values().get(pk=prefix.pk)
+
+        summary = run_job(server)
+
+        self.assertEqual(summary["conflicts"], 1)
+        self.assertEqual(summary["conflict_sample"], ["198.18.0.0/24"])
+        self.assertEqual(Prefix.objects.values().get(pk=prefix.pk), before)
+        link.refresh_from_db()
+        self.assertEqual(link.stale_mark, mark)
+        self.assertGreater(link.confirmation, mark)
+
+    def test_cleanup_marker_overflow_keeps_link_until_operator_shortens_note(self):
+        server = _make_db_server(
+            dhcp6=False, sync_leases_enabled=False, sync_reservations_enabled=False, sync_ip_ranges_enabled=False
+        )
+        other = _make_db_server(name="delegated-owner")
+        run_job(server)
+        prefix = Prefix.objects.get()
+        IPAMOwnershipLink.objects.create(
+            server=other,
+            family=4,
+            source="delegated-prefix",
+            prefix=prefix,
+            facts={"prefix_length": 24},
+            confirmation=next_confirmation_number(),
+        )
+        description = "[kea-sync: subnet]" + "n" * 182
+        self.assertEqual(len(description), 200)
+        Prefix.objects.filter(pk=prefix.pk).update(description=description)
+        before = Prefix.objects.values().get(pk=prefix.pk)
+
+        summary = run_job(server, ())
+
+        self.assertEqual(summary["conflicts"], 1)
+        self.assertEqual(Prefix.objects.values().get(pk=prefix.pk), before)
+        self.assertEqual(IPAMOwnershipLink.objects.filter(prefix=prefix).count(), 2)
+        Prefix.objects.filter(pk=prefix.pk).update(description="[kea-sync: subnet] Short operator note")
+        retry = run_job(server, ())
+        prefix.refresh_from_db()
+        self.assertEqual((retry["conflicts"], retry["updated"]), (0, 1))
+        self.assertEqual(prefix.description, "[kea-sync: delegated prefix] Short operator note")
+        self.assertEqual(
+            set(IPAMOwnershipLink.objects.filter(prefix=prefix).values_list("server_id", flat=True)), {other.pk}
+        )
+
+    def test_another_empty_snapshot_keeps_deprecated_objects_and_marks_unchanged(self):
+        server = _make_db_server(
+            dhcp6=False,
+            sync_leases_enabled=False,
+            sync_reservations_enabled=False,
+            sync_deprecate_prefixes_and_ranges=True,
+        )
+        run_job(server)
+        run_job(server, ())
+        prefix = Prefix.objects.values().get()
+        pool = IPRange.objects.values().get()
+        links = list(IPAMOwnershipLink.objects.order_by("pk").values())
+
+        summary = run_job(server, ())
+
+        self.assertEqual(Prefix.objects.values().get(), prefix)
+        self.assertEqual(IPRange.objects.values().get(), pool)
+        self.assertEqual(list(IPAMOwnershipLink.objects.order_by("pk").values()), links)
+        self.assertEqual((summary["created"], summary["updated"], summary["conflicts"]), (0, 0, 0))
+
+    def test_many_failed_pools_report_exact_error_count_and_limit_row_logs(self):
+        from core.exceptions import JobFailed
+        from django.db import connection
+
+        server = _make_db_server(dhcp6=False, sync_leases_enabled=False, sync_reservations_enabled=False)
+        pools = [{"pool": f"198.18.0.{start} - 198.18.0.{start}"} for start in range(1, 12)]
+        with connection.cursor() as cursor:
+            cursor.execute("ALTER TABLE ipam_iprange ADD CONSTRAINT reject_test_pools CHECK (false) NOT VALID")
+        job = Job.objects.create(name="Kea IPAM Sync", job_id=uuid.uuid4(), data={})
+        with (
+            stub_kea(_catalogue_responses_for_subnets(4, [{**SUBNET, "pools": pools}])),
+            self.assertLogs("netbox_kea.ipam_reconciliation", level="WARNING") as logs,
+            self.assertRaises(JobFailed),
+        ):
+            KeaIpamSyncJob(job).run(server_pk=server.pk)
+
+        self.assertEqual(job.data["summary"][0]["prefix_errors"], 11)
+        self.assertEqual(job.data["summary"][0]["created"], 1)
+        self.assertEqual(sum("IPAM reconciliation of" in message for message in logs.output), 10)
+        self.assertEqual(sum("Further row failures" in message for message in logs.output), 1)
+        self.assertFalse(IPRange.objects.exists())
+
     def test_last_dropping_server_decides_for_shared_prefix_and_pool(self):
         for first_flag, last_flag in ((False, True), (True, False)):
             with self.subTest(first=first_flag, last=last_flag):
