@@ -17,7 +17,7 @@ from django.conf import settings
 from django.contrib import messages as django_messages
 from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
-from django.core.exceptions import ValidationError
+from django.core.exceptions import ImproperlyConfigured, ValidationError
 from django.core.management import call_command
 from django.db import IntegrityError, transaction
 from django.db.models import ProtectedError
@@ -1216,6 +1216,32 @@ class TestSyncConfigSeedMigration(_MigrationTestCase):
         self.assertTrue(cfg.sync_enabled)
         self.assertEqual({name: getattr(cfg, name) for name in self._TOGGLES}, dict.fromkeys(self._TOGGLES, True))
         self._assert_sync_pages_write_nothing()
+
+    def test_upgrade_without_a_row_refuses_an_invalid_interval_by_name(self):
+        """A value the database constraint refuses must not fail as an IntegrityError, nor be truncated or coerced."""
+        historical = self._roll_back()
+        historical.objects.all().delete()
+
+        for interval in (0, 1441, 2.5, "10", True):
+            with self.subTest(interval=interval):
+                config = {"netbox_kea": {**self._CONFIG["netbox_kea"], "sync_interval_minutes": interval}}
+                with override_settings(PLUGINS_CONFIG=config):
+                    with self.assertRaisesMessage(ImproperlyConfigured, "sync_interval_minutes"):
+                        self._migrate_to_current()
+                self.assertFalse(historical.objects.exists())
+
+    def test_upgrade_with_a_row_ignores_an_invalid_interval(self):
+        """The interval only seeds a new row, so a value no run reads must not block the upgrade."""
+        historical = self._roll_back()
+        historical.objects.filter(pk=1).update(interval_minutes=9, backfill_applied=False)
+        config = {"netbox_kea": {**self._CONFIG["netbox_kea"], "sync_interval_minutes": 0}}
+
+        with override_settings(PLUGINS_CONFIG=config):
+            self._migrate_to_current()
+
+        cfg = SyncConfig.objects.get(pk=1)
+        self.assertEqual(cfg.interval_minutes, 9)
+        self.assertEqual({name: getattr(cfg, name) for name in self._TOGGLES}, self._CONFIGURED_TOGGLES)
 
     def test_downgrade_marks_the_backfill_as_applied(self):
         """The seed already applied the backfill, so the restored flag must not let it run again."""
