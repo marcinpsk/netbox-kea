@@ -42,6 +42,7 @@ if TYPE_CHECKING:
 # TYPE_CHECKING-only Family or DuplicateNetBoxRowsError would raise NameError.
 from . import branching, subnet_catalogue
 from .constants import Family
+from .plugin_settings import plugin_setting
 from .reservations import Reservation, ReservationSnapshot
 from .subnet_catalogue import CatalogueUnavailable, CompleteCatalogueSnapshot, VerifiedSubnet
 from .sync import DuplicateNetBoxRowsError
@@ -50,21 +51,6 @@ logger = logging.getLogger(__name__)
 
 # NetBox requires a registry interval; enqueue_once replaces it with SyncConfig.interval_minutes.
 _DEFAULT_INTERVAL = 5
-
-
-def _get_plugin_config() -> dict[str, Any]:
-    """Return the netbox_kea section of PLUGINS_CONFIG (never raises)."""
-    from django.conf import settings
-
-    plugins_config = getattr(settings, "PLUGINS_CONFIG", {})
-    if not isinstance(plugins_config, dict):
-        logger.warning("PLUGINS_CONFIG is %s, expected dict — using defaults.", type(plugins_config).__name__)
-        return {}
-    config = plugins_config.get("netbox_kea", {})
-    if not isinstance(config, dict):
-        logger.warning("PLUGINS_CONFIG['netbox_kea'] is %s, expected dict — using defaults.", type(config).__name__)
-        return {}
-    return config
 
 
 class _SnapshotSkipped:
@@ -598,22 +584,11 @@ class KeaIpamSyncJob(JobRunner):
                 self.logger.info("Global sync kill-switch is active (SyncConfig.sync_enabled=False) — skipping.")
                 return
 
-            config = _get_plugin_config()
             sync_leases = sync_cfg.sync_leases_enabled
             sync_reservations = sync_cfg.sync_reservations_enabled
             sync_prefixes = sync_cfg.sync_prefixes_enabled
             sync_ip_ranges = sync_cfg.sync_ip_ranges_enabled
-            raw_max_leases = config.get("sync_max_leases_per_server", 50000)
-            try:
-                max_leases = int(raw_max_leases)
-            except (TypeError, ValueError):
-                self.logger.warning(f"Invalid sync_max_leases_per_server={raw_max_leases!r}; falling back to 50000")
-                max_leases = 50000
-            if max_leases < 0:
-                self.logger.warning(
-                    f"Negative sync_max_leases_per_server={max_leases} is not allowed; using 0 (no cap)"
-                )
-                max_leases = 0
+            max_leases = plugin_setting("sync_max_leases_per_server")
 
             if not any([sync_leases, sync_reservations, sync_prefixes, sync_ip_ranges]):
                 self.logger.info("All sync type flags are False — nothing to do.")

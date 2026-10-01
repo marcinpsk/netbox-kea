@@ -29,10 +29,10 @@ from netbox_kea.reservations import (
 from netbox_kea.subnet_catalogue import IdentityOnlyCatalogueSnapshot, SubnetIdentity, VerifiedSubnet
 
 from .kea_stub import _res_page, kea_client, stub_kea
-from .utils import _make_db_server
+from .utils import _make_db_server, plugins_config
 
 DHCP_PLUGIN = "netbox_dhcp"
-_PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30}}
+_PLUGINS_CONFIG = plugins_config()
 
 
 def _conf_v4():
@@ -1328,7 +1328,7 @@ class DhcpPluginStaleCleanupGuardTest(TestCase):
         phase = LeasePhase(max_leases=None, subnet_prefix_lengths={1: 24}, reservation_addresses=None)
         lease = {"ip-address": "10.77.0.50", "hostname": "pc", "subnet-id": 1}
         for mode in ("remove", "deprecate"):
-            with self.subTest(mode), override_settings(PLUGINS_CONFIG={"netbox_kea": {"stale_ip_cleanup": mode}}):
+            with self.subTest(mode), override_settings(PLUGINS_CONFIG=plugins_config(stale_ip_cleanup=mode)):
                 with stub_kea({"lease4-get-page": _lease_page([lease])}):
                     reconcile(self.server, 4, [phase])
                 self.assertTrue(IPAMOwnershipLink.objects.filter(ip_address=referenced).exists())

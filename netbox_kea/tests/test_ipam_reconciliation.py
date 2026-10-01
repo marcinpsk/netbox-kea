@@ -28,14 +28,14 @@ from netbox_kea.models import (
 )
 from netbox_kea.sync import _cleanup_stale_ips
 from netbox_kea.tests.kea_stub import stub_kea
-from netbox_kea.tests.test_jobs import _PLUGINS_CONFIG, _PLUGINS_CONFIG_CLEANUP, _lease_page, _make_job, _patch_kea
-from netbox_kea.tests.utils import _make_db_server
+from netbox_kea.tests.test_jobs import _PLUGINS_CONFIG_CLEANUP, _lease_page, _make_job, _patch_kea
+from netbox_kea.tests.utils import _make_db_server, plugins_config
 
 ADDRESS = "10.0.0.5"
 
 
 def _config(mode: str) -> dict:
-    return {"netbox_kea": {**_PLUGINS_CONFIG["netbox_kea"], "stale_ip_cleanup": mode}}
+    return plugins_config(stale_ip_cleanup=mode)
 
 
 def _server(name: str, **fields):
