@@ -1244,11 +1244,11 @@ class TestSubnetCatalogueJob(TestCase):
         self.assertEqual(prefix.status, "active")
         self.assertEqual(summary[0]["created"], 1)
         self.assertEqual(summary[0]["updated"], 0)
-        prefix.description = ""
+        prefix.description = "Synced from Kea DHCP subnet operator note"
         prefix.save()
         summary, _ = self._run(responses)
         prefix.refresh_from_db()
-        self.assertEqual(prefix.description, "[kea-sync: subnet]")
+        self.assertEqual(prefix.description, "[kea-sync: subnet] operator note")
         self.assertEqual(summary[0]["created"], 0)
         self.assertEqual(summary[0]["updated"], 1)
         summary, _ = self._run(responses)
@@ -1265,14 +1265,14 @@ class TestSubnetCatalogueJob(TestCase):
             [("198.18.0.10/24", "198.18.0.20/24"), ("198.18.0.128/24", "198.18.0.255/24")],
         )
         self.assertEqual(summary[0]["created"], 3)
-        ranges[0].description = ""
+        ranges[0].description = "Synced from Kea DHCP pool operator note"
         ranges[0].save()
         ranges[1].description = "Operator pool note"
         ranges[1].save()
         summary, _ = self._run(responses)
         ranges[0].refresh_from_db()
         ranges[1].refresh_from_db()
-        self.assertEqual(ranges[0].description, "[kea-sync: pool]")
+        self.assertEqual(ranges[0].description, "[kea-sync: pool] operator note")
         self.assertEqual(ranges[1].description, "Operator pool note")
         self.assertEqual(summary[0]["updated"], 1)
         self.assertEqual(summary[0]["created"], 0)
@@ -1546,25 +1546,20 @@ class TestSubnetCatalogueJob(TestCase):
         self.assertEqual(summary[0]["prefix_errors"], 1)
         self.assertEqual(summary[0]["errors"], 0)
         self._assert_duplicate_logged(
-            "pool 198.18.0.10-198.18.0.20",
+            "pool 198.18.0.10 - 198.18.0.20",
             "/ipam/ip-ranges/?start_address=198.18.0.10&end_address=198.18.0.20&vrf_id=null",
         )
 
     def test_a_failed_pool_counts_an_error_and_the_next_pool_still_syncs(self):
-        from netbox_kea import sync
+        from django.db import connection
 
-        real_sync = sync.sync_pool_to_netbox_ip_range
-
-        def fail_first_pool(pool, subnet, vrf=None):
-            if pool.range == "198.18.0.10-198.18.0.20":
-                raise RuntimeError("IPRange save failed")
-            return real_sync(pool, subnet, vrf=vrf)
-
-        # NetBox saves an IPRange without validation, so no row state makes the save fail inside a test transaction.
-        with (
-            patch.object(sync, "sync_pool_to_netbox_ip_range", autospec=True, side_effect=fail_first_pool),
-            self.assertLogs("netbox_kea.jobs", level="ERROR") as logs,
-        ):
+        # A real database constraint rejects one reachable Pool, without replacing the writer under test.
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "ALTER TABLE ipam_iprange ADD CONSTRAINT reject_test_pool "
+                "CHECK (host(start_address) <> '198.18.0.10') NOT VALID"
+            )
+        with self.assertLogs("netbox_kea.ipam_reconciliation", level="WARNING") as logs:
             summary, _ = self._run(
                 self._responses(("198.18.0.10-198.18.0.20", "198.18.0.100-198.18.0.110")), failed=True
             )
@@ -1575,9 +1570,7 @@ class TestSubnetCatalogueJob(TestCase):
         self.assertEqual(summary[0]["created"], 2)
         self.assertEqual(summary[0]["prefix_errors"], 1)
         self.assertEqual(summary[0]["errors"], 0)
-        self.assertTrue(
-            any("Failed to sync pool 198.18.0.10-198.18.0.20 from server" in line for line in logs.output), logs.output
-        )
+        self.assertTrue(any("198.18.0.10 - 198.18.0.20 failed" in line for line in logs.output), logs.output)
 
     def _assert_duplicate_logged(self, kea_object, list_url):
         """The job log names the Kea object and the filtered list URL, but no row pk."""
