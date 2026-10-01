@@ -40,6 +40,7 @@ SYNC_BOOLEANS = (
     "sync_reservations_enabled",
     "sync_prefixes_enabled",
     "sync_ip_ranges_enabled",
+    "sync_deprecate_prefixes_and_ranges",
     "sync_dhcp_plugin_enabled",
 )
 
@@ -83,6 +84,7 @@ class TestServerGraphQLQuery(TestCase):
             sync_reservations_enabled=True,
             sync_prefixes_enabled=False,
             sync_ip_ranges_enabled=True,
+            sync_deprecate_prefixes_and_ranges=True,
             sync_dhcp_plugin_enabled=True,
             persist_config=False,
             sync_vrf=self.vrf,

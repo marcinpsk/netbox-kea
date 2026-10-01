@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """IPAM Reconciliation (ADR 0006): the one owner of IPAM Ownership links, stale cleanup and per-row savepoints.
 
-``reconcile`` runs the lease and Reservation phases of one Server and family. It links every owned object that a
+``reconcile`` runs the lease, Reservation, Subnet and Pool phases of one Server and family. It links every owned object that a
 phase reports, and a complete phase removes its own stale links. Each row runs in its own transaction, or in a
 savepoint when the caller holds a transaction, under a transaction-level advisory lock on the object identity.
 """
@@ -18,22 +18,26 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypeVar, cast
 
 from django.db import DatabaseError, connection, transaction
 from django.db.models import F
-from ipam.models import IPAddress, Prefix
+from ipam.models import IPAddress, IPRange, Prefix
+from netaddr import IPNetwork
 
 from . import subnet_catalogue
-from .constants import Family, StaleCleanupMode
+from .constants import IP_RANGE_MAX_SIZE, Family, StaleCleanupMode
 from .integrations import dhcp_plugin
-from .ipam_marker import parse_marker, render_marker, status_kind
+from .ipam_marker import MarkerKind, parse_marker, render_marker, rewrite_marker, status_kind
 from .kea import KeaException, lease_fields
 from .models import IPAMOwnershipLink, IPAMOwnershipSource, next_confirmation_number
 from .reservations import InSubnetReservationScope, Reservation
 from .subnet_catalogue import CatalogueUnavailable
 from .sync import (
+    DuplicateNetBoxRowsError,
     _apply_ip_fields,
     _apply_ip_mask,
     _get_stale_cleanup_mode,
     _ip_description,
     _record_hostname,
+    _resolve_prefix_length,
+    _single_match,
     _sync_mac_address,
 )
 
@@ -94,18 +98,55 @@ class ReservationPhase:
     source: ClassVar[str] = RESERVATION
 
 
-Phase = LeasePhase | ReservationPhase
+@dataclass(frozen=True)
+class CatalogueObservation:
+    """A live catalogue paired with the confirmation cutoff taken before its request."""
+
+    catalogue: CompleteCatalogueSnapshot | None
+    cutoff: int
+
+
+def read_catalogue(server: Server, family: Family) -> CatalogueObservation:
+    """Read the family's catalogue after taking the cutoff for its Subnet and Pool phases."""
+    cutoff = next_confirmation_number()
+    try:
+        catalogue = subnet_catalogue.for_synchronization(server, family)
+    except CatalogueUnavailable as exc:
+        logger.warning("Server %s (v%s): Subnet Catalogue unavailable: %s", server.name, family, exc)
+        catalogue = None
+    return CatalogueObservation(catalogue, cutoff)
+
+
+@dataclass(frozen=True)
+class SubnetPhase:
+    """The Subnets of one live catalogue observation."""
+
+    observation: CatalogueObservation
+    source: ClassVar[str] = "subnet"
+
+
+@dataclass(frozen=True)
+class PoolPhase:
+    """The allocation Pools of one live catalogue observation."""
+
+    observation: CatalogueObservation
+    source: ClassVar[str] = "pool"
+
+
+Phase = LeasePhase | ReservationPhase | SubnetPhase | PoolPhase
 
 
 @dataclass
 class SyncReport:
-    """What one reconcile call did. Conflicts and owner disagreements are canonical addresses."""
+    """What one reconcile call did. Conflicts and owner disagreements identify canonical IPAM objects."""
 
     created: int = 0
     updated: int = 0
     removed: int = 0
     deprecated: int = 0
     errors: int = 0
+    prefix_errors: int = 0
+    duplicates: list[DuplicateNetBoxRowsError] = field(default_factory=list)
     conflicts: set[str] = field(default_factory=set)
     disagreements: set[str] = field(default_factory=set)
     # The sources of the phases that are not complete: the snapshot is partial or failed, or a row failed.
@@ -123,17 +164,25 @@ class SyncReport:
 
     def fail_snapshot(self, source: str, what: str, exc: BaseException) -> None:
         """Count one snapshot that could not be read, which makes its phase incomplete, and log it."""
-        self.errors += 1
+        if source in {"subnet", "pool"}:
+            self.prefix_errors += 1
+        else:
+            self.errors += 1
         self.incomplete.add(source)
         logger.warning("%s failed: %s", what, exc, exc_info=exc)
 
     def fail_row(self, source: str, what: str, exc: BaseException) -> None:
         """Count one failed row, which makes its phase incomplete, and log the first failures."""
-        self.errors += 1
+        if source in {"subnet", "pool"}:
+            self.prefix_errors += 1
+        else:
+            self.errors += 1
         self.incomplete.add(source)
-        if self.errors <= _ROW_ERROR_LOG_LIMIT:
+        if isinstance(exc, DuplicateNetBoxRowsError):
+            self.duplicates.append(exc)
+        if self.errors + self.prefix_errors <= _ROW_ERROR_LOG_LIMIT:
             logger.warning("IPAM reconciliation of %s failed: %s", what, exc, exc_info=exc)
-        elif self.errors == _ROW_ERROR_LOG_LIMIT + 1:
+        elif self.errors + self.prefix_errors == _ROW_ERROR_LOG_LIMIT + 1:
             logger.warning("Further row failures of this reconciliation are not logged; see the error count.")
 
 
@@ -307,8 +356,12 @@ def reconcile(server: Server, family: Family, phases: Sequence[Phase]) -> SyncRe
     complete = {source for source, cutoff in cutoffs.items() if cutoff is not None}
     last_links_go = complete >= {LEASE, RESERVATION}
     for source, cutoff in cutoffs.items():
-        if cutoff is not None:
+        if cutoff is None:
+            continue
+        if source in {LEASE, RESERVATION}:
             _remove_stale_links(server, family, source, cutoff, mode, last_links_go, report)
+        else:
+            _remove_stale_network_links(server, family, source, cutoff, report)
     logger.info(
         "Server %s (v%s): IPAM reconciliation created=%d updated=%d removed=%d deprecated=%d conflicts=%d"
         " disagreements=%d errors=%d complete=%s",
@@ -340,7 +393,7 @@ def _each_row(
         try:
             with transaction.atomic():
                 outcome = work(row)
-        except (DatabaseError, _RowRefused) as exc:
+        except (DatabaseError, _RowRefused, DuplicateNetBoxRowsError) as exc:
             report.fail_row(source, name(row), exc)
             continue
         yield row, outcome
@@ -351,6 +404,8 @@ def _run_phase(server: Server, family: Family, phase: Phase, report: SyncReport)
 
     The cutoff number comes before the snapshot request, so a claim that confirms a link after it keeps the link.
     """
+    if isinstance(phase, (SubnetPhase, PoolPhase)):
+        return _run_network_phase(server, family, phase, report)
     cutoff = next_confirmation_number()
     if isinstance(phase, LeasePhase):
         reports = _lease_reports(server, family, phase, report)
@@ -685,7 +740,7 @@ def _store_link(
     server: Server,
     family: Family,
     source: str,
-    ip: IPAddress,
+    ip: IPAddress | Prefix | IPRange,
     facts: dict[str, Any] | None,
     *,
     stale_mark: int | None,
@@ -697,7 +752,7 @@ def _store_link(
             server=server,
             family=family,
             source=source,
-            ip_address=ip,
+            **{_object_field(ip): ip},
             facts=facts,
             confirmation=confirmation,
             stale_mark=stale_mark,
@@ -794,4 +849,196 @@ def _remove_stale_link(
     if ip.status != "deprecated":
         ip.status = "deprecated"
         ip.save()
+    return "deprecated"
+
+
+@dataclass(frozen=True)
+class _NetworkReport:
+    address: str
+    prefix_length: int
+    start: str = ""
+    end: str = ""
+    disagreement: bool = False
+
+    def facts(self) -> dict[str, Any]:
+        return {"prefix_length": self.prefix_length}
+
+
+def _object_field(obj: IPAddress | Prefix | IPRange) -> str:
+    if isinstance(obj, Prefix):
+        return "prefix"
+    if isinstance(obj, IPRange):
+        return "ip_range"
+    return "ip_address"
+
+
+def _lock_network(vrf_id: int | None, source: str, address: str) -> None:
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT pg_advisory_xact_lock(%s, %s)", [_LOCK_CLASS, _int4(f"{source} {vrf_id} {address}")])
+
+
+def _run_network_phase(
+    server: Server, family: Family, phase: SubnetPhase | PoolPhase, report: SyncReport
+) -> int | None:
+    catalogue = phase.observation.catalogue
+    if catalogue is None:
+        if not report.incomplete.intersection({"subnet", "pool"}):
+            report.fail_snapshot(phase.source, "the Subnet Catalogue", CatalogueUnavailable("No complete catalogue."))
+        report.incomplete.add(phase.source)
+        return None
+    reports: dict[str, _NetworkReport] = {}
+    for subnet in catalogue.subnets:
+        if isinstance(phase, SubnetPhase):
+            reports[subnet.cidr] = _NetworkReport(subnet.cidr, subnet.network.prefixlen)
+        else:
+            if subnet.configuration is None:
+                raise ValueError("A complete catalogue must include every Subnet configuration.")
+            for pool in subnet.configuration.pools:
+                if int(pool.end) - int(pool.start) + 1 > IP_RANGE_MAX_SIZE:
+                    continue
+                address = f"{pool.start} - {pool.end}"
+                row = _NetworkReport(address, subnet.network.prefixlen, str(pool.start), str(pool.end))
+                earlier = reports.get(address)
+                if earlier is not None and (earlier.disagreement or earlier.prefix_length != row.prefix_length):
+                    row = replace(earlier, disagreement=True)
+                reports[address] = row
+    for row, outcome in _each_row(
+        reports.values(),
+        report,
+        phase.source,
+        lambda row: _claim_network(server, family, phase.source, row),
+        lambda row: row.address,
+    ):
+        _count(report, row.address, outcome)
+    return None if phase.source in report.incomplete else phase.observation.cutoff
+
+
+def _claim_network(server: Server, family: Family, source: str, row: _NetworkReport) -> _Outcome:
+    _lock_network(server.sync_vrf_id, source, row.address)
+    if source == "subnet":
+        query = Prefix.objects.select_for_update().filter(vrf_id=server.sync_vrf_id, prefix=row.address)
+        filters = {"prefix": row.address, "vrf_id": server.sync_vrf_id or "null"}
+        fields: dict[str, Any] = {"prefix": row.address}
+    else:
+        query = IPRange.objects.select_for_update().filter(
+            vrf_id=server.sync_vrf_id, start_address__net_host=row.start, end_address__net_host=row.end
+        )
+        filters = {"start_address": row.start, "end_address": row.end, "vrf_id": server.sync_vrf_id or "null"}
+        fields = {
+            "start_address": IPNetwork(f"{row.start}/{row.prefix_length}"),
+            "end_address": IPNetwork(f"{row.end}/{row.prefix_length}"),
+        }
+    obj = _single_match(query, f"{source} {row.address}", filters)
+    kind: MarkerKind = "subnet" if source == "subnet" else "pool"
+    if obj is None:
+        if row.disagreement:
+            return "disagreement"
+        obj = query.model.objects.create(
+            **fields, vrf_id=server.sync_vrf_id, status="active", description=render_marker(kind)
+        )
+        _store_link(None, server, family, source, obj, row.facts(), stale_mark=None)
+        return "created"
+    links_query = IPAMOwnershipLink.objects.filter(**{_object_field(obj): obj})
+    marker = parse_marker(obj.description)
+    if marker is None:
+        links_query.delete()
+        return "conflict"
+    links = list(links_query)
+    own = next((link for link in links if _is_own_link(link, server, family, source)), None)
+    others = _drop_superseded_stale_links([link for link in links if link is not own])
+    if row.disagreement:
+        _store_link(own, server, family, source, obj, own.facts if own else None, stale_mark=_kept_mark(own))
+        return "disagreement"
+    if any(_is_live(link) and link.facts["prefix_length"] != row.prefix_length for link in others):
+        _store_link(own, server, family, source, obj, row.facts(), stale_mark=_kept_mark(own))
+        return "disagreement"
+    description = rewrite_marker(marker, kind)
+    if description is None:
+        _store_link(own, server, family, source, obj, row.facts(), stale_mark=_kept_mark(own))
+        return "conflict"
+    fields.update(status="active", description=description)
+    changed = any(str(getattr(obj, name)) != str(value) for name, value in fields.items())
+    if changed:
+        for name, value in fields.items():
+            setattr(obj, name, value)
+        obj.save()
+    _store_link(own, server, family, source, obj, row.facts(), stale_mark=None)
+    return "updated" if changed else "unchanged"
+
+
+def _remove_stale_network_links(server: Server, family: Family, source: str, cutoff: int, report: SyncReport) -> None:
+    """Drop the stale links of a complete Subnet or Pool phase. These objects are never removed."""
+    field_name = "prefix" if source == "subnet" else "ip_range"
+    links = IPAMOwnershipLink.objects.filter(server=server, family=family, source=source, confirmation__lt=cutoff)
+    # A marked link still needs the release check: an operator may have removed its object's marker.
+    candidates = list(links.select_related(field_name))
+    for link, outcome in _each_row(
+        candidates,
+        report,
+        source,
+        lambda link: _remove_stale_network_link(link, field_name, cutoff),
+        lambda link: f"stale {source} link {link.pk}",
+    ):
+        if outcome == "deprecated":
+            report.deprecated += 1
+        elif outcome == "updated":
+            report.updated += 1
+        elif outcome == "conflict":
+            obj = getattr(link, field_name)
+            report.conflicts.add(
+                str(obj.prefix) if field_name == "prefix" else f"{_host(obj.start_address)} - {_host(obj.end_address)}"
+            )
+
+
+def _remove_stale_network_link(candidate: IPAMOwnershipLink, field_name: str, cutoff: int) -> str:
+    obj = getattr(candidate, field_name)
+    address = str(obj.prefix) if field_name == "prefix" else f"{_host(obj.start_address)} - {_host(obj.end_address)}"
+    _lock_network(obj.vrf_id, candidate.source, address)
+    locked = type(obj).objects.select_for_update().filter(pk=obj.pk).first()
+    link = IPAMOwnershipLink.objects.filter(pk=candidate.pk).first()
+    if locked is None or link is None or link.confirmation >= cutoff:
+        return "kept"
+    current_address = (
+        str(locked.prefix) if field_name == "prefix" else f"{_host(locked.start_address)} - {_host(locked.end_address)}"
+    )
+    if (locked.vrf_id, current_address) != (obj.vrf_id, address):
+        raise _RowRefused(f"the identity of {field_name} {obj.pk} changed during cleanup")
+    links = IPAMOwnershipLink.objects.filter(**{field_name: locked})
+    marker = parse_marker(locked.description)
+    if marker is None:
+        links.delete()
+        return "conflict"
+    if _marked_and_unconfirmed(link):
+        return "kept"
+    others = list(links.exclude(pk=link.pk))
+    if others:
+        changed = False
+        if _live_sources(others):
+            sources = _live_sources(others)
+            kind: MarkerKind = (
+                "pool" if field_name == "ip_range" else ("subnet" if "subnet" in sources else "delegated prefix")
+            )
+            description = rewrite_marker(marker, kind)
+            if description is None:
+                return "conflict"
+            changed = locked.status != "active" or locked.description != description
+            if changed:
+                locked.status = "active"
+                locked.description = description
+                locked.save()
+        link.delete()
+        return "updated" if changed else "unlinked"
+    referenced = (
+        dhcp_plugin.sys4_referenced_prefix_ids()
+        if field_name == "prefix"
+        else dhcp_plugin.sys4_referenced_iprange_ids()
+    )
+    if not link.server.sync_deprecate_prefixes_and_ranges or locked.pk in referenced:
+        link.delete()
+        return "unlinked"
+    link.stale_mark = cutoff
+    link.save(update_fields=["stale_mark"])
+    if locked.status != "deprecated":
+        locked.status = "deprecated"
+        locked.save()
     return "deprecated"

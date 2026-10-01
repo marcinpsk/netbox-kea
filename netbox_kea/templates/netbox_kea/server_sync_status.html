@@ -109,6 +109,9 @@
               <span class="badge {% if sync_cfg.sync_enabled and object.sync_prefixes_enabled and sync_cfg.sync_prefixes_enabled %}text-bg-success{% else %}text-bg-secondary{% endif %}">Prefixes</span>
               <span class="badge {% if sync_cfg.sync_enabled and object.sync_ip_ranges_enabled and sync_cfg.sync_ip_ranges_enabled %}text-bg-success{% else %}text-bg-secondary{% endif %}">IP Ranges</span>
             </div>
+            <p class="small text-muted mt-2 mb-0">
+              Deprecate stale Prefixes and IP Ranges: {% checkmark object.sync_deprecate_prefixes_and_ranges %}
+            </p>
             {% endif %}
           </div>
         </div>

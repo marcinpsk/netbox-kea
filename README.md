@@ -307,6 +307,7 @@ Each server has optional overrides for the IPAM sync job:
 | `Sync Reservations` (`sync_reservations_enabled`) | `True` | Sync DHCP reservations as NetBox IP Addresses |
 | `Sync Prefixes` (`sync_prefixes_enabled`) | `True` | Sync Kea subnets as NetBox IP Prefixes |
 | `Sync IP Ranges` (`sync_ip_ranges_enabled`) | `True` | Sync Kea pools as NetBox IP Ranges |
+| `Deprecate stale Prefixes and IP Ranges` (`sync_deprecate_prefixes_and_ranges`) | `False` | Deprecate an owned Prefix or IP Range when this server drops its last ownership link as stale. These objects are never deleted |
 | `Sync VRF` (`sync_vrf`) | None (global routing table) | VRF to assign when syncing Prefixes, IP Ranges, and lease and reservation IP Addresses. There is no global fallback: leave blank to use the global routing table (no VRF). NetBox refuses to delete a VRF while a server syncs into it |
 | `Persist configuration` (`persist_config`) | `True` | Automatically save Kea config after each change via `config-write`. Disable when Kea config is managed externally (e.g. Ansible) |
 
@@ -329,11 +330,16 @@ The `Kea IPAM Sync` job runs automatically when `rqworker` is active:
    - The description starts with the sync marker `[kea-sync: <kind>]`. Text after the marker is an operator note,
      and the sync keeps it. To release an address from the sync, remove the marker or move it away from the start.
 4. Cleans up stale IPs (configurable via `stale_ip_cleanup`). A server's lease or reservation that Kea no longer
-   reports loses its link. When the last link of the server to an address goes, `stale_ip_cleanup` applies, but
+   reports loses its link. When the last link of every server to an address goes, `stale_ip_cleanup` applies, but
    only after a run in which both the lease and the reservation sync completed. When either one is disabled or
    fails, the address stays and a later run decides.
-5. One server failing does not block others
-6. Summary logged per server and in total
+5. Links Subnets to Prefixes and Pools to IP Ranges in the server's `sync_vrf`. A complete Subnet or Pool phase
+   drops its own stale links. These objects stay unchanged by default and are never deleted. The server that drops
+   the last link can opt in to deprecation with `sync_deprecate_prefixes_and_ranges`. A deprecated object's last link
+   stays marked stale until an applied report restores its active status, or another owner supersedes the stale link.
+   Removing the description marker releases every link without deprecation. DHCP plugin references prevent deprecation.
+6. One server failing does not block others
+7. Summary logged per server and in total
 
 Each server's summary reports `created`, `updated`, `errors`, `prefix_errors`, `conflicts`, `disagreements` and
 `skipped`:
@@ -344,11 +350,10 @@ Each server's summary reports `created`, `updated`, `errors`, `prefix_errors`, `
   be read, and reservations that the snapshot could not read. Any error fails the job. A
   failed snapshot and the first 10 failed rows of each server and IP version are logged at
   warning level, with the source (lease or reservation), the address and the exception.
-- **conflicts**: addresses that the sync left unchanged: the description of the NetBox IP
-  address does not start with the sync marker (it was created by hand, or an operator
+- **conflicts**: IPAM objects that the sync left unchanged: the description of the object does not start with the sync marker (it was created by hand, or an operator
   removed the marker),
   or the new marker and the note after it do not fit in the 200-character description.
-  They are deduplicated per server across the lease and reservation phases. Up to 20 of
+  They are deduplicated per server across its phases. Up to 20 of
   them are named in the summary and the log, so the addresses to look at are visible
   without trawling debug output.
 - **disagreements**: addresses that two Kea servers report with different facts (the

@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from functools import cached_property
 from typing import TYPE_CHECKING, cast
 
-from .constants import STALE_CLEANUP_MODES, StaleCleanupMode
+from .constants import IP_RANGE_MAX_SIZE, STALE_CLEANUP_MODES, StaleCleanupMode
 from .ipam_marker import (
     MarkerKind,
     marked_description_q,
@@ -959,8 +959,7 @@ def sync_pool_to_netbox_ip_range(pool: Pool, subnet: IPNetworkValue, vrf=None) -
 
     # NetBox stores IPRange.size in a PostgreSQL integer column (max 2^31-1).
     # Reject a larger pool before IPRange.save() raises NumericValueOutOfRange.
-    _PG_INTEGER_MAX = 2_147_483_647
-    if int(pool.end) - int(pool.start) + 1 > _PG_INTEGER_MAX:
+    if int(pool.end) - int(pool.start) + 1 > IP_RANGE_MAX_SIZE:
         logger.debug("Skipping pool %r: range too large to store as NetBox IPRange", pool.range)
         return _POOL_TOO_LARGE
 

@@ -12,6 +12,9 @@ from typing import Literal, get_args
 # The "Value" suffix is deliberate. netaddr exports its own IPAddress and IPNetwork,
 # which this package also uses, and the two are not interchangeable: the same address
 # built by each library compares unequal, so a mix-up makes a duplicate check miss.
+# NetBox stores IPRange.size in a PostgreSQL integer column.
+IP_RANGE_MAX_SIZE = 2_147_483_647
+
 Family = Literal[4, 6]
 IPAddressValue = ipaddress.IPv4Address | ipaddress.IPv6Address
 IPNetworkValue = ipaddress.IPv4Network | ipaddress.IPv6Network
