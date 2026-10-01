@@ -20,6 +20,9 @@ from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ImproperlyConfigured, ValidationError
 from django.core.management import call_command
 from django.db import IntegrityError, transaction
+from django.db.migrations.autodetector import MigrationAutodetector
+from django.db.migrations.loader import MigrationLoader
+from django.db.migrations.state import ProjectState
 from django.db.models import ProtectedError
 from django.test import SimpleTestCase, TestCase, TransactionTestCase, override_settings
 from django.urls import reverse
@@ -779,6 +782,34 @@ class TestMigrationState(TestCase):
             call_command("makemigrations", "netbox_kea", "--check", "--dry-run", "--no-input", verbosity=0)
         except SystemExit:
             self.fail("netbox_kea models changed with no matching migration. Run makemigrations.")
+
+    def test_ownership_metadata_is_excluded_from_generated_fields(self):
+        ownership = apps.get_model("netbox_kea", "IPAMOwnershipLink")
+        for name, attribute in (
+            ("family", "choices"),
+            ("source", "choices"),
+            ("facts", "help_text"),
+            ("confirmation", "help_text"),
+            ("stale_mark", "help_text"),
+        ):
+            with self.subTest(field=name):
+                field = ownership._meta.get_field(name)
+                self.assertTrue(getattr(field, attribute))
+                self.assertNotIn(attribute, field.deconstruct()[3])
+
+    def test_ownership_schema_drift_is_detected(self):
+        loader = MigrationLoader(None)
+        changed = ProjectState.from_apps(apps)
+        changed.models["netbox_kea", "ipamownershiplink"].fields["source"].max_length += 1
+
+        changes = MigrationAutodetector(loader.project_state(), changed).changes(
+            graph=loader.graph, trim_to_apps={"netbox_kea"}
+        )
+        operations = [operation for migration in changes["netbox_kea"] for operation in migration.operations]
+
+        self.assertEqual(len(operations), 1)
+        self.assertEqual(operations[0].describe(), "Alter field source on ipamownershiplink")
+        self.assertEqual(operations[0].field.max_length, 17)
 
 
 class _MigrationTestCase(TransactionTestCase):
