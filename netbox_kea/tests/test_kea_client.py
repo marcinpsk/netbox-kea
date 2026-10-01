@@ -1007,7 +1007,7 @@ class TestLeaseGetByIp(TestCase):
                 self.search = (version, selector, value, state)
                 return leases
 
-        client = SearchClient(url="http://kea:8000", write_guard=branching.bind())
+        client = SearchClient(url="http://kea:8000", timeout=30, max_unpaged_leases=1000, write_guard=branching.bind())
 
         result = client.lease_get_by_ip(version=4, ip_address="192.168.1.10")
 

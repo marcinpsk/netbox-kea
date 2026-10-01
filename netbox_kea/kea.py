@@ -817,12 +817,12 @@ class KeaClient:
         verify: bool | str | None = None,
         client_cert: str | None = None,
         client_key: str | None = None,
-        timeout: int = 30,
         persist_config: bool = True,
         send_service: bool = True,
-        max_unpaged_leases: int | None = 1000,
         on_config_change: Callable[[], None] | None = None,
         *,
+        timeout: int,
+        max_unpaged_leases: int | None,
         write_guard: WriteGuard,
     ):
         """Initialise a Kea HTTP client session.
@@ -834,7 +834,7 @@ class KeaClient:
             verify: SSL verification — True/False or path to a CA bundle.
             client_cert: Path to client certificate for mutual TLS.
             client_key: Path to private key matching client_cert.
-            timeout: Request timeout in seconds.
+            timeout: Required. Request timeout in seconds; ``Server.get_client()`` passes ``kea_timeout``.
             persist_config: When True (default), ``config-write`` is issued after
                 each mutation.  Set to False when Kea configuration is managed
                 externally (e.g. Ansible, Puppet) and you do not want the plugin
@@ -846,7 +846,8 @@ class KeaClient:
                 daemon, and ISC recommends omitting it for direct connections
                 (3.0.x silently ignored it).
             max_unpaged_leases: Reject an unpaged Subnet query when Kea reports
-                more than this many covered leases. ``None`` disables the guard.
+                more than this many covered leases. ``None`` disables the guard. Required, so no default
+                here can drift from the ``lease_query_max_unpaged_leases`` plugin setting.
             on_config_change: Optional callback invoked after Kea's live configuration
                 changes. Cache invalidation failures are logged and do not interrupt
                 persistence of an already-applied change.
