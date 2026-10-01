@@ -336,7 +336,7 @@ def _reservation_reports(
 
 
 def _add_report(reports: dict[str, _Report], new: _Report) -> None:
-    """Add one record's report of an address. Records with different facts make the report a disagreement."""
+    """Add one record's report of an address. Records whose facts do not merge make the report a disagreement."""
     earlier = reports.get(new.address)
     if earlier is None:
         reports[new.address] = new
@@ -344,10 +344,24 @@ def _add_report(reports: dict[str, _Report], new: _Report) -> None:
     mac_addresses = earlier.mac_addresses + new.mac_addresses
     if earlier.facts is None and not earlier.disagreement:
         reports[new.address] = replace(new, mac_addresses=mac_addresses)
-    elif new.facts is None or new.facts == earlier.facts:
+    elif new.facts is None:
         reports[new.address] = replace(earlier, mac_addresses=mac_addresses)
+    elif earlier.facts is not None and (merged := _merge(earlier.facts, new.facts)) is not None:
+        reports[new.address] = replace(earlier, facts=merged, mac_addresses=mac_addresses)
     else:
         reports[new.address] = _Report(new.address, None, mac_addresses, disagreement=True)
+
+
+def _merge(facts: _Facts, other: _Facts) -> _Facts | None:
+    """Return the facts of two reports of one source, or None when they disagree.
+
+    The prefix lengths must be equal. An empty hostname makes no claim, so the result takes the non-empty one.
+    """
+    if facts.prefix_length != other.prefix_length:
+        return None
+    if facts.hostname and other.hostname and facts.hostname != other.hostname:
+        return None
+    return replace(facts, hostname=facts.hostname or other.hostname)
 
 
 def _count(report: SyncReport, address: str, outcome: _Outcome) -> None:
@@ -446,7 +460,7 @@ def _applied_facts(source: str, facts: _Facts, others: Iterable[IPAMOwnershipLin
         if theirs.prefix_length != facts.prefix_length:
             return None
         if link.source == source:
-            if facts.hostname and theirs.hostname and theirs.hostname != facts.hostname:
+            if _merge(facts, theirs) is None:
                 return None
         elif link.source == RESERVATION and theirs.hostname:
             hostname = ""
