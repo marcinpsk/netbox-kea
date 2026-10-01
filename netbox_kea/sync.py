@@ -188,13 +188,7 @@ def bulk_fetch_netbox_ips(ip_list: list[str]) -> dict[str, NbIPAddress]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def _compute_ip_status(
-    desired_from: str,
-    current_status: str | None,
-    *,
-    ip_str: str = "",
-    other_source_ips: frozenset[str] | None = None,
-) -> str:
+def _compute_ip_status(desired_from: str, current_status: str | None) -> str:
     """Compute the correct NetBox IP status based on sync source and current state.
 
     Implements a semantic IP lifecycle:
@@ -205,31 +199,14 @@ def _compute_ip_status(
     Args:
         desired_from: ``"lease"`` or ``"reservation"``
         current_status: current NetBox IP status, or ``None`` when the IP is new.
-        ip_str: IP address string for two-pass mode lookup.
-        other_source_ips: When provided (not ``None``), enables **two-pass mode**
-            where the set contains all IPs confirmed by the *other* sync source
-            in this run.  For lease sync, pass the pre-fetched reservation IPs;
-            for reservation sync, pass the lease IPs collected this run.
-            Two-pass mode produces fully idempotent results — IPs with both a
-            lease and a reservation converge to ``"active"`` in a single save
-            instead of toggling through intermediate states on every run.
-            Pass ``None`` (default) to use single-pass / legacy mode which
-            falls back to ``current_status`` heuristics.
 
     """
     if desired_from == "lease":
-        if other_source_ips is not None:
-            # Two-pass mode: reservation set is authoritative for this run.
-            return "active" if ip_str in other_source_ips else "dhcp"
-        # Single-pass fallback: IP already reserved in NetBox → lease activates it.
+        # IP already reserved in NetBox → lease activates it.
         if current_status == "reserved":
             return "active"
         return "dhcp"
-    # "reservation"
-    if other_source_ips is not None:
-        # Two-pass mode: lease set is authoritative for this run.
-        return "active" if ip_str in other_source_ips else "reserved"
-    # Single-pass fallback: IP already leased → reservation confirms active use.
+    # "reservation": IP already leased → reservation confirms active use.
     if current_status == "dhcp":
         return "active"
     return "reserved"
@@ -540,7 +517,6 @@ def sync_lease_to_netbox(
     lease: dict,
     *,
     cleanup: bool = True,
-    reservation_ips: frozenset[str] | None = None,
     subnet_prefix_map: dict[int, int] | None = None,
     force: bool = False,
     conflicts: list[str] | None = None,
@@ -564,11 +540,6 @@ def sync_lease_to_netbox(
                           the hostname after syncing.  Set to ``False`` in batch
                           operations where the caller will perform a single cleanup pass
                           with the full keep-set via :func:`cleanup_stale_ips_batch`.
-        reservation_ips:  Optional frozenset of all reservation IPs confirmed by the
-                          reservation pre-fetch in this sync run.  When provided,
-                          enables two-pass idempotent status computation — ``"active"``
-                          if the IP also has a reservation, ``"dhcp"`` otherwise.
-                          Pass ``None`` (default) to use single-pass fallback mode.
         subnet_prefix_map: Optional ``{subnet-id: prefix_len}`` map built from the
                           Kea config.  Used to resolve the authoritative mask and
                           to correct legacy ``/32`` rows on existing Kea-synced IPs.
@@ -612,7 +583,7 @@ def sync_lease_to_netbox(
                 conflicts.append(ip_str)
             return ip_obj, False, False
 
-    status = _compute_ip_status("lease", current_status, ip_str=ip_str, other_source_ips=reservation_ips)
+    status = _compute_ip_status("lease", current_status)
     changed = _apply_ip_fields(ip_obj, status=status, hostname=hostname, claim=force)
 
     # Correct the mask on existing Kea-synced IPs (e.g. a legacy /32 that should
@@ -671,7 +642,6 @@ def sync_reservation_to_netbox(
     reservation: Reservation,
     *,
     cleanup: bool = True,
-    lease_ips: frozenset[str] | None = None,
     force: bool = False,
     conflicts: list[str] | None = None,
 ) -> ReservationSyncResult:
@@ -690,11 +660,6 @@ def sync_reservation_to_netbox(
                      for the hostname after syncing.  Set to ``False`` in batch
                      operations where the caller will perform a single cleanup
                      pass with the full keep-set via :func:`cleanup_stale_ips_batch`.
-        lease_ips:   Optional frozenset of all lease IPs confirmed by the lease
-                     sync in this run.  When provided, enables two-pass idempotent
-                     status computation — ``"active"`` if the IP also has a lease,
-                     ``"reserved"`` otherwise.  Pass ``None`` (default) to use
-                     single-pass fallback mode.
         force:       When ``False`` (default), any address whose existing NetBox IP
                      is *foreign* (manually curated — see :func:`is_kea_managed_ip`)
                      is skipped and left untouched; sibling addresses in the same
@@ -758,7 +723,7 @@ def sync_reservation_to_netbox(
                     primary_obj = ip_obj
                 continue
 
-        status = _compute_ip_status("reservation", current_status, ip_str=ip_str, other_source_ips=lease_ips)
+        status = _compute_ip_status("reservation", current_status)
         changed = _apply_ip_fields(ip_obj, status=status, hostname=hostname, claim=force)
 
         # Correct the mask on existing Kea-synced IPs from the authoritative
