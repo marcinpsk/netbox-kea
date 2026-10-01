@@ -35,7 +35,6 @@ from .sync import (
     _get_stale_cleanup_mode,
     _ip_description,
     _record_hostname,
-    _resolve_prefix_length,
     _single_match,
     _sync_mac_address,
 )
