@@ -16,9 +16,8 @@ Lease endpoints accept POST with:
 Returns an HTMX HTML fragment (<td> content) with a link to the new/updated
 NetBox IPAddress, or an error message if something went wrong.
 
-These tests drive the **real** ``KeaClient`` and the **real** sync functions
-(``sync_lease_to_netbox`` / ``sync_reservation_to_netbox``) — they assert the
-NetBox ``IPAddress`` rows those create. Only the HTTP boundary to Kea is stubbed
+These tests drive the real ``KeaClient`` and IPAM synchronization operations.
+They assert the NetBox ``IPAddress`` rows and ownership links. Only the HTTP boundary to Kea is stubbed
 via ``kea_stub.stub_kea``:
 
 * single lease sync       → ``lease{v}-get`` (echoes the posted IP back)
@@ -108,6 +107,20 @@ class _SyncViewBase(TestCase):
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestLease4SyncView(_SyncViewBase):
     """POST to server_lease4_sync creates/updates a NetBox IPAddress."""
+
+    def test_duplicate_ipam_rows_report_a_sync_error_without_changing_either(self):
+        from netbox_kea.models import IPAMOwnershipLink
+
+        NbIP.objects.create(address="198.18.0.10/24", description="[kea-sync: lease]")
+        NbIP.objects.create(address="198.18.0.10/32", description="[kea-sync: lease]")
+        before = list(NbIP.objects.order_by("pk").values())
+        response = self.client.post(
+            reverse("plugins:netbox_kea:server_lease4_sync", args=[self.server.pk]),
+            {"ip_address": "198.18.0.10"},
+        )
+        self.assertContains(response, "Sync error: see server logs", status_code=500)
+        self.assertEqual(list(NbIP.objects.order_by("pk").values()), before)
+        self.assertFalse(IPAMOwnershipLink.objects.exists())
 
     def setUp(self):
         super().setUp()
@@ -359,6 +372,36 @@ class TestReservation6SyncView(_SyncViewBase):
         ip = NbIP.objects.filter(address__net_host="2001:db8:1::50").first()
         self.assertIsNotNone(ip)
         self.assertEqual(ip.status, "reserved")
+
+    def test_multi_address_sync_reports_and_links_each_address_in_server_vrf(self):
+        from ipam.models import VRF
+
+        from netbox_kea.models import IPAMOwnershipLink
+
+        vrf = VRF.objects.create(name="reservation-vrf")
+        self.server.sync_vrf = vrf
+        self.server.save()
+        with stub_kea(
+            {
+                **_catalogue_responses(6, 1, "2001:db8:1::/64"),
+                "reservation-get": _reservation_get(
+                    "multi.example.com",
+                    "2001:db8:1::50",
+                    version=6,
+                    duid="01:02:03:04",
+                    **{"ip-addresses": ["2001:db8:1::50", "2001:db8:1::51"]},
+                ),
+            }
+        ):
+            response = self.client.post(self._url())
+        self.assertContains(response, "Synchronized 2/2")
+        for address in ("2001:db8:1::50", "2001:db8:1::51"):
+            self.assertContains(response, address)
+            ip = NbIP.objects.get(vrf=vrf, address__net_host=address)
+            self.assertContains(response, ip.get_absolute_url())
+            link = IPAMOwnershipLink.objects.get(ip_address=ip)
+            self.assertEqual((link.server_id, link.family, link.source), (self.server.pk, 6, "reservation"))
+        self.assertEqual(NbIP.objects.count(), 2)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
