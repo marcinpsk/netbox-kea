@@ -1786,6 +1786,96 @@ class IPAMPhaseConcurrencyTest(TransactionTestCase):
         released.refresh_from_db()
         self.assertEqual((released.status, released.description), ("active", "Operator network"))
 
+    def test_outer_import_does_not_wait_on_a_claim_blocked_by_server_deletion(self):
+        from django.db import DatabaseError
+        from netaddr import IPNetwork
+
+        from netbox_kea.integrations.dhcp_plugin import ImportSummary, import_reservation_snapshot
+        from netbox_kea.ipam_reconciliation import ReservationObservation, SubnetClaim
+        from netbox_kea.models import Server
+        from netbox_kea.reservations import ReservationSnapshot
+
+        owner = _make_db_server(name="import-owner", dhcp4=False, dhcp6=True)
+        sibling = _make_db_server(name="sibling", dhcp4=False, dhcp6=True)
+        first = Prefix.objects.create(prefix="2001:db8::/64", description="[kea-sync: delegated prefix]")
+        second = Prefix.objects.create(prefix="2001:db8:1::/64", description="[kea-sync: delegated prefix]")
+        for server, prefix, source in (
+            (owner, first, "delegated-prefix"),
+            (owner, second, "delegated-prefix"),
+            (sibling, second, "subnet"),
+        ):
+            IPAMOwnershipLink.objects.create(
+                server=server,
+                prefix=prefix,
+                family=6,
+                source=source,
+                adopted=True,
+                facts={"prefix_length": 64},
+                confirmation=next_confirmation_number(),
+            )
+        observation = ReservationObservation(ReservationSnapshot(6, (), (), True, None), next_confirmation_number())
+        later_row = threading.Event()
+        resume_import = threading.Event()
+        cascaded = threading.Event()
+        sqlstates = []
+        identity_locks = 0
+        summary = ImportSummary()
+
+        def observe_import(execute, sql, params, many, context):
+            nonlocal identity_locks
+            if "pg_advisory" in sql or "pg_try_advisory" in sql:
+                identity_locks += 1
+                if identity_locks == 2:
+                    later_row.set()
+                    if not resume_import.wait(timeout=30):
+                        raise TimeoutError("The import was not resumed")
+            return observe_errors(execute, sql, params, many, context)
+
+        def observe_errors(execute, sql, params, many, context):
+            try:
+                return execute(sql, params, many, context)
+            except DatabaseError as exc:
+                sqlstates.append(getattr(exc.__cause__, "sqlstate", None))
+                raise
+
+        def observe_delete(execute, sql, params, many, context):
+            if sql.startswith('DELETE FROM "netbox_kea_server"'):
+                cascaded.set()
+            return observe_errors(execute, sql, params, many, context)
+
+        def run_import():
+            with connection.execute_wrapper(observe_import):
+                import_reservation_snapshot(owner, None, observation, {}, summary)
+
+        def delete_server():
+            with connection.execute_wrapper(observe_delete):
+                return Server.objects.get(pk=sibling.pk).delete()
+
+        def claim_network():
+            with connection.execute_wrapper(observe_errors):
+                return claim(sibling, 6, [SubnetClaim(IPNetwork(str(second.prefix)))], force=False)
+
+        self._start("import", run_import)
+        try:
+            self.assertTrue(later_row.wait(timeout=30), self.results)
+            self._start("delete-server", delete_server)
+            self.assertTrue(cascaded.wait(timeout=30), self.results)
+            self._start("claim", claim_network)
+            self._wait_for_lock_waits(2)
+        finally:
+            resume_import.set()
+        self._join()
+
+        self.assertNotIn("40P01", sqlstates)
+        self.assertNotIsInstance(self.results["delete-server"], BaseException)
+        self.assertNotIsInstance(self.results["import"], BaseException)
+        self.assertEqual((summary.errors, summary.ownership.prefix_errors), (1, 1))
+        self.assertFalse(summary.ownership.complete)
+        self.assertTrue(IPAMOwnershipLink.objects.filter(server=owner, prefix=second).exists())
+        retry = ImportSummary()
+        import_reservation_snapshot(owner, None, observation, {}, retry)
+        self.assertEqual(retry.errors, 0)
+
     def test_receipt_completion_does_not_block_an_ownership_foreign_key_at_commit(self):
         from django.db import transaction
 
