@@ -847,11 +847,19 @@ class TestReservationCheckNetboxIPView(_SyncViewBase):
         self.assertIn("alert-info", body)
         self.assertIn("Already in NetBox IPAM", body)
 
-    def test_info_alert_for_blank_description_ip(self):
-        NbIP.objects.create(address="10.0.40.2/24", status="active", description="")
-        response = self.client.get(self._url(), {"ip": "10.0.40.2"})
-        body = response.content.decode()
-        self.assertIn("alert-info", body)
+    def test_warning_for_blank_description_ip_leaves_row_and_links_unchanged(self):
+        ip = NbIP.objects.create(address="198.18.0.2/24", status="active", description="")
+        before_row = NbIP.objects.values().get(pk=ip.pk)
+        before_links = list(IPAMOwnershipLink.objects.filter(ip_address=ip).order_by("pk").values())
+        response = self.client.get(self._url(), {"ip": "198.18.0.2"})
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "alert-warning")
+        self.assertContains(response, "This IP exists in NetBox and was <strong>not</strong> created by Kea sync")
+        self.assertContains(response, "Syncing will overwrite this entry.")
+        self.assertNotContains(response, "alert-info")
+        self.assertNotContains(response, "Already in NetBox IPAM")
+        self.assertEqual(NbIP.objects.values().get(pk=ip.pk), before_row)
+        self.assertEqual(list(IPAMOwnershipLink.objects.filter(ip_address=ip).order_by("pk").values()), before_links)
 
     def test_warning_alert_for_foreign_ip(self):
         NbIP.objects.create(address="10.0.40.3/24", status="active", description="Router loopback")
