@@ -65,6 +65,9 @@ forked, and predate its conventional-commit history.
 - Resolve lease ownership facts from the Kea catalogue
   ([`163ee15`](https://github.com/marcinpsk/netbox-kea/commit/163ee153e6eec126c5b7f30eb4e664fca6978dc1))
 
+- Retain every commit's release guidance in changelog
+  ([`c12036d`](https://github.com/marcinpsk/netbox-kea/commit/c12036d240e4275e2dc725e89f22cd31139e8026))
+
 - Sync manually added leases without explicit Subnet IDs
   ([`a0c5696`](https://github.com/marcinpsk/netbox-kea/commit/a0c5696f3db465e4f951cef367640bed8eb38b88))
 
@@ -129,6 +132,9 @@ forked, and predate its conventional-commit history.
 
 - Lease IP addresses use the Sync VRF, and the summary counts owner disagreements
   ([`7c22d2c`](https://github.com/marcinpsk/netbox-kea/commit/7c22d2c2b0b9f903f7eb91288b267e4073ece533))
+
+- Refresh generated upgrade notes after develop rebase
+  ([`cd4cc88`](https://github.com/marcinpsk/netbox-kea/commit/cd4cc88ecb52e65d58dcb64b3c17901233d7cb5e))
 
 ### Features
 
@@ -195,6 +201,18 @@ forked, and predate its conventional-commit history.
 
 - **ui**: The browser cleanup finds its NetBox IP by the sync marker
   ([`8229a76`](https://github.com/marcinpsk/netbox-kea/commit/8229a765f325292ee5c54a428418e673597f37c0))
+
+### Additional Release Information
+
+- `stale_ip_cleanup = "remove"` now removes expired leases, deleted Reservations and hostless leases
+  after their last ownership link becomes stale. On upgrade, it removes only lease rows that expire
+  after adoption. Rows already stale get no owner and stay unowned and counted.
+
+- When every configured Server uses the same non-global sync_vrf, an unowned global marker address
+  moves into it with its primary key and changelog intact. An existing owner or destination
+  collision prevents the move. Mixed VRFs keep the global row. The read-only
+  Server.ipam_first_complete_at field records initial completion across enabled job and DHCP import
+  observations.
 
 
 ## v1.12.0 (2026-10-01)
