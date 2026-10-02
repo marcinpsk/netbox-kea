@@ -41,6 +41,8 @@ from .sync import (
 )
 
 if TYPE_CHECKING:
+    from dcim.models import MACAddress
+
     from .models import Server
     from .subnet_catalogue import CompleteCatalogueSnapshot
 
@@ -246,6 +248,7 @@ class AddressClaim:
     address: str
     outcome: _Outcome | Literal["error", "not-applicable"]
     ip: IPAddress | None = None
+    resolved_macs: Mapping[tuple[str, str], MACAddress] = field(default_factory=dict)
 
     @property
     def synchronized(self) -> bool:
@@ -338,15 +341,19 @@ def claim(
     def apply(row: _Report) -> AddressClaim:
         outcome = _claim(server, family, source, row, force=force)
         ip = IPAddress.objects.filter(vrf_id=server.sync_vrf_id, address__net_host=row.address).first()
+        resolved_macs = {}
         if outcome != "conflict":
             for hardware, hostname in row.mac_addresses:
-                if sync_mac_address(hardware, hostname) is None and source == RESERVATION:
+                mac = sync_mac_address(hardware, hostname)
+                if mac is None and source == RESERVATION:
                     raise _RowRefused("The required hardware address could not be resolved")
+                if mac is not None:
+                    resolved_macs[hardware, hostname] = mac
         if row.facts is None and not row.disagreement and outcome == "unchanged":
             if ip is not None and not _is_owned_description(ip.description):
                 return AddressClaim(row.address, "conflict", ip)
             return AddressClaim(row.address, "not-applicable", ip)
-        return AddressClaim(row.address, outcome, ip)
+        return AddressClaim(row.address, outcome, ip, resolved_macs)
 
     report = SyncReport()
     for row, result in _each_row(reports.values(), report, source, apply, lambda row: row.address):
@@ -991,6 +998,11 @@ def _run_network_phase(
     return None if phase.source in report.incomplete else phase.observation.cutoff
 
 
+def _network_marker_kind(sources: Collection[str]) -> MarkerKind:
+    """Prefer the Subnet marker when a Prefix has both live ownership sources."""
+    return "pool" if "pool" in sources else ("subnet" if "subnet" in sources else "delegated prefix")
+
+
 def _claim_network(
     server: Server, family: Family, source: str, row: _NetworkReport, *, force: bool = False
 ) -> _Outcome:
@@ -1009,7 +1021,7 @@ def _claim_network(
             "end_address": IPNetwork(f"{row.end}/{row.prefix_length}"),
         }
     obj = _single_match(query, f"{source} {row.address}", filters)
-    kind: MarkerKind = "pool" if source == "pool" else ("subnet" if source == "subnet" else "delegated prefix")
+    kind = _network_marker_kind({source})
     if obj is None:
         if row.disagreement:
             return "disagreement"
@@ -1034,7 +1046,7 @@ def _claim_network(
     if any(_is_live(link) and link.facts["prefix_length"] != row.prefix_length for link in others):
         _store_link(own, server, family, source, obj, row.facts(), stale_mark=_kept_mark(own))
         return "disagreement"
-    description = rewrite_marker(marker, kind)
+    description = rewrite_marker(marker, _network_marker_kind({source} | _live_sources(others)))
     if description is None:
         _store_link(own, server, family, source, obj, row.facts(), stale_mark=_kept_mark(own))
         return "conflict"
@@ -1097,10 +1109,7 @@ def _remove_stale_network_link(candidate: IPAMOwnershipLink, field_name: str, cu
         changed = False
         if _live_sources(others):
             sources = _live_sources(others)
-            kind: MarkerKind = (
-                "pool" if field_name == "ip_range" else ("subnet" if "subnet" in sources else "delegated prefix")
-            )
-            description = rewrite_marker(marker, kind)
+            description = rewrite_marker(marker, _network_marker_kind(sources))
             if description is None:
                 return "conflict"
             changed = locked.status != "active" or locked.description != description

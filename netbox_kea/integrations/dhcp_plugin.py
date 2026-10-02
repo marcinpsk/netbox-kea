@@ -68,7 +68,6 @@ from ..mappers.kea_to_dhcp import (
 from ..pools import parse_pool
 from ..reservations import (
     TRAVERSAL_DIAGNOSTIC_CODES,
-    GlobalReservationScope,
     InSubnetReservationScope,
     Reservation,
 )
@@ -167,16 +166,22 @@ def _reservation_addresses(reservation: Reservation, claims: ClaimResult, summar
             f"{', '.join(unattached)} have no NetBox IP and were not attached"
         )
     hardware = reservation.identity.hardware_address
-    mac_obj = _resolve_mac(hardware, reservation.hostname) if hardware else None
+    mac_obj = None
+    if hardware:
+        for address in reservation.addresses:
+            mac_obj = claims.addresses[str(address)].resolved_macs.get((hardware, reservation.hostname))
+            if mac_obj is not None:
+                break
+        if mac_obj is None:
+            mac_obj = _resolve_mac(hardware, reservation.hostname)
     return ipv4_ip, ipv6_ips, mac_obj
 
 
 def _resolve_mac(hw_address: str | None, hostname: str = ""):
     """Return the ``dcim.MACAddress`` row for *hw_address*, creating it when absent.
 
-    ``sync_reservation_to_netbox`` also creates this row, but it returns Not Applicable
-    first for a Global or addressless Reservation. Only reading here would then leave
-    the imported reservation with no identifier, so it could never match itself again.
+    Address claims return their resolved MAC rows. Global, addressless and curated
+    Reservations can have no such result, so they resolve the DHCP identifier here.
     """
     if not hw_address:
         return None
@@ -898,13 +903,8 @@ def import_reservation_snapshot(
                 summary.reservations_skipped += 1
                 summary.warn(f"reservation for unknown subnet-id {subnet_id} skipped")
                 continue
-        elif isinstance(reservation.scope, GlobalReservationScope):
-            subnet_obj = None
         else:
-            complete = False
-            summary.reservations_skipped += 1
-            summary.warn("reservation has an unsupported scope and was skipped")
-            continue
+            subnet_obj = None
         obj = _upsert_reservation(reservation, subnet_obj, server, dhcp_server, custom_defs, summary, claims)
         if obj is None:
             complete = False

@@ -51,6 +51,10 @@ For each grouped address, apply its ownership report and resolve its required MA
 If a required MAC cannot be resolved, refuse that row and roll back its IP and link changes.
 The returned address outcome is an error, and unrelated addresses continue.
 The import must not attach an error result.
+Each successful address result returns its resolved MAC rows, keyed by hardware address and hostname.
+The import checks every address outcome before it attaches the exact returned MAC row.
+This closes the late lookup window where a duplicate MAC could invalidate an already successful claim.
+Other DHCP row failures do not roll back previously successful address claims.
 Addressless and Global hardware Reservations still resolve their MAC for the DHCP row.
 Their row save fails if the required MAC cannot be resolved.
 
