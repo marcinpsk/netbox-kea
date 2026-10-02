@@ -446,7 +446,7 @@ def _complete_observation(server: Server, workflow: Workflow, observed: SourceSc
 
 
 def _pending_adoptions() -> set[tuple[Family, str]]:
-    """Read potential owners once for all objects in one reconciliation or count snapshot."""
+    """Read potential owners for the current policy or one count snapshot."""
     pending: set[tuple[Family, str]] = set()
     fields = {
         "lease": "ip_address",
@@ -466,6 +466,18 @@ def _pending_adoptions() -> set[tuple[Family, str]]:
 
 def _adoption_waits(link: IPAMOwnershipLink, object_field: str, pending: set[tuple[Family, str]]) -> bool:
     return link.adopted and (link.family, object_field) in pending
+
+
+def _cleanup_link(pk: int) -> IPAMOwnershipLink | None:
+    """Hold adoption policy writes until this cleanup transaction commits."""
+    link = IPAMOwnershipLink.objects.filter(pk=pk).first()
+    if link is not None and link.adopted:
+        with connection.cursor() as cursor:
+            # Table locks also cover new Servers and bulk configuration updates.
+            cursor.execute("LOCK TABLE netbox_kea_server, netbox_kea_syncconfig IN SHARE MODE")
+        # A Server deletion may have removed the link while the policy lock waited.
+        link = IPAMOwnershipLink.objects.filter(pk=pk).first()
+    return link
 
 
 def upgrade_counts() -> SyncReport:
@@ -711,15 +723,14 @@ def reconcile(server: Server, family: Family, phases: Sequence[Phase]) -> SyncRe
     cutoffs = {phase.source: _run_phase(server, family, phase, report) for phase in phases}
     complete = {source for source, cutoff in cutoffs.items() if cutoff is not None}
     report.completed_sources.update(complete)
-    pending = _pending_adoptions()
     last_links_go = LEASE in complete and (RESERVATION in complete or not server.sync_reservations_enabled)
     for source, cutoff in cutoffs.items():
         if cutoff is None:
             continue
         if source in {LEASE, RESERVATION}:
-            _remove_stale_links(server, family, source, cutoff, mode, last_links_go, report, pending)
+            _remove_stale_links(server, family, source, cutoff, mode, last_links_go, report)
         else:
-            _remove_stale_network_links(server, family, source, cutoff, report, pending)
+            _remove_stale_network_links(server, family, source, cutoff, report)
     logger.info(
         "Server %s (v%s): IPAM reconciliation created=%d updated=%d removed=%d deprecated=%d conflicts=%d"
         " disagreements=%d errors=%d complete=%s",
@@ -1175,7 +1186,6 @@ def _remove_stale_links(
     mode: StaleCleanupMode,
     last_links_go: bool,
     report: SyncReport,
-    pending: set[tuple[Family, str]],
 ) -> None:
     """Remove the links of a complete phase that no run confirmed since *cutoff*.
 
@@ -1194,7 +1204,7 @@ def _remove_stale_links(
         candidates,
         report,
         source,
-        lambda stale: _remove_stale_link(stale, cutoff, mode, last_links_go, referenced, pending),
+        lambda stale: _remove_stale_link(stale, cutoff, mode, last_links_go, referenced),
         lambda stale: f"stale {source} link of {stale.address} of Server {server.name}",
     )
     for stale, outcome in rows:
@@ -1218,12 +1228,11 @@ def _remove_stale_link(
     mode: StaleCleanupMode,
     last_links_go: bool,
     referenced: set[int],
-    pending: set[tuple[Family, str]],
 ) -> str:
     """Decide one stale link under the identity lock and the row lock of its object."""
     _lock_identity(stale.vrf_id, stale.address)
     ip = IPAddress.objects.select_for_update().filter(pk=stale.ip_pk).first()
-    link = IPAMOwnershipLink.objects.filter(pk=stale.pk).first()
+    link = _cleanup_link(stale.pk)
     if ip is None or link is None or link.confirmation >= cutoff:
         return "kept"
     if (ip.vrf_id, _host(ip.address)) != (stale.vrf_id, stale.address):
@@ -1243,7 +1252,7 @@ def _remove_stale_link(
             # On a conflict the link stays, so the status still matches the links and the next run tries again.
             link.delete()
         return outcome
-    if _adoption_waits(link, "ip_address", pending):
+    if link.adopted and _adoption_waits(link, "ip_address", _pending_adoptions()):
         return "waiting"
     if mode == "none" or ip.pk in referenced:
         link.delete()
@@ -1387,9 +1396,7 @@ def _claim_network(
     return "updated" if changed else "unchanged"
 
 
-def _remove_stale_network_links(
-    server: Server, family: Family, source: str, cutoff: int, report: SyncReport, pending: set[tuple[Family, str]]
-) -> None:
+def _remove_stale_network_links(server: Server, family: Family, source: str, cutoff: int, report: SyncReport) -> None:
     """Drop the stale links of a complete Subnet or Pool phase. These objects are never removed."""
     field_name = "ip_range" if source == "pool" else "prefix"
     links = IPAMOwnershipLink.objects.filter(server=server, family=family, source=source, confirmation__lt=cutoff)
@@ -1399,7 +1406,7 @@ def _remove_stale_network_links(
         candidates,
         report,
         source,
-        lambda link: _remove_stale_network_link(link, field_name, cutoff, pending),
+        lambda link: _remove_stale_network_link(link, field_name, cutoff),
         lambda link: f"stale {source} link {link.pk}",
     ):
         if outcome == "waiting":
@@ -1415,14 +1422,12 @@ def _remove_stale_network_links(
             )
 
 
-def _remove_stale_network_link(
-    candidate: IPAMOwnershipLink, field_name: str, cutoff: int, pending: set[tuple[Family, str]]
-) -> str:
+def _remove_stale_network_link(candidate: IPAMOwnershipLink, field_name: str, cutoff: int) -> str:
     obj = getattr(candidate, field_name)
     address = str(obj.prefix) if field_name == "prefix" else f"{_host(obj.start_address)} - {_host(obj.end_address)}"
     _lock_network(obj.vrf_id, candidate.source, address)
     locked = type(obj).objects.select_for_update().filter(pk=obj.pk).first()
-    link = IPAMOwnershipLink.objects.filter(pk=candidate.pk).first()
+    link = _cleanup_link(candidate.pk)
     if locked is None or link is None or link.confirmation >= cutoff:
         return "kept"
     current_address = (
@@ -1452,7 +1457,7 @@ def _remove_stale_network_link(
                 locked.save()
         link.delete()
         return "updated" if changed else "unlinked"
-    if _adoption_waits(link, field_name, pending):
+    if link.adopted and _adoption_waits(link, field_name, _pending_adoptions()):
         return "waiting"
     referenced = (
         dhcp_plugin.sys4_referenced_prefix_ids()

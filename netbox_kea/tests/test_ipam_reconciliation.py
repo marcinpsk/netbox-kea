@@ -1475,6 +1475,121 @@ class IPAMPhaseConcurrencyTest(TransactionTestCase):
             self.fail(f"{name} did not return a report: {result!r}")
         return result
 
+    def test_source_enabled_while_cleanup_waits_preserves_the_adopted_address(self):
+        from netbox_kea.ipam_reconciliation import upgrade_counts
+
+        for index, mode in enumerate(("remove", "deprecate", "none"), start=1):
+            with self.subTest(mode=mode), override_settings(PLUGINS_CONFIG=_config(mode)):
+                owner = _server(f"owner-{mode}")
+                other = _server(f"other-{mode}", sync_reservations_enabled=False)
+                _run_job(owner, [])
+                _run_job(other, [])
+                address = f"198.18.0.{index}"
+                ip = NbIP.objects.create(address=f"{address}/24", description="[kea-sync: lease]")
+                _reconcile(owner, [_lease(address)])
+                holder = self._hold("SELECT id FROM ipam_ipaddress WHERE id = %s FOR UPDATE", [ip.pk])
+
+                with _kea():
+                    phases = _phases(owner)
+                    self._start(mode, lambda owner=owner, phases=phases: reconcile(owner, 4, phases))
+                    self._wait_for_lock_waits(1)
+                    other.sync_reservations_enabled = True
+                    other.save(update_fields=["sync_reservations_enabled"])
+                    self.assertIn(("ip_address", ip.pk), upgrade_counts().waiting_objects)
+                    holder.commit()
+                    self._join()
+
+                report = self._report(mode)
+                self.assertEqual((report.errors, report.waiting, report.removed, report.deprecated), (0, 1, 0, 0))
+                ip.refresh_from_db()
+                self.assertEqual(ip.status, "dhcp")
+                self.assertTrue(IPAMOwnershipLink.objects.filter(ip_address=ip, adopted=True).exists())
+                _run_job(other, [])
+                _reconcile(owner)
+                if mode == "remove":
+                    self.assertFalse(NbIP.objects.filter(pk=ip.pk).exists())
+                elif mode == "none":
+                    self.assertFalse(IPAMOwnershipLink.objects.filter(ip_address=ip).exists())
+                else:
+                    ip.refresh_from_db()
+                    self.assertEqual(ip.status, "deprecated")
+
+    def test_source_enabled_while_cleanup_waits_preserves_adopted_networks(self):
+        from ipam.models import IPRange
+        from netaddr import IPNetwork
+
+        from netbox_kea.ipam_reconciliation import PoolPhase, SubnetPhase, read_catalogue
+        from netbox_kea.tests.test_prefix_pool_reconciliation import SUBNET as NETWORK_SUBNET
+
+        for field, phase_type, flag, lock_sql in (
+            ("prefix", SubnetPhase, "sync_prefixes_enabled", "SELECT id FROM ipam_prefix WHERE id = %s FOR UPDATE"),
+            ("ip_range", PoolPhase, "sync_ip_ranges_enabled", "SELECT id FROM ipam_iprange WHERE id = %s FOR UPDATE"),
+        ):
+            with self.subTest(field=field):
+                owner = _server(f"owner-{field}", sync_deprecate_prefixes_and_ranges=True)
+                other = _server(f"other-{field}", **{flag: False})
+                _run_job(owner, [])
+                _run_job(other, [])
+                if field == "prefix":
+                    obj = Prefix.objects.create(prefix=NETWORK_SUBNET["subnet"], description="[kea-sync: subnet]")
+                else:
+                    obj = IPRange.objects.create(
+                        start_address=IPNetwork("198.18.0.10/24"),
+                        end_address=IPNetwork("198.18.0.20/24"),
+                        description="[kea-sync: pool]",
+                    )
+                with stub_kea(_catalogue_responses_for_subnets(4, [NETWORK_SUBNET])):
+                    reconcile(owner, 4, [phase_type(read_catalogue(owner, 4))])
+                holder = self._hold(lock_sql, [obj.pk])
+                with stub_kea(_catalogue_responses_for_subnets(4, [])):
+                    phase = phase_type(read_catalogue(owner, 4))
+                    self._start(field, lambda owner=owner, phase=phase: reconcile(owner, 4, [phase]))
+                    self._wait_for_lock_waits(1)
+                    setattr(other, flag, True)
+                    other.save(update_fields=[flag])
+                    holder.commit()
+                    self._join()
+
+                obj.refresh_from_db()
+                report = self._report(field)
+                self.assertEqual((report.prefix_errors, report.waiting, report.deprecated), (0, 1, 0))
+                self.assertEqual(obj.status, "active")
+                self.assertTrue(IPAMOwnershipLink.objects.filter(**{field: obj}, adopted=True).exists())
+                _run_job(other, [])
+                with stub_kea(_catalogue_responses_for_subnets(4, [])):
+                    reconcile(owner, 4, [phase_type(read_catalogue(owner, 4))])
+                obj.refresh_from_db()
+                self.assertEqual(obj.status, "deprecated")
+
+    def test_policy_writes_cannot_commit_between_the_barrier_check_and_cleanup(self):
+        from netbox_kea.models import SyncConfig
+
+        SyncConfig.objects.filter(pk=1).update(sync_reservations_enabled=False)
+        owner = _server("owner")
+        _run_job(owner, [])
+        ip = NbIP.objects.create(address="198.18.0.1/24", description="[kea-sync: lease]")
+        _reconcile(owner, [_lease("198.18.0.1")])
+        link = IPAMOwnershipLink.objects.get(ip_address=ip)
+        holder = self._hold("SELECT id FROM netbox_kea_ipamownershiplink WHERE id = %s FOR UPDATE", [link.pk])
+
+        with override_settings(PLUGINS_CONFIG=_config("deprecate")), _kea():
+            phases = _phases(owner)
+            self._start("cleanup", lambda: reconcile(owner, 4, phases))
+            self._wait_for_lock_waits(1)
+            self._start("new-owner", lambda: _server("new-owner"))
+            self._wait_for_lock_waits(2)
+            self._start("global-policy", lambda: SyncConfig.objects.filter(pk=1).update(sync_reservations_enabled=True))
+            self._wait_for_lock_waits(3)
+            holder.commit()
+            self._join()
+
+        self.assertNotIsInstance(self.results["new-owner"], BaseException)
+        self.assertEqual(self.results["global-policy"], 1)
+        report = self._report("cleanup")
+        self.assertEqual((report.errors, report.waiting, report.deprecated), (0, 0, 1))
+        ip.refresh_from_db()
+        self.assertEqual(ip.status, "deprecated")
+
     def test_upgrade_competing_claims_move_one_locked_global_row(self):
         vrf = VRF.objects.create(name="shared-upgrade")
         first = _server("first", sync_vrf=vrf)

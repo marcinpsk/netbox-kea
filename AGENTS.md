@@ -465,9 +465,9 @@ resort, reserved for true external boundaries you cannot run locally.
   keys dedupe and track failures; the `_FETCH_ERROR` sentinel distinguishes lookup
   errors from genuine not-found.
 - **Sync lifecycle**: IP status is `dhcp` (dynamic lease only), `reserved`
-  (reservation only), or `active` (both). `cleanup_stale_ips_batch()` groups by
-  `(hostname, address_family)`; cleanup is skipped when errors > 0. Single-sync paths
-  (`_sync()`) use `cleanup=False` (a one-record sync has no complete keep-set).
+  (reservation only), or `active` (both). `reconcile()` claims all phase reports
+  before it removes stale ownership links for complete phases. An incomplete phase
+  keeps its links. `claim()` handles selected records without stale cleanup.
 - **Kea option aliases**: DNS options can be `domain-name-servers` or `dns-servers`;
   NTP can be `ntp-servers` or `sntp-servers`. Search both alias tuples.
 - **Forms**: lease search forms inherit `BaseLeasesSarchForm` (the typo is
