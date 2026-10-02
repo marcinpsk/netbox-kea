@@ -1273,43 +1273,6 @@ class DhcpPluginStaleCleanupGuardTest(TestCase):
     def setUp(self):
         self.server = _make_db_server(name=f"kea-clean-{timezone.now().timestamp()}")
 
-    def test_cleanup_skips_sys4_referenced_ip(self):
-        from ipam.models import IPAddress
-
-        from netbox_kea.integrations import dhcp_plugin
-        from netbox_kea.sync import _cleanup_stale_ips
-
-        # Two Kea-synced IPs share one hostname; one will be referenced by a reservation.
-        conf = {
-            "subnet4": [
-                {
-                    "id": 1,
-                    "subnet": "10.77.0.0/24",
-                    "reservations": [
-                        {"hw-address": "aa:bb:cc:dd:ee:77", "ip-address": "10.77.0.50", "hostname": "mover"}
-                    ],
-                }
-            ]
-        }
-        dhcp_plugin.import_server_config(self.server, parse_dhcp_config(conf, 4), _reservation_snapshot(conf, 4))
-        referenced = IPAddress.objects.get(address="10.77.0.50/24")
-
-        # An unreferenced, same-hostname Kea-synced IP (the kind cleanup is meant to remove).
-        unreferenced = IPAddress.objects.create(
-            address="10.77.0.51/24",
-            status="dhcp",
-            dns_name="mover",
-            description="[kea-sync: lease]",
-        )
-
-        # Device "moved" to a third IP → cleanup runs for hostname "mover".
-        cleaned = _cleanup_stale_ips("10.77.0.99", "mover", mode="remove")
-
-        self.assertEqual(cleaned, 1)  # only the unreferenced one
-        self.assertFalse(IPAddress.objects.filter(pk=unreferenced.pk).exists())
-        self.assertTrue(IPAddress.objects.filter(pk=referenced.pk).exists())
-        self.assertIn(referenced.pk, dhcp_plugin.sys4_referenced_ip_ids())
-
     def test_reconciliation_never_removes_or_deprecates_a_referenced_ip(self):
         from ipam.models import IPAddress
 
@@ -1319,8 +1282,10 @@ class DhcpPluginStaleCleanupGuardTest(TestCase):
         from netbox_kea.models import IPAMOwnershipLink
 
         from .kea_stub import _catalogue_responses_for_subnets
+        from .test_ipam_reconciliation import _run_job
         from .test_jobs import _lease_page
 
+        _run_job(self.server, [])
         conf = {
             "subnet4": [
                 {

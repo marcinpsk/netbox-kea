@@ -15,7 +15,7 @@ from contextlib import suppress
 
 from core.exceptions import JobFailed
 from core.models import Job
-from django.db import connection, connections, transaction
+from django.db import connection, connections
 from django.test import TestCase, TransactionTestCase, override_settings
 from ipam.models import VRF, Prefix
 from ipam.models import IPAddress as NbIP
@@ -26,7 +26,6 @@ from netbox_kea.ipam_reconciliation import (
     LeasePhase,
     ReservationPhase,
     SyncReport,
-    _lock_identity,
     claim,
     reconcile,
 )
@@ -34,10 +33,8 @@ from netbox_kea.jobs import KeaIpamSyncJob
 from netbox_kea.models import (
     CONFIRMATION_SEQUENCE,
     IPAMOwnershipLink,
-    IPAMOwnershipSource,
     next_confirmation_number,
 )
-from netbox_kea.sync import _cleanup_stale_ips
 from netbox_kea.tests.kea_stub import _catalogue_responses_for_subnets, _res_page, stub_kea
 from netbox_kea.tests.test_jobs import _PLUGINS_CONFIG_CLEANUP, _lease_page, _make_job, _patch_kea
 from netbox_kea.tests.utils import _make_db_server, plugins_config
@@ -579,7 +576,12 @@ class LeasePhaseReleaseTest(TestCase):
     def test_a_row_outside_the_sync_vrf_is_neither_linked_nor_changed(self):
         self.server.sync_vrf = VRF.objects.create(name="sync")
         self.server.save()
-        other_vrf = NbIP.objects.create(address=f"{ADDRESS}/32", status="dhcp", description="[kea-sync: lease]")
+        other_vrf = NbIP.objects.create(
+            address=f"{ADDRESS}/32",
+            vrf=VRF.objects.create(name="other"),
+            status="dhcp",
+            description="[kea-sync: lease]",
+        )
 
         _reconcile(self.server, [_lease(hostname="host")])
 
@@ -736,7 +738,8 @@ class LeasePhaseRowFailureTest(TestCase):
         report = _reconcile(server, [_lease("10.0.0.1", ["not", "a", "name"]), _lease("10.0.0.2", "ok")])
 
         self.assertEqual((report.errors, report.complete, report.created), (1, False, 1))
-        self.assertEqual([lease["ip-address"] for lease in report.lease_records], ["10.0.0.2"])
+        self.assertFalse(NbIP.objects.filter(address__net_host="10.0.0.1").exists())
+        self.assertEqual(str(NbIP.objects.get(address__net_host="10.0.0.2").address), "10.0.0.2/24")
 
 
 OVERLAPPING = (SUBNET, {"id": 2, "subnet": "10.0.0.0/16"})
@@ -789,6 +792,7 @@ class ReservationPhaseTest(TestCase):
     def test_reservation_rows_use_the_sync_vrf(self):
         self.server.sync_vrf = VRF.objects.create(name="sync")
         self.server.save()
+        _server("global-owner")
         global_row = NbIP.objects.create(
             address=f"{ADDRESS}/24", status="reserved", description="[kea-sync: reservation]"
         )
@@ -1318,6 +1322,51 @@ class IPAMPhaseConcurrencyTest(TransactionTestCase):
             self.fail(f"{name} did not return a report: {result!r}")
         return result
 
+    def test_upgrade_competing_claims_move_one_locked_global_row(self):
+        vrf = VRF.objects.create(name="shared-upgrade")
+        first = _server("first", sync_vrf=vrf)
+        second = _server("second", sync_vrf=vrf)
+        legacy = NbIP.objects.create(address=f"{ADDRESS}/32", description="[kea-sync: lease]")
+        holder = self._hold("SELECT id FROM ipam_ipaddress WHERE id = %s FOR UPDATE", [legacy.pk])
+        with _kea():
+            self._start("first", lambda: claim(first, 4, [_lease()], force=False))
+            self._wait_for_lock_waits(1)
+            self._start("second", lambda: claim(second, 4, [_lease()], force=False))
+            self._wait_for_lock_waits(2)
+            holder.commit()
+            self._join()
+        for result in self.results.values():
+            self.assertIsInstance(result, ClaimResult)
+            self.assertEqual(result.primary.pk, legacy.pk)
+        legacy.refresh_from_db()
+        self.assertEqual(legacy.vrf_id, vrf.pk)
+        self.assertEqual(set(_links(legacy)), {"first", "second"})
+        self.assertTrue(all(link.adopted for link in _links(legacy).values()))
+
+    def test_upgrade_concurrent_job_and_import_merge_completion_receipts(self):
+        from django.apps import apps
+
+        from netbox_kea.tests.test_views_dhcp_plugin import _sync_responses
+        from netbox_kea.views.dhcp_plugin_sync import run_dhcp_plugin_import
+
+        if not apps.is_installed("netbox_dhcp"):
+            self.skipTest("netbox_dhcp not installed")
+        server = _server("shared-upgrade", sync_dhcp_plugin_enabled=True)
+        holder = self._hold("SELECT id FROM netbox_kea_server WHERE id = %s FOR UPDATE", [server.pk])
+        responses = _sync_responses({4: {"subnet4": []}}, {4: []})
+        responses["lease4-get-page"] = _lease_page([])
+        with stub_kea(responses):
+            self._start("job", lambda: KeaIpamSyncJob(_make_job()).run(server_pk=server.pk))
+            self._start("import", lambda: run_dhcp_plugin_import(server))
+            self._wait_for_lock_waits(2)
+            holder.commit()
+            self._join()
+        for result in self.results.values():
+            self.assertNotIsInstance(result, BaseException)
+        server.refresh_from_db()
+        self.assertEqual(set(server.ipam_initial_observations), {"job", "import"})
+        self.assertIsNotNone(server.ipam_first_complete_at)
+
     def test_cleanup_retains_ip_and_link_when_operator_moves_address_while_it_waits(self):
         server = _server("owner")
         _reconcile(server, [_lease("198.18.0.42")])
@@ -1416,30 +1465,6 @@ class IPAMPhaseConcurrencyTest(TransactionTestCase):
         self.assertEqual(_links(ip), {})
         row = _row()
         self.assertEqual((row.description, row.dns_name), ("Printer on floor 2", "host"))
-
-    def test_the_old_stale_cleanup_keeps_a_row_that_a_concurrent_run_links_under_the_identity_lock(self):
-        server = _server("owner")
-        ip = NbIP.objects.create(
-            address=f"{ADDRESS}/24", status="dhcp", dns_name="host", description="[kea-sync: lease]"
-        )
-
-        with transaction.atomic():
-            # The test holds the identity lock like a reconcile run, and links the row while the cleanup waits.
-            _lock_identity(None, ADDRESS)
-            self._start("cleanup", lambda: _cleanup_stale_ips("10.0.0.6", "host", mode="remove"))
-            self._wait_for_lock_waits(1)
-            IPAMOwnershipLink.objects.create(
-                server=server,
-                family=4,
-                source=IPAMOwnershipSource.LEASE,
-                ip_address=ip,
-                confirmation=next_confirmation_number(),
-            )
-        self._join()
-
-        self.assertEqual(self.results["cleanup"], 0)
-        self.assertTrue(NbIP.objects.filter(pk=ip.pk).exists())
-        self.assertEqual(set(_links(ip)), {"owner"})
 
     def test_network_link_confirmed_while_cleanup_waits_for_object_lock_survives(self):
         from ipam.models import IPRange, Prefix
