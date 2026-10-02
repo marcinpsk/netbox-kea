@@ -325,7 +325,7 @@ class SyncReport:
 
     def fail_row(self, source: str, what: str, exc: BaseException) -> None:
         """Count one failed row, which makes its phase incomplete, and log the first failures."""
-        if source in {"subnet", "pool"}:
+        if source in {"subnet", "pool", "delegated-prefix"}:
             self.prefix_errors += 1
         else:
             self.errors += 1
@@ -474,8 +474,15 @@ def _cleanup_adoption_waits(link: IPAMOwnershipLink, object_field: str) -> bool:
         return False
     with connection.cursor() as cursor:
         # Table locks also cover new Servers and bulk configuration updates.
-        cursor.execute("LOCK TABLE netbox_kea_server, netbox_kea_syncconfig IN SHARE MODE")
+        cursor.execute("LOCK TABLE netbox_kea_server, netbox_kea_syncconfig IN SHARE MODE NOWAIT")
     return _adoption_waits(link, object_field, _pending_adoptions())
+
+
+def _cleanup_links(obj: IPAddress | Prefix | IPRange) -> list[IPAMOwnershipLink]:
+    """Refuse a busy owner row before cleanup can wait with retained policy locks."""
+    return list(
+        IPAMOwnershipLink.objects.select_for_update(nowait=True).filter(**{_object_field(obj): obj}).order_by("pk")
+    )
 
 
 def upgrade_counts() -> SyncReport:
@@ -1230,8 +1237,11 @@ def _remove_stale_link(
     """Decide one stale link under the identity lock and the row lock of its object."""
     _lock_identity(stale.vrf_id, stale.address)
     ip = IPAddress.objects.select_for_update().filter(pk=stale.ip_pk).first()
-    link = IPAMOwnershipLink.objects.select_for_update().filter(pk=stale.pk).first()
-    if ip is None or link is None or link.confirmation >= cutoff:
+    if ip is None:
+        return "kept"
+    links = _cleanup_links(ip)
+    link = next((link for link in links if link.pk == stale.pk), None)
+    if link is None or link.confirmation >= cutoff:
         return "kept"
     if (ip.vrf_id, _host(ip.address)) != (stale.vrf_id, stale.address):
         raise _RowRefused(f"the address of IP address {ip.pk} changed while the cleanup read it")
@@ -1240,7 +1250,7 @@ def _remove_stale_link(
         return "conflict"
     if _marked_and_unconfirmed(link):
         return "kept"
-    others = list(IPAMOwnershipLink.objects.filter(ip_address=ip).exclude(pk=link.pk))
+    others = [other for other in links if other.pk != link.pk]
     if not last_links_go and not any(other.server_id == link.server_id for other in others):
         # The last link of its Server needs a later call with complete required sources.
         return "kept"
@@ -1425,8 +1435,11 @@ def _remove_stale_network_link(candidate: IPAMOwnershipLink, field_name: str, cu
     address = str(obj.prefix) if field_name == "prefix" else f"{_host(obj.start_address)} - {_host(obj.end_address)}"
     _lock_network(obj.vrf_id, candidate.source, address)
     locked = type(obj).objects.select_for_update().filter(pk=obj.pk).first()
-    link = IPAMOwnershipLink.objects.select_for_update().filter(pk=candidate.pk).first()
-    if locked is None or link is None or link.confirmation >= cutoff:
+    if locked is None:
+        return "kept"
+    owners = _cleanup_links(locked)
+    link = next((link for link in owners if link.pk == candidate.pk), None)
+    if link is None or link.confirmation >= cutoff:
         return "kept"
     current_address = (
         str(locked.prefix) if field_name == "prefix" else f"{_host(locked.start_address)} - {_host(locked.end_address)}"
@@ -1440,7 +1453,7 @@ def _remove_stale_network_link(candidate: IPAMOwnershipLink, field_name: str, cu
         return "conflict"
     if _marked_and_unconfirmed(link):
         return "kept"
-    others = list(links.exclude(pk=link.pk))
+    others = [other for other in owners if other.pk != link.pk]
     if others:
         changed = False
         if _live_sources(others):

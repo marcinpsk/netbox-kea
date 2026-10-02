@@ -1454,7 +1454,7 @@ class IPAMPhaseConcurrencyTest(TransactionTestCase):
             thread.join(timeout=30)
             self.assertFalse(thread.is_alive(), f"{thread.name} did not finish")
 
-    def _wait_for_lock_waits(self, count: int) -> None:
+    def _wait_for_lock_waits(self, count: int, *, finished: str | None = None) -> None:
         deadline = time.monotonic() + 30
         with connection.cursor() as cursor:
             while time.monotonic() < deadline:
@@ -1464,7 +1464,7 @@ class IPAMPhaseConcurrencyTest(TransactionTestCase):
                     "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database()"
                     " AND wait_event_type = 'Lock'"
                 )
-                if cursor.fetchone()[0] >= count:
+                if cursor.fetchone()[0] >= count or (finished is not None and finished in self.results):
                     return
                 time.sleep(0.01)
         self.fail(f"{count} lock waits never happened; results: {self.results}")
@@ -1590,10 +1590,13 @@ class IPAMPhaseConcurrencyTest(TransactionTestCase):
         self.assertEqual(ip.status, "deprecated")
 
     def _delete_server_during_cleanup(self, owner, deleted_server, phases=None):
+        from django.db import DatabaseError
+
         from netbox_kea.models import Server
 
         cascaded = threading.Event()
         resume_delete = threading.Event()
+        sqlstates = []
 
         def pause_server_delete(execute, sql, params, many, context):
             # Let Django delete the links, then pause before its final Server statement.
@@ -1607,21 +1610,38 @@ class IPAMPhaseConcurrencyTest(TransactionTestCase):
             with connection.execute_wrapper(pause_server_delete):
                 return Server.objects.get(pk=deleted_server.pk).delete()
 
+        def observe_cleanup(execute, sql, params, many, context):
+            try:
+                return execute(sql, params, many, context)
+            except DatabaseError as exc:
+                sqlstates.append(getattr(exc.__cause__, "sqlstate", None))
+                raise
+
+        def run_cleanup():
+            with connection.execute_wrapper(observe_cleanup):
+                return reconcile(owner, 4, phases)
+
         with override_settings(PLUGINS_CONFIG=_config("deprecate")), _kea():
             if phases is None:
                 phases = _phases(owner)
             self._start("delete-server", delete_server)
             try:
                 self.assertTrue(cascaded.wait(timeout=30), self.results)
-                self._start("cleanup", lambda: reconcile(owner, 4, phases))
-                self._wait_for_lock_waits(1)
+                self._start("cleanup", run_cleanup)
+                self._wait_for_lock_waits(1, finished="cleanup")
             finally:
                 resume_delete.set()
             self._join()
 
         self.assertNotIsInstance(self.results["delete-server"], BaseException)
         report = self._report("cleanup")
-        self.assertEqual((report.errors, report.prefix_errors), (0, 0))
+        self.assertLessEqual(report.errors + report.prefix_errors, 1)
+        self.assertTrue(set(sqlstates) <= {"55P03"}, sqlstates)
+        if sqlstates:
+            self.assertFalse(report.complete)
+            with _kea():
+                retry = reconcile(owner, 4, phases)
+            self.assertEqual((retry.errors, retry.prefix_errors), (0, 0))
         self.assertFalse(Server.objects.filter(pk=deleted_server.pk).exists())
 
     def test_server_deletion_cascade_and_adopted_cleanup_do_not_deadlock(self):
@@ -1687,6 +1707,84 @@ class IPAMPhaseConcurrencyTest(TransactionTestCase):
                 self.assertFalse(IPAMOwnershipLink.objects.filter(**{field: obj}).exists())
                 obj.refresh_from_db()
                 self.assertEqual((obj.status, obj.description), ("active", "Operator network"))
+
+    def test_import_retains_policy_locks_without_deadlocking_a_later_marker_release(self):
+        from django.db import DatabaseError
+
+        from netbox_kea.integrations.dhcp_plugin import ImportSummary, import_reservation_snapshot
+        from netbox_kea.ipam_reconciliation import ReservationObservation
+        from netbox_kea.models import Server
+        from netbox_kea.reservations import ReservationSnapshot
+
+        owner = _make_db_server(name="import-owner", dhcp4=False, dhcp6=True)
+        sibling = _make_db_server(name="sibling", dhcp4=False, dhcp6=True)
+        first = Prefix.objects.create(prefix="2001:db8::/64", description="[kea-sync: delegated prefix]")
+        released = Prefix.objects.create(prefix="2001:db8:1::/64", description="Operator network")
+        for server, prefix in ((owner, first), (owner, released), (sibling, released)):
+            IPAMOwnershipLink.objects.create(
+                server=server,
+                prefix=prefix,
+                family=6,
+                source="delegated-prefix",
+                adopted=True,
+                facts={"prefix_length": 64},
+                confirmation=next_confirmation_number(),
+            )
+        observation = ReservationObservation(ReservationSnapshot(6, (), (), True, None), next_confirmation_number())
+        cascaded = threading.Event()
+        resume_delete = threading.Event()
+        sqlstates = []
+        summary = ImportSummary()
+
+        def pause_delete(execute, sql, params, many, context):
+            if sql.startswith('DELETE FROM "netbox_kea_server"'):
+                cascaded.set()
+                if not resume_delete.wait(timeout=30):
+                    raise TimeoutError("Server deletion was not resumed")
+            return execute(sql, params, many, context)
+
+        def delete_server():
+            with connection.execute_wrapper(pause_delete):
+                return Server.objects.get(pk=sibling.pk).delete()
+
+        ownership_reads = 0
+
+        def observe_import(execute, sql, params, many, context):
+            nonlocal ownership_reads
+            if 'FROM "netbox_kea_ipamownershiplink"' in sql and "FOR UPDATE" in sql:
+                ownership_reads += 1
+                if ownership_reads == 2:
+                    resume_delete.set()
+            try:
+                return execute(sql, params, many, context)
+            except DatabaseError as exc:
+                sqlstates.append(getattr(exc.__cause__, "sqlstate", None))
+                raise
+
+        def run_import():
+            with connection.execute_wrapper(observe_import):
+                import_reservation_snapshot(owner, None, observation, {}, summary)
+
+        self._start("delete-server", delete_server)
+        try:
+            self.assertTrue(cascaded.wait(timeout=30), self.results)
+            self._start("import", run_import)
+            self._join()
+        finally:
+            resume_delete.set()
+
+        self.assertNotIsInstance(self.results["delete-server"], BaseException)
+        self.assertNotIsInstance(self.results["import"], BaseException)
+        self.assertEqual(sqlstates, ["55P03"])
+        self.assertEqual((summary.errors, summary.ownership.prefix_errors), (1, 1))
+        self.assertFalse(summary.ownership.complete)
+        self.assertTrue(IPAMOwnershipLink.objects.filter(server=owner, prefix=released).exists())
+        retry = ImportSummary()
+        import_reservation_snapshot(owner, None, observation, {}, retry)
+        self.assertEqual(retry.errors, 0)
+        self.assertFalse(IPAMOwnershipLink.objects.filter(prefix=released).exists())
+        released.refresh_from_db()
+        self.assertEqual((released.status, released.description), ("active", "Operator network"))
 
     def test_upgrade_competing_claims_move_one_locked_global_row(self):
         vrf = VRF.objects.create(name="shared-upgrade")

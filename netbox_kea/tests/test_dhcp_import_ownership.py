@@ -720,7 +720,7 @@ class TypedNetworkClaimTest(TestCase):
 
         report = reconcile(server, 6, [DelegatedPrefixPhase(observation.snapshot.records, observation.cutoff, True)])
 
-        self.assertEqual(report.errors, 1)
+        self.assertEqual((report.errors, report.prefix_errors), (0, 1))
         self.assertEqual(report.incomplete, {"delegated-prefix"})
         self.assertEqual(report.prefixes[duplicate].outcome, "error")
         self.assertEqual(report.prefixes[valid].outcome, "created")
