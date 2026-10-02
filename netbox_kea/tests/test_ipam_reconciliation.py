@@ -1786,6 +1786,115 @@ class IPAMPhaseConcurrencyTest(TransactionTestCase):
         released.refresh_from_db()
         self.assertEqual((released.status, released.description), ("active", "Operator network"))
 
+    def test_receipt_completion_does_not_block_an_ownership_foreign_key_at_commit(self):
+        from django.db import transaction
+
+        from netbox_kea.ipam_reconciliation import complete_job_observation
+
+        owner = _server(
+            "owner", sync_reservations_enabled=False, sync_prefixes_enabled=False, sync_ip_ranges_enabled=False
+        )
+        old = NbIP.objects.create(address="198.18.0.1/24", description="[kea-sync: lease]")
+        _reconcile(owner, [_lease("198.18.0.1")])
+        policy_held = threading.Event()
+        server_row_locked = threading.Event()
+
+        def run_reconciliation():
+            with transaction.atomic():
+                report = reconcile(owner, 4, [_lease_phase()])
+                policy_held.set()
+                if not server_row_locked.wait(timeout=30):
+                    raise TimeoutError("Receipt completion did not lock the Server")
+            return report
+
+        def observe_completion(execute, sql, params, many, context):
+            result = execute(sql, params, many, context)
+            if 'FROM "netbox_kea_server"' in sql and "FOR " in sql:
+                server_row_locked.set()
+            return result
+
+        def complete_observation():
+            with connection.execute_wrapper(observe_completion):
+                complete_job_observation(owner, {4: SyncReport(completed_sources={"lease"})})
+
+        with _kea([_lease("198.18.0.2")]):
+            self._start("reconciliation", run_reconciliation)
+            self.assertTrue(policy_held.wait(timeout=30), self.results)
+            self._start("completion", complete_observation)
+            self._join()
+
+        self.assertNotIsInstance(self.results["completion"], BaseException)
+        report = self._report("reconciliation")
+        self.assertEqual((report.errors, report.waiting, report.created), (0, 1, 1))
+        self.assertTrue(NbIP.objects.filter(pk=old.pk).exists())
+        self.assertTrue(IPAMOwnershipLink.objects.filter(ip_address__address__net_host="198.18.0.2").exists())
+        owner.refresh_from_db()
+        self.assertIn("job", owner.ipam_initial_observations)
+        self.assertIsNotNone(owner.ipam_first_complete_at)
+
+    def test_cleanup_keeps_its_report_when_an_operator_deletes_the_locked_object(self):
+        from ipam.models import IPRange
+        from netaddr import IPNetwork
+
+        from netbox_kea.ipam_reconciliation import PoolPhase, SubnetPhase, read_catalogue
+        from netbox_kea.tests.test_prefix_pool_reconciliation import SUBNET as NETWORK_SUBNET
+
+        for field, model, phase_type, values, marker in (
+            ("ip_address", NbIP, None, {"address": "198.18.0.1/24"}, "lease"),
+            ("prefix", Prefix, SubnetPhase, {"prefix": NETWORK_SUBNET["subnet"]}, "subnet"),
+            (
+                "ip_range",
+                IPRange,
+                PoolPhase,
+                {"start_address": IPNetwork("198.18.0.10/24"), "end_address": IPNetwork("198.18.0.20/24")},
+                "pool",
+            ),
+        ):
+            with self.subTest(field=field):
+                owner = _server(f"owner-{field}")
+                obj = model.objects.create(**values, description=f"[kea-sync: {marker}]")
+                if phase_type is None:
+                    _reconcile(owner, [_lease("198.18.0.1")])
+                    with _kea():
+                        phases = _phases(owner)
+                else:
+                    with stub_kea(_catalogue_responses_for_subnets(4, [NETWORK_SUBNET])):
+                        reconcile(owner, 4, [phase_type(read_catalogue(owner, 4))])
+                    with stub_kea(_catalogue_responses_for_subnets(4, [])):
+                        phases = [phase_type(read_catalogue(owner, 4))]
+                deleted = threading.Event()
+                commit_delete = threading.Event()
+
+                def pause_commit(
+                    execute, sql, params, many, context, model=model, deleted=deleted, commit_delete=commit_delete
+                ):
+                    result = execute(sql, params, many, context)
+                    if sql.startswith("DELETE FROM ") and f'"{model._meta.db_table}"' in sql:
+                        deleted.set()
+                        if not commit_delete.wait(timeout=30):
+                            raise TimeoutError("Object deletion was not committed")
+                    return result
+
+                def delete_object(model=model, obj=obj, pause_commit=pause_commit):
+                    with connection.execute_wrapper(pause_commit):
+                        return model.objects.get(pk=obj.pk).delete()
+
+                with _kea():
+                    self._start(f"delete-{field}", delete_object)
+                    try:
+                        self.assertTrue(deleted.wait(timeout=30), self.results)
+                        self._start(field, lambda owner=owner, phases=phases: reconcile(owner, 4, phases))
+                        self._wait_for_lock_waits(1)
+                    finally:
+                        commit_delete.set()
+                    self._join()
+
+                self.assertNotIsInstance(self.results[f"delete-{field}"], BaseException)
+                report = self._report(field)
+                self.assertEqual((report.errors, report.prefix_errors, report.removed), (0, 0, 0))
+                self.assertFalse(model.objects.filter(pk=obj.pk).exists())
+                self.assertFalse(IPAMOwnershipLink.objects.filter(**{field: obj}).exists())
+
     def test_upgrade_competing_claims_move_one_locked_global_row(self):
         vrf = VRF.objects.create(name="shared-upgrade")
         first = _server("first", sync_vrf=vrf)

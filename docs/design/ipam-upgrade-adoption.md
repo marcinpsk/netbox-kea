@@ -67,7 +67,8 @@ A complete empty observation counts. A claim-only or partial bulk action cannot 
 Public purpose-specific completion functions consume typed report evidence with actual completed source coverage.
 The job and import share the effective-source policy used by barrier queries.
 Re-read current required scope before publication; newly enabled unobserved pairs cannot receive completion credit.
-Merge receipts under a Server row lock, so concurrent workflow completion preserves both receipts.
+Merge receipts under a Server NO KEY UPDATE row lock, so concurrent workflow completion preserves both receipts.
+This lock permits deferred ownership foreign-key checks to finish while policy writes wait for cleanup.
 The historical first-complete timestamp is never reset. A newly enabled unobserved source can hold relevant marked objects
 until its required workflow completes that scope. Barrier decisions use receipts, rather than the historical timestamp alone.
 A Run Now invocation cannot silently treat an incomplete or narrower source run as the Server completion.

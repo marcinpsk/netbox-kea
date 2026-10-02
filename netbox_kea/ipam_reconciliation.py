@@ -429,7 +429,7 @@ def complete_import_observation(server: Server, reports: Mapping[Family, SyncRep
 
 def _complete_observation(server: Server, workflow: Workflow, observed: SourceScope) -> None:
     with transaction.atomic():
-        current = Server.objects.select_for_update().get(pk=server.pk)
+        current = Server.objects.select_for_update(no_key=True).get(pk=server.pk)
         required = effective_sources(current)
         if not required[workflow] or not required[workflow] <= observed:
             return
