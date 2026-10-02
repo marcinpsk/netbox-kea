@@ -454,7 +454,7 @@ class TestReservationMutationViews(_ViewTestBase):
         from django.contrib.messages import get_messages
         from django.core.exceptions import ValidationError
 
-        def fail_sync(_reservation, *, cleanup, force):
+        def fail_sync(_server, _family, _records, *, force):
             raise ValidationError("IPAM validation failed")
 
         responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
@@ -471,9 +471,48 @@ class TestReservationMutationViews(_ViewTestBase):
         )
 
         with (
-            patch("netbox_kea.views.reservation_mutations.sync_reservation_to_netbox", new=fail_sync),
+            patch("netbox_kea.views.reservation_mutations.claim", new=fail_sync),
             stub_kea(responses) as kea,
         ):
+            response = self.client.post(
+                reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk]),
+                {
+                    "subnet_cidr": "198.18.0.0/24",
+                    "ip_address": "198.18.0.20",
+                    "identifier_type": "hw-address",
+                    "identifier": "aa:bb:cc:dd:ee:ff",
+                    "sync_to_netbox": "on",
+                },
+            )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(kea.commands().count("reservation-add"), 1)
+        self.assertIn(
+            "The Reservation changed, but NetBox IPAM synchronization failed.",
+            [str(message) for message in get_messages(response.wsgi_request)],
+        )
+
+    def test_create_warns_when_ownership_claim_returns_a_row_error(self):
+        from dcim.models import MACAddress
+        from django.contrib.messages import get_messages
+
+        MACAddress.objects.create(mac_address="aa:bb:cc:dd:ee:ff")
+        MACAddress.objects.create(mac_address="aa:bb:cc:dd:ee:ff")
+
+        responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
+        raw = {
+            "subnet-id": 20,
+            "hw-address": "aa:bb:cc:dd:ee:ff",
+            "ip-address": "198.18.0.20",
+        }
+        responses.update(
+            {
+                "reservation-add": {"result": 0},
+                "reservation-get": _res_get(raw),
+            }
+        )
+
+        with stub_kea(responses) as kea:
             response = self.client.post(
                 reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk]),
                 {

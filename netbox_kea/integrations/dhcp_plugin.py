@@ -51,7 +51,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ..ipam_reconciliation import ClaimResult, ReservationObservation
+    from ..ipam_reconciliation import ClaimResult, ReservationObservation, SyncReport
 
 from django.apps import apps
 from django.db import transaction
@@ -82,10 +82,17 @@ def is_available() -> bool:
     return apps.is_installed(PLUGIN_APP_LABEL)
 
 
+def _ownership_report() -> SyncReport:
+    from ..ipam_reconciliation import SyncReport
+
+    return SyncReport()
+
+
 @dataclass
 class ImportSummary:
     """Counters and warnings accumulated over one server-config import."""
 
+    ownership: SyncReport = field(default_factory=_ownership_report)
     subnets_created: int = 0
     subnets_updated: int = 0
     pools_created: int = 0
@@ -869,6 +876,20 @@ def _upsert_reservation(reservation, subnet_obj, server, dhcp_server, custom_def
     return obj
 
 
+def _record_address_claims(report: SyncReport, claims: ClaimResult) -> bool:
+    """Keep ownership outcomes separate from the DHCP rows that consume them."""
+    report.conflicts.update(claims.conflicts)
+    complete = True
+    for address, result in claims.addresses.items():
+        if result.outcome == "error":
+            complete = False
+        elif result.outcome == "conflict":
+            report.conflicts.add(address)
+        elif result.outcome == "disagreement":
+            report.disagreements.add(address)
+    return complete
+
+
 def import_reservation_snapshot(
     server,
     dhcp_server,
@@ -881,6 +902,7 @@ def import_reservation_snapshot(
 
     if observation is None:
         summary.reservations_unread = True
+        summary.ownership.incomplete.add("reservation")
         return
     snapshot = observation.snapshot
     if snapshot.traversal_truncated:
@@ -893,7 +915,8 @@ def import_reservation_snapshot(
     claims = claim(server, snapshot.family, snapshot.records, force=False)
     summary.owner_disagreements += sum(result.outcome == "disagreement" for result in claims.addresses.values())
     imported = []
-    complete = snapshot.complete
+    complete = snapshot.complete and not snapshot.diagnostics
+    complete = _record_address_claims(summary.ownership, claims) and complete
     for reservation in snapshot.records:
         if isinstance(reservation.scope, InSubnetReservationScope):
             subnet_id = reservation.scope.subnet.subnet_id
@@ -927,12 +950,18 @@ def import_reservation_snapshot(
                     if result.prefix is not None:
                         prefixes.append(result.prefix)
                 obj.ipv6_prefixes.set(prefixes)
+        summary.ownership.merge(report)
+        if complete:
+            summary.ownership.completed_sources.add("reservation")
+        else:
+            summary.ownership.incomplete.add("reservation")
         summary.errors += report.errors + report.prefix_errors
         summary.owner_disagreements += len(report.disagreements)
         for address in sorted(report.conflicts):
             summary.warn(f"delegated prefix {address}: IPAM ownership conflict, Prefix left unchanged")
     except Exception:
         summary.errors += 1
+        summary.ownership.incomplete.add("delegated-prefix")
         logger.exception("Could not attach delegated Prefixes after DHCP import")
         summary.warn("Delegated Prefixes could not be attached. See server logs.")
 
@@ -999,7 +1028,27 @@ def import_server_config(
             continue
         upsert_options(subnet_obj, subnet_intent.options, config.family, dhcp_server, custom_defs, summary)
         upsert_pools(subnet_obj, subnet_intent, summary, dhcp_server, custom_defs, pool_claims)
+    for source, outcomes in (("subnet", prefix_claims.prefixes), ("pool", pool_claims.ranges)):
+        if any(result.outcome == "error" for result in outcomes.values()):
+            summary.ownership.incomplete.add(source)
+        else:
+            summary.ownership.completed_sources.add(source)
+        summary.ownership.conflicts.update(
+            address for address, result in outcomes.items() if result.outcome == "conflict"
+        )
+        summary.ownership.disagreements.update(
+            address for address, result in outcomes.items() if result.outcome == "disagreement"
+        )
     import_reservation_snapshot(server, dhcp_server, reservation_observation, custom_defs, summary)
+    if not config.configuration_complete:
+        summary.ownership.incomplete.update({"subnet", "pool"})
+    if (
+        summary.errors
+        or summary.reservations_skipped
+        or summary.reservations_quarantined
+        or summary.reservations_unread
+    ):
+        summary.ownership.incomplete.add("reservation")
     return summary
 
 

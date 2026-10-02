@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 
-def sync_lease_to_netbox(lease):
+def _lease_report(lease):
     # ruleid: kea-sync-hostname-unvalidated
     hostname = lease.get("hostname", "")
     # ruleid: kea-sync-hostname-unvalidated
@@ -13,7 +13,7 @@ def sync_lease_to_netbox(lease):
     hostname = _record_hostname(lease)
 
 
-def _record_hostname_and_addresses(record):
+def _claim_reports(record):
     # ruleid: kea-sync-hostname-unvalidated
     hostname = record.get("hostname", "")
     # ruleid: kea-sync-hostname-unvalidated

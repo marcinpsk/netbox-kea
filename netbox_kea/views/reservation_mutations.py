@@ -20,6 +20,7 @@ from netbox.views import generic
 from .. import constants, forms, subnet_catalogue
 from ..constants import Family, IPAddressValue
 from ..dhcp_options import DHCPOption
+from ..ipam_reconciliation import claim
 from ..kea import KeaClient, KeaException
 from ..models import Server
 from ..pools import addresses_in_pools
@@ -41,7 +42,6 @@ from ..reservations import (
 )
 from ..signals import reservation_created, reservation_deleted, reservation_updated
 from ..subnet_catalogue import CatalogueSnapshot, MutationScope, VerifiedSubnet
-from ..sync import sync_reservation_to_netbox
 from ..utilities import kea_error_hint
 from ._base import _diagnostic_messages, _KeaChangeMixin
 from .reservations import _RESERVATIONS_TAB, _build_reservation_options_formset, _configured_capabilities
@@ -319,7 +319,9 @@ def _confirmed_side_effects(
             )
         else:
             try:
-                sync_reservation_to_netbox(result.intended, cleanup=False, force=True)
+                outcome = claim(server, reservation.family, [result.intended], force=True)
+                if any(not address.synchronized for address in outcome.addresses.values()):
+                    messages.warning(request, "The Reservation changed, but NetBox IPAM synchronization failed.")
             except (DatabaseError, ValidationError, ValueError, requests.RequestException):
                 logger.exception("Could not synchronize a confirmed Reservation mutation to NetBox IPAM")
                 messages.warning(request, "The Reservation changed, but NetBox IPAM synchronization failed.")

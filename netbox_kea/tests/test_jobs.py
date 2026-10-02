@@ -204,6 +204,74 @@ class TestKeaIpamSyncJobRun(TestCase):
         self.assertFalse(IPAddress.objects.exists())
         self.assertFalse(IPAMOwnershipLink.objects.exists())
 
+    def test_summary_counts_unowned_markers_without_adopting_them(self):
+        self._make_db_server(dhcp6=False)
+        unowned = NbIP.objects.create(address="198.18.0.90/32", status="dhcp", description="[kea-sync: lease]")
+        with _patch_kea():
+            job = self._run()
+        self.assertEqual(job.data["summary"][0]["unowned"], 0)
+        self.assertEqual(job.data["summary"][0]["waiting"], 0)
+        self.assertTrue(NbIP.objects.filter(pk=unowned.pk).exists())
+
+    def test_upgrade_summary_keeps_server_scope_and_scans_unowned_rows_once(self):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        from netbox_kea.tests.test_ipam_reconciliation import _lease, _reconcile, _server
+
+        first = _server("first")
+        _server("second")
+        NbIP.objects.create(address="10.0.0.5/32", description="[kea-sync: lease]")
+        _reconcile(first, [_lease()])
+        NbIP.objects.create(address="198.18.0.90/32", description="[kea-sync: lease]")
+        with (
+            _patch_kea(),
+            CaptureQueriesContext(connection) as queries,
+            self.assertLogs("netbox.jobs", level="INFO") as logs,
+        ):
+            job = self._run()
+        scans = [query["sql"] for query in queries if '"netbox_kea_ipamownershiplink"."id" IS NULL' in query["sql"]]
+        self.assertEqual(len(scans), 3, "The three IPAM tables must be scanned only once per job")
+        self.assertEqual([entry["waiting"] for entry in job.data["summary"]], [1, 0])
+        self.assertEqual([entry["unowned"] for entry in job.data["summary"]], [0, 0])
+        totals = [message for message in logs.output if "Kea IPAM sync complete" in message]
+        self.assertEqual(len(totals), 1)
+        self.assertIn("unowned=1", totals[0])
+        self.assertIn("waiting=0", totals[0])
+
+    def test_total_conflicts_counts_each_server_once(self):
+        for name in ("first", "second"):
+            self._make_db_server(name=name, dhcp6=False)
+        NbIP.objects.create(address="198.18.0.20/24", status="active", description="Operator address")
+        lease = {"ip-address": "198.18.0.20", "subnet-id": 1, "hostname": "host.example.invalid"}
+        with (
+            _patch_kea(
+                leases4=[lease], responses=_catalogue_responses_for_subnets(4, [{"id": 1, "subnet": "198.18.0.0/24"}])
+            ),
+            self.assertLogs("netbox.jobs", level="INFO") as logs,
+        ):
+            job = self._run()
+        self.assertEqual([entry["conflicts"] for entry in job.data["summary"]], [1, 1])
+        totals = [message for message in logs.output if "Kea IPAM sync complete" in message]
+        self.assertEqual(len(totals), 1)
+        self.assertIn("conflicts=2", totals[0])
+
+    def test_deleting_the_final_server_keeps_and_counts_unowned_rows(self):
+        server = self._make_db_server(dhcp6=False, sync_prefixes_enabled=False, sync_ip_ranges_enabled=False)
+        with _patch_kea(leases4=[_LEASE4]):
+            self._run()
+        row = NbIP.objects.get(address__net_host=_LEASE4["ip-address"])
+        server.delete()
+        with _patch_kea() as kea, self.assertLogs("netbox.jobs", level="INFO") as logs:
+            job = self._run()
+        self.assertEqual(kea.commands(), [])
+        self.assertTrue(NbIP.objects.filter(pk=row.pk).exists())
+        self.assertEqual(job.data["summary"], [])
+        totals = [message for message in logs.output if "Kea IPAM sync complete" in message]
+        self.assertEqual(len(totals), 1)
+        self.assertIn("servers=0", totals[0])
+        self.assertIn("unowned=1", totals[0])
+
     # ── scaffolding ──────────────────────────────────────────────────────────
 
     def _run(self) -> MagicMock:
@@ -225,6 +293,23 @@ class TestKeaIpamSyncJobRun(TestCase):
 
         return _make_db_server(**kwargs)
 
+    def _adopt_stale(self, ip, source="lease"):
+        from netbox_kea.models import IPAMOwnershipLink
+
+        ip.refresh_from_db()
+        record = {
+            "ip-address": str(ip.address.ip),
+            "subnet-id": 1,
+            "hostname": ip.dns_name,
+            "hw-address": "aa:bb:cc:dd:ee:99",
+        }
+        with _patch_kea(
+            leases4=[record] if source == "lease" else [],
+            reservations=[record] if source == "reservation" else [],
+        ):
+            self._run()
+        self.assertTrue(IPAMOwnershipLink.objects.filter(ip_address=ip, source=source).exists())
+
     # ── basic lease sync ──────────────────────────────────────────────────────
 
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG_CLEANUP)
@@ -237,6 +322,7 @@ class TestKeaIpamSyncJobRun(TestCase):
             dns_name="valid.example.invalid",
             description="[kea-sync: lease]",
         )
+        self._adopt_stale(stale, "lease")
         valid_lease = {"ip-address": "198.18.0.30", "subnet-id": 1, "hostname": "valid.example.invalid"}
         for hostname in (["host.example.invalid"], {"name": "host.example.invalid"}):
             with self.subTest(hostname=hostname):
@@ -476,6 +562,7 @@ class TestKeaIpamSyncJobRun(TestCase):
             dns_name="host1",
             description="[kea-sync: lease]",
         )
+        self._adopt_stale(stale, "lease")
         overflow = {**_LEASE4, "ip-address": "10.0.0.2", "hostname": "host2"}
         with _patch_kea(leases4=[_LEASE4, overflow]):
             with self.assertLogs("netbox_kea.ipam_reconciliation", level="WARNING") as cm:
@@ -610,7 +697,7 @@ class TestKeaIpamSyncJobRun(TestCase):
 
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG_CLEANUP)
     def test_cleanup_skipped_when_host_cmds_absent(self):
-        """Reservation phase skipped (host_cmds absent) → cleanup_safe=False → stale IP preserved."""
+        """Reservation phase skipped (host_cmds absent) → an incomplete phase → stale IP preserved."""
         from ipam.models import IPAddress
 
         self._make_db_server()
@@ -620,12 +707,13 @@ class TestKeaIpamSyncJobRun(TestCase):
             dns_name="host1",
             description="[kea-sync: lease]",
         )
+        self._adopt_stale(stale, "lease")
 
         with _patch_kea(
             leases4=[_LEASE4],
             responses={"reservation-get-page": {"result": 2, "text": "unknown command"}},
         ):
-            with self.assertLogs("netbox_kea.jobs", level="WARNING"):
+            with self.assertLogs("netbox_kea.ipam_reconciliation", level="WARNING"):
                 self._run()
         self.assertTrue(IPAddress.objects.filter(pk=stale.pk).exists())
 
@@ -633,7 +721,7 @@ class TestKeaIpamSyncJobRun(TestCase):
 
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG_CLEANUP)
     def test_stale_ip_removed_after_successful_sync(self):
-        """A Kea-managed IP with the same hostname but a different address is deleted."""
+        """An adopted lease that expires after the first complete run is removed."""
         from ipam.models import IPAddress
 
         self._make_db_server()
@@ -643,6 +731,8 @@ class TestKeaIpamSyncJobRun(TestCase):
             dns_name="host1",
             description="[kea-sync: lease]",
         )
+        with _patch_kea(leases4=[{**_LEASE4, "ip-address": "10.0.0.99"}], reservations=[]):
+            self._run()
         with _patch_kea(leases4=[_LEASE4], reservations=[]):
             self._run()
         self.assertFalse(IPAddress.objects.filter(pk=stale.pk).exists())
@@ -659,6 +749,7 @@ class TestKeaIpamSyncJobRun(TestCase):
             dns_name="host1",
             description="[kea-sync: lease]",
         )
+        self._adopt_stale(stale, "lease")
         bad_lease = {**_LEASE4, "ip-address": "not-an-ip"}
         with _patch_kea(leases4=[bad_lease]):
             self._run_raises()
@@ -680,6 +771,7 @@ class TestKeaIpamSyncJobRun(TestCase):
             dns_name=_PAGE_HOSTNAME,
             description="[kea-sync: reservation]",
         )
+        self._adopt_stale(stale, "reservation")
 
         # A full page yields a cursor; the page it points at never arrives.
         hosts = _full_reservation_page()
@@ -693,7 +785,7 @@ class TestKeaIpamSyncJobRun(TestCase):
                 )
             },
         ):
-            with self.assertLogs("netbox_kea.jobs", level="WARNING"):
+            with self.assertLogs("netbox_kea.ipam_reconciliation", level="WARNING"):
                 self._run()
 
         addresses = sorted(str(ip.address) for ip in IPAddress.objects.all())
@@ -763,6 +855,7 @@ class TestKeaIpamSyncJobRun(TestCase):
             dns_name="partial-snapshot.example.invalid",
             description="[kea-sync: reservation]",
         )
+        self._adopt_stale(stale, "reservation")
 
         with _patch_kea(
             leases4=[],
@@ -875,7 +968,7 @@ class TestKeaIpamSyncJobRun(TestCase):
     def test_address_less_reservation_reported_as_skipped_not_failed(self):
         """An identifier-only reservation must not fail the nightly job (#110).
 
-        ``sync_reservation_to_netbox`` raises on a reservation with no address; counting
+        A Reservation without an address has no IPAM row; counting
         that as an error made ``run()`` raise ``JobFailed`` for a perfectly legal Kea
         configuration, with the reason visible only at debug level.
         """
@@ -949,18 +1042,12 @@ class TestKeaIpamSyncJobRun(TestCase):
     # ── unhandled exception in _sync_one_server ────────────────────────
 
     def test_unhandled_exception_in_sync_one_server_is_caught(self):
-        """An unhandled exception inside _sync_one_server is caught by the outer loop.
-
-        Patching ``cleanup_stale_ips_batch`` to raise is the only way to
-        trigger this path: the real function returns early when
-        ``stale_ip_cleanup='none'``, so we use ``stale_ip_cleanup='remove'``
-        and inject a RuntimeError there.
-        """
+        """A completion-state database error is caught by the server loop."""
         self._make_db_server()
         with override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG_CLEANUP):
             with _patch_kea(leases4=[_LEASE4], reservations=[]):
                 with patch(
-                    "netbox_kea.sync.cleanup_stale_ips_batch", side_effect=RuntimeError("db gone"), autospec=True
+                    "netbox_kea.jobs.complete_job_observation", side_effect=RuntimeError("db gone"), autospec=True
                 ):
                     with self.assertLogs("netbox.jobs", level="ERROR") as cm:
                         job = self._run_raises()

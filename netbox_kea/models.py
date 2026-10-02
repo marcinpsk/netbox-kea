@@ -137,6 +137,14 @@ class Server(JobsMixin, NetBoxModel):
             "Enable if connecting via kea-ctrl-agent. Disable when connecting directly to DHCP daemon endpoints."
         ),
     )
+    ipam_first_complete_at: models.DateTimeField = models.DateTimeField(
+        null=True,
+        blank=True,
+        editable=False,
+        help_text="When every enabled IPAM workflow first completed its initial observation.",
+    )
+    ipam_initial_observations: models.JSONField = models.JSONField(default=dict, editable=False)
+
     sync_enabled = models.BooleanField(
         verbose_name="IPAM Sync Enabled",
         default=True,
@@ -207,6 +215,19 @@ class Server(JobsMixin, NetBoxModel):
         permissions = [
             ("bulk_delete_lease_from_server", "Can bulk delete DHCP leases from server"),
         ]
+
+    def save(self, force_insert=False, force_update=False, using=None, update_fields=None) -> None:
+        """Keep workflow-owned receipts out of an ordinary existing Server edit."""
+        if not self._state.adding and not force_insert and update_fields is None:
+            deferred = self.get_deferred_fields()
+            update_fields = {
+                field.name
+                for field in self._meta.concrete_fields
+                if not field.primary_key
+                and field.attname not in deferred
+                and field.name not in {"ipam_initial_observations", "ipam_first_complete_at"}
+            }
+        super().save(force_insert=force_insert, force_update=force_update, using=using, update_fields=update_fields)
 
     def __str__(self):
         return self.name
@@ -577,6 +598,7 @@ class IPAMOwnershipLink(models.Model):
     confirmation: models.BigIntegerField = models.BigIntegerField(
         help_text="The confirmation sequence number that a run took when it last confirmed the link.",
     )
+    adopted: models.BooleanField = models.BooleanField(default=False)
     stale_mark: models.BigIntegerField = models.BigIntegerField(
         null=True,
         blank=True,

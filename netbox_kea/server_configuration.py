@@ -579,6 +579,11 @@ def shown_shared_network(snapshot: ServerConfigurationSnapshot, name: str) -> Sh
         return None
 
 
+def observed_snapshot(server: Server, family: Family, configuration: dict[str, Any]) -> ServerConfigurationSnapshot:
+    """Validate the exact configuration read by a workflow that also consumes its import intent."""
+    return _parse_configuration(server, configuration, family, None)
+
+
 def candidate_snapshot(server: Server, candidate: CandidateConfiguration) -> ServerConfigurationSnapshot:
     """Return the configuration facts of *candidate*, parsed the same way as a live read."""
     return _parse_configuration(server, candidate.arguments[f"Dhcp{candidate.family}"], candidate.family, None)

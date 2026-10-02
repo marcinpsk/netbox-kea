@@ -309,6 +309,7 @@ Each server has optional overrides for the IPAM sync job:
 | `Sync IP Ranges` (`sync_ip_ranges_enabled`) | `True` | Sync Kea pools as NetBox IP Ranges |
 | `Deprecate stale Prefixes and IP Ranges` (`sync_deprecate_prefixes_and_ranges`) | `False` | Deprecate an owned Prefix or IP Range when this server drops its last ownership link as stale. These objects are never deleted |
 | `Sync VRF` (`sync_vrf`) | None (global routing table) | VRF to assign when syncing Prefixes, IP Ranges, and lease and reservation IP Addresses. There is no global fallback: leave blank to use the global routing table (no VRF). NetBox refuses to delete a VRF while a server syncs into it |
+| `First complete IPAM observation` (`ipam_first_complete_at`) | None | Read-only time when this server first completed all enabled job and DHCP import observations after the ownership upgrade |
 | `Persist configuration` (`persist_config`) | `True` | Automatically save Kea config after each change via `config-write`. Disable when Kea config is managed externally (e.g. Ansible) |
 
 These fields override the global `PLUGINS_CONFIG` values for that specific server.
@@ -341,8 +342,8 @@ The `Kea IPAM Sync` job runs automatically when `rqworker` is active:
 6. One server failing does not block others
 7. Summary logged per server and in total
 
-Each server's summary reports `created`, `updated`, `errors`, `prefix_errors`, `conflicts`, `disagreements` and
-`skipped`:
+Each server's summary reports `created`, `updated`, `errors`, `prefix_errors`, `conflicts`, `disagreements`,
+`skipped`, `unowned` and `waiting`:
 
 - **skipped**: reservations the sync deliberately did not write: global reservations and
   reservations that reserve no address. They are not errors and do not fail the job.
@@ -361,8 +362,33 @@ Each server's summary reports `created`, `updated`, `errors`, `prefix_errors`, `
   for example from two reservations in overlapping subnets. A lease and a reservation
   disagree only on the prefix length, and an empty hostname makes no claim. The address
   keeps its values until the reports agree, or until one of them goes.
+- **unowned**: marker objects with no ownership link, including objects left by a deleted server. The job total
+  counts these objects once. The per-server value is zero because these objects have no owning server.
+- **waiting**: adopted objects whose cleanup this server held during the run while a potential owner had not
+  completed its initial observations. The job total counts objects still waiting after all servers finish.
+  Counts include each object once across sources and address families.
 
 View job history, next scheduled time and logs under **System → Background Jobs → Kea IPAM Sync**.
+
+### Upgrade to ownership links
+
+The first observations adopt marker objects that Kea still reports. No data migration assigns owners.
+An object with a blank description stays unchanged unless an operator forces a claim.
+When every configured server uses the same non-global `sync_vrf`, an unowned marker IP address in the global
+VRF moves into that VRF with its primary key and changelog intact. A row already owned by another server does
+not move. A destination address collision keeps the global row unowned and reports a conflict. Servers with
+different VRFs keep the global row and create their own scoped rows. A global-VRF server adopts it in place.
+
+Adopted objects keep their last link until every potential owner completes all relevant enabled observations.
+Periodic jobs and DHCP imports record completion separately. An incomplete phase or missing family does not
+count as complete. Disabled sources and families do not hold the barrier. The read-only
+`ipam_first_complete_at` field shows when a server first completed its enabled observations. Newly enabled
+sources still require complete observations, even when that timestamp is already set.
+
+`stale_ip_cleanup = "remove"` now also removes the rows of expired leases, deleted Reservations and hostless
+leases after their final ownership link becomes stale. On upgrade, lease removal applies only to leases that
+expire after adoption. Rows already stale before the upgrade get no link, stay unchanged and count as
+`unowned`. Review these rows before removing them manually.
 
 To change the sync interval, edit it on the **Sync Jobs** page. You do not need to restart the worker: the new interval applies after the next scheduled run.
 

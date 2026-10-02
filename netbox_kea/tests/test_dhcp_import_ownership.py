@@ -50,6 +50,195 @@ class ImportOwnershipTest(TestCase):
         self.identity = {"subnet-id": 1, "duid": "01:02:03:04", "hostname": "delegated.example"}
         self.network = "2001:db8:100::/56"
 
+    def test_complete_import_only_server_records_initial_completion(self):
+        self.server.sync_enabled = False
+        self.server.sync_dhcp_plugin_enabled = True
+        self.server.save()
+        with stub_kea(_sync_responses({6: self.config}, {6: []})):
+            results = run_dhcp_plugin_import(self.server)
+        self.assertEqual(results[0][1].errors, 0)
+        self.server.refresh_from_db()
+        self.assertIsNotNone(self.server.ipam_first_complete_at)
+        self.assertIn("import", self.server.ipam_initial_observations)
+
+    def test_stale_server_edit_preserves_import_receipt_and_initial_completion(self):
+        from netbox_kea.models import Server
+
+        self.server.sync_enabled = False
+        self.server.sync_dhcp_plugin_enabled = True
+        self.server.save()
+        stale = Server.objects.get(pk=self.server.pk)
+        with stub_kea(_sync_responses({6: self.config}, {6: []})):
+            results = run_dhcp_plugin_import(self.server)
+        self.assertEqual(results[0][1].errors, 0)
+        self.server.refresh_from_db()
+        receipts = self.server.ipam_initial_observations
+        completed = self.server.ipam_first_complete_at
+        self.assertIsNotNone(completed)
+        stale.name = "edited-import-owner"
+        stale.save()
+        self.server.refresh_from_db()
+        self.assertEqual(self.server.name, "edited-import-owner")
+        self.assertEqual(self.server.ipam_initial_observations, receipts)
+        self.assertEqual(self.server.ipam_first_complete_at, completed)
+
+    def test_handled_curated_global_prefix_does_not_block_complete_import(self):
+        self.server.sync_enabled = False
+        self.server.sync_dhcp_plugin_enabled = True
+        self.server.save()
+        Prefix.objects.create(prefix=self.network, description="Operator delegation")
+        hosts = [{"subnet-id": 0, "duid": "01:02:03:04", "prefixes": [self.network]}]
+        with stub_kea(_sync_responses({6: self.config}, {6: hosts})):
+            results = run_dhcp_plugin_import(self.server)
+        self.assertEqual(results[0][1].errors, 0)
+        self.server.refresh_from_db()
+        self.assertIsNotNone(self.server.ipam_first_complete_at)
+
+    def test_missing_enabled_family_does_not_record_import_completion(self):
+        self.server.dhcp4 = True
+        self.server.sync_enabled = False
+        self.server.sync_dhcp_plugin_enabled = True
+        self.server.save()
+        responses = _sync_responses({6: self.config}, {6: []})
+        responses["subnet4-list"] = {"result": 1, "text": "unavailable"}
+        with stub_kea(responses):
+            run_dhcp_plugin_import(self.server)
+        self.server.refresh_from_db()
+        self.assertIsNone(self.server.ipam_first_complete_at)
+        self.assertEqual(self.server.ipam_initial_observations, {})
+
+    def test_successful_config_response_without_family_block_does_not_complete_import(self):
+        self.server.dhcp4 = True
+        self.server.sync_enabled = False
+        self.server.sync_dhcp_plugin_enabled = True
+        self.server.save()
+        for arguments in ({}, {"Dhcp4": None}):
+            with self.subTest(arguments=arguments):
+                responses = _sync_responses({6: self.config}, {6: []})
+                complete_config = responses["config-get"]
+
+                def config_get(body, missing=arguments, healthy=complete_config):
+                    if body["service"] == ["dhcp4"]:
+                        return {"result": 0, "arguments": missing}
+                    return healthy(body)
+
+                responses["config-get"] = config_get
+                with stub_kea(responses):
+                    results = run_dhcp_plugin_import(self.server)
+                self.assertEqual([family for family, _summary in results], [6])
+                self.assertEqual(results[0][1].errors, 0)
+                self.assertTrue(
+                    IPAMOwnershipLink.objects.filter(server=self.server, family=6, source="subnet").exists()
+                )
+                self.server.refresh_from_db()
+                self.assertIsNone(self.server.ipam_first_complete_at)
+                self.assertEqual(self.server.ipam_initial_observations, {})
+        with stub_kea(_sync_responses({4: {"subnet4": []}, 6: self.config}, {4: [], 6: []})):
+            run_dhcp_plugin_import(self.server)
+        self.server.refresh_from_db()
+        self.assertIsNotNone(self.server.ipam_first_complete_at)
+        self.assertEqual(set(self.server.ipam_initial_observations), {"import"})
+
+    def test_job_before_import_cannot_release_an_unknown_import_owner(self):
+        from netbox_kea.jobs import KeaIpamSyncJob
+        from netbox_kea.tests.test_jobs import _lease_page, _make_job
+
+        self.server.sync_dhcp_plugin_enabled = True
+        self.server.sync_deprecate_prefixes_and_ranges = True
+        self.server.save()
+        prefix = Prefix.objects.create(prefix="2001:db8:1::/64", description="[kea-sync: subnet]")
+
+        def run_job(config):
+            responses = _sync_responses({6: config}, {6: []})
+            responses["lease6-get-page"] = _lease_page([])
+            with stub_kea(responses):
+                KeaIpamSyncJob(_make_job()).run(server_pk=self.server.pk)
+
+        run_job(self.config)
+        run_job({"subnet6": []})
+        self.server.refresh_from_db()
+        prefix.refresh_from_db()
+        self.assertIsNone(self.server.ipam_first_complete_at)
+        self.assertEqual(prefix.status, "active")
+        self.assertTrue(IPAMOwnershipLink.objects.filter(prefix=prefix).exists())
+        with stub_kea(_sync_responses({6: {"subnet6": []}}, {6: []})):
+            run_dhcp_plugin_import(self.server)
+        self.server.refresh_from_db()
+        self.assertIsNotNone(self.server.ipam_first_complete_at)
+        run_job({"subnet6": []})
+        prefix.refresh_from_db()
+        self.assertEqual(prefix.status, "deprecated")
+
+    def test_complementary_partial_imports_never_combine_into_completion(self):
+        self.server.dhcp4 = True
+        self.server.sync_enabled = False
+        self.server.sync_dhcp_plugin_enabled = True
+        self.server.save()
+        configs = {4: {"subnet4": []}, 6: {"subnet6": []}}
+        for failed in (4, 6):
+            responses = _sync_responses(configs, {4: [], 6: []})
+            responses[f"subnet{failed}-list"] = {"result": 1, "text": "unavailable"}
+            with stub_kea(responses):
+                run_dhcp_plugin_import(self.server)
+            self.server.refresh_from_db()
+            self.assertIsNone(self.server.ipam_first_complete_at)
+            self.assertEqual(self.server.ipam_initial_observations, {})
+        with stub_kea(_sync_responses(configs, {4: [], 6: []})):
+            run_dhcp_plugin_import(self.server)
+        self.server.refresh_from_db()
+        self.assertIsNotNone(self.server.ipam_first_complete_at)
+
+    def test_failed_ownership_row_blocks_whole_import_receipt(self):
+        self.server.sync_enabled = False
+        self.server.sync_dhcp_plugin_enabled = True
+        self.server.save()
+        for _ in range(2):
+            Prefix.objects.create(prefix="2001:db8:1::/64", description="[kea-sync: subnet]")
+        with stub_kea(_sync_responses({6: self.config}, {6: []})):
+            results = run_dhcp_plugin_import(self.server)
+        self.assertGreater(results[0][1].errors, 0)
+        self.server.refresh_from_db()
+        self.assertIsNone(self.server.ipam_first_complete_at)
+        self.assertEqual(self.server.ipam_initial_observations, {})
+
+    def test_import_only_owner_protects_addresses_prefixes_and_ranges(self):
+        from netbox_kea.jobs import KeaIpamSyncJob
+        from netbox_kea.tests.test_jobs import _lease_page, _make_job
+
+        owner = _make_db_server(name="periodic-owner", dhcp6=False, sync_deprecate_prefixes_and_ranges=True)
+        unknown = _make_db_server(name="import-only", dhcp6=False, sync_enabled=False, sync_dhcp_plugin_enabled=True)
+        address = IPAddress.objects.create(address="10.0.0.25/24", description="[kea-sync: lease]")
+        prefix = Prefix.objects.create(prefix="10.0.0.0/24", description="[kea-sync: subnet]")
+        ip_range = IPRange.objects.create(
+            start_address=IPNetwork("10.0.0.20/24"),
+            end_address=IPNetwork("10.0.0.30/24"),
+            description="[kea-sync: pool]",
+        )
+        config = {"subnet4": [{"id": 1, "subnet": "10.0.0.0/24", "pools": [{"pool": "10.0.0.20-10.0.0.30"}]}]}
+
+        def run_job(configuration, leases):
+            responses = _sync_responses({4: configuration}, {4: []})
+            responses["lease4-get-page"] = _lease_page(leases)
+            job = _make_job()
+            with stub_kea(responses):
+                KeaIpamSyncJob(job).run(server_pk=owner.pk)
+            return job.data["summary"][0]
+
+        run_job(config, [{"ip-address": "10.0.0.25", "subnet-id": 1, "valid-lft": 3600, "state": 0}])
+        waiting = run_job({"subnet4": []}, [])
+        self.assertEqual(waiting["waiting"], 3)
+        for obj in (address, prefix, ip_range):
+            obj.refresh_from_db()
+            self.assertNotEqual(obj.status, "deprecated")
+        self.assertEqual(IPAMOwnershipLink.objects.filter(server=owner).count(), 3)
+        with stub_kea(_sync_responses({4: {"subnet4": []}}, {4: []})):
+            run_dhcp_plugin_import(unknown)
+        run_job({"subnet4": []}, [])
+        self.assertFalse(IPAddress.objects.filter(pk=address.pk).exists())
+        for obj in (prefix, ip_range):
+            obj.refresh_from_db()
+            self.assertEqual(obj.status, "deprecated")
+
     def import_hosts(self, hosts, *, complete=True, server=None):
         observation = _reservation_snapshot(self.config, 6, hosts)
         if not complete:
@@ -636,8 +825,4 @@ class AdapterOwnershipBoundaryTest(SimpleTestCase):
             if isinstance(node, ast.ImportFrom) and node.module is not None and node.module.split(".")[-1] == "sync"
             for alias in node.names
         ]
-        self.assertEqual([name for name in imported if name.startswith("_")], [])
-        self.assertNotIn("get_netbox_ip", imported)
-        self.assertNotIn("sync_reservation_to_netbox", imported)
-        self.assertNotIn("sync_subnet_to_netbox_prefix", imported)
-        self.assertNotIn("sync_pool_to_netbox_ip_range", imported)
+        self.assertLessEqual(set(imported), {"sync_mac_address"})

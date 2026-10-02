@@ -1117,7 +1117,7 @@ class TestCombinedReservations4Enrichment(_CombinedViewBase):
 
     def test_netbox_ip_synced_link_when_ip_in_netbox(self):
         """The combined table shows aggregate synchronization for the Reservation."""
-        IPAddress.objects.create(address="10.0.0.5/32")
+        IPAddress.objects.create(address="10.0.0.5/32", description="[kea-sync: reservation]")
         with _reservation_stub(
             4,
             {"reservation-get-page": _res_page([dict(_MOCK_RESERVATION_ENRICHED)]), "lease4-get-by-state": _leases([])},
@@ -1125,6 +1125,25 @@ class TestCombinedReservations4Enrichment(_CombinedViewBase):
             response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Synchronized 1/1")
+
+    def test_blank_description_row_is_not_synchronized_and_stays_unchanged(self):
+        from netbox_kea.models import IPAMOwnershipLink
+
+        ip = IPAddress.objects.create(address="10.0.0.5/32", status="active", description="")
+        before_row = IPAddress.objects.values().get(pk=ip.pk)
+        before_links = list(IPAMOwnershipLink.objects.filter(ip_address=ip).order_by("pk").values())
+        with _reservation_stub(
+            4,
+            {"reservation-get-page": _res_page([dict(_MOCK_RESERVATION_ENRICHED)]), "lease4-get-by-state": _leases([])},
+        ):
+            response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, '<span class="badge text-bg-secondary">Not Synchronized 0/1</span>', html=True)
+        self.assertNotContains(response, "Synchronized 1/1")
+        row = next(iter(response.context["table"].rows)).record
+        self.assertEqual(row["sync_state"].code, "not-synchronized")
+        self.assertEqual(IPAddress.objects.values().get(pk=ip.pk), before_row)
+        self.assertEqual(list(IPAMOwnershipLink.objects.filter(ip_address=ip).order_by("pk").values()), before_links)
 
     def test_edit_action_links_use_server_pk(self):
         """Each combined reservation row must have an edit link pointing to the correct server."""

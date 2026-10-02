@@ -8,8 +8,8 @@ from utilities.release import load_release_data
 
 from netbox_kea import NetBoxKeaConfig
 from netbox_kea.constants import STALE_CLEANUP_MODES
+from netbox_kea.ipam_reconciliation import _get_stale_cleanup_mode
 from netbox_kea.models import _get_kea_timeout, _get_max_unpaged_leases
-from netbox_kea.sync import _get_stale_cleanup_mode
 from netbox_kea.tests.utils import plugins_config
 
 NETBOX_VERSION = load_release_data().version
