@@ -753,10 +753,17 @@ def reconcile(server: Server, family: Family, phases: Sequence[Phase]) -> SyncRe
     return report
 
 
-def _lock_identity(vrf_id: int | None, address: str) -> None:
+def _lock_identity(vrf_id: int | None, address: str, *, nowait: bool = False) -> None:
     """Hold the advisory lock of one IP address identity, the VRF and the address, until the transaction ends."""
+    _lock_key(f"ip-address {vrf_id} {address}", nowait=nowait)
+
+
+def _lock_key(identity: str, *, nowait: bool) -> None:
     with connection.cursor() as cursor:
-        cursor.execute("SELECT pg_advisory_xact_lock(%s, %s)", [_LOCK_CLASS, _int4(f"ip-address {vrf_id} {address}")])
+        function = "pg_try_advisory_xact_lock" if nowait else "pg_advisory_xact_lock"
+        cursor.execute(f"SELECT {function}(%s, %s)", [_LOCK_CLASS, _int4(identity)])
+        if nowait and not cursor.fetchone()[0]:
+            raise _RowRefused("The IPAM identity is busy; retry cleanup on the next sync")
 
 
 def _each_row(
@@ -1205,11 +1212,12 @@ def _remove_stale_links(
     if not candidates:
         return
     referenced = dhcp_plugin.sys4_referenced_ip_ids()
+    nowait = connection.in_atomic_block
     rows = _each_row(
         candidates,
         report,
         source,
-        lambda stale: _remove_stale_link(stale, cutoff, mode, last_links_go, referenced),
+        lambda stale: _remove_stale_link(stale, cutoff, mode, last_links_go, referenced, nowait=nowait),
         lambda stale: f"stale {source} link of {stale.address} of Server {server.name}",
     )
     for stale, outcome in rows:
@@ -1233,10 +1241,12 @@ def _remove_stale_link(
     mode: StaleCleanupMode,
     last_links_go: bool,
     referenced: set[int],
+    *,
+    nowait: bool,
 ) -> str:
     """Decide one stale link under the identity lock and the row lock of its object."""
-    _lock_identity(stale.vrf_id, stale.address)
-    ip = IPAddress.objects.select_for_update().filter(pk=stale.ip_pk).first()
+    _lock_identity(stale.vrf_id, stale.address, nowait=nowait)
+    ip = IPAddress.objects.select_for_update(nowait=nowait).filter(pk=stale.ip_pk).first()
     if ip is None:
         return "kept"
     links = _cleanup_links(ip)
@@ -1296,10 +1306,9 @@ def _object_field(obj: IPAddress | Prefix | IPRange) -> str:
     return "ip_address"
 
 
-def _lock_network(vrf_id: int | None, source: str, address: str) -> None:
+def _lock_network(vrf_id: int | None, source: str, address: str, *, nowait: bool = False) -> None:
     kind = "ip-range" if source == "pool" else "prefix"
-    with connection.cursor() as cursor:
-        cursor.execute("SELECT pg_advisory_xact_lock(%s, %s)", [_LOCK_CLASS, _int4(f"{kind} {vrf_id} {address}")])
+    _lock_key(f"{kind} {vrf_id} {address}", nowait=nowait)
 
 
 def _run_network_phase(
@@ -1410,11 +1419,12 @@ def _remove_stale_network_links(server: Server, family: Family, source: str, cut
     links = IPAMOwnershipLink.objects.filter(server=server, family=family, source=source, confirmation__lt=cutoff)
     # A marked link still needs the release check: an operator may have removed its object's marker.
     candidates = list(links.select_related(field_name))
+    nowait = connection.in_atomic_block
     for link, outcome in _each_row(
         candidates,
         report,
         source,
-        lambda link: _remove_stale_network_link(link, field_name, cutoff),
+        lambda link: _remove_stale_network_link(link, field_name, cutoff, nowait=nowait),
         lambda link: f"stale {source} link {link.pk}",
     ):
         if outcome == "waiting":
@@ -1430,11 +1440,11 @@ def _remove_stale_network_links(server: Server, family: Family, source: str, cut
             )
 
 
-def _remove_stale_network_link(candidate: IPAMOwnershipLink, field_name: str, cutoff: int) -> str:
+def _remove_stale_network_link(candidate: IPAMOwnershipLink, field_name: str, cutoff: int, *, nowait: bool) -> str:
     obj = getattr(candidate, field_name)
     address = str(obj.prefix) if field_name == "prefix" else f"{_host(obj.start_address)} - {_host(obj.end_address)}"
-    _lock_network(obj.vrf_id, candidate.source, address)
-    locked = type(obj).objects.select_for_update().filter(pk=obj.pk).first()
+    _lock_network(obj.vrf_id, candidate.source, address, nowait=nowait)
+    locked = type(obj).objects.select_for_update(nowait=nowait).filter(pk=obj.pk).first()
     if locked is None:
         return "kept"
     owners = _cleanup_links(locked)

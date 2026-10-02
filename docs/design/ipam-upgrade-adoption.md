@@ -77,6 +77,7 @@ Final adopted-link cleanup locks all current ownership links before the Server a
 These locks are nonblocking. A busy owner or policy write fails only its cleanup row and keeps the object.
 The next sync retries that row. This also prevents Server cascade deadlocks within a DHCP import transaction.
 Locks stay until the owning transaction commits. DHCP imports can hold them across several rows.
+Cleanup inside an outer transaction also refuses busy identity and object locks, before it can wait with retained policy locks.
 The policy locks also cover new Servers and bulk updates.
 Count snapshots read policy once without these locks, because they do not authorize cleanup.
 Operator release and cleanup with other owners do not take the policy locks.
