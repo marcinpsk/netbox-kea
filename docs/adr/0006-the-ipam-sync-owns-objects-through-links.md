@@ -127,11 +127,15 @@ number, and a concurrent phase sees it under the object lock.
 
 A phase removes the last link of its Server to an object only when the `reconcile` call runs every phase that can
 report that object type, and each of them is complete. For an IP address these are the lease and the Reservation
-phases. Otherwise the link stays and a later run decides. A Prefix is the exception: the job reports it from the
+phases. If `Server.sync_reservations_enabled` is false, the Reservation source is not an owner for that Server.
+A complete lease phase alone can then remove its last lease link. This exception does not apply to the global
+Reservation toggle or to an unavailable `host_cmds` hook. Config-file Reservations can still exist without the
+hook, so that Reservation phase stays incomplete and the last link stays. A failed or truncated lease snapshot
+keeps every stale lease link. Otherwise the link stays and a later run decides. A Prefix is the exception: the job reports it from the
 Subnet phase and the DHCP plugin import from the `delegated-prefix` phase, in separate calls, so each of these
 phases counts alone. A Prefix is never removed, so the worst case is an opt-in deprecation that the next Subnet
-run reverts when it links the Prefix. A call that runs only some of these phases, such as the
-bulk Reservation Sync, therefore never removes the last link of its Server. A failed phase does not block the
+run reverts when it links the Prefix. A bulk Reservation Sync has no complete lease phase,
+so it never removes the last link of its Server, even when that Server disables Reservation sync. A failed phase does not block the
 removal of a link when the Server keeps another link to the object.
 
 When a complete phase removes the last link of a Stale IPAM Object, the object changes as follows:
