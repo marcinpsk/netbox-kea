@@ -435,6 +435,7 @@ def _complete_observation(server: Server, workflow: Workflow, observed: SourceSc
             return
         receipts = _receipts(current)
         receipts[workflow] = _ObservationReceipt(observed, timezone.now())
+        current.snapshot()
         current.ipam_initial_observations = {key: receipt.stored() for key, receipt in receipts.items()}
         if current.ipam_first_complete_at is None and all(
             not scope or (key in receipts and scope <= receipts[key].sources) for key, scope in required.items()
@@ -985,6 +986,7 @@ def _claim(
             if conflicts is not None:
                 conflicts.add(report.address)
         elif eligible and report.facts is not None:
+            legacy[0].snapshot()
             legacy[0].vrf_id = vrf_id
             legacy[0].save()
             rows = legacy
@@ -1052,6 +1054,7 @@ def _apply_claim(
         # The new marker and the operator note do not fit: the object stays as it is, and the owner keeps its link.
         _store_link(own, server, family, source, ip, facts.stored(), stale_mark=_kept_mark(own), adopted=adopted)
         return "conflict"
+    ip.snapshot()
     changed = _apply_ip_fields(ip, status=status, hostname=applied.hostname, description=description)
     changed = _apply_ip_mask(ip, report.address, applied.prefix_length) or changed
     if changed:
@@ -1108,6 +1111,7 @@ def _restatus(ip: IPAddress, links: Sequence[IPAMOwnershipLink]) -> _Outcome:
     description = _ip_description(ip.description, status)
     if description is None:
         return "conflict"
+    ip.snapshot()
     if not _apply_ip_fields(ip, status=status, hostname=_implied_hostname(links), description=description):
         return "unchanged"
     ip.save()
@@ -1281,6 +1285,7 @@ def _remove_stale_link(
     link.stale_mark = cutoff
     link.save(update_fields=["stale_mark"])
     if ip.status != "deprecated":
+        ip.snapshot()
         ip.status = "deprecated"
         ip.save()
     return "deprecated"
@@ -1406,6 +1411,7 @@ def _claim_network(
     fields.update(status="active", description=description)
     changed = any(str(getattr(obj, name)) != str(value) for name, value in fields.items())
     if changed:
+        obj.snapshot()
         for name, value in fields.items():
             setattr(obj, name, value)
         obj.save()
@@ -1473,6 +1479,7 @@ def _remove_stale_network_link(candidate: IPAMOwnershipLink, field_name: str, cu
                 return "conflict"
             changed = locked.status != "active" or locked.description != description
             if changed:
+                locked.snapshot()
                 locked.status = "active"
                 locked.description = description
                 locked.save()
@@ -1491,6 +1498,7 @@ def _remove_stale_network_link(candidate: IPAMOwnershipLink, field_name: str, cu
     link.stale_mark = cutoff
     link.save(update_fields=["stale_mark"])
     if locked.status != "deprecated":
+        locked.snapshot()
         locked.status = "deprecated"
         locked.save()
     return "deprecated"

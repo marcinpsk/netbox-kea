@@ -314,9 +314,11 @@ def upsert_options(parent_obj, options, family: int, dhcp_server, custom_defs, s
                     assigned_object_type=ct, assigned_object_id=parent_obj.pk, definition=definition
                 ).first()
                 created = existing is None
-                obj = existing or Option(
-                    definition=definition, assigned_object_type=ct, assigned_object_id=parent_obj.pk
-                )
+                if existing is None:
+                    obj = Option(definition=definition, assigned_object_type=ct, assigned_object_id=parent_obj.pk)
+                else:
+                    obj = existing
+                    obj.snapshot()
                 obj.data = opt.data or ""
                 obj.csv_format = opt.csv_format
                 obj.send_option = _send_option(opt)
@@ -465,6 +467,7 @@ def _apply_global_settings(dhcp_server, settings: dict, summary: ImportSummary, 
         return
     model_fields = {f.name for f in dhcp_server._meta.get_fields()}
     changed: list[str] = []
+    dhcp_server.snapshot()
     for kea_key, attr, transform in _SERVER_FIELDS:
         if attr not in model_fields or kea_key not in settings:
             continue
@@ -558,6 +561,8 @@ def upsert_client_class(server, dhcp_server, intent: ClientClassIntent, custom_d
     created = obj is None
     if obj is None:
         obj = ClientClass(name=cc_name, dhcp_server=dhcp_server)
+    else:
+        obj.snapshot()
 
     changed = created
     if obj.dhcp_server_id != dhcp_server.pk:
@@ -644,6 +649,7 @@ def upsert_subnet(server, dhcp_server, intent: SubnetIntent, summary: ImportSumm
             if result.outcome in {"conflict", "disagreement"}:
                 summary.warn(f"subnet {network}: IPAM ownership {result.outcome}, Prefix left unchanged")
             if existing is not None:
+                existing.snapshot()
                 if existing.prefix_id != prefix_obj.pk:
                     existing.prefix = prefix_obj
                     changed = True
@@ -845,10 +851,12 @@ def _upsert_reservation(reservation, subnet_obj, server, dhcp_server, custom_def
                     dhcp_server=None if subnet_obj is not None else dhcp_server,
                     name=_reservation_name(scope_name, reservation),
                 )
-            elif linked is None and subnet_obj is None:
-                # Newly adopted: take the family-qualified name so the other family is free
-                # to create its own row under the unique-name constraint.
-                obj.name = _reservation_name(scope_name, reservation)
+            else:
+                obj.snapshot()
+                if linked is None and subnet_obj is None:
+                    # Newly adopted: take the family-qualified name so the other family is free
+                    # to create its own row under the unique-name constraint.
+                    obj.name = _reservation_name(scope_name, reservation)
             obj.hostname = reservation.hostname or None
             _apply_reservation_identifier(obj, reservation, mac_obj)
             # One row holds one family. _reservation_addresses returns the other

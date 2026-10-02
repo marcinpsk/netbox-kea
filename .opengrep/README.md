@@ -53,6 +53,16 @@ out of CI so CodeRabbit can run its own analysis on pull requests.
 | `netbox-ipam-get-or-create-non-unique-key` | error | `get_or_create()` or `update_or_create()` on `Prefix`, `IPRange`, or `IPAddress`, directly or on a queryset chain such as `.filter(...)`. An exact `pk=` or `id=` lookup is exempt. NetBox does not enforce these keys in the database, so a duplicate row makes every call raise `MultipleObjectsReturned`. |
 | `netbox-ipam-mutation-outside-reconciliation` | error | Deletes and status writes on `IPAddress`, `Prefix` and `IPRange` outside `netbox_kea/ipam_reconciliation.py`. Covers direct queryset chains, local query bindings and typed helper parameters, including import aliases. Tests and migrations are excluded. |
 
+The adjacent snapshot rule uses the stdlib AST checker
+`netbox_kea/tests/snapshot_discipline.py`. It checks that loaded model saves take
+a snapshot before their first direct mutation or known mutation-helper call.
+It also rejects a later snapshot that overwrites the old values. An explicit
+inventory classifies direct save sites; new or changed sites require review.
+The checker runs in the native suite and the `snapshot-discipline` pre-commit
+hook. Its direct-receiver scope and limits are documented in
+[the design record](../docs/design/snapshot-discipline.md).
+It has no baseline or inline suppression marker.
+
 ## Running locally
 
 ```bash
