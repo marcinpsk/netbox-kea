@@ -38,6 +38,7 @@ _NON_WIRE_HYPHENATED = {
     "catalogue-identity-collision": "Catalogue validation diagnostic",
     "configuration-changed-during-retry": "Catalogue retry diagnostic",
     "configuration-unavailable": "Configuration snapshot diagnostic",
+    "delegated-prefix": "IPAM Ownership source (ADR 0006)",
     "duplicate-address": "Transfer validation diagnostic",
     "duplicate-option": "Transfer validation diagnostic",
     "duplicate-prefix": "Transfer validation diagnostic",

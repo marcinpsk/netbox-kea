@@ -1,9 +1,12 @@
 # SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-FileCopyrightText: 2023-2024 Devon Mar <devon-mar@users.noreply.github.com>
 # SPDX-License-Identifier: Apache-2.0
+from typing import Any
+
 from netbox.plugins import PluginConfig
 
 from . import branching
+from .plugin_settings import DEFAULT_SETTINGS, validate_settings
 
 __version__ = "1.12.0"
 
@@ -17,19 +20,13 @@ class NetBoxKeaConfig(PluginConfig):
     version = __version__
     base_url = "kea"
     middleware = ("netbox_kea.branching.BranchRefusalMiddleware",)
-    default_settings = {
-        "kea_timeout": 30,
-        "lease_query_max_unpaged_leases": 1000,
-        # stale_ip_cleanup: "remove" (delete stale IPs), "deprecate" (set status=deprecated), "none" (skip cleanup)
-        "stale_ip_cleanup": "remove",
-        # Background IPAM sync settings (Kea → NetBox via django-rq)
-        "sync_interval_minutes": 5,
-        "sync_leases_enabled": True,
-        "sync_reservations_enabled": True,
-        "sync_prefixes_enabled": True,
-        "sync_ip_ranges_enabled": True,
-        "sync_max_leases_per_server": 50000,
-    }
+    default_settings = DEFAULT_SETTINGS
+
+    @classmethod
+    def validate(cls, user_config: dict[str, Any], netbox_version: str) -> None:
+        """Refuse an invalid setting at startup, after NetBox fills in the defaults."""
+        super().validate(user_config, netbox_version)
+        validate_settings(user_config)
 
     def ready(self) -> None:
         """Register the netbox-branching integration after Django is fully initialised."""

@@ -84,12 +84,15 @@ def _fetch_config_intent(server: Server, version: Family):
 
 def _fetch_reservation_snapshot(server: Server, version: Family):
     """Return a typed Reservation Snapshot, possibly incomplete, or ``None`` after a read failure."""
+    from ..ipam_reconciliation import ReservationObservation
+    from ..models import next_confirmation_number
     from ..subnet_catalogue import for_synchronization
 
+    cutoff = next_confirmation_number()
     try:
         client = server.get_client(version=version)
         catalogue = for_synchronization(server, version)
-        return client.reservation_snapshot(version, catalogue)
+        return ReservationObservation(client.reservation_snapshot(version, catalogue), cutoff)
     except (KeaException, requests.RequestException, RuntimeError, ValueError):
         logger.warning(
             "DHCP-plugin sync: Reservation Snapshot failed for %s (v%s)", server.name, version, exc_info=True
@@ -118,6 +121,8 @@ def _summary_problems(summary) -> list[str]:
             f"{summary.foreign_addresses_skipped} manually curated NetBox IP(s) were left unchanged. "
             "Use the per-reservation Sync to claim one."
         )
+    if summary.owner_disagreements:
+        problems.append(f"{summary.owner_disagreements} IPAM owner disagreement(s) left the shared objects unchanged.")
     if summary.addresses_unattached:
         problems.append(
             f"{summary.addresses_unattached} reserved address(es) were not attached because no NetBox IP "

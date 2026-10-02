@@ -156,7 +156,9 @@ _WRITES = [member for member in KeaCommand if member.is_write]
 
 
 def _bound_client() -> KeaClient:
-    return KeaClient(url="https://kea.example.invalid/", write_guard=BranchBinding(_BRANCH))
+    return KeaClient(
+        url="https://kea.example.invalid/", timeout=30, max_unpaged_leases=1000, write_guard=BranchBinding(_BRANCH)
+    )
 
 
 @pytest.mark.parametrize("command", _WRITES, ids=lambda member: member.value)
@@ -182,6 +184,8 @@ def test_a_config_mutation_in_a_branch_is_refused_before_the_cache_invalidation(
     invalidations: list[str] = []
     client = KeaClient(
         url="https://kea.example.invalid/",
+        timeout=30,
+        max_unpaged_leases=1000,
         write_guard=BranchBinding(_BRANCH),
         on_config_change=lambda: invalidations.append("invalidated"),
     )
@@ -309,6 +313,11 @@ def test_the_build_site_scan_sees_a_guard_other_than_the_branch_binding(guard):
     }
 
 
-def test_a_kea_client_without_a_write_guard_is_a_type_error():
-    with pytest.raises(TypeError, match="write_guard"):
-        KeaClient(url="https://kea.example.invalid/")  # type: ignore[call-arg]
+@pytest.mark.parametrize("missing", ["write_guard", "timeout", "max_unpaged_leases"])
+def test_a_kea_client_without_a_required_option_is_a_type_error(missing):
+    """The caller states these, so no default in kea.py can drift from the plugin settings."""
+    options = {"write_guard": BranchBinding(_BRANCH), "timeout": 30, "max_unpaged_leases": 1000}
+    del options[missing]
+
+    with pytest.raises(TypeError, match=missing):
+        KeaClient(url="https://kea.example.invalid/", **options)

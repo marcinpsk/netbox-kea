@@ -21,6 +21,7 @@ from rest_framework.test import APIClient
 from netbox_kea.models import Server
 
 from .kea_stub import stub_kea
+from .utils import plugins_config
 
 # A single DHCPv6 lease (result 0) returned by lease6-get.
 _LEASE6_RESPONSE = [
@@ -40,7 +41,7 @@ _LEASE6_RESPONSE = [
 
 User = get_user_model()
 
-_PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30, "lease_query_max_unpaged_leases": 0}}
+_PLUGINS_CONFIG = plugins_config(lease_query_max_unpaged_leases=0)
 
 _LEASE4_RESPONSE = [
     {

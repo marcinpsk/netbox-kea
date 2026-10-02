@@ -169,7 +169,7 @@ These choices had no competing alternative: a `netbox_kea/branching.py` owner; r
 middleware (branch activation runs earlier, in `CoreMiddleware` request processors, and a processor
 cannot refuse, `NB/utilities/request.py:131-142`); a read or write kind on every Kea command,
 checked in `KeaClient.command()` (`kea.py:727-769`, the single HTTP funnel); `KeaIpamSyncJob` stays
-main-only; `SyncConfig` main-only; the ADR 0006 link model branchable; a CI job with a real
+main-only; `SyncConfig` main-only; the ADR 0006 link model main-only; a CI job with a real
 provisioned branch.
 
 | # | Decision | Chosen | Rejected | Evidence and reason |
@@ -187,7 +187,7 @@ provisioned branch.
 | D11 | Stale branch selection | Refuse with 409 `branch_selection_unusable` | Run the request on main, as for every NetBox view | A stale cookie or unready query runs on main (`NBB/utilities.py:548-597`, `NBB/middleware.py:53-89`), which the "no silent fallback" constraint forbids |
 | D12 | Write controls in the UI | A banner; the IPAddress panel hides its add links | Disable mutation controls | 44 mutation views. Refusal already meets condition 1; disabling controls is a follow-up |
 | D13 | Early Server delete guard | `pre_delete` receiver | At `delete()`, because `JobsMixin.delete()` removes jobs before the collector runs | `JobsMixin.delete()` wraps the job deletion and `super().delete()` in one `atomic(using=...)` (`NB/netbox/models/features.py:513-520`), so a `pre_delete` refusal rolls the job deletion back. Reopen if NetBox removes that transaction |
-| D14 | Startup validation of `exempt_models` | None; deferred to the ADR 0006 link model, the first branchable plugin model | Reject exemptions that break the required branchable set | No plugin model is branchable today, so no exemption can break the set |
+| D14 | Startup validation of `exempt_models` | None; every plugin model remains main-only, including the ADR 0006 ownership link | Reject exemptions that break the required branchable set | No plugin model is branchable today, so no exemption can break the set |
 | D15 | Branch table footprint check per request | None | Validate before reads and core actions | Constraint: no branch predates this release. Guard 2 blocks a new branchable model without a design decision |
 | D16 | REST refusal code | `branch_write_refused` | `branch_not_supported` | Reads are supported |
 | D17 | CI variants | netbox-plugin-dhcp present | Present and absent | Nothing in the design differs with the DHCP plugin absent |
@@ -366,7 +366,7 @@ The sinks follow the design, with these facts from the code:
 | `Server` | No (resolver) | One row per pk: the Kea client and the Redis keys use main's current connection fields; sync never copies censored passwords into a branch |
 | `SyncConfig` | No (plain model) | Global singleton |
 | `KeaDhcpLink` | No (plain model, resolver) | Its only foreign keys go to `Server` (main-only) and `ContentType` (exempt) |
-| ADR 0006 ownership link (future) | Yes, by the rule | `CASCADE` keys to IPAddress, Prefix, IPRange. Its revert and sync behaviour is designed with it; guard 2 blocks it until then |
+| ADR 0006 ownership link | No (resolver) | `CASCADE` keys to IPAddress, Prefix, IPRange. A delete of a linked object in a branch reaches main's link table, and the `pre_delete` receiver refuses it. Merge and revert delete on main, where `CASCADE` removes the links. Design: `docs/design/ipam-ownership-branching.md` |
 
 `Server.sync_vrf` becomes `PROTECT`. A VRF delete, in a branch or in main, is refused while a
 Server syncs into that VRF. Django's collector raises `ProtectedError` during collection, before
@@ -406,9 +406,11 @@ The release ships a migration, so `migrate` refreshes stored `ObjectType.feature
    on either connection. Safe methods: the status the same request gets on main (200 for pages),
    no INSERT, UPDATE or DELETE on either connection, and no refused Kea command. A route whose
    arguments the test cannot build fails by name.
-2. Branchability pin: compute the rule from `_meta` for every plugin model, assert
-   `supports_branching()` agrees, and assert the branchable set equals a pinned empty set. The
-   message says that a change needs a design decision, because open branches lack the table.
+2. Branchability pin: compute, from `_meta` of every plugin model (auto-created ones included),
+   the relations that a delete in a branch reaches, and assert that they equal a pinned set of
+   `(model.field, on_delete)`. Each one must be a concrete `CASCADE` key on a model with the refusal
+   receiver. Assert that `supports_branching()` is `False` for every plugin model. The message says
+   that a change needs a design decision (`docs/design/ipam-ownership-branching.md`).
 3. Kea transport: an AST scan asserts that the runtime package has exactly one HTTP send, inside
    `KeaClient.command()`. A test pins the `read` and `write` members of `KeaCommand` as two
    explicit sets written in the test, independent of the enum, and fails when a member is added,

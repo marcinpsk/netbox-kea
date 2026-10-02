@@ -3,8 +3,7 @@
 """Exercise the sync job through real ORM writes and a Kea HTTP transport stub.
 
 Job tests assert IPAddress, Prefix, IPRange and summary results. Catalogue parsing
-and malformed wire shapes belong to the catalogue and configuration tests. Pure
-configuration and scheduling helpers retain focused SimpleTestCase coverage.
+and malformed wire shapes belong to the catalogue and configuration tests.
 """
 
 from __future__ import annotations
@@ -16,7 +15,7 @@ from unittest.mock import MagicMock, patch
 
 import requests
 from core.exceptions import JobFailed
-from django.test import SimpleTestCase, TestCase, override_settings
+from django.test import TestCase, override_settings
 from ipam.models import IPAddress as NbIP
 from ipam.models import IPRange, Prefix
 
@@ -24,20 +23,12 @@ from netbox_kea.jobs import KeaIpamSyncJob
 from netbox_kea.models import SyncConfig
 
 from .kea_stub import _catalogue_responses_for_subnets, _res_page, _reservation_family, _subnet_list, queued, stub_kea
+from .utils import plugins_config
 
-_PLUGINS_CONFIG = {
-    "netbox_kea": {
-        "kea_timeout": 30,
-        "stale_ip_cleanup": "none",
-        "sync_interval_minutes": 5,
-        "sync_leases_enabled": True,
-        "sync_reservations_enabled": True,
-        "sync_max_leases_per_server": 50000,
-    }
-}
+_PLUGINS_CONFIG = plugins_config(stale_ip_cleanup="none")
 
 # Variant used by tests that exercise the stale-IP cleanup path.
-_PLUGINS_CONFIG_CLEANUP = {"netbox_kea": {**_PLUGINS_CONFIG["netbox_kea"], "stale_ip_cleanup": "remove"}}
+_PLUGINS_CONFIG_CLEANUP = plugins_config()
 
 _LEASE4 = {
     "ip-address": "10.0.0.1",
@@ -152,6 +143,15 @@ def _patch_kea(
     error code, or an exception instance raised at the HTTP boundary.
     """
     reservation_rows = list(reservations or [])
+    lease_subnets = {
+        4: [{"id": 1, "subnet": "10.0.0.0/24"}] if leases4 is not None else [],
+        6: [{"id": 1, "subnet": "2001:db8::/64"}] if leases6 is not None else [],
+    }
+
+    def subnets(version: int) -> list[dict]:
+        configured = {subnet["id"]: subnet for subnet in lease_subnets[version]}
+        configured.update({subnet["id"]: subnet for subnet in _reservation_subnets(reservation_rows, version)})
+        return list(configured.values())
 
     def config_get(body: dict) -> dict:
         service = (body.get("service") or ["dhcp4"])[0]
@@ -160,13 +160,13 @@ def _patch_kea(
         subnet_key = f"subnet{version}"
         return {
             "result": 0,
-            "arguments": {root: {subnet_key: _reservation_subnets(reservation_rows, version), "shared-networks": []}},
+            "arguments": {root: {subnet_key: subnets(version), "shared-networks": []}},
         }
 
     def subnet_list(body: dict) -> dict:
         version = 6 if body.get("command") == "subnet6-list" else 4
-        subnets = _reservation_subnets(reservation_rows, version)
-        return {"result": 0, "arguments": {"subnets": subnets}} if subnets else {"result": 3}
+        rows = subnets(version)
+        return {"result": 0, "arguments": {"subnets": rows}} if rows else {"result": 3}
 
     def reservation_page(body: dict) -> dict:
         version = 6 if (body.get("service") or ["dhcp4"])[0] == "dhcp6" else 4
@@ -190,6 +190,19 @@ def _patch_kea(
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestKeaIpamSyncJobRun(TestCase):
     """Run the job with real sync helpers and ORM writes; stub only Kea HTTP."""
+
+    def test_available_empty_catalogue_does_not_select_the_unavailable_fallback(self):
+        from ipam.models import IPAddress, Prefix
+
+        from netbox_kea.models import IPAMOwnershipLink
+
+        self._make_db_server(dhcp6=False, sync_reservations_enabled=False)
+        Prefix.objects.create(prefix="10.0.0.0/24")
+        with _patch_kea(leases4=[_LEASE4], responses=_catalogue_responses_for_subnets(4, [])):
+            job = self._run()
+        self.assertEqual(job.data["summary"][0]["errors"], 1)
+        self.assertFalse(IPAddress.objects.exists())
+        self.assertFalse(IPAMOwnershipLink.objects.exists())
 
     # ── scaffolding ──────────────────────────────────────────────────────────
 
@@ -222,7 +235,7 @@ class TestKeaIpamSyncJobRun(TestCase):
             address="198.18.0.29/32",
             status="dhcp",
             dns_name="valid.example.invalid",
-            description="Synced from Kea DHCP (dhcp)",
+            description="[kea-sync: lease]",
         )
         valid_lease = {"ip-address": "198.18.0.30", "subnet-id": 1, "hostname": "valid.example.invalid"}
         for hostname in (["host.example.invalid"], {"name": "host.example.invalid"}):
@@ -306,7 +319,7 @@ class TestKeaIpamSyncJobRun(TestCase):
             address="198.18.0.20/24",
             status="reserved",
             dns_name="old.example.invalid",
-            description="Synced from Kea DHCP reservation",
+            description="[kea-sync: reservation]",
         )
         reservation = {
             "ip-address": "198.18.0.20",
@@ -446,9 +459,7 @@ class TestKeaIpamSyncJobRun(TestCase):
 
     # ── truncation ─────────────────────────────────────────────────────────
 
-    @override_settings(
-        PLUGINS_CONFIG={"netbox_kea": {**_PLUGINS_CONFIG_CLEANUP["netbox_kea"], "sync_max_leases_per_server": 1}}
-    )
+    @override_settings(PLUGINS_CONFIG=plugins_config(sync_max_leases_per_server=1))
     def test_truncation_warning_skips_cleanup(self):
         """Truncated lease fetch → warning logged and stale IP not removed.
 
@@ -463,11 +474,11 @@ class TestKeaIpamSyncJobRun(TestCase):
             address="10.0.0.99/32",
             status="dhcp",
             dns_name="host1",
-            description="Synced from Kea DHCP (dhcp)",
+            description="[kea-sync: lease]",
         )
         overflow = {**_LEASE4, "ip-address": "10.0.0.2", "hostname": "host2"}
         with _patch_kea(leases4=[_LEASE4, overflow]):
-            with self.assertLogs("netbox_kea.jobs", level="WARNING") as cm:
+            with self.assertLogs("netbox_kea.ipam_reconciliation", level="WARNING") as cm:
                 self._run()
         self.assertTrue(any("truncated" in msg for msg in cm.output))
         # The overflow lease past the cap was genuinely dropped, not synced.
@@ -481,14 +492,14 @@ class TestKeaIpamSyncJobRun(TestCase):
         """result=2 (unknown command) from reservation-get-page → WARNING about host_cmds.
 
         The real ``command()`` turns the result-2 code into a ``KeaException``,
-        which the job reads as "host_cmds hook not loaded".
+        which the Reservation phase reads as "host_cmds hook not loaded".
         """
         self._make_db_server()
         with _patch_kea(
             leases4=[_LEASE4],
             responses={"reservation-get-page": {"result": 2, "text": "unknown command"}},
         ):
-            with self.assertLogs("netbox_kea.jobs", level="WARNING") as cm:
+            with self.assertLogs("netbox_kea.ipam_reconciliation", level="WARNING") as cm:
                 self._run()
         self.assertTrue(any("host_cmds" in msg for msg in cm.output))
 
@@ -502,6 +513,27 @@ class TestKeaIpamSyncJobRun(TestCase):
         self.assertTrue(NbIP.objects.filter(address__net_host="2001:db8::123", status="dhcp").exists())
         self.assertIn("subnet6-list", kea.commands())
         self.assertIn("lease6-get-page", kea.commands())
+
+    def _run_with_snapshot_oserror(self, command: str) -> MagicMock:
+        # A missing TLS CA file is a plain OSError, not a requests error.
+        self._make_db_server()
+        unavailable = OSError("TLS CA certificate file is unavailable")
+        with _patch_kea(leases4=[_LEASE4], leases6=[_LEASE6], reservations=[_RESV4], responses={command: unavailable}):
+            return self._run()
+
+    def test_a_lease_snapshot_oserror_does_not_stop_the_reservation_phase_or_the_other_family(self):
+        job = self._run_with_snapshot_oserror("lease4-get-page")
+
+        self.assertTrue(NbIP.objects.filter(address__net_host="10.0.0.100").exists())
+        self.assertTrue(NbIP.objects.filter(address__net_host="2001:db8::1").exists())
+        self.assertEqual(job.data["summary"][0]["errors"], 1)
+
+    def test_a_reservation_snapshot_oserror_does_not_stop_the_lease_phase_or_the_other_family(self):
+        job = self._run_with_snapshot_oserror("reservation-get-page")
+
+        self.assertTrue(NbIP.objects.filter(address__net_host="10.0.0.1").exists())
+        self.assertTrue(NbIP.objects.filter(address__net_host="2001:db8::1").exists())
+        self.assertEqual(job.data["summary"][0]["errors"], 2)
 
     def test_catalogue_failure_is_not_reported_as_missing_host_cmds(self):
         self._make_db_server(dhcp6=False)
@@ -520,16 +552,15 @@ class TestKeaIpamSyncJobRun(TestCase):
     def test_absent_host_cmds_is_skipped_not_counted_as_an_error(self):
         """A server without host_cmds has no reservations to sync, so the job must not fail.
 
-        ``_fetch_reservation_snapshot`` returned ``None`` for both a missing hook and a
-        genuine failure, so the skip incremented ``stats["errors"]`` and every sync run
-        against such a server ended in ``JobFailed``.
+        A missing hook once counted as a failed read, so every sync run against such a
+        server ended in ``JobFailed``.
         """
         self._make_db_server()
         with _patch_kea(
             leases4=[_LEASE4],
             responses={"reservation-get-page": {"result": 2, "text": "unknown command"}},
         ):
-            with self.assertLogs("netbox_kea.jobs", level="WARNING"):
+            with self.assertLogs("netbox_kea.ipam_reconciliation", level="WARNING"):
                 # Must not raise JobFailed: nothing failed, the feature is absent.
                 KeaIpamSyncJob(_make_job()).run()
 
@@ -539,7 +570,7 @@ class TestKeaIpamSyncJobRun(TestCase):
             leases4=[_LEASE4],
             responses={"reservation-get-page": {"result": 2, "text": "unknown command"}},
         ):
-            with self.assertLogs("netbox_kea.jobs", level="WARNING"):
+            with self.assertLogs("netbox_kea.ipam_reconciliation", level="WARNING"):
                 job = self._run()
 
         self.assertEqual([entry["errors"] for entry in job.data["summary"]], [0])
@@ -554,13 +585,13 @@ class TestKeaIpamSyncJobRun(TestCase):
             leases4=[_LEASE4],
             responses={"reservation-get-page": {"result": 1, "text": "internal error"}},
         ):
-            with self.assertLogs("netbox_kea.jobs", level="WARNING") as logs:
+            with self.assertLogs("netbox_kea.ipam_reconciliation", level="WARNING") as logs:
                 self._run()
 
         failures = [
             record
             for record in logs.records
-            if "Reservation Snapshot failed" in record.getMessage() and record.exc_info is not None
+            if "the Reservation snapshot failed" in record.getMessage() and record.exc_info is not None
         ]
         self.assertTrue(failures, [record.getMessage() for record in logs.records])
 
@@ -572,7 +603,7 @@ class TestKeaIpamSyncJobRun(TestCase):
             leases4=[_LEASE4],
             responses={"reservation-get-page": {"result": 1, "text": "internal error"}},
         ):
-            with self.assertLogs("netbox_kea.jobs", level="WARNING"):
+            with self.assertLogs("netbox_kea.ipam_reconciliation", level="WARNING"):
                 job = self._run()
 
         self.assertEqual([entry["errors"] for entry in job.data["summary"]], [1])
@@ -587,7 +618,7 @@ class TestKeaIpamSyncJobRun(TestCase):
             address="10.0.0.99/32",
             status="dhcp",
             dns_name="host1",
-            description="Synced from Kea DHCP (dhcp)",
+            description="[kea-sync: lease]",
         )
 
         with _patch_kea(
@@ -610,7 +641,7 @@ class TestKeaIpamSyncJobRun(TestCase):
             address="10.0.0.99/32",
             status="dhcp",
             dns_name="host1",
-            description="Synced from Kea DHCP (dhcp)",
+            description="[kea-sync: lease]",
         )
         with _patch_kea(leases4=[_LEASE4], reservations=[]):
             self._run()
@@ -626,7 +657,7 @@ class TestKeaIpamSyncJobRun(TestCase):
             address="10.0.0.99/32",
             status="dhcp",
             dns_name="host1",
-            description="Synced from Kea DHCP (dhcp)",
+            description="[kea-sync: lease]",
         )
         bad_lease = {**_LEASE4, "ip-address": "not-an-ip"}
         with _patch_kea(leases4=[bad_lease]):
@@ -647,7 +678,7 @@ class TestKeaIpamSyncJobRun(TestCase):
             address="10.0.0.99/32",
             status="reserved",
             dns_name=_PAGE_HOSTNAME,
-            description="Synced from Kea DHCP (reserved)",
+            description="[kea-sync: reservation]",
         )
 
         # A full page yields a cursor; the page it points at never arrives.
@@ -730,7 +761,7 @@ class TestKeaIpamSyncJobRun(TestCase):
             address="198.18.0.200/32",
             status="reserved",
             dns_name="partial-snapshot.example.invalid",
-            description="Synced from Kea DHCP (reserved)",
+            description="[kea-sync: reservation]",
         )
 
         with _patch_kea(
@@ -743,50 +774,14 @@ class TestKeaIpamSyncJobRun(TestCase):
                 )
             },
         ):
-            with self.assertLogs("netbox_kea.jobs", level="WARNING") as logs:
+            with self.assertLogs("netbox_kea.ipam_reconciliation", level="WARNING") as logs:
                 self._run()
 
         self.assertTrue(IPAddress.objects.filter(address__net_host="198.18.0.1").exists())
         self.assertTrue(IPAddress.objects.filter(address__net_host="198.18.0.100").exists())
         self.assertTrue(IPAddress.objects.filter(pk=stale.pk).exists())
-        self.assertTrue(any("Reservation Snapshot diagnostic" in message for message in logs.output))
+        self.assertTrue(any("the Reservation snapshot is incomplete" in message for message in logs.output))
         self.assertFalse(any("malformed Reservation" in message for message in logs.output))
-
-    # ── max_leases config validation ──────────────────────────────────────
-
-    @override_settings(
-        PLUGINS_CONFIG={
-            **_PLUGINS_CONFIG,
-            "netbox_kea": {**_PLUGINS_CONFIG["netbox_kea"], "sync_max_leases_per_server": "not-a-number"},
-        }
-    )
-    def test_invalid_max_leases_string_falls_back_to_default(self):
-        """Non-integer sync_max_leases_per_server → warning logged, sync continues."""
-        self._make_db_server()
-        with _patch_kea(leases4=[_LEASE4]):
-            with self.assertLogs("netbox.jobs", level="WARNING") as cm:
-                self._run()
-        self.assertTrue(any("Invalid sync_max_leases_per_server" in msg for msg in cm.output))
-        from ipam.models import IPAddress
-
-        self.assertTrue(IPAddress.objects.filter(address__net_host="10.0.0.1").exists())
-
-    @override_settings(
-        PLUGINS_CONFIG={
-            **_PLUGINS_CONFIG,
-            "netbox_kea": {**_PLUGINS_CONFIG["netbox_kea"], "sync_max_leases_per_server": -1},
-        }
-    )
-    def test_negative_max_leases_resets_to_zero(self):
-        """Negative sync_max_leases_per_server → warning logged, sync continues."""
-        self._make_db_server()
-        with _patch_kea(leases4=[_LEASE4]):
-            with self.assertLogs("netbox.jobs", level="WARNING") as cm:
-                self._run()
-        self.assertTrue(any("Negative sync_max_leases_per_server" in msg for msg in cm.output))
-        from ipam.models import IPAddress
-
-        self.assertTrue(IPAddress.objects.filter(address__net_host="10.0.0.1").exists())
 
     # ── reservation KeaException (non-result-2) ───────────────────────────
 
@@ -797,9 +792,9 @@ class TestKeaIpamSyncJobRun(TestCase):
             leases4=[_LEASE4],
             responses={"reservation-get-page": {"result": 1, "text": "internal error"}},
         ):
-            with self.assertLogs("netbox_kea.jobs", level="WARNING") as cm:
+            with self.assertLogs("netbox_kea.ipam_reconciliation", level="WARNING") as cm:
                 self._run_raises()
-        self.assertTrue(any("Reservation Snapshot failed" in msg for msg in cm.output))
+        self.assertTrue(any("the Reservation snapshot failed" in msg for msg in cm.output))
 
     # ── per-reservation sync exception ───────────────────────────────────
 
@@ -818,7 +813,7 @@ class TestKeaIpamSyncJobRun(TestCase):
 
     def test_job_data_summary_written_after_run(self):
         """Per-server stats are persisted to job.data['summary'] after a run."""
-        self._make_db_server(name="kea-prod")
+        self._make_db_server(name="kea-prod", sync_prefixes_enabled=False)
         with _patch_kea(leases4=[_LEASE4]):
             mock_job = _make_job()
             KeaIpamSyncJob(mock_job).run()
@@ -947,9 +942,9 @@ class TestKeaIpamSyncJobRun(TestCase):
             leases4=[_LEASE4],
             responses={"reservation-get-page": RuntimeError("unexpected")},
         ):
-            with self.assertLogs("netbox_kea.jobs", level="WARNING") as cm:
+            with self.assertLogs("netbox_kea.ipam_reconciliation", level="WARNING") as cm:
                 self._run_raises()
-        self.assertTrue(any("Reservation Snapshot failed" in msg for msg in cm.output))
+        self.assertTrue(any("the Reservation snapshot failed" in msg for msg in cm.output))
 
     # ── unhandled exception in _sync_one_server ────────────────────────
 
@@ -1171,62 +1166,6 @@ class TestSyncIntervalFromSyncConfig(TestCase):
         self.assertFalse(self._successors(job).exists())
 
 
-class TestGetPluginConfig(SimpleTestCase):
-    """Tests for _get_plugin_config() defensive type-checking."""
-
-    def test_returns_dict_when_plugins_config_missing(self):
-        """PLUGINS_CONFIG not set → empty dict returned, no exception."""
-        from netbox_kea.jobs import _get_plugin_config
-
-        with override_settings(PLUGINS_CONFIG={}):
-            result = _get_plugin_config()
-        self.assertIsInstance(result, dict)
-
-    def test_returns_dict_when_plugins_config_is_none(self):
-        """PLUGINS_CONFIG=None → WARNING logged, empty dict returned."""
-        from netbox_kea.jobs import _get_plugin_config
-
-        with override_settings(PLUGINS_CONFIG=None):
-            with self.assertLogs("netbox_kea.jobs", level="WARNING") as cm:
-                result = _get_plugin_config()
-
-        self.assertEqual(result, {})
-        self.assertTrue(any("PLUGINS_CONFIG" in msg for msg in cm.output))
-
-    def test_returns_dict_when_netbox_kea_section_is_not_dict(self):
-        """PLUGINS_CONFIG['netbox_kea'] is a string → WARNING logged, empty dict returned."""
-        from netbox_kea.jobs import _get_plugin_config
-
-        with override_settings(PLUGINS_CONFIG={"netbox_kea": "bad-value"}):
-            with self.assertLogs("netbox_kea.jobs", level="WARNING") as cm:
-                result = _get_plugin_config()
-
-        self.assertEqual(result, {})
-        self.assertTrue(any("netbox_kea" in msg for msg in cm.output))
-
-
-class TestRecordConflicts(SimpleTestCase):
-    """_record_conflicts folds one phase's conflicts into the job stats."""
-
-    def test_a_set_deduplicates_across_calls_and_spellings(self):
-        from netbox_kea.jobs import _record_conflicts
-
-        stats = {"conflicts": 0}
-        seen = set()
-        _record_conflicts(stats, ["2001:db8::1", "10.0.0.1"], seen)
-        _record_conflicts(stats, ["2001:0db8::0001"], seen)
-        self.assertEqual(seen, {"2001:db8::1", "10.0.0.1"})
-        self.assertEqual(stats["conflicts"], 2)
-
-    def test_without_a_set_the_counts_accumulate(self):
-        from netbox_kea.jobs import _record_conflicts
-
-        stats = {}
-        _record_conflicts(stats, ["10.0.0.1", "10.0.0.1"], None)
-        _record_conflicts(stats, ["10.0.0.2"], None)
-        self.assertEqual(stats["conflicts"], 3)
-
-
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestJobSaveFailure(TestCase):
     """A JobRunner persistence failure is logged after the real job flow finishes."""
@@ -1305,11 +1244,11 @@ class TestSubnetCatalogueJob(TestCase):
         self.assertEqual(prefix.status, "active")
         self.assertEqual(summary[0]["created"], 1)
         self.assertEqual(summary[0]["updated"], 0)
-        prefix.description = ""
+        prefix.description = "Synced from Kea DHCP subnet operator note"
         prefix.save()
         summary, _ = self._run(responses)
         prefix.refresh_from_db()
-        self.assertEqual(prefix.description, "Synced from Kea DHCP subnet")
+        self.assertEqual(prefix.description, "[kea-sync: subnet] operator note")
         self.assertEqual(summary[0]["created"], 0)
         self.assertEqual(summary[0]["updated"], 1)
         summary, _ = self._run(responses)
@@ -1326,14 +1265,14 @@ class TestSubnetCatalogueJob(TestCase):
             [("198.18.0.10/24", "198.18.0.20/24"), ("198.18.0.128/24", "198.18.0.255/24")],
         )
         self.assertEqual(summary[0]["created"], 3)
-        ranges[0].description = ""
+        ranges[0].description = "Synced from Kea DHCP pool operator note"
         ranges[0].save()
         ranges[1].description = "Operator pool note"
         ranges[1].save()
         summary, _ = self._run(responses)
         ranges[0].refresh_from_db()
         ranges[1].refresh_from_db()
-        self.assertEqual(ranges[0].description, "Synced from Kea DHCP pool")
+        self.assertEqual(ranges[0].description, "[kea-sync: pool] operator note")
         self.assertEqual(ranges[1].description, "Operator pool note")
         self.assertEqual(summary[0]["updated"], 1)
         self.assertEqual(summary[0]["created"], 0)
@@ -1607,25 +1546,20 @@ class TestSubnetCatalogueJob(TestCase):
         self.assertEqual(summary[0]["prefix_errors"], 1)
         self.assertEqual(summary[0]["errors"], 0)
         self._assert_duplicate_logged(
-            "pool 198.18.0.10-198.18.0.20",
+            "pool 198.18.0.10 - 198.18.0.20",
             "/ipam/ip-ranges/?start_address=198.18.0.10&end_address=198.18.0.20&vrf_id=null",
         )
 
     def test_a_failed_pool_counts_an_error_and_the_next_pool_still_syncs(self):
-        from netbox_kea import sync
+        from django.db import connection
 
-        real_sync = sync.sync_pool_to_netbox_ip_range
-
-        def fail_first_pool(pool, subnet, vrf=None):
-            if pool.range == "198.18.0.10-198.18.0.20":
-                raise RuntimeError("IPRange save failed")
-            return real_sync(pool, subnet, vrf=vrf)
-
-        # NetBox saves an IPRange without validation, so no row state makes the save fail inside a test transaction.
-        with (
-            patch.object(sync, "sync_pool_to_netbox_ip_range", autospec=True, side_effect=fail_first_pool),
-            self.assertLogs("netbox_kea.jobs", level="ERROR") as logs,
-        ):
+        # A real database constraint rejects one reachable Pool, without replacing the writer under test.
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "ALTER TABLE ipam_iprange ADD CONSTRAINT reject_test_pool "
+                "CHECK (host(start_address) <> '198.18.0.10') NOT VALID"
+            )
+        with self.assertLogs("netbox_kea.ipam_reconciliation", level="WARNING") as logs:
             summary, _ = self._run(
                 self._responses(("198.18.0.10-198.18.0.20", "198.18.0.100-198.18.0.110")), failed=True
             )
@@ -1636,9 +1570,7 @@ class TestSubnetCatalogueJob(TestCase):
         self.assertEqual(summary[0]["created"], 2)
         self.assertEqual(summary[0]["prefix_errors"], 1)
         self.assertEqual(summary[0]["errors"], 0)
-        self.assertTrue(
-            any("Failed to sync pool 198.18.0.10-198.18.0.20 from server" in line for line in logs.output), logs.output
-        )
+        self.assertTrue(any("198.18.0.10 - 198.18.0.20 failed" in line for line in logs.output), logs.output)
 
     def _assert_duplicate_logged(self, kea_object, list_url):
         """The job log names the Kea object and the filtered list URL, but no row pk."""

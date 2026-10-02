@@ -21,8 +21,18 @@ import logging
 from collections.abc import Iterable
 from dataclasses import dataclass
 from functools import cached_property
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
+from .constants import IP_RANGE_MAX_SIZE, STALE_CLEANUP_MODES, StaleCleanupMode
+from .ipam_marker import (
+    MarkerKind,
+    marked_description_q,
+    parse_marker,
+    render_marker,
+    rewrite_marker,
+    status_kind,
+)
+from .plugin_settings import plugin_setting
 from .reservations import (
     GlobalReservationScope,
     InSubnetReservationScope,
@@ -31,6 +41,7 @@ from .reservations import (
 )
 
 if TYPE_CHECKING:
+    from django.db.models import QuerySet
     from ipam.models import IPAddress as NbIPAddress
 
     from .constants import IPNetworkValue
@@ -176,13 +187,7 @@ def bulk_fetch_netbox_ips(ip_list: list[str]) -> dict[str, NbIPAddress]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def _compute_ip_status(
-    desired_from: str,
-    current_status: str | None,
-    *,
-    ip_str: str = "",
-    other_source_ips: frozenset[str] | None = None,
-) -> str:
+def _compute_ip_status(desired_from: str, current_status: str | None) -> str:
     """Compute the correct NetBox IP status based on sync source and current state.
 
     Implements a semantic IP lifecycle:
@@ -193,31 +198,14 @@ def _compute_ip_status(
     Args:
         desired_from: ``"lease"`` or ``"reservation"``
         current_status: current NetBox IP status, or ``None`` when the IP is new.
-        ip_str: IP address string for two-pass mode lookup.
-        other_source_ips: When provided (not ``None``), enables **two-pass mode**
-            where the set contains all IPs confirmed by the *other* sync source
-            in this run.  For lease sync, pass the pre-fetched reservation IPs;
-            for reservation sync, pass the lease IPs collected this run.
-            Two-pass mode produces fully idempotent results — IPs with both a
-            lease and a reservation converge to ``"active"`` in a single save
-            instead of toggling through intermediate states on every run.
-            Pass ``None`` (default) to use single-pass / legacy mode which
-            falls back to ``current_status`` heuristics.
 
     """
     if desired_from == "lease":
-        if other_source_ips is not None:
-            # Two-pass mode: reservation set is authoritative for this run.
-            return "active" if ip_str in other_source_ips else "dhcp"
-        # Single-pass fallback: IP already reserved in NetBox → lease activates it.
+        # IP already reserved in NetBox → lease activates it.
         if current_status == "reserved":
             return "active"
         return "dhcp"
-    # "reservation"
-    if other_source_ips is not None:
-        # Two-pass mode: lease set is authoritative for this run.
-        return "active" if ip_str in other_source_ips else "reserved"
-    # Single-pass fallback: IP already leased → reservation confirms active use.
+    # "reservation": IP already leased → reservation confirms active use.
     if current_status == "dhcp":
         return "active"
     return "reserved"
@@ -261,15 +249,16 @@ def _update_mac_description(mac_obj: object, hostname: str) -> bool:
     return False
 
 
-def _get_stale_cleanup_mode() -> str:
-    """Return the configured stale IP cleanup mode from PLUGINS_CONFIG.
+def _stale_cleanup_mode(value: str) -> StaleCleanupMode:
+    """Return *value* as a stale cleanup mode, or raise ValueError when it is not one."""
+    if value not in STALE_CLEANUP_MODES:
+        raise ValueError(f"stale_ip_cleanup must be one of {', '.join(STALE_CLEANUP_MODES)}, not {value!r}")
+    return cast("StaleCleanupMode", value)
 
-    Supported values: ``"remove"`` (default), ``"deprecate"``, ``"none"``.
-    """
-    from django.conf import settings
 
-    config = getattr(settings, "PLUGINS_CONFIG", {}).get("netbox_kea", {})
-    return config.get("stale_ip_cleanup", "remove")
+def _get_stale_cleanup_mode() -> StaleCleanupMode:
+    """Return the configured stale IP cleanup mode."""
+    return plugin_setting("stale_ip_cleanup")
 
 
 def _cleanup_stale_ips(
@@ -288,7 +277,7 @@ def _cleanup_stale_ips(
     Matching criteria (all must be true):
     - ``dns_name`` matches *hostname* exactly
     - ``status`` is one of ``dhcp``, ``active``, or ``reserved``
-    - ``description`` starts with ``"Synced from Kea DHCP"``
+    - ``description`` starts with the sync marker (see :mod:`netbox_kea.ipam_marker`)
     - Address is NOT *new_ip_str* (the current IP is never touched)
     - Address is NOT in *exclude_ips* (allows protecting all IPs in a multi-address reservation)
     - Same IP family (IPv4 cleanup does not remove IPv6 entries)
@@ -306,18 +295,21 @@ def _cleanup_stale_ips(
                      full-table scan :func:`dhcp_plugin.sys4_referenced_ip_ids`
                      performs on every call. When ``None`` it is computed on demand.
 
-    Returns the number of IPs cleaned up.
+    Returns the number of IPs cleaned up. Raises ValueError for an unknown *mode*.
 
     """
+    mode = _stale_cleanup_mode(mode)
     if mode == "none" or not hostname:
         return 0
 
     from ipam.models import IPAddress as NbIP
 
+    # An IP address with an IPAM Ownership link belongs to the reconciliation (ADR 0006), not to this cleanup.
     stale_qs = NbIP.objects.filter(
+        marked_description_q(),
         dns_name=hostname,
         status__in=("dhcp", "active", "reserved"),
-        description__startswith="Synced from Kea DHCP",
+        kea_ownership_links__isnull=True,
     ).exclude(address__net_host=new_ip_str)
 
     # Also exclude sibling IPs (e.g. other addresses in the same DHCPv6 reservation).
@@ -338,22 +330,36 @@ def _cleanup_stale_ips(
     if protected_ids:
         stale_qs = stale_qs.exclude(pk__in=protected_ids)
 
-    count = stale_qs.count()
-    if count == 0:
-        return 0
+    from .ipam_reconciliation import _host
 
-    if mode == "remove":
-        stale_qs.delete()
-    elif mode == "deprecate":
-        stale_qs.update(status="deprecated")
-    else:
-        logger.warning("Unknown stale_ip_cleanup mode %r — skipping cleanup", mode)
-        return 0
-
-    return count
+    candidates = [(pk, vrf_id, _host(address)) for pk, vrf_id, address in stale_qs.values_list("pk", "vrf", "address")]
+    return sum(_clean_stale_ip(stale_qs, pk, vrf_id, host, mode) for pk, vrf_id, host in candidates)
 
 
-def _sync_mac_address(hw_address: str, hostname: str = ""):
+def _clean_stale_ip(
+    stale_qs: QuerySet[NbIPAddress], pk: int, vrf_id: int | None, host: str, mode: StaleCleanupMode
+) -> int:
+    """Remove or deprecate one candidate if it is still stale under its identity lock and row lock; return 1 if so."""
+    from django.db import transaction
+    from ipam.models import IPAddress as NbIP
+
+    from .ipam_reconciliation import _lock_identity
+
+    with transaction.atomic():
+        # The same identity lock as the reconciliation, so a link that a concurrent run creates is visible here.
+        _lock_identity(vrf_id, host)
+        locked = NbIP.objects.select_for_update().filter(pk=pk).first()
+        if locked is None or not stale_qs.filter(pk=pk, vrf=vrf_id, address__net_host=host).exists():
+            return 0
+        row = NbIP.objects.filter(pk=pk)
+        if mode == "remove":
+            row.delete()
+        else:
+            row.update(status="deprecated")
+    return 1
+
+
+def sync_mac_address(hw_address: str, hostname: str = ""):
     """Create or update a NetBox ``MACAddress`` entry for *hw_address* and return it.
 
     When *hostname* is provided the ``description`` field is annotated with
@@ -371,7 +377,7 @@ def _sync_mac_address(hw_address: str, hostname: str = ""):
     try:
         from netaddr import EUI, AddrFormatError, mac_unix_expanded
     except ImportError:
-        logger.debug("netaddr not available — skipping MAC sync for %s", hw_address)
+        logger.debug("netaddr not available — skipping MAC sync")
         return None
     try:
         from django.db.utils import IntegrityError, OperationalError, ProgrammingError
@@ -380,40 +386,33 @@ def _sync_mac_address(hw_address: str, hostname: str = ""):
         mac_obj, _ = MACAddress.objects.get_or_create(mac_address=mac_str)
         if hostname and _update_mac_description(mac_obj, hostname):
             mac_obj.save()
-    except (ProgrammingError, OperationalError, IntegrityError):
-        logger.debug("DB error while syncing MAC address %s to NetBox DCIM", hw_address, exc_info=True)
+    # The exception text can repeat the MAC address, so only its type goes to the log.
+    except (ProgrammingError, OperationalError, IntegrityError) as exc:
+        logger.debug("DB error while syncing a MAC address to NetBox DCIM: %s", type(exc).__name__)
     except AddrFormatError:
-        logger.debug("Invalid MAC address format %r — skipping DCIM MAC sync", hw_address, exc_info=True)
-    except Exception:
-        logger.debug("Failed to sync MAC address %s to NetBox DCIM", hw_address, exc_info=True)
+        logger.debug("Invalid MAC address format — skipping DCIM MAC sync")
+    except Exception as exc:  # noqa: BLE001 — a MAC sync failure must not stop the IP address sync
+        logger.debug("Failed to sync a MAC address to NetBox DCIM: %s", type(exc).__name__)
     else:
         return mac_obj
     return None
 
 
-_KEA_DESC_PREFIX = "Synced from Kea DHCP"
-
-#: The note this module writes on a Prefix it creates for a Kea subnet.
-KEA_SUBNET_PREFIX_DESCRIPTION = f"{_KEA_DESC_PREFIX} subnet"
-#: The note for a Prefix created from a Reservation's delegated prefix.
-KEA_DELEGATED_PREFIX_DESCRIPTION = f"{_KEA_DESC_PREFIX} delegated prefix"
-
-
 def _is_kea_managed_description(description: str | None) -> bool:
-    """Return ``True`` when *description* is safe for the sync to overwrite.
+    """Return ``True`` when *description* is safe for the old sync paths to overwrite.
 
     A description is Kea-managed when it is empty (the IP is being adopted this
-    run) or starts with ``"Synced from Kea DHCP"``.  Manually-curated
-    descriptions are left untouched.
+    run) or starts with the sync marker (see :mod:`netbox_kea.ipam_marker`).
+    Manually-curated descriptions are left untouched.
     """
-    return not description or description.startswith(_KEA_DESC_PREFIX)
+    return not description or parse_marker(description) is not None
 
 
 def is_kea_managed_ip(ip_obj: NbIPAddress) -> bool:
     """Return ``True`` when *ip_obj* is safe for the sync to claim/overwrite.
 
     A NetBox IP is *Kea-managed* when its ``description`` is blank or starts
-    with ``"Synced from Kea DHCP"`` (see :func:`_is_kea_managed_description`).
+    with the sync marker (see :func:`_is_kea_managed_description`).
     Any other description marks the IP as a manually-curated ("foreign") entry
     that an unattended (bulk / background) sync must not overwrite unless
     explicitly forced.
@@ -421,38 +420,35 @@ def is_kea_managed_ip(ip_obj: NbIPAddress) -> bool:
     return _is_kea_managed_description(getattr(ip_obj, "description", "") or "")
 
 
-def _status_description(status: str) -> str:
-    """Return the Kea-sync description that matches the semantic *status*.
+def _ip_description(description: str, status: str, *, claim: bool) -> str | None:
+    """Return the description that the sync writes for *status*, or *description* when the sync keeps it.
 
-    - ``dhcp``     → dynamic lease, no reservation
-    - ``reserved`` → reservation only, no active lease
-    - ``active``   → both an active lease and a reservation
+    The sync rewrites only the marker block and keeps the operator note after it. A blank description, or any
+    description when *claim* is ``True``, gets the block alone. ``None`` means that the new block and the note do not
+    fit, so the sync leaves the object unchanged (see :func:`netbox_kea.ipam_marker.rewrite_marker`).
     """
-    if status == "dhcp":
-        return f"{_KEA_DESC_PREFIX} lease"
-    if status == "active":
-        return f"{_KEA_DESC_PREFIX} lease + reservation"
-    return f"{_KEA_DESC_PREFIX} reservation"  # "reserved"
+    kind = status_kind(status)
+    marker = parse_marker(description)
+    if marker is not None:
+        return rewrite_marker(marker, kind)
+    if claim or not description:
+        return render_marker(kind)
+    return description
 
 
-def _apply_ip_fields(
-    ip_obj: NbIPAddress,
-    status: str,
-    hostname: str,
-    *,
-    claim: bool = False,
-) -> bool:
-    """Apply *status*, *hostname* (dns_name), and a status-derived description to *ip_obj*.
+def _refuse_overlong(ip_str: str, conflicts: list[str] | None) -> None:
+    """Log an IP address that the sync leaves unchanged because the new marker and the note do not fit."""
+    logger.warning("IP address %s stays unchanged: the new marker and the note do not fit in the description", ip_str)
+    if conflicts is not None:
+        conflicts.append(ip_str)
 
-    The description is derived from *status* via :func:`_status_description` and
-    self-heals on every run for Kea-managed IPs — so an IP first created from a
-    lease but later (also) reserved no longer stays labelled ``"... lease"``.
 
-    When *claim* is ``True`` (an explicit forced sync), the Kea-managed description
-    is written even over a foreign (manually-curated) one — so the override is
-    *sticky*: :func:`is_kea_managed_ip` returns ``True`` afterwards and the next
-    unattended sync updates the IP normally instead of re-reporting it as a
-    conflict. When ``False`` (default), a foreign description is preserved.
+def _apply_ip_fields(ip_obj: NbIPAddress, status: str, hostname: str, description: str) -> bool:
+    """Apply *status*, *hostname* (dns_name), and *description* to *ip_obj*.
+
+    The caller gets *description* from :func:`_ip_description`, so the marker kind follows *status* and
+    self-heals on every run: an IP first created from a lease but later (also) reserved no longer stays
+    marked ``lease``.
 
     Returns ``True`` when any field was changed and the object should be saved.
     """
@@ -468,8 +464,7 @@ def _apply_ip_fields(
         ip_obj.dns_name = hostname
         changed = True
 
-    description = _status_description(status)
-    if (claim or _is_kea_managed_description(ip_obj.description)) and ip_obj.description != description:
+    if ip_obj.description != description:
         ip_obj.description = description
         changed = True
 
@@ -510,7 +505,6 @@ def sync_lease_to_netbox(
     lease: dict,
     *,
     cleanup: bool = True,
-    reservation_ips: frozenset[str] | None = None,
     subnet_prefix_map: dict[int, int] | None = None,
     force: bool = False,
     conflicts: list[str] | None = None,
@@ -519,7 +513,7 @@ def sync_lease_to_netbox(
 
     The ``status`` is ``"dhcp"`` (or ``"active"`` when the IP also has a
     reservation) and ``dns_name`` is set to the lease hostname.  The description
-    self-heals to match the status (see :func:`_status_description`).  The prefix
+    marker self-heals to match the status (see :func:`_ip_description`).  The prefix
     length is resolved by :func:`_resolve_prefix_length` — the Kea subnet (via
     ``subnet-id`` + *subnet_prefix_map*) is authoritative, falling back to the
     longest matching NetBox prefix, then ``/32`` / ``/128``.
@@ -534,11 +528,6 @@ def sync_lease_to_netbox(
                           the hostname after syncing.  Set to ``False`` in batch
                           operations where the caller will perform a single cleanup pass
                           with the full keep-set via :func:`cleanup_stale_ips_batch`.
-        reservation_ips:  Optional frozenset of all reservation IPs confirmed by the
-                          reservation pre-fetch in this sync run.  When provided,
-                          enables two-pass idempotent status computation — ``"active"``
-                          if the IP also has a reservation, ``"dhcp"`` otherwise.
-                          Pass ``None`` (default) to use single-pass fallback mode.
         subnet_prefix_map: Optional ``{subnet-id: prefix_len}`` map built from the
                           Kea config.  Used to resolve the authoritative mask and
                           to correct legacy ``/32`` rows on existing Kea-synced IPs.
@@ -582,8 +571,12 @@ def sync_lease_to_netbox(
                 conflicts.append(ip_str)
             return ip_obj, False, False
 
-    status = _compute_ip_status("lease", current_status, ip_str=ip_str, other_source_ips=reservation_ips)
-    changed = _apply_ip_fields(ip_obj, status=status, hostname=hostname, claim=force)
+    status = _compute_ip_status("lease", current_status)
+    description = _ip_description(ip_obj.description, status, claim=force)
+    if description is None:
+        _refuse_overlong(ip_str, conflicts)
+        return ip_obj, False, False
+    changed = _apply_ip_fields(ip_obj, status=status, hostname=hostname, description=description)
 
     # Correct the mask on existing Kea-synced IPs (e.g. a legacy /32 that should
     # be /24) from the authoritative Kea subnet prefix length.
@@ -600,7 +593,7 @@ def sync_lease_to_netbox(
 
     hw_address = lease.get("hw-address")
     if hw_address:
-        _sync_mac_address(hw_address, hostname)
+        sync_mac_address(hw_address, hostname)
 
     return ip_obj, created, changed
 
@@ -641,7 +634,6 @@ def sync_reservation_to_netbox(
     reservation: Reservation,
     *,
     cleanup: bool = True,
-    lease_ips: frozenset[str] | None = None,
     force: bool = False,
     conflicts: list[str] | None = None,
 ) -> ReservationSyncResult:
@@ -660,11 +652,6 @@ def sync_reservation_to_netbox(
                      for the hostname after syncing.  Set to ``False`` in batch
                      operations where the caller will perform a single cleanup
                      pass with the full keep-set via :func:`cleanup_stale_ips_batch`.
-        lease_ips:   Optional frozenset of all lease IPs confirmed by the lease
-                     sync in this run.  When provided, enables two-pass idempotent
-                     status computation — ``"active"`` if the IP also has a lease,
-                     ``"reserved"`` otherwise.  Pass ``None`` (default) to use
-                     single-pass fallback mode.
         force:       When ``False`` (default), any address whose existing NetBox IP
                      is *foreign* (manually curated — see :func:`is_kea_managed_ip`)
                      is skipped and left untouched; sibling addresses in the same
@@ -728,8 +715,14 @@ def sync_reservation_to_netbox(
                     primary_obj = ip_obj
                 continue
 
-        status = _compute_ip_status("reservation", current_status, ip_str=ip_str, other_source_ips=lease_ips)
-        changed = _apply_ip_fields(ip_obj, status=status, hostname=hostname, claim=force)
+        status = _compute_ip_status("reservation", current_status)
+        description = _ip_description(ip_obj.description, status, claim=force)
+        if description is None:
+            _refuse_overlong(ip_str, conflicts)
+            if primary_obj is None:
+                primary_obj = ip_obj
+            continue
+        changed = _apply_ip_fields(ip_obj, status=status, hostname=hostname, description=description)
 
         # Correct the mask on existing Kea-synced IPs from the authoritative
         # Kea subnet prefix length (fixes legacy /32 rows).
@@ -754,8 +747,8 @@ def sync_reservation_to_netbox(
             exclude_ips=frozenset(all_ips),
         )
 
-    if reservation.identity.identifier_type == "hw-address":
-        _sync_mac_address(reservation.identity.value, hostname)
+    if (hw_address := reservation.identity.hardware_address) is not None:
+        sync_mac_address(hw_address, hostname)
 
     return ReservationSyncResult(
         reservation=reservation,
@@ -898,22 +891,20 @@ def _single_match(queryset, kea_object: str, list_filter: dict[str, str]):
     return matches[0] if matches else None
 
 
-def sync_subnet_to_netbox_prefix(
-    network: IPNetworkValue, vrf=None, description: str = KEA_SUBNET_PREFIX_DESCRIPTION
-) -> tuple:
+def sync_subnet_to_netbox_prefix(network: IPNetworkValue, vrf=None, kind: MarkerKind = "subnet") -> tuple:
     """Create or update a NetBox Prefix from a parsed Kea network.
 
     Behaviour:
     - If a Prefix with this CIDR already exists (in *vrf*), it is returned
       as-is (idempotent).  The description is set only when the existing
       object has an empty description, to avoid overwriting operator notes.
-    - Otherwise a new active Prefix is created with *description*.
+    - Otherwise a new active Prefix is created with the marker of *kind*.
 
     Args:
         network: The canonical network, e.g. from :func:`netbox_kea.kea.subnet_network`.
         vrf: NetBox VRF instance to assign the prefix to.  ``None`` means the global VRF.
-        description: The note for a Prefix this call creates, or for an existing one that
-            carries none.
+        kind: The marker kind for a Prefix this call creates, or for an existing one that
+            carries no description.
 
     Returns ``(prefix_object, created, did_update)`` where *created* is ``True`` for new
     objects and *did_update* is ``True`` when an existing object's description was set.
@@ -922,6 +913,7 @@ def sync_subnet_to_netbox_prefix(
     from ipam.models import Prefix
 
     cidr = str(network)
+    description = render_marker(kind)
     prefix_obj = _single_match(
         Prefix.objects.filter(prefix=cidr, vrf=vrf),
         f"subnet {cidr}",
@@ -967,8 +959,7 @@ def sync_pool_to_netbox_ip_range(pool: Pool, subnet: IPNetworkValue, vrf=None) -
 
     # NetBox stores IPRange.size in a PostgreSQL integer column (max 2^31-1).
     # Reject a larger pool before IPRange.save() raises NumericValueOutOfRange.
-    _PG_INTEGER_MAX = 2_147_483_647
-    if int(pool.end) - int(pool.start) + 1 > _PG_INTEGER_MAX:
+    if int(pool.end) - int(pool.start) + 1 > IP_RANGE_MAX_SIZE:
         logger.debug("Skipping pool %r: range too large to store as NetBox IPRange", pool.range)
         return _POOL_TOO_LARGE
 
@@ -987,11 +978,11 @@ def sync_pool_to_netbox_ip_range(pool: Pool, subnet: IPNetworkValue, vrf=None) -
             end_address=end_addr,
             vrf=vrf,
             status="active",
-            description="Synced from Kea DHCP pool",
+            description=render_marker("pool"),
         )
     did_update = False
     if not created and not range_obj.description:
-        range_obj.description = "Synced from Kea DHCP pool"
+        range_obj.description = render_marker("pool")
         range_obj.save(update_fields=["description"])
         did_update = True
     return range_obj, created, did_update
