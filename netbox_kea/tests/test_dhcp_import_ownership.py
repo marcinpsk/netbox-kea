@@ -472,6 +472,74 @@ class ImportOwnershipTest(TestCase):
 
 @override_settings(PLUGINS_CONFIG=plugins_config())
 class TypedNetworkClaimTest(TestCase):
+    def test_oversized_pool_is_skipped_while_supported_pool_is_claimed(self):
+        server = _make_db_server()
+        network = ipaddress.ip_network("2001:db8::/64")
+        oversized = parse_pool("2001:db8::/64", network)
+        supported = parse_pool("2001:db8::10-2001:db8::20", network)
+
+        result = claim(server, 6, [PoolClaim(oversized, network), PoolClaim(supported, network)], force=False)
+
+        self.assertEqual(set(result.ranges), {"2001:db8::10 - 2001:db8::20"})
+        self.assertEqual(result.ranges["2001:db8::10 - 2001:db8::20"].outcome, "created")
+        ip_range = IPRange.objects.get()
+        self.assertEqual(str(ip_range.start_address), "2001:db8::10/64")
+        self.assertEqual(str(ip_range.end_address), "2001:db8::20/64")
+        self.assertEqual(IPAMOwnershipLink.objects.get().ip_range_id, ip_range.pk)
+
+    def test_pool_phase_refuses_catalogue_without_configuration_before_writes(self):
+        from netbox_kea.ipam_reconciliation import PoolPhase, read_catalogue
+
+        from .kea_stub import _catalogue_responses_for_subnets
+
+        server = _make_db_server()
+        with stub_kea(
+            _catalogue_responses_for_subnets(
+                4, [{"id": 1, "subnet": "198.18.0.0/24", "pools": [{"pool": "198.18.0.10-198.18.0.20"}]}]
+            )
+        ):
+            observation = read_catalogue(server, 4)
+        catalogue = observation.catalogue
+        self.assertIsNotNone(catalogue)
+        invalid = replace(catalogue, subnets=(replace(catalogue.subnets[0], configuration=None),))
+        with self.assertRaisesMessage(ValueError, "complete catalogue must include every Subnet configuration"):
+            reconcile(server, 4, [PoolPhase(replace(observation, catalogue=invalid))])
+        self.assertFalse(IPRange.objects.exists())
+        self.assertFalse(IPAMOwnershipLink.objects.exists())
+
+        report = reconcile(server, 4, [PoolPhase(observation)])
+        self.assertTrue(report.complete)
+        self.assertEqual(report.created, 1)
+        self.assertEqual(IPAMOwnershipLink.objects.get().ip_range_id, IPRange.objects.get().pk)
+
+    def test_failed_delegated_claim_preserves_stale_links_and_claims_other_prefixes(self):
+        server = _make_db_server(sync_deprecate_prefixes_and_ranges=True)
+        stale = "2001:db8:100::/56"
+        duplicate = "2001:db8:200::/56"
+        valid = "2001:db8:300::/56"
+        initial = _reservation_snapshot({"subnet6": []}, 6, [{"subnet-id": 0, "duid": "01:02:03", "prefixes": [stale]}])
+        control = reconcile(server, 6, [DelegatedPrefixPhase(initial.snapshot.records, initial.cutoff, True)])
+        self.assertTrue(control.complete)
+        self.assertEqual(control.prefixes[stale].outcome, "created")
+        before = IPAMOwnershipLink.objects.values().get(prefix__prefix=stale)
+        Prefix.objects.create(prefix=duplicate)
+        Prefix.objects.create(prefix=duplicate)
+        duplicates_before = list(Prefix.objects.filter(prefix=duplicate).order_by("pk").values())
+        observation = _reservation_snapshot(
+            {"subnet6": []}, 6, [{"subnet-id": 0, "duid": "01:02:03", "prefixes": [duplicate, valid]}]
+        )
+
+        report = reconcile(server, 6, [DelegatedPrefixPhase(observation.snapshot.records, observation.cutoff, True)])
+
+        self.assertEqual(report.errors, 1)
+        self.assertEqual(report.incomplete, {"delegated-prefix"})
+        self.assertEqual(report.prefixes[duplicate].outcome, "error")
+        self.assertEqual(report.prefixes[valid].outcome, "created")
+        self.assertEqual(list(Prefix.objects.filter(prefix=duplicate).order_by("pk").values()), duplicates_before)
+        self.assertFalse(IPAMOwnershipLink.objects.filter(prefix__prefix=duplicate).exists())
+        self.assertEqual(IPAMOwnershipLink.objects.values().get(prefix__prefix=stale), before)
+        self.assertEqual(Prefix.objects.get(prefix=stale).status, "active")
+
     def test_pool_outside_claimed_subnet_fails_before_writing(self):
         server = _make_db_server()
         network = ipaddress.ip_network("198.18.0.0/24")

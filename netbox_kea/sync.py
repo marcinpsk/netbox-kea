@@ -420,20 +420,18 @@ def is_kea_managed_ip(ip_obj: NbIPAddress) -> bool:
     return _is_kea_managed_description(getattr(ip_obj, "description", "") or "")
 
 
-def _ip_description(description: str, status: str, *, claim: bool) -> str | None:
-    """Return the description that the sync writes for *status*, or *description* when the sync keeps it.
+def _ip_description(description: str, status: str) -> str | None:
+    """Return the description that the sync writes for *status* after the ownership guard.
 
-    The sync rewrites only the marker block and keeps the operator note after it. A blank description, or any
-    description when *claim* is ``True``, gets the block alone. ``None`` means that the new block and the note do not
-    fit, so the sync leaves the object unchanged (see :func:`netbox_kea.ipam_marker.rewrite_marker`).
+    The sync rewrites only the marker block and keeps the operator note after it. A blank description or a foreign
+    description explicitly claimed by the caller gets the block alone. ``None`` means that the new block and the
+    note do not fit, so the sync leaves the object unchanged (see :func:`netbox_kea.ipam_marker.rewrite_marker`).
     """
     kind = status_kind(status)
     marker = parse_marker(description)
     if marker is not None:
         return rewrite_marker(marker, kind)
-    if claim or not description:
-        return render_marker(kind)
-    return description
+    return render_marker(kind)
 
 
 def _refuse_overlong(ip_str: str, conflicts: list[str] | None) -> None:
@@ -572,7 +570,7 @@ def sync_lease_to_netbox(
             return ip_obj, False, False
 
     status = _compute_ip_status("lease", current_status)
-    description = _ip_description(ip_obj.description, status, claim=force)
+    description = _ip_description(ip_obj.description, status)
     if description is None:
         _refuse_overlong(ip_str, conflicts)
         return ip_obj, False, False
@@ -716,7 +714,7 @@ def sync_reservation_to_netbox(
                 continue
 
         status = _compute_ip_status("reservation", current_status)
-        description = _ip_description(ip_obj.description, status, claim=force)
+        description = _ip_description(ip_obj.description, status)
         if description is None:
             _refuse_overlong(ip_str, conflicts)
             if primary_obj is None:

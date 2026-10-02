@@ -76,6 +76,36 @@ class ClaimOwnershipTest(TestCase):
         self.kea = transport.__enter__()
         self.addCleanup(transport.__exit__, None, None, None)
 
+    def test_ambiguous_hardware_rolls_back_reservation_claim_and_keeps_other_rows(self):
+        from dcim.models import MACAddress
+
+        from netbox_kea.ipam_reconciliation import claim
+        from netbox_kea.models import IPAMOwnershipLink
+        from netbox_kea.tests.test_integration_dhcp_plugin import _reservation_snapshot
+
+        hardware = "02:00:00:00:00:01"
+        MACAddress.objects.create(mac_address=hardware)
+        MACAddress.objects.create(mac_address=hardware)
+        ip = IPAddress.objects.create(address="198.18.0.10/24", description="Operator address")
+        before = IPAddress.objects.values().get(pk=ip.pk)
+        observation = _reservation_snapshot(
+            {"subnet4": [{"id": 1, "subnet": "198.18.0.0/24"}]},
+            4,
+            [
+                {"subnet-id": 1, "hw-address": hardware, "ip-address": "198.18.0.10"},
+                {"subnet-id": 1, "hw-address": "02:00:00:00:00:02", "ip-address": "198.18.0.11"},
+            ],
+        )
+
+        result = claim(self.server, 4, observation.snapshot.records, force=True)
+
+        self.assertEqual(result.addresses["198.18.0.10"].outcome, "error")
+        self.assertEqual(IPAddress.objects.values().get(pk=ip.pk), before)
+        self.assertFalse(IPAMOwnershipLink.objects.filter(ip_address=ip).exists())
+        self.assertEqual(result.addresses["198.18.0.11"].outcome, "created")
+        self.assertEqual(result.synchronized_addresses, frozenset({"198.18.0.11"}))
+        self.assertEqual(str(IPAMOwnershipLink.objects.get().ip_address.address.ip), "198.18.0.11")
+
     def test_empty_claim_and_addressless_reservation_do_not_write(self):
         from netbox_kea.ipam_reconciliation import claim
         from netbox_kea.models import IPAMOwnershipLink

@@ -684,7 +684,7 @@ def _claim(server: Server, family: Family, source: str, report: _Report, *, forc
             # A Global Reservation does not change an object that it never linked.
             return "unchanged" if facts is None and not links else "conflict"
         links = []
-    return _apply_claim(server, family, source, report, ip, links, force=force)
+    return _apply_claim(server, family, source, report, ip, links)
 
 
 def _apply_claim(
@@ -694,8 +694,6 @@ def _apply_claim(
     report: _Report,
     ip: IPAddress,
     links: list[IPAMOwnershipLink],
-    *,
-    force: bool,
 ) -> _Outcome:
     """Compare owners before applying facts or an explicit takeover to the locked row."""
     facts = report.facts
@@ -714,7 +712,7 @@ def _apply_claim(
         return "disagreement"
 
     status = _status(_live_sources(others) | {source})
-    description = _ip_description(ip.description, status, claim=force)
+    description = _ip_description(ip.description, status)
     if description is None:
         # The new marker and the operator note do not fit: the object stays as it is, and the owner keeps its link.
         _store_link(own, server, family, source, ip, facts.stored(), stale_mark=_kept_mark(own))
@@ -772,7 +770,7 @@ def _restatus(ip: IPAddress, links: Sequence[IPAMOwnershipLink]) -> _Outcome:
     if not sources:
         return "unchanged"
     status = _status(sources)
-    description = _ip_description(ip.description, status, claim=False)
+    description = _ip_description(ip.description, status)
     if description is None:
         return "conflict"
     if not _apply_ip_fields(ip, status=status, hostname=_implied_hostname(links), description=description):
