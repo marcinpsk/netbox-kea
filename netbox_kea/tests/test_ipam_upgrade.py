@@ -331,3 +331,43 @@ class UpgradeAdoptionTest(TestCase):
             _reconcile(owner, [_lease()])
             self.assertEqual(_reconcile(owner).waiting, 1)
             self.assertTrue(IPAddress.objects.filter(pk=relevant.pk).exists())
+
+    def test_malformed_persisted_receipts_fail_closed_without_mutating_ownership(self):
+        server = _server("owner")
+        address = IPAddress.objects.create(address="10.0.0.5/24", description="[kea-sync: lease]")
+        _reconcile(server, [_lease()])
+        before_object = IPAddress.objects.values().get(pk=address.pk)
+        before_links = list(IPAMOwnershipLink.objects.filter(ip_address=address).values())
+        completed = "2026-10-02T00:00:00+00:00"
+        malformed = (
+            [],
+            {"unknown": {}},
+            {"job": []},
+            {"job": {"sources": []}},
+            {"job": {"sources": "lease", "completed_at": completed}},
+            {"job": {"sources": [[5, "lease"]], "completed_at": completed}},
+            {"job": {"sources": [[4, "unknown"]], "completed_at": completed}},
+            {"job": {"sources": [[True, "lease"]], "completed_at": completed}},
+            {"job": {"sources": [[4]], "completed_at": completed}},
+            {"job": {"sources": [[4, "lease"]], "completed_at": "2026-10-02T00:00:00"}},
+        )
+        for value in malformed:
+            with self.subTest(receipts=value):
+                server.ipam_initial_observations = value
+                server.save(update_fields=["ipam_initial_observations"])
+                with self.assertRaises(ValueError):
+                    upgrade_counts()
+                self.assertEqual(IPAddress.objects.values().get(pk=address.pk), before_object)
+                self.assertEqual(list(IPAMOwnershipLink.objects.filter(ip_address=address).values()), before_links)
+                server.refresh_from_db()
+                self.assertIsNone(server.ipam_first_complete_at)
+                self.assertEqual(server.ipam_initial_observations, value)
+        server.ipam_initial_observations = {}
+        server.save(update_fields=["ipam_initial_observations"])
+        self.assertEqual(upgrade_counts().waiting, 1)
+        _run_job(server, [_lease()])
+        server.refresh_from_db()
+        self.assertIsNotNone(server.ipam_first_complete_at)
+        self.assertEqual(upgrade_counts().waiting, 0)
+        self.assertTrue(IPAddress.objects.filter(pk=address.pk).exists())
+        self.assertTrue(IPAMOwnershipLink.objects.filter(ip_address=address, adopted=True).exists())

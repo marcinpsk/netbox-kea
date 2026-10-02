@@ -86,6 +86,38 @@ class ImportOwnershipTest(TestCase):
         self.assertIsNone(self.server.ipam_first_complete_at)
         self.assertEqual(self.server.ipam_initial_observations, {})
 
+    def test_successful_config_response_without_family_block_does_not_complete_import(self):
+        self.server.dhcp4 = True
+        self.server.sync_enabled = False
+        self.server.sync_dhcp_plugin_enabled = True
+        self.server.save()
+        for arguments in ({}, {"Dhcp4": None}):
+            with self.subTest(arguments=arguments):
+                responses = _sync_responses({6: self.config}, {6: []})
+                complete_config = responses["config-get"]
+
+                def config_get(body, missing=arguments, healthy=complete_config):
+                    if body["service"] == ["dhcp4"]:
+                        return {"result": 0, "arguments": missing}
+                    return healthy(body)
+
+                responses["config-get"] = config_get
+                with stub_kea(responses):
+                    results = run_dhcp_plugin_import(self.server)
+                self.assertEqual([family for family, _summary in results], [6])
+                self.assertEqual(results[0][1].errors, 0)
+                self.assertTrue(
+                    IPAMOwnershipLink.objects.filter(server=self.server, family=6, source="subnet").exists()
+                )
+                self.server.refresh_from_db()
+                self.assertIsNone(self.server.ipam_first_complete_at)
+                self.assertEqual(self.server.ipam_initial_observations, {})
+        with stub_kea(_sync_responses({4: {"subnet4": []}, 6: self.config}, {4: [], 6: []})):
+            run_dhcp_plugin_import(self.server)
+        self.server.refresh_from_db()
+        self.assertIsNotNone(self.server.ipam_first_complete_at)
+        self.assertEqual(set(self.server.ipam_initial_observations), {"import"})
+
     def test_job_before_import_cannot_release_an_unknown_import_owner(self):
         from netbox_kea.jobs import KeaIpamSyncJob
         from netbox_kea.tests.test_jobs import _lease_page, _make_job

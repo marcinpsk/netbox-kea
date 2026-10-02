@@ -47,20 +47,15 @@ def _get_stale_cleanup_mode() -> StaleCleanupMode:
     return plugin_setting("stale_ip_cleanup")
 
 
-def _ip_description(description: str, status: str, *, claim: bool) -> str | None:
-    """Return the description that the sync writes for *status*, or *description* when the sync keeps it.
+def _ip_description(description: str, status: str) -> str | None:
+    """Rewrite an owned marker or mark an explicitly claimed object.
 
-    The sync rewrites only the marker block and keeps the operator note after it. A blank description, or any
-    description when *claim* is ``True``, gets the block alone. ``None`` means that the new block and the note do not
-    fit, so the sync leaves the object unchanged (see :func:`netbox_kea.ipam_marker.rewrite_marker`).
+    Keep the operator note after an existing marker. Return None when the new marker and note do not fit.
+    Callers decide whether the object is eligible before they call this helper.
     """
     kind = status_kind(status)
     marker = parse_marker(description)
-    if marker is not None:
-        return rewrite_marker(marker, kind)
-    if claim or not description:
-        return render_marker(kind)
-    return description
+    return rewrite_marker(marker, kind) if marker is not None else render_marker(kind)
 
 
 def _apply_ip_fields(ip_obj: IPAddress, status: str, hostname: str, description: str) -> bool:
@@ -91,21 +86,10 @@ def _apply_ip_fields(ip_obj: IPAddress, status: str, hostname: str, description:
     return changed
 
 
-def _apply_ip_mask(ip_obj: IPAddress, ip_str: str, prefix_len: int, *, force: bool = False) -> bool:
-    """Correct a Kea-synced IP's prefix length to *prefix_len*.
-
-    Only rewrites the mask when the IP is Kea-managed (see
-    :func:`_is_kea_managed_description`) — unless *force* is ``True`` (an explicit
-    forced sync claiming the IP), in which case the mask is corrected regardless.
-    Manually-curated IPs are otherwise left untouched.  This is what fixes legacy
-    rows that were stored as ``/32`` before the authoritative Kea subnet mask was used.
-
-    Returns ``True`` when the address was changed.
-    """
+def _apply_ip_mask(ip_obj: IPAddress, ip_str: str, prefix_len: int) -> bool:
+    """Apply the reported mask to an eligible IP address and return whether it changed."""
     desired = f"{ip_str}/{prefix_len}"
     if str(ip_obj.address) == desired:
-        return False
-    if not force and not _is_owned_description(ip_obj.description):
         return False
     ip_obj.address = desired
     return True
