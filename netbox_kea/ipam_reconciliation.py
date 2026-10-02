@@ -701,8 +701,8 @@ def reconcile(server: Server, family: Family, phases: Sequence[Phase]) -> SyncRe
     """Run *phases* for one Server and family: link what they report, then remove the stale links of each complete one.
 
     The claims of all phases run before any link is removed. The last link of the Server to an IP address goes only
-    when the call runs a complete lease phase and a complete Reservation phase. Writes go to main only: the job refuses
-    to run in a branch.
+    when the lease phase is complete and the Reservation phase is complete or disabled on the Server.
+    Writes go to main only: the job refuses to run in a branch.
     """
     if len({phase.source for phase in phases}) != len(phases):
         raise ValueError("reconcile takes at most one phase of each source")
@@ -712,7 +712,7 @@ def reconcile(server: Server, family: Family, phases: Sequence[Phase]) -> SyncRe
     complete = {source for source, cutoff in cutoffs.items() if cutoff is not None}
     report.completed_sources.update(complete)
     pending = _pending_adoptions()
-    last_links_go = complete >= {LEASE, RESERVATION}
+    last_links_go = LEASE in complete and (RESERVATION in complete or not server.sync_reservations_enabled)
     for source, cutoff in cutoffs.items():
         if cutoff is None:
             continue
@@ -837,7 +837,7 @@ def _reservation_reports(
         if not exc.unsupported_command:
             report.fail_snapshot(RESERVATION, what, exc)
             return {}
-        # Without host_cmds the Server has no Reservation to read. Nothing failed, but the phase is not complete.
+        # Without host_cmds, config-file Reservations can still exist. The phase is not complete.
         logger.warning(
             "Server %s (v%s): host_cmds is unavailable; the Reservation phase is skipped", server.name, family
         )
@@ -1235,7 +1235,7 @@ def _remove_stale_link(
         return "kept"
     others = list(IPAMOwnershipLink.objects.filter(ip_address=ip).exclude(pk=link.pk))
     if not last_links_go and not any(other.server_id == link.server_id for other in others):
-        # The last link of its Server: a later call with a complete lease and Reservation phase decides.
+        # The last link of its Server needs a later call with complete required sources.
         return "kept"
     if others:
         outcome = _restatus(ip, others)
