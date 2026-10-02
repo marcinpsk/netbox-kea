@@ -634,6 +634,49 @@ class LeasePhaseMarkerTest(TestCase):
 class LeasePhaseRowFailureTest(TestCase):
     """A row failure fails only that row, and a phase with a failed row keeps its stale links."""
 
+    def test_repeated_bad_rows_bound_logs_and_preserve_stale_ownership(self):
+        server = _server("owner")
+        _reconcile(server, [_lease("198.18.0.99")])
+        leases = [_lease(f"198.18.0.{index}", ["invalid"]) for index in range(1, 13)]
+        leases.append(_lease("198.18.0.50", "valid.example"))
+        with self.assertLogs("netbox_kea.ipam_reconciliation", level="WARNING") as logs:
+            report = _reconcile(server, leases)
+        self.assertEqual((report.errors, report.created), (12, 1))
+        self.assertIn("lease", report.incomplete)
+        self.assertEqual(_row("198.18.0.50").dns_name, "valid.example")
+        self.assertEqual(set(_links(_row("198.18.0.99"))), {"owner"})
+        self.assertEqual(sum("IPAM reconciliation of" in line for line in logs.output), 10)
+        self.assertEqual(sum("Further row failures" in line for line in logs.output), 1)
+
+    def test_duplicate_phase_rejected_before_requests_or_writes(self):
+        server = _server("owner")
+        _reconcile(server, [_lease("198.18.0.42")])
+        before = list(NbIP.objects.values())
+        links = list(IPAMOwnershipLink.objects.values())
+        with stub_kea({}) as kea, self.assertRaises(ValueError):
+            reconcile(server, 4, [_lease_phase(), _lease_phase()])
+        self.assertEqual(kea.commands(), [])
+        self.assertEqual(list(NbIP.objects.values()), before)
+        self.assertEqual(list(IPAMOwnershipLink.objects.values()), links)
+
+    def test_unexpected_hardware_type_preserves_ip_sync_and_sanitizes_logs(self):
+        from dcim.models import MACAddress
+
+        server = _server("owner")
+        with self.assertLogs("netbox_kea.sync", level="DEBUG") as logs:
+            report = _reconcile(server, [_lease("198.18.0.42", **{"hw-address": {"private-value": "invalid"}})])
+        self.assertEqual((report.created, report.errors), (1, 0))
+        self.assertEqual(set(_links(_row("198.18.0.42"))), {"owner"})
+        self.assertFalse(MACAddress.objects.exists())
+        self.assertTrue(any("TypeError" in line for line in logs.output))
+        self.assertFalse(any("private-value" in line for line in logs.output))
+
+    def test_link_label_identifies_owner_family_source_and_address(self):
+        server = _server("owner")
+        _reconcile(server, [_lease("198.18.0.42")])
+        link = IPAMOwnershipLink.objects.get()
+        self.assertEqual(str(link), "owner IPv4 lease → 198.18.0.42/24")
+
     def test_a_database_error_on_one_row_does_not_abort_the_rest_of_the_phase(self):
         server = _server("owner")
         _reconcile(server, [_lease("10.0.0.9", "stale")])
@@ -665,6 +708,22 @@ class ReservationPhaseTest(TestCase):
 
     def setUp(self):
         self.server = _server("owner")
+
+    def test_in_subnet_facts_win_over_global_reservation_in_either_order(self):
+        global_record = _reservation("198.18.0.42", "global.example", subnet_id=0)
+        scoped_record = _reservation("198.18.0.42", "scoped.example")
+        for records in ([global_record, scoped_record], [scoped_record, global_record]):
+            with self.subTest(global_first=records[0] is global_record):
+                NbIP.objects.all().delete()
+                report = _reconcile(self.server, reservations=records, subnets=({"id": 1, "subnet": "198.18.0.0/24"},))
+                ip = _row("198.18.0.42")
+                self.assertEqual(
+                    (str(ip.address), ip.status, ip.dns_name), ("198.18.0.42/24", "reserved", "scoped.example")
+                )
+                self.assertEqual((report.created, report.errors), (1, 0))
+                link = IPAMOwnershipLink.objects.get(ip_address=ip)
+                self.assertEqual((link.server_id, link.source), (self.server.pk, "reservation"))
+                self.assertEqual(link.facts, {"hostname": "scoped.example", "prefix_length": 24})
 
     def test_an_in_subnet_reservation_creates_a_reserved_row_with_the_subnet_prefix_length(self):
         report = _reconcile(self.server, reservations=[_reservation(hostname="printer")])
@@ -1218,6 +1277,25 @@ class LeasePhaseConcurrencyTest(TransactionTestCase):
         if not isinstance(result, SyncReport):
             self.fail(f"{name} did not return a report: {result!r}")
         return result
+
+    def test_cleanup_retains_ip_and_link_when_operator_moves_address_while_it_waits(self):
+        server = _server("owner")
+        _reconcile(server, [_lease("198.18.0.42")])
+        ip = _row("198.18.0.42")
+        before = list(IPAMOwnershipLink.objects.values())
+        operator = self._hold("UPDATE ipam_ipaddress SET address = %s WHERE id = %s", ["198.18.0.43/24", ip.pk])
+        with _kea():
+            phases = _phases(server)
+            self._start("cleanup", lambda: reconcile(server, 4, phases))
+            self._wait_for_lock_waits(1)
+            operator.commit()
+            self._join()
+        ip.refresh_from_db()
+        self.assertEqual(str(ip.address), "198.18.0.43/24")
+        self.assertEqual(list(IPAMOwnershipLink.objects.values()), before)
+        report = self._report("cleanup")
+        self.assertEqual((report.errors, report.removed), (1, 0))
+        self.assertIn("lease", report.incomplete)
 
     def test_two_ha_members_that_run_at_the_same_time_create_one_row(self):
         first, second = _server("first"), _server("second")

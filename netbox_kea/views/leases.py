@@ -7,6 +7,7 @@ import uuid
 from abc import ABCMeta
 from collections.abc import Callable
 from functools import partial
+from ipaddress import ip_address as parse_ip_address
 from typing import Any, Generic, TypeVar
 from urllib.parse import urlencode as _urlencode
 
@@ -33,6 +34,7 @@ from ..kea import (
     KeaClient,
     KeaException,
     LeaseQueryGuardError,
+    lease_fields,
     lease_query_guard_message,
 )
 from ..models import Server
@@ -74,6 +76,14 @@ def _run_lease_sync_to_netbox(
         messages.warning(request, "Lease created, but it was not synced to NetBox (requires IPAM permission).")
         return
     try:
+        if lease_fields(lease).subnet_id is None:
+            client = server.get_client(version=family)
+            created_lease = client.lease_get_by_ip(family, ip_address)
+            if created_lease is None or parse_ip_address(lease_fields(created_lease).address) != parse_ip_address(
+                ip_address
+            ):
+                raise ValueError("Kea did not return the created lease")
+            lease = created_lease
         result = claim(server, family, [lease], force=False)
         outcome = next(iter(result.addresses.values())).outcome
         if outcome == "error":
@@ -89,7 +99,16 @@ def _run_lease_sync_to_netbox(
         else:
             nb_action = outcome if outcome in {"created", "updated"} else "already up to date"
             messages.success(request, f"IPAddress {ip_address} {nb_action} in NetBox.")
-    except (CatalogueUnavailable, ValueError, DatabaseError, ValidationError, requests.RequestException):
+    except (
+        CatalogueUnavailable,
+        KeaException,
+        RuntimeError,
+        OSError,
+        ValueError,
+        DatabaseError,
+        ValidationError,
+        requests.RequestException,
+    ):
         logger.exception("Failed to sync lease %s to NetBox", ip_address)
         messages.warning(request, "Lease created but NetBox IPAM sync failed; see server logs.")
 

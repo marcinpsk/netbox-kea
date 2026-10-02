@@ -1643,13 +1643,133 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
     def test_post_lease4_add_with_sync_links_the_created_ip(self):
         from netbox_kea.models import IPAMOwnershipLink
 
-        with _lease_stub({"lease4-add": {"result": 0}, "subnet4-list": self._SUBNETS4}):
+        with _lease_stub({"lease4-add": {"result": 0}, "subnet4-list": self._SUBNETS4}) as kea:
             response = self.client.post(self._url(version=4), self._post4(sync=True))
+        self.assertNotIn("lease4-get", kea.commands())
         self.assertEqual(response.status_code, 302)
         ip = NbIP.objects.get(address__net_host="10.0.0.200")
         link = IPAMOwnershipLink.objects.get(ip_address=ip)
         self.assertEqual((link.server_id, link.family, link.source), (self.server.pk, 4, "lease"))
         self.assertEqual(link.facts, {"hostname": "newlease.example.com", "prefix_length": 24})
+
+    def test_optional_subnet_add_uses_the_created_lease_facts(self):
+        from ipam.models import VRF
+
+        from netbox_kea.models import IPAMOwnershipLink
+
+        self.server.sync_vrf = VRF.objects.create(name="lease-sync")
+        self.server.save()
+        data = {"ip_address": "198.18.0.42", "hw_address": "aa:bb:cc:dd:ee:ff", "sync_to_netbox": "on"}
+        responses = {
+            "lease4-add": {"result": 0},
+            "lease4-get": {"result": 0, "arguments": {"ip-address": "198.18.0.42", "subnet-id": 7}},
+            "subnet4-list": _subnet_list(
+                4, [{"id": 7, "subnet": "198.18.0.0/24"}, {"id": 8, "subnet": "198.18.0.0/25"}]
+            ),
+        }
+        with _lease_stub(responses) as kea:
+            response = self.client.post(self._url(), data)
+        self.assertEqual(response.status_code, 302)
+        ip = NbIP.objects.get(address__net_host="198.18.0.42", vrf=self.server.sync_vrf)
+        self.assertEqual(str(ip.address), "198.18.0.42/24")
+        link = IPAMOwnershipLink.objects.get(ip_address=ip)
+        self.assertEqual((link.server_id, link.family, link.source), (self.server.pk, 4, "lease"))
+        self.assertEqual(link.facts["prefix_length"], 24)
+        self.assertEqual(kea.commands().count("lease4-add"), 1)
+        self.assertEqual(kea.commands().count("lease4-get"), 1)
+        self.assertNotIn("subnet-id", kea.requests[0]["arguments"])
+
+    def test_optional_subnet_ipv6_add_matches_canonical_address(self):
+        from ipam.models import VRF
+
+        from netbox_kea.models import IPAMOwnershipLink
+
+        self.server.sync_vrf = VRF.objects.create(name="lease-sync-v6")
+        self.server.save()
+        data = {"ip_address": "2001:db8::42", "duid": "00:01:02:03", "iaid": 1, "sync_to_netbox": "on"}
+        responses = {
+            "lease6-add": {"result": 0},
+            "lease6-get": {
+                "result": 0,
+                "arguments": {"ip-address": "2001:0db8:0000:0000:0000:0000:0000:0042", "subnet-id": 7},
+            },
+            "subnet6-list": _subnet_list(
+                6, [{"id": 7, "subnet": "2001:db8::/64"}, {"id": 8, "subnet": "2001:db8::/80"}]
+            ),
+        }
+        with _lease_stub(responses) as kea:
+            response = self.client.post(self._url(6), data)
+        self.assertEqual(response.status_code, 302)
+        ip = NbIP.objects.get(address__net_host="2001:db8::42", vrf=self.server.sync_vrf)
+        self.assertEqual(str(ip.address), "2001:db8::42/64")
+        link = IPAMOwnershipLink.objects.get(ip_address=ip)
+        self.assertEqual((link.server_id, link.family, link.source), (self.server.pk, 6, "lease"))
+        self.assertEqual(link.facts["prefix_length"], 64)
+        self.assertEqual(kea.commands().count("lease6-get"), 1)
+        self.assertNotIn("subnet-id", kea.requests[0]["arguments"])
+
+    def test_optional_subnet_readback_failure_preserves_success_without_ipam_writes(self):
+        from netbox_kea.models import IPAMOwnershipLink
+
+        for family, address in ((4, "198.18.0.42"), (6, "2001:db8::42")):
+            cases = {
+                "absent": {"result": 3},
+                "wrong-address": {
+                    "result": 0,
+                    "arguments": {"ip-address": "198.18.0.43" if family == 4 else "2001:db8::43", "subnet-id": 7},
+                },
+                "malformed-response": {"result": 0, "arguments": []},
+                "malformed-address": {"result": 0, "arguments": {"ip-address": "invalid", "subnet-id": 7}},
+                "missing-id": {"result": 0, "arguments": {"ip-address": address}},
+                "malformed-id": {"result": 0, "arguments": {"ip-address": address, "subnet-id": []}},
+                "unsupported": {"result": 2},
+                "unavailable": requests.ConnectionError("readback unavailable"),
+                "invalid-json": ValueError("invalid JSON"),
+                "socket-error": OSError("readback unavailable"),
+            }
+            for name, readback in cases.items():
+                with self.subTest(family=family, readback=name):
+                    data = {
+                        "ip_address": address,
+                        "hw_address": "aa:bb:cc:dd:ee:ff",
+                        "duid": "00:01:02:03",
+                        "iaid": 1,
+                        "sync_to_netbox": "on",
+                    }
+                    subnet = "198.18.0.0/24" if family == 4 else "2001:db8::/64"
+                    with _lease_stub(
+                        {
+                            f"lease{family}-add": {"result": 0},
+                            f"lease{family}-get": readback,
+                            f"subnet{family}-list": _subnet_list(family, [{"id": 7, "subnet": subnet}]),
+                        }
+                    ) as kea:
+                        response = self.client.post(self._url(family), data)
+                    self.assertEqual(response.status_code, 302)
+                    self.assertEqual(kea.commands().count(f"lease{family}-add"), 1)
+                    self.assertEqual(kea.commands().count(f"lease{family}-get"), 1)
+                    messages = [str(message) for message in get_messages(response.wsgi_request)]
+                    self.assertTrue(any("created." in message for message in messages))
+                    self.assertTrue(any("sync failed" in message for message in messages))
+                    self.assertFalse(NbIP.objects.exists())
+                    self.assertFalse(IPAMOwnershipLink.objects.exists())
+
+    def test_optional_subnet_without_sync_does_not_read_back(self):
+        for family, address in ((4, "198.18.0.42"), (6, "2001:db8::42")):
+            with self.subTest(family=family):
+                with _lease_stub({f"lease{family}-add": {"result": 0}}) as kea:
+                    response = self.client.post(
+                        self._url(family),
+                        {
+                            "ip_address": address,
+                            "duid": "00:01:02:03",
+                            "iaid": 1,
+                            "hw_address": "aa:bb:cc:dd:ee:ff",
+                        },
+                    )
+                self.assertEqual(response.status_code, 302)
+                self.assertEqual(kea.commands(), [f"lease{family}-add"])
+                self.assertFalse(NbIP.objects.exists())
 
     def test_post_lease4_add_keeps_kea_success_when_the_catalogue_is_unavailable(self):
         from netbox_kea.models import IPAMOwnershipLink
@@ -1723,10 +1843,13 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
         perm.users.add(limited)
         self.client.force_login(limited)
 
+        data = self._post4(sync=True)
+        del data["subnet_id"]
         with _lease_stub({"lease4-add": {"result": 0}, "subnet4-list": self._SUBNETS4}) as kea:
-            response = self.client.post(self._url(version=4), self._post4(sync=True))
+            response = self.client.post(self._url(version=4), data)
         self.assertEqual(response.status_code, 302)
         self.assertEqual(kea.commands().count("lease4-add"), 1)
+        self.assertEqual(kea.commands(), ["lease4-add"])
         self.assertFalse(NbIP.objects.exists())
         self.assertFalse(IPAMOwnershipLink.objects.exists())
 
