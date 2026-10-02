@@ -72,6 +72,9 @@ The historical first-complete timestamp is never reset. A newly enabled unobserv
 until its required workflow completes that scope. Barrier decisions use receipts, rather than the historical timestamp alone.
 A Run Now invocation cannot silently treat an incomplete or narrower source run as the Server completion.
 Normal last-link rules apply once relevant Servers complete their required initial observations.
+Adopted cleanup locks the Server and Sync Configuration tables against writes, then reads current scope.
+The locks stay until the row transaction commits. They also cover new Servers and bulk updates.
+Count snapshots read policy once without these locks, because they do not authorize cleanup.
 
 ## Replacement and guard
 
