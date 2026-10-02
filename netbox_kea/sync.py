@@ -359,7 +359,7 @@ def _clean_stale_ip(
     return 1
 
 
-def _sync_mac_address(hw_address: str, hostname: str = ""):
+def sync_mac_address(hw_address: str, hostname: str = ""):
     """Create or update a NetBox ``MACAddress`` entry for *hw_address* and return it.
 
     When *hostname* is provided the ``description`` field is annotated with
@@ -593,7 +593,7 @@ def sync_lease_to_netbox(
 
     hw_address = lease.get("hw-address")
     if hw_address:
-        _sync_mac_address(hw_address, hostname)
+        sync_mac_address(hw_address, hostname)
 
     return ip_obj, created, changed
 
@@ -748,7 +748,7 @@ def sync_reservation_to_netbox(
         )
 
     if (hw_address := reservation.identity.hardware_address) is not None:
-        _sync_mac_address(hw_address, hostname)
+        sync_mac_address(hw_address, hostname)
 
     return ReservationSyncResult(
         reservation=reservation,

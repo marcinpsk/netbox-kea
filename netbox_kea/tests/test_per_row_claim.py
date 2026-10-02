@@ -109,7 +109,9 @@ class ClaimOwnershipTest(TestCase):
                 ip = IPAddress.objects.create(address="198.18.0.10/24", description=description)
                 before = IPAddress.objects.values().get(pk=ip.pk)
                 result = claim(self.server, 4, [reservation], force=True)
-                self.assertEqual(result.addresses["198.18.0.10"].outcome, "not-applicable")
+                expected = "conflict" if description == "Operator row" else "not-applicable"
+                self.assertEqual(result.addresses["198.18.0.10"].outcome, expected)
+                self.assertEqual(result.addresses["198.18.0.10"].ip, ip)
                 self.assertIsNone(result.primary)
                 self.assertEqual(IPAddress.objects.values().get(pk=ip.pk), before)
                 if description == "Operator row":

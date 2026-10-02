@@ -1537,6 +1537,36 @@ class IPAMPhaseConcurrencyTest(TransactionTestCase):
             self.fail(f"{name} did not return claim results: {result!r}")
         return result
 
+    def test_subnet_and_delegated_prefix_claims_share_one_identity_lock(self):
+        import ipaddress
+
+        from netbox_kea.ipam_reconciliation import DelegatedPrefixPhase, SubnetClaim
+        from netbox_kea.tests.test_integration_dhcp_plugin import _reservation_snapshot
+
+        first, second = _server("subnet-owner"), _server("delegated-owner")
+        network = ipaddress.ip_network("2001:db8:100::/56")
+        observation = _reservation_snapshot(
+            {"subnet6": []}, 6, [{"subnet-id": 0, "duid": "01:02:03", "prefixes": [str(network)]}]
+        )
+        holder = self._hold("LOCK TABLE ipam_prefix IN SHARE MODE", [])
+        self._start("subnet", lambda: claim(first, 6, [SubnetClaim(network)], force=False))
+        self._start(
+            "delegated",
+            lambda: reconcile(
+                second, 6, [DelegatedPrefixPhase(observation.snapshot.records, observation.cutoff, True)]
+            ),
+        )
+        self._wait_for_lock_waits(2)
+        holder.commit()
+        self._join()
+        prefix = Prefix.objects.get(prefix=str(network))
+        self.assertEqual(
+            set(IPAMOwnershipLink.objects.filter(prefix=prefix).values_list("source", flat=True)),
+            {"subnet", "delegated-prefix"},
+        )
+        self.assertEqual(self._report("delegated").errors, 0)
+        self.assertIn(self._claim_result("subnet").prefixes[str(network)].outcome, {"created", "updated", "unchanged"})
+
     def test_claim_and_reconcile_create_one_row_under_the_same_identity_lock(self):
         first, second = _server("claim-owner"), _server("reconcile-owner")
         holder = self._hold("LOCK TABLE ipam_ipaddress IN SHARE MODE", [])

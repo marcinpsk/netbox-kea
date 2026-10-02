@@ -113,7 +113,7 @@ class FetchReservationSnapshotTest(TestCase):
             snapshot = dps._fetch_reservation_snapshot(self._server(), 4)
 
         self.assertIsNotNone(snapshot)
-        self.assertFalse(snapshot.complete)
+        self.assertFalse(snapshot.snapshot.complete)
 
     def test_returns_none_when_the_supported_snapshot_read_fails(self):
         responses = _sync_responses({4: {"subnet4": [{"id": 1, "subnet": "198.18.0.0/24"}]}})

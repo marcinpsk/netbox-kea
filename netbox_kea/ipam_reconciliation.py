@@ -21,12 +21,13 @@ from ipam.models import IPAddress, IPRange, Prefix
 from netaddr import IPNetwork
 
 from . import subnet_catalogue
-from .constants import IP_RANGE_MAX_SIZE, Family, StaleCleanupMode
+from .constants import IP_RANGE_MAX_SIZE, Family, IPNetworkValue, StaleCleanupMode
 from .integrations import dhcp_plugin
-from .ipam_marker import MarkerKind, parse_marker, render_marker, rewrite_marker, status_kind
+from .ipam_marker import Marker, MarkerKind, parse_marker, render_marker, rewrite_marker, status_kind
 from .kea import KeaException, lease_fields
 from .models import IPAMOwnershipLink, IPAMOwnershipSource, next_confirmation_number
-from .reservations import TRAVERSAL_DIAGNOSTIC_CODES, InSubnetReservationScope, Reservation
+from .pools import Pool
+from .reservations import TRAVERSAL_DIAGNOSTIC_CODES, InSubnetReservationScope, Reservation, ReservationSnapshot
 from .subnet_catalogue import CatalogueUnavailable
 from .sync import (
     DuplicateNetBoxRowsError,
@@ -36,7 +37,7 @@ from .sync import (
     _ip_description,
     _record_hostname,
     _single_match,
-    _sync_mac_address,
+    sync_mac_address,
 )
 
 if TYPE_CHECKING:
@@ -131,7 +132,25 @@ class PoolPhase:
     source: ClassVar[str] = "pool"
 
 
-Phase = LeasePhase | ReservationPhase | SubnetPhase | PoolPhase
+@dataclass(frozen=True)
+class ReservationObservation:
+    """A Reservation snapshot and the confirmation cutoff taken before its read."""
+
+    snapshot: ReservationSnapshot
+    cutoff: int
+
+
+@dataclass(frozen=True)
+class DelegatedPrefixPhase:
+    """Successfully imported Reservations with their original read cutoff."""
+
+    records: Sequence[Reservation]
+    cutoff: int
+    complete: bool
+    source: ClassVar[str] = "delegated-prefix"
+
+
+Phase = LeasePhase | ReservationPhase | SubnetPhase | PoolPhase | DelegatedPrefixPhase
 
 
 @dataclass
@@ -158,6 +177,7 @@ class SyncReport:
     reservation_traversal_truncated: bool = False
     # Global and addressless Reservations, which write no IPAM row: the job counts them as skipped.
     skipped_reservations: list[Reservation] = field(default_factory=list)
+    prefixes: dict[str, PrefixClaim] = field(default_factory=dict)
 
     @property
     def complete(self) -> bool:
@@ -234,10 +254,43 @@ class AddressClaim:
 
 
 @dataclass(frozen=True)
-class ClaimResult:
-    """Per-address outcomes from one claim, including addresses whose row failed."""
+class SubnetClaim:
+    """A canonical Subnet network to claim without cleanup."""
 
-    addresses: dict[str, AddressClaim]
+    network: IPNetworkValue
+
+
+@dataclass(frozen=True)
+class PoolClaim:
+    """An allocation Pool and the Subnet that supplies its address mask."""
+
+    pool: Pool
+    network: IPNetworkValue
+
+
+@dataclass(frozen=True)
+class PrefixClaim:
+    """The ownership outcome and existing Prefix for one network."""
+
+    outcome: _Outcome | Literal["error"]
+    prefix: Prefix | None = None
+
+
+@dataclass(frozen=True)
+class RangeClaim:
+    """The ownership outcome and existing IP Range for one allocation Pool."""
+
+    outcome: _Outcome | Literal["error"]
+    ip_range: IPRange | None = None
+
+
+@dataclass(frozen=True)
+class ClaimResult:
+    """Typed outcomes from one source claim, including identities whose row failed."""
+
+    addresses: dict[str, AddressClaim] = field(default_factory=dict)
+    prefixes: dict[str, PrefixClaim] = field(default_factory=dict)
+    ranges: dict[str, RangeClaim] = field(default_factory=dict)
 
     @property
     def primary(self) -> IPAddress | None:
@@ -250,16 +303,27 @@ class ClaimResult:
         return frozenset(address for address, result in self.addresses.items() if result.synchronized)
 
 
-def claim(server: Server, family: Family, records: Sequence[dict[str, Any] | Reservation], force: bool) -> ClaimResult:
+def claim(
+    server: Server,
+    family: Family,
+    records: Sequence[dict[str, Any]] | Sequence[Reservation] | Sequence[SubnetClaim] | Sequence[PoolClaim],
+    force: bool,
+) -> ClaimResult:
     """Claim one source's records in the Server's VRF, with per-address outcomes and no stale cleanup.
 
-    A call contains leases or Reservations, never both. All records are validated and grouped before any write.
-    Lease masks come from the live Kea Subnet Catalogue. Reservations carry their verified Subnet mask.
+    A call contains one source: leases, Reservations, Subnets or Pools. All records are validated and grouped
+    before any write. Lease masks come from the live Kea Subnet Catalogue. Reservations carry their verified
+    Subnet mask. Network records carry their own canonical network and Pool bounds.
     """
     if family not in (4, 6) or isinstance(family, bool):
         raise ValueError("The address family must be 4 or 6")
     if not records:
         return ClaimResult({})
+    if isinstance(records[0], (SubnetClaim, PoolClaim)):
+        return _claim_network_records(server, family, records, force=force)
+    if any(isinstance(record, (SubnetClaim, PoolClaim)) for record in records):
+        raise ValueError("A claim takes one homogeneous source")
+    address_records = cast("Sequence[dict[str, Any] | Reservation]", records)
     lease_records = isinstance(records[0], dict)
     if any(isinstance(record, dict) != lease_records for record in records):
         raise ValueError("A claim takes one source: leases or Reservations, not both")
@@ -268,22 +332,25 @@ def claim(server: Server, family: Family, records: Sequence[dict[str, Any] | Res
     if lease_records:
         catalogue = subnet_catalogue.for_synchronization(server, family)
         subnet_prefix_lengths = {subnet.subnet_id: subnet.network.prefixlen for subnet in catalogue.subnets}
-    reports = _claim_reports(server, family, records, subnet_prefix_lengths)
+    reports = _claim_reports(server, family, address_records, subnet_prefix_lengths)
     outcomes = {address: AddressClaim(address, "error") for address in reports}
 
     def apply(row: _Report) -> AddressClaim:
         outcome = _claim(server, family, source, row, force=force)
         ip = IPAddress.objects.filter(vrf_id=server.sync_vrf_id, address__net_host=row.address).first()
+        if outcome != "conflict":
+            for hardware, hostname in row.mac_addresses:
+                if sync_mac_address(hardware, hostname) is None and source == RESERVATION:
+                    raise _RowRefused("The required hardware address could not be resolved")
         if row.facts is None and not row.disagreement and outcome == "unchanged":
+            if ip is not None and not _is_owned_description(ip.description):
+                return AddressClaim(row.address, "conflict", ip)
             return AddressClaim(row.address, "not-applicable", ip)
         return AddressClaim(row.address, outcome, ip)
 
     report = SyncReport()
     for row, result in _each_row(reports.values(), report, source, apply, lambda row: row.address):
         outcomes[row.address] = result
-        if result.outcome != "conflict":
-            for hardware, hostname in row.mac_addresses:
-                _sync_mac_address(hardware, hostname)
     return ClaimResult(outcomes)
 
 
@@ -406,6 +473,8 @@ def _run_phase(server: Server, family: Family, phase: Phase, report: SyncReport)
 
     The cutoff number comes before the snapshot request, so a claim that confirms a link after it keeps the link.
     """
+    if isinstance(phase, DelegatedPrefixPhase):
+        return _run_delegated_prefix_phase(server, family, phase, report)
     if isinstance(phase, (SubnetPhase, PoolPhase)):
         return _run_network_phase(server, family, phase, report)
     cutoff = next_confirmation_number()
@@ -424,7 +493,7 @@ def _run_phase(server: Server, family: Family, phase: Phase, report: SyncReport)
         _count(report, row.address, outcome)
         if outcome != "conflict":
             for hw_address, hostname in row.mac_addresses:
-                _sync_mac_address(hw_address, hostname)
+                sync_mac_address(hw_address, hostname)
     return None if phase.source in report.incomplete else cutoff
 
 
@@ -881,8 +950,9 @@ def _object_field(obj: IPAddress | Prefix | IPRange) -> str:
 
 
 def _lock_network(vrf_id: int | None, source: str, address: str) -> None:
+    kind = "ip-range" if source == "pool" else "prefix"
     with connection.cursor() as cursor:
-        cursor.execute("SELECT pg_advisory_xact_lock(%s, %s)", [_LOCK_CLASS, _int4(f"{source} {vrf_id} {address}")])
+        cursor.execute("SELECT pg_advisory_xact_lock(%s, %s)", [_LOCK_CLASS, _int4(f"{kind} {vrf_id} {address}")])
 
 
 def _run_network_phase(
@@ -921,9 +991,11 @@ def _run_network_phase(
     return None if phase.source in report.incomplete else phase.observation.cutoff
 
 
-def _claim_network(server: Server, family: Family, source: str, row: _NetworkReport) -> _Outcome:
+def _claim_network(
+    server: Server, family: Family, source: str, row: _NetworkReport, *, force: bool = False
+) -> _Outcome:
     _lock_network(server.sync_vrf_id, source, row.address)
-    if source == "subnet":
+    if source != "pool":
         query = Prefix.objects.select_for_update().filter(vrf_id=server.sync_vrf_id, prefix=row.address)
         filters = {"prefix": row.address, "vrf_id": server.sync_vrf_id or "null"}
         fields: dict[str, Any] = {"prefix": row.address}
@@ -937,7 +1009,7 @@ def _claim_network(server: Server, family: Family, source: str, row: _NetworkRep
             "end_address": IPNetwork(f"{row.end}/{row.prefix_length}"),
         }
     obj = _single_match(query, f"{source} {row.address}", filters)
-    kind: MarkerKind = "subnet" if source == "subnet" else "pool"
+    kind: MarkerKind = "pool" if source == "pool" else ("subnet" if source == "subnet" else "delegated prefix")
     if obj is None:
         if row.disagreement:
             return "disagreement"
@@ -950,7 +1022,9 @@ def _claim_network(server: Server, family: Family, source: str, row: _NetworkRep
     marker = parse_marker(obj.description)
     if marker is None:
         links_query.delete()
-        return "conflict"
+        if not force:
+            return "conflict"
+        marker = Marker(kind, f" {obj.description}" if obj.description else "", legacy=False)
     links = list(links_query)
     own = next((link for link in links if _is_own_link(link, server, family, source)), None)
     others = _drop_superseded_stale_links([link for link in links if link is not own])
@@ -976,7 +1050,7 @@ def _claim_network(server: Server, family: Family, source: str, row: _NetworkRep
 
 def _remove_stale_network_links(server: Server, family: Family, source: str, cutoff: int, report: SyncReport) -> None:
     """Drop the stale links of a complete Subnet or Pool phase. These objects are never removed."""
-    field_name = "prefix" if source == "subnet" else "ip_range"
+    field_name = "ip_range" if source == "pool" else "prefix"
     links = IPAMOwnershipLink.objects.filter(server=server, family=family, source=source, confirmation__lt=cutoff)
     # A marked link still needs the release check: an operator may have removed its object's marker.
     candidates = list(links.select_related(field_name))
@@ -1050,3 +1124,91 @@ def _remove_stale_network_link(candidate: IPAMOwnershipLink, field_name: str, cu
         locked.status = "deprecated"
         locked.save()
     return "deprecated"
+
+
+def _network_result(server: Server, source: str, row: _NetworkReport, outcome: _Outcome) -> PrefixClaim | RangeClaim:
+    """Return the object while its identity lock is held by the current savepoint."""
+    if source == "pool":
+        obj = IPRange.objects.filter(
+            vrf_id=server.sync_vrf_id, start_address__net_host=row.start, end_address__net_host=row.end
+        ).first()
+        return RangeClaim(outcome, obj)
+    obj = Prefix.objects.filter(vrf_id=server.sync_vrf_id, prefix=row.address).first()
+    return PrefixClaim(outcome, obj)
+
+
+def _claim_network_records(
+    server: Server,
+    family: Family,
+    records: Sequence[dict[str, Any] | Reservation | SubnetClaim | PoolClaim],
+    *,
+    force: bool,
+) -> ClaimResult:
+    """Validate and group one typed network source before any ownership write."""
+    source = "subnet" if isinstance(records[0], SubnetClaim) else "pool"
+    expected = SubnetClaim if source == "subnet" else PoolClaim
+    reports: dict[str, _NetworkReport] = {}
+    for record in records:
+        if not isinstance(record, (SubnetClaim, PoolClaim)) or not isinstance(record, expected):
+            raise ValueError("A claim takes one homogeneous source")
+        if record.network.version != family:
+            raise ValueError("The network does not match the claim family")
+        if isinstance(record, SubnetClaim):
+            row = _NetworkReport(str(record.network), record.network.prefixlen)
+        else:
+            pool = record.pool
+            if pool.start not in record.network or pool.end not in record.network or int(pool.end) < int(pool.start):
+                raise ValueError("The Pool must be contained by its Subnet")
+            if int(pool.end) - int(pool.start) + 1 > IP_RANGE_MAX_SIZE:
+                continue
+            row = _NetworkReport(f"{pool.start} - {pool.end}", record.network.prefixlen, str(pool.start), str(pool.end))
+        earlier = reports.get(row.address)
+        if earlier is not None and (earlier.disagreement or earlier.prefix_length != row.prefix_length):
+            row = replace(earlier, disagreement=True)
+        reports[row.address] = row
+    return _claim_network_reports(server, family, source, reports, force=force)
+
+
+def _claim_network_reports(
+    server: Server, family: Family, source: str, reports: Mapping[str, _NetworkReport], *, force: bool = False
+) -> ClaimResult:
+    """Use the same network ownership policy as complete reconciliation phases."""
+    result = ClaimResult()
+    for address in reports:
+        if source == "pool":
+            result.ranges[address] = RangeClaim("error")
+        else:
+            result.prefixes[address] = PrefixClaim("error")
+
+    def apply(row: _NetworkReport) -> PrefixClaim | RangeClaim:
+        outcome = _claim_network(server, family, source, row, force=force)
+        return _network_result(server, source, row, outcome)
+
+    for row, outcome in _each_row(reports.values(), SyncReport(), source, apply, lambda row: row.address):
+        if isinstance(outcome, PrefixClaim):
+            result.prefixes[row.address] = outcome
+        else:
+            result.ranges[row.address] = outcome
+    return result
+
+
+def _run_delegated_prefix_phase(
+    server: Server, family: Family, phase: DelegatedPrefixPhase, report: SyncReport
+) -> int | None:
+    """Claim successfully imported delegated Prefixes before optional stale cleanup."""
+    reports: dict[str, _NetworkReport] = {}
+    for reservation in phase.records:
+        if reservation.family != family:
+            raise ValueError("The Reservation does not match the phase family")
+        for prefix in reservation.delegated_prefixes:
+            reports[str(prefix)] = _NetworkReport(str(prefix), prefix.prefixlen)
+    results = _claim_network_reports(server, family, phase.source, reports)
+    report.prefixes.update(results.prefixes)
+    for address, result in results.prefixes.items():
+        if result.outcome == "error":
+            report.fail_row(phase.source, address, _RowRefused("Delegated Prefix claim failed"))
+        else:
+            _count(report, address, result.outcome)
+    if not phase.complete:
+        report.incomplete.add(phase.source)
+    return None if phase.source in report.incomplete else phase.cutoff
