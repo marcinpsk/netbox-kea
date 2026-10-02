@@ -209,9 +209,35 @@ class TestKeaIpamSyncJobRun(TestCase):
         unowned = NbIP.objects.create(address="198.18.0.90/32", status="dhcp", description="[kea-sync: lease]")
         with _patch_kea():
             job = self._run()
-        self.assertEqual(job.data["summary"][0]["unowned"], 1)
+        self.assertEqual(job.data["summary"][0]["unowned"], 0)
         self.assertEqual(job.data["summary"][0]["waiting"], 0)
         self.assertTrue(NbIP.objects.filter(pk=unowned.pk).exists())
+
+    def test_upgrade_summary_keeps_server_scope_and_scans_unowned_rows_once(self):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        from netbox_kea.tests.test_ipam_reconciliation import _lease, _reconcile, _server
+
+        first = _server("first")
+        _server("second")
+        NbIP.objects.create(address="10.0.0.5/32", description="[kea-sync: lease]")
+        _reconcile(first, [_lease()])
+        NbIP.objects.create(address="198.18.0.90/32", description="[kea-sync: lease]")
+        with (
+            _patch_kea(),
+            CaptureQueriesContext(connection) as queries,
+            self.assertLogs("netbox.jobs", level="INFO") as logs,
+        ):
+            job = self._run()
+        scans = [query["sql"] for query in queries if '"netbox_kea_ipamownershiplink"."id" IS NULL' in query["sql"]]
+        self.assertEqual(len(scans), 3, "The three IPAM tables must be scanned only once per job")
+        self.assertEqual([entry["waiting"] for entry in job.data["summary"]], [1, 0])
+        self.assertEqual([entry["unowned"] for entry in job.data["summary"]], [0, 0])
+        totals = [message for message in logs.output if "Kea IPAM sync complete" in message]
+        self.assertEqual(len(totals), 1)
+        self.assertIn("unowned=1", totals[0])
+        self.assertIn("waiting=0", totals[0])
 
     def test_total_conflicts_counts_each_server_once(self):
         for name in ("first", "second"):

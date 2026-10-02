@@ -61,6 +61,27 @@ class ImportOwnershipTest(TestCase):
         self.assertIsNotNone(self.server.ipam_first_complete_at)
         self.assertIn("import", self.server.ipam_initial_observations)
 
+    def test_stale_server_edit_preserves_import_receipt_and_initial_completion(self):
+        from netbox_kea.models import Server
+
+        self.server.sync_enabled = False
+        self.server.sync_dhcp_plugin_enabled = True
+        self.server.save()
+        stale = Server.objects.get(pk=self.server.pk)
+        with stub_kea(_sync_responses({6: self.config}, {6: []})):
+            results = run_dhcp_plugin_import(self.server)
+        self.assertEqual(results[0][1].errors, 0)
+        self.server.refresh_from_db()
+        receipts = self.server.ipam_initial_observations
+        completed = self.server.ipam_first_complete_at
+        self.assertIsNotNone(completed)
+        stale.name = "edited-import-owner"
+        stale.save()
+        self.server.refresh_from_db()
+        self.assertEqual(self.server.name, "edited-import-owner")
+        self.assertEqual(self.server.ipam_initial_observations, receipts)
+        self.assertEqual(self.server.ipam_first_complete_at, completed)
+
     def test_handled_curated_global_prefix_does_not_block_complete_import(self):
         self.server.sync_enabled = False
         self.server.sync_dhcp_plugin_enabled = True

@@ -8,17 +8,177 @@ from django.test import TestCase, override_settings
 from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 from django.utils import timezone
-from ipam.models import VRF, IPAddress
+from ipam.models import VRF, IPAddress, IPRange, Prefix
+from netaddr import IPNetwork
 from rest_framework.test import APIClient
 
 from netbox_kea.ipam_reconciliation import claim, upgrade_counts
-from netbox_kea.models import IPAMOwnershipLink
+from netbox_kea.models import IPAMOwnershipLink, Server
 from netbox_kea.tests.test_ipam_reconciliation import _kea, _lease, _reconcile, _run_job, _server
 from netbox_kea.tests.utils import plugins_config
 
 
 @override_settings(PLUGINS_CONFIG=plugins_config(stale_ip_cleanup="remove"))
 class UpgradeAdoptionTest(TestCase):
+    def test_unowned_count_reads_only_valid_marker_candidates(self):
+        expected = set()
+        factories = (
+            ("ip_address", IPAddress, lambda index: {"address": f"198.18.0.{index}/32"}),
+            ("prefix", Prefix, lambda index: {"prefix": f"198.18.{index}.0/24"}),
+            (
+                "ip_range",
+                IPRange,
+                lambda index: {
+                    "start_address": IPNetwork(f"198.19.{index}.1/24"),
+                    "end_address": IPNetwork(f"198.19.{index}.10/24"),
+                },
+            ),
+        )
+        for field, model, identity in factories:
+            for index, description in enumerate(
+                ("[kea-sync: lease] note", "Synced from Kea DHCP note", "Operator row", "", "[kea-sync: invalid]"),
+                start=1,
+            ):
+                obj = model.objects.create(**identity(index), description=description)
+                if index <= 2:
+                    expected.add((field, obj.pk))
+        with CaptureQueriesContext(connection) as queries:
+            counts = upgrade_counts()
+        self.assertEqual(counts.unowned_objects, expected)
+        candidate_queries = [query["sql"] for query in queries if "LEFT OUTER JOIN" in query["sql"]]
+        self.assertEqual(len(candidate_queries), 3)
+        for sql in candidate_queries:
+            with self.subTest(sql=sql), connection.cursor() as cursor:
+                cursor.execute(sql)
+                self.assertEqual(len(cursor.fetchall()), 2, "Unmarked IPAM rows must remain in the database")
+
+    def test_stale_server_edit_preserves_job_receipt_and_initial_completion(self):
+        server = _server("owner")
+        stale = Server.objects.get(pk=server.pk)
+        _run_job(server, [])
+        server.refresh_from_db()
+        completed = server.ipam_first_complete_at
+        receipts = server.ipam_initial_observations
+        self.assertIsNotNone(completed)
+        stale.name = "edited-owner"
+        stale.save()
+        server.refresh_from_db()
+        self.assertEqual(server.name, "edited-owner")
+        self.assertEqual(server.ipam_initial_observations, receipts)
+        self.assertEqual(server.ipam_first_complete_at, completed)
+        _run_job(server, [])
+        server.refresh_from_db()
+        self.assertEqual(server.ipam_first_complete_at, completed)
+
+    def test_rest_edit_preserves_completion_written_during_connectivity_check(self):
+        server = _server("owner")
+        user = get_user_model().objects.create(username="concurrent-operator", is_superuser=True)
+        client = APIClient()
+        client.force_authenticate(user)
+        observed = {}
+
+        def finish_job(body):
+            _run_job(server, [])
+            server.refresh_from_db()
+            observed["receipts"] = server.ipam_initial_observations
+            observed["completed"] = server.ipam_first_complete_at
+            return {"result": 0, "arguments": {"extended": "test"}}
+
+        with _kea(responses={"version-get": finish_job}):
+            response = client.patch(
+                reverse("plugins-api:netbox_kea-api:server-detail", args=[server.pk]),
+                {"name": "edited-owner"},
+                format="json",
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNotNone(observed["completed"])
+        server.refresh_from_db()
+        self.assertEqual(server.name, "edited-owner")
+        self.assertEqual(server.ipam_initial_observations, observed["receipts"])
+        self.assertEqual(server.ipam_first_complete_at, observed["completed"])
+
+    def test_import_completion_requires_complete_evidence_and_enabled_import(self):
+        from netbox_kea.ipam_reconciliation import SyncReport, complete_import_observation
+
+        server = _server("job-only", sync_dhcp_plugin_enabled=False)
+        complete = SyncReport(completed_sources={"subnet", "pool", "reservation"})
+        for reports in (
+            {},
+            {4: SyncReport(incomplete={"reservation"})},
+            {4: SyncReport(errors=1)},
+            {4: SyncReport(prefix_errors=1)},
+            {4: complete},
+        ):
+            with self.subTest(reports=reports):
+                complete_import_observation(server, reports)
+                server.refresh_from_db()
+                self.assertEqual(server.ipam_initial_observations, {})
+                self.assertIsNone(server.ipam_first_complete_at)
+
+    def test_adopted_networks_wait_for_other_jobs_then_deprecate(self):
+        from netbox_kea.ipam_reconciliation import PoolPhase, SubnetPhase, read_catalogue, reconcile
+        from netbox_kea.tests.test_prefix_pool_reconciliation import SUBNET
+
+        owner = _server("owner", sync_deprecate_prefixes_and_ranges=True)
+        other = _server("unobserved")
+        prefix = Prefix.objects.create(prefix=SUBNET["subnet"], description="[kea-sync: subnet]")
+        pool = SUBNET["pools"][0]["pool"]
+        start, end = (value.strip() for value in pool.split("-"))
+        ip_range = IPRange.objects.create(
+            start_address=IPNetwork(f"{start}/24"), end_address=IPNetwork(f"{end}/24"), description="[kea-sync: pool]"
+        )
+        with _kea(subnets=[SUBNET]):
+            observation = read_catalogue(owner, 4)
+            reconcile(owner, 4, [SubnetPhase(observation), PoolPhase(observation)])
+        self.assertTrue(IPAMOwnershipLink.objects.filter(prefix=prefix, adopted=True).exists())
+        self.assertTrue(IPAMOwnershipLink.objects.filter(ip_range=ip_range, adopted=True).exists())
+        with _kea(subnets=[]):
+            observation = read_catalogue(owner, 4)
+            waiting = reconcile(owner, 4, [SubnetPhase(observation), PoolPhase(observation)])
+        self.assertEqual(waiting.waiting_objects, {("prefix", prefix.pk), ("ip_range", ip_range.pk)})
+        for obj in (prefix, ip_range):
+            obj.refresh_from_db()
+            self.assertEqual(obj.status, "active")
+        _run_job(owner, [])
+        _run_job(other, [])
+        with _kea(subnets=[]):
+            observation = read_catalogue(owner, 4)
+            finished = reconcile(owner, 4, [SubnetPhase(observation), PoolPhase(observation)])
+        self.assertEqual((finished.waiting, finished.deprecated), (0, 2))
+        for obj in (prefix, ip_range):
+            obj.refresh_from_db()
+            self.assertEqual(obj.status, "deprecated")
+
+    def test_deferred_server_edit_preserves_concurrent_configuration_and_receipts(self):
+        server = _server("owner")
+        stale = Server.objects.only("name").get(pk=server.pk)
+        _run_job(server, [])
+        server.refresh_from_db()
+        receipts = server.ipam_initial_observations
+        completed = server.ipam_first_complete_at
+        server.sync_enabled = False
+        server.save(update_fields=["sync_enabled"])
+        stale.name = "edited-owner"
+        stale.save()
+        server.refresh_from_db()
+        self.assertEqual(server.name, "edited-owner")
+        self.assertFalse(server.sync_enabled)
+        self.assertEqual(server.ipam_initial_observations, receipts)
+        self.assertEqual(server.ipam_first_complete_at, completed)
+
+    def test_selected_job_does_not_report_another_servers_waiting_object(self):
+        owner = _server("owner")
+        other = _server("other")
+        IPAddress.objects.create(address="10.0.0.5/32", description="[kea-sync: lease]")
+        _reconcile(owner, [_lease()])
+        self.assertEqual(upgrade_counts().waiting, 1)
+        with self.assertLogs("netbox.jobs", level="INFO") as logs:
+            summary = _run_job(other, [])
+        self.assertEqual(summary["waiting"], 0)
+        totals = [message for message in logs.output if "Kea IPAM sync complete" in message]
+        self.assertEqual(len(totals), 1)
+        self.assertIn("waiting=1", totals[0])
+
     def test_shared_vrf_moves_legacy_address_with_same_primary_key(self):
         vrf = VRF.objects.create(name="shared")
         server = _server("first", sync_vrf=vrf)
@@ -78,7 +238,7 @@ class UpgradeAdoptionTest(TestCase):
         self.assertIsNotNone(server.ipam_first_complete_at)
         self.assertTrue(IPAddress.objects.filter(pk=stale.pk).exists())
         self.assertFalse(IPAMOwnershipLink.objects.filter(ip_address=stale).exists())
-        self.assertEqual(summary["unowned"], 1)
+        self.assertEqual(summary["unowned"], 0)
 
     def test_global_adoption_keeps_primary_key_and_blank_description_refuses_claim(self):
         server = _server("first")
@@ -202,7 +362,7 @@ class UpgradeAdoptionTest(TestCase):
         server = _server("first")
         completed = timezone.now().replace(microsecond=0)
         server.ipam_first_complete_at = completed
-        server.save()
+        server.save(update_fields=["ipam_first_complete_at"])
         user = get_user_model().objects.create(username="upgrade-reader", is_superuser=True)
         self.client.force_login(user)
         response = self.client.post(
