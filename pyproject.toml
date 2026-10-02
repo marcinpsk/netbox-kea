@@ -241,8 +241,14 @@ upload_to_vcs_release = true
 # exit 0. Both keys are stated rather than inherited so the guard in
 # netbox_kea/tests/test_release_changelog.py reads them instead of assuming a default.
 [tool.semantic_release.changelog]
+template_dir = "scripts/release_templates"
 mode = "update"
 insertion_flag = "<!-- version list -->"
+
+# Reuse upstream release formatting and override only commit-footer aggregation.
+[tool.semantic_release.changelog.environment]
+autoescape = false
+extensions = ["scripts.changelog_templates.ChangelogTemplates"]
 
 [tool.semantic_release.changelog.default_templates]
 changelog_file = "CHANGELOG.md"

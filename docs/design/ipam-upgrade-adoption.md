@@ -126,4 +126,4 @@ historical meaning.
 
 ## Status
 
-Revision r2 is ratified. The first increment implements receipt state and shared effective-source policy. Implementation must prove job-before-import protection, incomplete observations, concurrent receipt preservation and normal cleanup after completion.
+Revision r2 is ratified and implemented. Real ORM tests cover job-before-import protection, incomplete observations, concurrent receipt preservation and normal cleanup after completion. The job and import share receipt state and effective-source policy.
