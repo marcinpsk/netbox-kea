@@ -162,6 +162,11 @@ class Server(JobsMixin, NetBoxModel):
         default=True,
         help_text="Sync Kea pools as NetBox IP Ranges for this server.",
     )
+    sync_deprecate_prefixes_and_ranges: models.BooleanField = models.BooleanField(
+        verbose_name="Deprecate stale Prefixes and IP Ranges",
+        default=False,
+        help_text="Deprecate an owned Prefix or IP Range when this server drops its last ownership link as stale. Never delete it.",
+    )
     sync_dhcp_plugin_enabled = models.BooleanField(
         verbose_name="Sync to DHCP plugin",
         default=False,

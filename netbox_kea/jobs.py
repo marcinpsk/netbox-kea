@@ -26,11 +26,10 @@ if TYPE_CHECKING:
 
 # Runtime imports: get_type_hints() resolves this module's annotations, so a
 # TYPE_CHECKING-only Family or DuplicateNetBoxRowsError would raise NameError.
-from . import branching, subnet_catalogue
+from . import branching
 from .constants import Family
 from .plugin_settings import plugin_setting
 from .reservations import Reservation
-from .subnet_catalogue import CatalogueUnavailable, CompleteCatalogueSnapshot, VerifiedSubnet
 from .sync import DuplicateNetBoxRowsError
 
 logger = logging.getLogger(__name__)
@@ -42,83 +41,6 @@ _DEFAULT_INTERVAL = 5
 #: How many conflicting IPs to name in the job summary and log line.  A bare count
 #: tells an operator nothing about which manually-curated IPs the sync left alone.
 _CONFLICT_SAMPLE_SIZE = 20
-
-
-def _sync_subnet_entry(
-    subnet: VerifiedSubnet,
-    sync_prefixes: bool,
-    sync_ip_ranges: bool,
-    vrf,
-    stats: dict[str, int],
-    server_name: str,
-    duplicates: list[DuplicateNetBoxRowsError],
-) -> None:
-    """Sync one verified Subnet to a NetBox Prefix and its allocation ranges."""
-    from .sync import (
-        _POOL_TOO_LARGE,
-        sync_pool_to_netbox_ip_range,
-        sync_subnet_to_netbox_prefix,
-    )
-
-    subnet_cidr = subnet.cidr
-
-    if sync_prefixes:
-        try:
-            _, created, did_update = sync_subnet_to_netbox_prefix(subnet.network, vrf=vrf)
-            if created:
-                stats["created"] += 1
-            elif did_update:
-                stats["updated"] += 1
-        except DuplicateNetBoxRowsError as exc:
-            logger.exception("Failed to sync prefix %s from server %s", subnet_cidr, server_name)
-            stats["prefix_errors"] += 1
-            duplicates.append(exc)
-        except Exception:
-            logger.exception("Failed to sync prefix %s from server %s", subnet_cidr, server_name)
-            stats["prefix_errors"] += 1
-
-    if sync_ip_ranges:
-        pools = subnet.configuration.pools if subnet.configuration is not None else ()
-        for pool in pools:
-            try:
-                result = sync_pool_to_netbox_ip_range(pool, subnet.network, vrf=vrf)
-                if result is not _POOL_TOO_LARGE:
-                    _, created, did_update = result
-                    if created:
-                        stats["created"] += 1
-                    elif did_update:
-                        stats["updated"] += 1
-            except DuplicateNetBoxRowsError as exc:  # noqa: PERF203
-                logger.exception("Failed to sync pool %s from server %s", pool.range, server_name)
-                stats["prefix_errors"] += 1
-                duplicates.append(exc)
-            except Exception:
-                logger.exception("Failed to sync pool %s from server %s", pool.range, server_name)
-                stats["prefix_errors"] += 1
-
-
-def _sync_server_prefixes_and_ranges(
-    server: Server,
-    version: Family,
-    *,
-    catalogue: CompleteCatalogueSnapshot | None,
-    sync_prefixes: bool,
-    sync_ip_ranges: bool,
-    vrf=None,
-    stats: dict[str, int],
-    duplicates: list[DuplicateNetBoxRowsError],
-) -> None:
-    """Sync Prefixes and IP Ranges from the run's complete catalogue."""
-    if catalogue is None:
-        logger.warning(
-            "Server %s (v%s): skipping prefix/range sync: Subnet Catalogue unavailable", server.name, version
-        )
-        stats["prefix_errors"] += 1
-        return
-
-    logger.info("Server %s (v%s): found %d subnets for prefix/range sync", server.name, version, len(catalogue.subnets))
-    for subnet in catalogue.subnets:
-        _sync_subnet_entry(subnet, sync_prefixes, sync_ip_ranges, vrf, stats, server.name, duplicates)
 
 
 def _sync_one_server(
@@ -136,19 +58,30 @@ def _sync_one_server(
 ) -> None:
     """Sync a single server's leases, reservations, prefixes, and IP ranges.
 
-    The lease and Reservation phases of each family run in one ``reconcile`` call (ADR 0006).
+    The lease, Reservation, Subnet and Pool phases of each family run in one ``reconcile`` call (ADR 0006).
 
-    *conflict_ips* is a caller-owned set that collects the NetBox IPs this run refused to change, so the caller can
+    *conflict_ips* is a caller-owned set that collects the NetBox IPAM objects this run refused to change, so the caller can
     name them in the job summary. One set per server, shared by both phases and both IP versions: a foreign IP that
     has *both* a lease and a reservation is one conflict for the operator to resolve, not two.
 
-    *disagreement_ips* collects the addresses whose owners report different facts (ADR 0006).
+    *disagreement_ips* collects the IPAM objects whose owners report different facts (ADR 0006).
 
     *duplicates* is a caller-owned list that collects the Kea subnets and
     pools that match more than one NetBox row, so the caller can name them.
     """
-    from .ipam_reconciliation import LeasePhase, Phase, ReservationPhase, reconcile
+    from .ipam_reconciliation import (
+        LeasePhase,
+        Phase,
+        PoolPhase,
+        ReservationPhase,
+        SubnetPhase,
+        read_catalogue,
+        reconcile,
+    )
     from .sync import cleanup_stale_ips_batch
+
+    if not any((sync_leases, sync_reservations, sync_prefixes, sync_ip_ranges)):
+        return
 
     all_synced: list[dict | Reservation] = []
     # Records the job deliberately did not write, whose addresses cleanup must keep.
@@ -161,12 +94,10 @@ def _sync_one_server(
         if not enabled:
             continue
 
-        catalogue = None
-        if any((sync_leases, sync_reservations, sync_prefixes, sync_ip_ranges)):
-            try:
-                catalogue = subnet_catalogue.for_synchronization(server, version)
-            except CatalogueUnavailable as exc:
-                logger.warning("Server %s (v%s): Subnet Catalogue unavailable: %s", server.name, version, exc)
+        observation = read_catalogue(server, version)
+        catalogue = observation.catalogue
+        if catalogue is None:
+            logger.warning("Server %s (v%s): Subnet Catalogue unavailable", server.name, version)
         subnet_prefix_map = (
             {subnet.identity.subnet_id: subnet.identity.network.prefixlen for subnet in catalogue.subnets}
             if catalogue is not None
@@ -184,11 +115,17 @@ def _sync_one_server(
             phases.append(LeasePhase(max_leases=max_leases or None, subnet_prefix_lengths=subnet_prefix_map))
         if sync_reservations:
             phases.append(ReservationPhase(catalogue=catalogue))
+        if sync_prefixes:
+            phases.append(SubnetPhase(observation))
+        if sync_ip_ranges:
+            phases.append(PoolPhase(observation))
         if phases:
             report = reconcile(server, version, phases)
             stats["created"] += report.created
             stats["updated"] += report.updated
             stats["errors"] += report.errors
+            stats["prefix_errors"] += report.prefix_errors
+            duplicates.extend(report.duplicates)
             stats["skipped"] += len(report.skipped_reservations)
             conflict_ips.update(report.conflicts)
             disagreement_ips.update(report.disagreements)
@@ -198,24 +135,12 @@ def _sync_one_server(
             protected.extend(report.skipped_reservations)
             cleanup_safe &= report.complete
 
-        if sync_prefixes or sync_ip_ranges:
-            _sync_server_prefixes_and_ranges(
-                server,
-                version,
-                catalogue=catalogue,
-                sync_prefixes=sync_prefixes,
-                sync_ip_ranges=sync_ip_ranges,
-                vrf=server.sync_vrf,
-                stats=stats,
-                duplicates=duplicates,
-            )
-
     stats["conflicts"] = len(conflict_ips)
     stats["disagreements"] = len(disagreement_ips)
     if disagreement_ips:
         sample = sorted(disagreement_ips)[:_CONFLICT_SAMPLE_SIZE]
         logger.warning(
-            "Server %s: %d NetBox IP(s) keep their facts because their owners report different facts; first %d: %s",
+            "Server %s: %d NetBox IPAM object(s) keep their facts because their owners report different facts; first %d: %s",
             server.name,
             len(disagreement_ips),
             len(sample),
@@ -224,7 +149,7 @@ def _sync_one_server(
     if conflict_ips:
         sample = sorted(conflict_ips)[:_CONFLICT_SAMPLE_SIZE]
         logger.warning(
-            "Server %s: %d NetBox IP(s) left untouched: the description does not start with the sync marker,"
+            "Server %s: %d NetBox IPAM object(s) left untouched: the description does not start with the sync marker,"
             " or the new marker and the note do not fit; first %d: %s",
             server.name,
             len(conflict_ips),

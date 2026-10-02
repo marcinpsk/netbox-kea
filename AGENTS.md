@@ -203,11 +203,13 @@ URL request
   `(hostname, address_family)`). Raises `DuplicateNetBoxRowsError` when more than one
   NetBox Prefix or IP Range matches one Kea Subnet or Pool.
 - **`ipam_reconciliation.py`**: `reconcile(server, family, phases) -> SyncReport` (ADR 0006). The job's
-  lease and Reservation phases run through it: it links each reported IP address in `Server.sync_vrf` under
+  lease, Reservation, Subnet and Pool phases run through it: it links each reported IPAM object in `Server.sync_vrf` under
   an advisory lock on the identity and a row lock, the status comes from the live links, and a complete
   phase removes its own stale links. The last link of a Server goes only when the call ran a complete lease
-  and Reservation phase; the last link of an object follows `stale_ip_cleanup`. The other callers still use
-  `sync.py` until #210 to #214, and the old cleanup skips every IP address with an ownership link.
+  and Reservation phase; the last link of an IP address follows `stale_ip_cleanup`. A complete Subnet or Pool phase
+  drops its own stale links; `Server.sync_deprecate_prefixes_and_ranges` opts in to deprecation, never deletion.
+  `read_catalogue` pairs the shared snapshot with a cutoff taken before its request. The other callers still use
+  `sync.py` until #211 to #214, and the old cleanup skips every IP address with an ownership link.
 - **`jobs.py`**: `KeaIpamSyncJob` (`@system_job`). Iterates all `Server` objects,
   runs subnet/lease/reservation/prefix/range sync phases, writes a per-server
   summary to the job log.
