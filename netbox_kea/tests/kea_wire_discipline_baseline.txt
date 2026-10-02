@@ -10,7 +10,6 @@ constants.py::<module>	153
 integrations/dhcp_plugin.py::<module>	44
 integrations/dhcp_plugin.py::_apply_reservation_identifier	4
 integrations/dhcp_plugin.py::_create_custom_option_def	1
-integrations/dhcp_plugin.py::_ensure_reservation_addresses	1
 integrations/dhcp_plugin.py::_find_reservation	4
 integrations/dhcp_plugin.py::_hr_identifiers	3
 integrations/dhcp_plugin.py::_relay_to_str	1

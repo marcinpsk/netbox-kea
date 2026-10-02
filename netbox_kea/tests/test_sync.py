@@ -1014,7 +1014,7 @@ class TestCleanupStaleIpsUnknownMode(SimpleTestCase):
 
 
 class TestSyncMacAddressErrors(TestCase):
-    """_sync_mac_address handles DB and parse errors gracefully."""
+    """sync_mac_address handles DB and parse errors gracefully."""
 
     def test_db_error_is_caught_and_logged(self):
         """ProgrammingError during get_or_create is caught; no exception propagates."""
@@ -1032,10 +1032,10 @@ class TestSyncMacAddressErrors(TestCase):
         except ImportError:
             self.skipTest("netaddr not available")
 
-        from netbox_kea.sync import _sync_mac_address
+        from netbox_kea.sync import sync_mac_address
 
         with patch.object(MACAddress.objects, "get_or_create", side_effect=ProgrammingError("boom")) as mock_goc:
-            _sync_mac_address("aa:bb:cc:dd:ee:ff", hostname="test-host")
+            sync_mac_address("aa:bb:cc:dd:ee:ff", hostname="test-host")
         # Verify get_or_create was actually invoked (not bypassed by an earlier error)
         mock_goc.assert_called()
 
@@ -1051,17 +1051,17 @@ class TestSyncMacAddressErrors(TestCase):
         except ImportError:
             self.skipTest("netaddr not available")
 
-        from netbox_kea.sync import _sync_mac_address
+        from netbox_kea.sync import sync_mac_address
 
         # Passing an obviously invalid MAC address exercises the AddrFormatError path.
-        _sync_mac_address("not-a-mac", hostname="test-host")
+        sync_mac_address("not-a-mac", hostname="test-host")
         # No exception should propagate — AddrFormatError is caught and logged.
 
     def test_the_log_message_does_not_contain_the_mac_address(self):
-        from netbox_kea.sync import _sync_mac_address
+        from netbox_kea.sync import sync_mac_address
 
         with self.assertLogs("netbox_kea.sync", "DEBUG") as logs:
-            _sync_mac_address("aa:bb:cc:dd:ee:zz", hostname="test-host")
+            sync_mac_address("aa:bb:cc:dd:ee:zz", hostname="test-host")
 
         self.assertEqual([record.levelname for record in logs.records], ["DEBUG"])
         # The formatted record includes the traceback text, where netaddr repeats the value.
@@ -1118,14 +1118,14 @@ class TestFindPrefixLengthSQLiteException(TestCase):
 
 
 class TestSyncMacAddressImportErrors(TestCase):
-    """_sync_mac_address: ImportError for dcim.models and netaddr."""
+    """sync_mac_address: ImportError for dcim.models and netaddr."""
 
     def test_dcim_import_error_returns_silently(self):
-        """When dcim.models cannot be imported, _sync_mac_address returns without raising."""
+        """When dcim.models cannot be imported, sync_mac_address returns without raising."""
         import sys
         from unittest.mock import patch
 
-        # Remove cached module so the import inside _sync_mac_address triggers ImportError
+        # Remove cached module so the import inside sync_mac_address triggers ImportError
         with patch.dict(sys.modules, {"dcim.models": None}):
             # Need to reload sync so the inner import runs fresh
             import importlib
@@ -1134,10 +1134,10 @@ class TestSyncMacAddressImportErrors(TestCase):
 
             importlib.reload(sync_mod)
             # Should not raise even when dcim is unavailable
-            sync_mod._sync_mac_address("aa:bb:cc:dd:ee:ff", hostname="test")
+            sync_mod.sync_mac_address("aa:bb:cc:dd:ee:ff", hostname="test")
 
     def test_netaddr_import_error_returns_silently(self):
-        """When netaddr cannot be imported, _sync_mac_address logs debug and returns."""
+        """When netaddr cannot be imported, sync_mac_address logs debug and returns."""
         import sys
         import types
         from unittest.mock import patch
@@ -1153,7 +1153,7 @@ class TestSyncMacAddressImportErrors(TestCase):
 
             importlib.reload(sync_mod)
             # Should not raise even when netaddr is unavailable
-            sync_mod._sync_mac_address("aa:bb:cc:dd:ee:ff", hostname="test")
+            sync_mod.sync_mac_address("aa:bb:cc:dd:ee:ff", hostname="test")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
