@@ -25,7 +25,15 @@ from netaddr import IPNetwork
 from . import subnet_catalogue
 from .constants import IP_RANGE_MAX_SIZE, Family, IPNetworkValue, StaleCleanupMode
 from .integrations import dhcp_plugin
-from .ipam_marker import Marker, MarkerKind, parse_marker, render_marker, rewrite_marker, status_kind
+from .ipam_marker import (
+    Marker,
+    MarkerKind,
+    marked_description_q,
+    parse_marker,
+    render_marker,
+    rewrite_marker,
+    status_kind,
+)
 from .kea import KeaException, lease_fields
 from .models import IPAMOwnershipLink, IPAMOwnershipSource, Server, SyncConfig, next_confirmation_number
 from .plugin_settings import plugin_setting
@@ -465,7 +473,9 @@ def upgrade_counts() -> SyncReport:
     report = SyncReport()
     pending = _pending_adoptions()
     for object_field, model in (("ip_address", IPAddress), ("prefix", Prefix), ("ip_range", IPRange)):
-        for obj in model.objects.filter(kea_ownership_links__isnull=True).only("pk", "description"):
+        for obj in model.objects.filter(marked_description_q(), kea_ownership_links__isnull=True).only(
+            "pk", "description"
+        ):
             if _is_owned_description(obj.description):
                 report.unowned_objects.add((object_field, obj.pk))
         for link in IPAMOwnershipLink.objects.filter(adopted=True, **{f"{object_field}__isnull": False}).select_related(

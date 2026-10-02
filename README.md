@@ -362,8 +362,10 @@ Each server's summary reports `created`, `updated`, `errors`, `prefix_errors`, `
   for example from two reservations in overlapping subnets. A lease and a reservation
   disagree only on the prefix length, and an empty hostname makes no claim. The address
   keeps its values until the reports agree, or until one of them goes.
-- **unowned**: marker objects with no ownership link, including objects left by a deleted server.
-- **waiting**: adopted objects whose last link stays while a potential owner completes its initial observations.
+- **unowned**: marker objects with no ownership link, including objects left by a deleted server. The job total
+  counts these objects once. The per-server value is zero because these objects have no owning server.
+- **waiting**: adopted objects whose cleanup this server held during the run while a potential owner had not
+  completed its initial observations. The job total counts objects still waiting after all servers finish.
   Counts include each object once across sources and address families.
 
 View job history, next scheduled time and logs under **System → Background Jobs → Kea IPAM Sync**.

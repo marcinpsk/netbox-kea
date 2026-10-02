@@ -216,6 +216,19 @@ class Server(JobsMixin, NetBoxModel):
             ("bulk_delete_lease_from_server", "Can bulk delete DHCP leases from server"),
         ]
 
+    def save(self, force_insert=False, force_update=False, using=None, update_fields=None) -> None:
+        """Keep workflow-owned receipts out of an ordinary existing Server edit."""
+        if not self._state.adding and not force_insert and update_fields is None:
+            deferred = self.get_deferred_fields()
+            update_fields = {
+                field.name
+                for field in self._meta.concrete_fields
+                if not field.primary_key
+                and field.attname not in deferred
+                and field.name not in {"ipam_initial_observations", "ipam_first_complete_at"}
+            }
+        super().save(force_insert=force_insert, force_update=force_update, using=using, update_fields=update_fields)
+
     def __str__(self):
         return self.name
 

@@ -99,9 +99,6 @@ def _sync_one_server(
         combined.merge(reports[version])
 
     complete_job_observation(server, reports)
-    counts = upgrade_counts()
-    combined.waiting_objects = counts.waiting_objects
-    combined.unowned_objects = counts.unowned_objects
 
     if combined.disagreements:
         sample = sorted(combined.disagreements)[:_CONFLICT_SAMPLE_SIZE]
