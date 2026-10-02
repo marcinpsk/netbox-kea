@@ -28,6 +28,7 @@ via ``kea_stub.stub_kea``:
 from __future__ import annotations
 
 import requests
+from django.contrib import messages as django_messages
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.db.models.signals import pre_save
@@ -35,7 +36,7 @@ from django.test import TestCase, override_settings
 from django.urls import reverse
 from ipam.models import IPAddress as NbIP
 
-from netbox_kea.models import Server
+from netbox_kea.models import IPAMOwnershipLink, Server, next_confirmation_number
 from netbox_kea.views.reservations import _RESERVATION_PAGE_SIZE
 
 from .kea_stub import _catalogue_responses, _res_page, _reservation_mutation_commands, queued, stub_kea
@@ -470,6 +471,31 @@ class TestReservation4BulkSyncView(_SyncViewBase):
     def _url(self):
         return reverse("plugins:netbox_kea:server_reservation4_bulk_sync", args=[self.server.pk])
 
+    def test_complete_sync_removes_only_its_stale_reservation_link(self):
+        ip = NbIP.objects.create(
+            address="198.18.0.10/24", status="active", description="[kea-sync: lease + reservation]"
+        )
+        other_server = _make_server(name="other-owner")
+        links = [
+            IPAMOwnershipLink.objects.create(
+                server=owner,
+                family=4,
+                source=source,
+                ip_address=ip,
+                confirmation=next_confirmation_number(),
+                facts={"hostname": "", "prefix_length": 24},
+            )
+            for owner, source in [(self.server, "lease"), (self.server, "reservation"), (other_server, "reservation")]
+        ]
+        with stub_kea({**_catalogue_responses(4, 1, "198.18.0.0/24"), "reservation-get-page": _res_page([])}):
+            response = self.client.post(self._url())
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(set(IPAMOwnershipLink.objects.values_list("pk", flat=True)), {links[0].pk, links[2].pk})
+        ip.refresh_from_db()
+        self.assertEqual(ip.status, "active")
+        summary = " ".join(str(message) for message in django_messages.get_messages(response.wsgi_request))
+        self.assertIn("0 created, 0 updated, 0 conflicts skipped, 1 stale links cleaned", summary)
+
     def test_redirects_after_success(self):
         hosts = [
             {
@@ -531,8 +557,7 @@ class TestReservation4BulkSyncView(_SyncViewBase):
             dns_name="shared-bulk",
             description="[kea-sync: reservation]",
         )
-        # No Kea record holds this address, so cleanup must remove it. Without it the
-        # two assertions below also pass when cleanup never runs.
+        # A marker without an ownership link does not authorize cleanup.
         NbIP.objects.create(
             address="10.0.13.99/32",
             status="reserved",
@@ -556,9 +581,9 @@ class TestReservation4BulkSyncView(_SyncViewBase):
             NbIP.objects.filter(address__net_host="10.0.13.2").exists(),
             "the skipped Global Reservation lost its address to stale-IP cleanup",
         )
-        self.assertFalse(
+        self.assertTrue(
             NbIP.objects.filter(address__net_host="10.0.13.99").exists(),
-            "stale-IP cleanup did not run, so the assertions above prove nothing",
+            "an unowned marker address must stay",
         )
 
     def test_malformed_snapshot_fails_closed_with_a_message(self):
@@ -573,7 +598,7 @@ class TestReservation4BulkSyncView(_SyncViewBase):
             response,
             reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk]),
         )
-        self.assertContains(response, "Failed to fetch reservations")
+        self.assertContains(response, "Reservation phase incomplete; cleanup skipped")
         self.assertEqual(NbIP.objects.count(), 0)
 
     def test_distinguishes_quarantined_records_from_truncated_traversal(self):
