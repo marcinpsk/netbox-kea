@@ -1569,8 +1569,7 @@ class IPAMPhaseConcurrencyTest(TransactionTestCase):
         _run_job(owner, [])
         ip = NbIP.objects.create(address="198.18.0.1/24", description="[kea-sync: lease]")
         _reconcile(owner, [_lease("198.18.0.1")])
-        link = IPAMOwnershipLink.objects.get(ip_address=ip)
-        holder = self._hold("SELECT id FROM netbox_kea_ipamownershiplink WHERE id = %s FOR UPDATE", [link.pk])
+        holder = self._hold("LOCK TABLE netbox_kea_ipamownershiplink IN SHARE MODE", [])
 
         with override_settings(PLUGINS_CONFIG=_config("deprecate")), _kea():
             phases = _phases(owner)
@@ -1589,6 +1588,47 @@ class IPAMPhaseConcurrencyTest(TransactionTestCase):
         self.assertEqual((report.errors, report.waiting, report.deprecated), (0, 0, 1))
         ip.refresh_from_db()
         self.assertEqual(ip.status, "deprecated")
+
+    def test_server_deletion_cascade_and_adopted_cleanup_do_not_deadlock(self):
+        from netbox_kea.models import Server
+
+        owner = _server("owner")
+        owner_pk = owner.pk
+        _run_job(owner, [])
+        ip = NbIP.objects.create(address="198.18.0.1/24", description="[kea-sync: lease]")
+        _reconcile(owner, [_lease("198.18.0.1")])
+        cascaded = threading.Event()
+        resume_delete = threading.Event()
+
+        def pause_server_delete(execute, sql, params, many, context):
+            # Let Django delete the links, then pause before its final Server statement.
+            if sql.startswith('DELETE FROM "netbox_kea_server"'):
+                cascaded.set()
+                if not resume_delete.wait(timeout=30):
+                    raise TimeoutError("Server deletion was not resumed")
+            return execute(sql, params, many, context)
+
+        def delete_server():
+            with connection.execute_wrapper(pause_server_delete):
+                return Server.objects.get(pk=owner_pk).delete()
+
+        with override_settings(PLUGINS_CONFIG=_config("deprecate")), _kea():
+            phases = _phases(owner)
+            self._start("delete-server", delete_server)
+            try:
+                self.assertTrue(cascaded.wait(timeout=30), self.results)
+                self._start("cleanup", lambda: reconcile(owner, 4, phases))
+                self._wait_for_lock_waits(1)
+            finally:
+                resume_delete.set()
+            self._join()
+
+        self.assertNotIsInstance(self.results["delete-server"], BaseException)
+        self.assertEqual(self._report("cleanup").errors, 0)
+        self.assertFalse(Server.objects.filter(pk=owner_pk).exists())
+        self.assertFalse(IPAMOwnershipLink.objects.filter(ip_address=ip).exists())
+        ip.refresh_from_db()
+        self.assertEqual(ip.status, "dhcp")
 
     def test_upgrade_competing_claims_move_one_locked_global_row(self):
         vrf = VRF.objects.create(name="shared-upgrade")
