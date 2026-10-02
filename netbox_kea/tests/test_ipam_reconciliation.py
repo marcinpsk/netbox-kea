@@ -1589,14 +1589,9 @@ class IPAMPhaseConcurrencyTest(TransactionTestCase):
         ip.refresh_from_db()
         self.assertEqual(ip.status, "deprecated")
 
-    def test_server_deletion_cascade_and_adopted_cleanup_do_not_deadlock(self):
+    def _delete_server_during_cleanup(self, owner, deleted_server, phases=None):
         from netbox_kea.models import Server
 
-        owner = _server("owner")
-        owner_pk = owner.pk
-        _run_job(owner, [])
-        ip = NbIP.objects.create(address="198.18.0.1/24", description="[kea-sync: lease]")
-        _reconcile(owner, [_lease("198.18.0.1")])
         cascaded = threading.Event()
         resume_delete = threading.Event()
 
@@ -1610,10 +1605,11 @@ class IPAMPhaseConcurrencyTest(TransactionTestCase):
 
         def delete_server():
             with connection.execute_wrapper(pause_server_delete):
-                return Server.objects.get(pk=owner_pk).delete()
+                return Server.objects.get(pk=deleted_server.pk).delete()
 
         with override_settings(PLUGINS_CONFIG=_config("deprecate")), _kea():
-            phases = _phases(owner)
+            if phases is None:
+                phases = _phases(owner)
             self._start("delete-server", delete_server)
             try:
                 self.assertTrue(cascaded.wait(timeout=30), self.results)
@@ -1624,11 +1620,73 @@ class IPAMPhaseConcurrencyTest(TransactionTestCase):
             self._join()
 
         self.assertNotIsInstance(self.results["delete-server"], BaseException)
-        self.assertEqual(self._report("cleanup").errors, 0)
-        self.assertFalse(Server.objects.filter(pk=owner_pk).exists())
+        report = self._report("cleanup")
+        self.assertEqual((report.errors, report.prefix_errors), (0, 0))
+        self.assertFalse(Server.objects.filter(pk=deleted_server.pk).exists())
+
+    def test_server_deletion_cascade_and_adopted_cleanup_do_not_deadlock(self):
+        owner = _server("owner")
+        _run_job(owner, [])
+        ip = NbIP.objects.create(address="198.18.0.1/24", description="[kea-sync: lease]")
+        _reconcile(owner, [_lease("198.18.0.1")])
+
+        self._delete_server_during_cleanup(owner, owner)
+
         self.assertFalse(IPAMOwnershipLink.objects.filter(ip_address=ip).exists())
         ip.refresh_from_db()
         self.assertEqual(ip.status, "dhcp")
+
+    def test_marker_release_and_sibling_server_deletion_do_not_deadlock(self):
+        owner = _server("owner")
+        sibling = _server("sibling")
+        _run_job(owner, [])
+        _run_job(sibling, [])
+        ip = NbIP.objects.create(address="198.18.0.1/24", description="[kea-sync: lease]")
+        for server in (owner, sibling):
+            _reconcile(server, [_lease("198.18.0.1")])
+        self.assertEqual(IPAMOwnershipLink.objects.filter(ip_address=ip, adopted=True).count(), 2)
+        ip.description = "Operator address"
+        ip.save(update_fields=["description"])
+
+        self._delete_server_during_cleanup(owner, sibling)
+
+        self.assertFalse(IPAMOwnershipLink.objects.filter(ip_address=ip).exists())
+        ip.refresh_from_db()
+        self.assertEqual((ip.status, ip.description), ("dhcp", "Operator address"))
+
+    def test_network_marker_release_and_sibling_server_deletion_do_not_deadlock(self):
+        from ipam.models import IPRange
+        from netaddr import IPNetwork
+
+        from netbox_kea.ipam_reconciliation import PoolPhase, SubnetPhase, read_catalogue
+        from netbox_kea.tests.test_prefix_pool_reconciliation import SUBNET as NETWORK_SUBNET
+
+        for field, phase_type in (("prefix", SubnetPhase), ("ip_range", PoolPhase)):
+            with self.subTest(field=field):
+                owner = _server(f"owner-{field}")
+                sibling = _server(f"sibling-{field}")
+                if field == "prefix":
+                    obj = Prefix.objects.create(prefix=NETWORK_SUBNET["subnet"], description="[kea-sync: subnet]")
+                else:
+                    obj = IPRange.objects.create(
+                        start_address=IPNetwork("198.18.0.10/24"),
+                        end_address=IPNetwork("198.18.0.20/24"),
+                        description="[kea-sync: pool]",
+                    )
+                with stub_kea(_catalogue_responses_for_subnets(4, [NETWORK_SUBNET])):
+                    for server in (owner, sibling):
+                        reconcile(server, 4, [phase_type(read_catalogue(server, 4))])
+                self.assertEqual(IPAMOwnershipLink.objects.filter(**{field: obj}, adopted=True).count(), 2)
+                obj.description = "Operator network"
+                obj.save(update_fields=["description"])
+                with stub_kea(_catalogue_responses_for_subnets(4, [])):
+                    phase = phase_type(read_catalogue(owner, 4))
+
+                self._delete_server_during_cleanup(owner, sibling, phases=[phase])
+
+                self.assertFalse(IPAMOwnershipLink.objects.filter(**{field: obj}).exists())
+                obj.refresh_from_db()
+                self.assertEqual((obj.status, obj.description), ("active", "Operator network"))
 
     def test_upgrade_competing_claims_move_one_locked_global_row(self):
         vrf = VRF.objects.create(name="shared-upgrade")
