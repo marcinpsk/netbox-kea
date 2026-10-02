@@ -88,6 +88,15 @@ forked, and predate its conventional-commit history.
 - Put SPDX copyright headers in each file, with the holders from git blame
   ([`284ecb2`](https://github.com/marcinpsk/netbox-kea/commit/284ecb2fc5b4770e134286242fc10b3d00a3d613))
 
+- **deps**: Bump the github-actions group with 2 updates
+  ([`6ed2548`](https://github.com/marcinpsk/netbox-kea/commit/6ed25481a14dc5d75790587ed5d79fdefbfde55f))
+
+- **deps**: Bump virtualenv
+  ([`059edae`](https://github.com/marcinpsk/netbox-kea/commit/059edae798e32ea71cfdb26fbdeb6d23a6248987))
+
+- **deps-dev**: Bump ruff from 0.16.8 to 0.16.9
+  ([`c048769`](https://github.com/marcinpsk/netbox-kea/commit/c04876986102acec5c5a71ec3aa704702fc2daa3))
+
 - **opengrep**: The IPAM sync job catches OSError, not RequestException
   ([`9f8890c`](https://github.com/marcinpsk/netbox-kea/commit/9f8890c63f4417e3144aada3e8414768625e9b86))
 
@@ -111,6 +120,9 @@ forked, and predate its conventional-commit history.
 
 - ADR 0006, README and CONTEXT describe the marker and owner rules as built
   ([`6f70b16`](https://github.com/marcinpsk/netbox-kea/commit/6f70b16576d863b5cf015a6cad878560c91c921b))
+
+- Generate IPAM ownership upgrade notes
+  ([`6fbd846`](https://github.com/marcinpsk/netbox-kea/commit/6fbd8468bc736f51512fdc63c4a36982b8566a63))
 
 - IPAM Ownership links stay in main, and a branch delete that reaches one is refused
   ([`95bce1c`](https://github.com/marcinpsk/netbox-kea/commit/95bce1cd366577cb31c4f27edab566385c16ca93))
@@ -150,13 +162,16 @@ forked, and predate its conventional-commit history.
   ([`1f84f4d`](https://github.com/marcinpsk/netbox-kea/commit/1f84f4dc0c68bba67205489a4234728abe5ee7bf))
 
 - Adopt IPAM rows and remove legacy sync paths
-  ([`216915f`](https://github.com/marcinpsk/netbox-kea/commit/216915fbf0dee1f8ccba5bc0a4df4ac65d87d66b))
+  ([`b3f82c7`](https://github.com/marcinpsk/netbox-kea/commit/b3f82c71b3f9689339013a5fbf1107090b7c5611))
 
 - Claim DHCP import IPAM ownership
   ([`ce8826f`](https://github.com/marcinpsk/netbox-kea/commit/ce8826fd7c2252720361030034da119707be9b7e))
 
 - Drop Marker.note, which only tests read
   ([`eec09fb`](https://github.com/marcinpsk/netbox-kea/commit/eec09fb6f66a9bcbc0708f76572ec714438ee84a))
+
+- Remove obsolete claim guards and verify upgrade states
+  ([`1c8c571`](https://github.com/marcinpsk/netbox-kea/commit/1c8c571500656d45b37b8cd71dcc3ed31af4d46a))
 
 - Run bulk Reservation Sync through reconciliation
   ([`4a23238`](https://github.com/marcinpsk/netbox-kea/commit/4a23238be5804000b29dfd9ef994337f5681912d))
@@ -180,18 +195,6 @@ forked, and predate its conventional-commit history.
 
 - **ui**: The browser cleanup finds its NetBox IP by the sync marker
   ([`8229a76`](https://github.com/marcinpsk/netbox-kea/commit/8229a765f325292ee5c54a428418e673597f37c0))
-
-### Additional Release Information
-
-- `stale_ip_cleanup = "remove"` now removes expired leases, deleted Reservations and hostless leases
-  after their last ownership link becomes stale. On upgrade, it removes only lease rows that expire
-  after adoption. Rows already stale get no owner and stay unowned and counted.
-
-- When every configured Server uses the same non-global sync_vrf, an unowned global marker address
-  moves into it with its primary key and changelog intact. An existing owner or destination
-  collision prevents the move. Mixed VRFs keep the global row. The read-only
-  Server.ipam_first_complete_at field records initial completion across enabled job and DHCP import
-  observations.
 
 
 ## v1.12.0 (2026-10-01)
