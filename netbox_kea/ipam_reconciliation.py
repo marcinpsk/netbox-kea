@@ -468,14 +468,14 @@ def _adoption_waits(link: IPAMOwnershipLink, object_field: str, pending: set[tup
     return link.adopted and (link.family, object_field) in pending
 
 
-def _cleanup_link(pk: int) -> IPAMOwnershipLink | None:
-    """Lock the link before policy writes, so a Server cascade cannot reverse the lock order."""
-    link = IPAMOwnershipLink.objects.select_for_update().filter(pk=pk).first()
-    if link is not None and link.adopted:
-        with connection.cursor() as cursor:
-            # Table locks also cover new Servers and bulk configuration updates.
-            cursor.execute("LOCK TABLE netbox_kea_server, netbox_kea_syncconfig IN SHARE MODE")
-    return link
+def _cleanup_adoption_waits(link: IPAMOwnershipLink, object_field: str) -> bool:
+    """Freeze policy for a final adopted link whose row the cleanup already locked."""
+    if not link.adopted:
+        return False
+    with connection.cursor() as cursor:
+        # Table locks also cover new Servers and bulk configuration updates.
+        cursor.execute("LOCK TABLE netbox_kea_server, netbox_kea_syncconfig IN SHARE MODE")
+    return _adoption_waits(link, object_field, _pending_adoptions())
 
 
 def upgrade_counts() -> SyncReport:
@@ -1230,7 +1230,7 @@ def _remove_stale_link(
     """Decide one stale link under the identity lock and the row lock of its object."""
     _lock_identity(stale.vrf_id, stale.address)
     ip = IPAddress.objects.select_for_update().filter(pk=stale.ip_pk).first()
-    link = _cleanup_link(stale.pk)
+    link = IPAMOwnershipLink.objects.select_for_update().filter(pk=stale.pk).first()
     if ip is None or link is None or link.confirmation >= cutoff:
         return "kept"
     if (ip.vrf_id, _host(ip.address)) != (stale.vrf_id, stale.address):
@@ -1250,7 +1250,7 @@ def _remove_stale_link(
             # On a conflict the link stays, so the status still matches the links and the next run tries again.
             link.delete()
         return outcome
-    if link.adopted and _adoption_waits(link, "ip_address", _pending_adoptions()):
+    if _cleanup_adoption_waits(link, "ip_address"):
         return "waiting"
     if mode == "none" or ip.pk in referenced:
         link.delete()
@@ -1425,7 +1425,7 @@ def _remove_stale_network_link(candidate: IPAMOwnershipLink, field_name: str, cu
     address = str(obj.prefix) if field_name == "prefix" else f"{_host(obj.start_address)} - {_host(obj.end_address)}"
     _lock_network(obj.vrf_id, candidate.source, address)
     locked = type(obj).objects.select_for_update().filter(pk=obj.pk).first()
-    link = _cleanup_link(candidate.pk)
+    link = IPAMOwnershipLink.objects.select_for_update().filter(pk=candidate.pk).first()
     if locked is None or link is None or link.confirmation >= cutoff:
         return "kept"
     current_address = (
@@ -1455,7 +1455,7 @@ def _remove_stale_network_link(candidate: IPAMOwnershipLink, field_name: str, cu
                 locked.save()
         link.delete()
         return "updated" if changed else "unlinked"
-    if link.adopted and _adoption_waits(link, field_name, _pending_adoptions()):
+    if _cleanup_adoption_waits(link, field_name):
         return "waiting"
     referenced = (
         dhcp_plugin.sys4_referenced_prefix_ids()
