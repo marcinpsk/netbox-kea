@@ -1652,6 +1652,52 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
         self.assertEqual((link.server_id, link.family, link.source), (self.server.pk, 4, "lease"))
         self.assertEqual(link.facts, {"hostname": "newlease.example.com", "prefix_length": 24})
 
+    @override_settings(PLUGINS_CONFIG=plugins_config(stale_ip_cleanup="remove"))
+    def test_lease_add_preserves_reserved_siblings_and_their_ownership(self):
+        from netbox_kea.models import IPAMOwnershipLink, next_confirmation_number
+
+        siblings = [
+            NbIP.objects.create(
+                address=f"198.18.0.{number}/24",
+                status="reserved",
+                dns_name="same.example.invalid",
+                description="[kea-sync: reservation] retain operator note",
+            )
+            for number in (20, 21)
+        ]
+        IPAMOwnershipLink.objects.create(
+            confirmation=next_confirmation_number(),
+            server=self.server,
+            family=4,
+            source="reservation",
+            ip_address=siblings[0],
+            facts={"hostname": "same.example.invalid", "prefix_length": 24},
+        )
+        sibling_ids = [row.pk for row in siblings]
+        before_rows = list(NbIP.objects.filter(pk__in=sibling_ids).order_by("pk").values())
+        before_links = list(IPAMOwnershipLink.objects.filter(ip_address_id__in=sibling_ids).order_by("pk").values())
+        data = self._post4(sync=True)
+        data.update(ip_address="198.18.0.22", hostname="same.example.invalid")
+        with _lease_stub(
+            {
+                "lease4-add": {"result": 0},
+                "subnet4-list": _subnet_list(4, [{"id": 1, "subnet": "198.18.0.0/24"}]),
+            }
+        ) as kea:
+            response = self.client.post(self._url(version=4), data)
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(kea.commands().count("lease4-add"), 1)
+        self.assertTrue(
+            IPAMOwnershipLink.objects.filter(
+                server=self.server, source="lease", ip_address__address__net_host="198.18.0.22"
+            ).exists()
+        )
+        self.assertEqual(list(NbIP.objects.filter(pk__in=sibling_ids).order_by("pk").values()), before_rows)
+        self.assertEqual(
+            list(IPAMOwnershipLink.objects.filter(ip_address_id__in=sibling_ids).order_by("pk").values()),
+            before_links,
+        )
+
     def test_optional_subnet_add_uses_the_created_lease_facts(self):
         from ipam.models import VRF
 

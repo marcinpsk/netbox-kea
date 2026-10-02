@@ -137,6 +137,14 @@ class Server(JobsMixin, NetBoxModel):
             "Enable if connecting via kea-ctrl-agent. Disable when connecting directly to DHCP daemon endpoints."
         ),
     )
+    ipam_first_complete_at: models.DateTimeField = models.DateTimeField(
+        null=True,
+        blank=True,
+        editable=False,
+        help_text="When every enabled IPAM workflow first completed its initial observation.",
+    )
+    ipam_initial_observations: models.JSONField = models.JSONField(default=dict, editable=False)
+
     sync_enabled = models.BooleanField(
         verbose_name="IPAM Sync Enabled",
         default=True,
@@ -577,6 +585,7 @@ class IPAMOwnershipLink(models.Model):
     confirmation: models.BigIntegerField = models.BigIntegerField(
         help_text="The confirmation sequence number that a run took when it last confirmed the link.",
     )
+    adopted: models.BooleanField = models.BooleanField(default=False)
     stale_mark: models.BigIntegerField = models.BigIntegerField(
         null=True,
         blank=True,

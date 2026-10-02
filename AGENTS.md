@@ -158,7 +158,7 @@ URL request
       sync_jobs.py      (jobs tab, periodic sync management, SyncConfig admin)
   → config_write.py     (Configuration Changes: typed outcome, advisory lock, persist step)
   → kea.py              (HTTP POST to each daemon's / control socket)
-  → sync.py             (bridges Kea data to NetBox IPAM)
+  → sync.py             (read-only IPAM badges and DCIM MAC synchronization)
   → ipam_reconciliation.py (IPAM Ownership links, stale cleanup, per-row savepoints; ADR 0006)
   → ipam_marker.py     (the `[kea-sync: <kind>]` description marker: parse, rewrite, legacy text; ADR 0006)
   → jobs.py             (KeaIpamSyncJob — periodic background sync)
@@ -168,7 +168,7 @@ URL request
 
 ### Core components
 
-- **`Server` model** (`models.py`): the only persisted model. Stores connection
+- **`Server` model** (`models.py`): stores connection
   config: `ca_url` (default/fallback endpoint), optional per-protocol `dhcp4_url` /
   `dhcp6_url` (dual-URL mode), CA and per-protocol credentials, TLS fields
   (`ssl_verify`, `ca_file_path`, `client_cert_path`, `client_key_path`),
@@ -198,18 +198,20 @@ URL request
   argument only when the server is fronted by a Control Agent
   (`send_service = has_control_agent`); a direct daemon drops it, because Kea 3.2.0+
   rejects a `service` that does not match the daemon the request lands on.
-- **`sync.py`**: bridges Kea data to NetBox IPAM — `sync_lease_to_netbox()`,
-  `sync_reservation_to_netbox()`, `cleanup_stale_ips_batch()` (grouped by
-  `(hostname, address_family)`). Raises `DuplicateNetBoxRowsError` when more than one
-  NetBox Prefix or IP Range matches one Kea Subnet or Pool.
+- **`sync.py`**: reads IPAM rows for synchronization badges and synchronizes DCIM MAC addresses.
+  IPAM creation, status changes and cleanup belong to `ipam_reconciliation.py`.
 - **`ipam_reconciliation.py`**: `reconcile(server, family, phases) -> SyncReport` (ADR 0006). The job's
   lease, Reservation, Subnet and Pool phases run through it: it links each reported IPAM object in `Server.sync_vrf` under
   an advisory lock on the identity and a row lock, the status comes from the live links, and a complete
   phase removes its own stale links. The last link of a Server goes only when the call ran a complete lease
   and Reservation phase; the last link of an IP address follows `stale_ip_cleanup`. A complete Subnet or Pool phase
   drops its own stale links; `Server.sync_deprecate_prefixes_and_ranges` opts in to deprecation, never deletion.
-  `read_catalogue` pairs the shared snapshot with a cutoff taken before its request. The other callers still use
-  `sync.py` until #211 to #214, and the old cleanup skips every IP address with an ownership link.
+  `read_catalogue` pairs the shared snapshot with a cutoff taken before its request. Per-row actions use
+  `claim`, which never cleans up. Adoption preserves legacy object identities and marks their links.
+  Complete whole-workflow job and DHCP import receipts protect each adopted object's last link until all
+  relevant enabled owners have observed their sources. `Server.ipam_first_complete_at` records the initial
+  completion time. Internal scoped receipts protect newly enabled sources after that time.
+  Read `docs/design/ipam-upgrade-adoption.md` when changing adoption, completion receipts or upgrade cleanup.
 - **`jobs.py`**: `KeaIpamSyncJob` (`@system_job`). Iterates all `Server` objects,
   runs subnet/lease/reservation/prefix/range sync phases, writes a per-server
   summary to the job log.

@@ -76,6 +76,7 @@ class ServerSerializer(NetBoxModelSerializer):
             "sync_deprecate_prefixes_and_ranges",
             "sync_dhcp_plugin_enabled",
             "sync_vrf",
+            "ipam_first_complete_at",
             "url",
             "display",
             "tags",

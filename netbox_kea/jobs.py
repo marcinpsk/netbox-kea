@@ -25,12 +25,11 @@ if TYPE_CHECKING:
     from .models import Server
 
 # Runtime imports: get_type_hints() resolves this module's annotations, so a
-# TYPE_CHECKING-only Family or DuplicateNetBoxRowsError would raise NameError.
+# TYPE_CHECKING-only Family or SyncReport would raise NameError.
 from . import branching
 from .constants import Family
+from .ipam_reconciliation import SyncReport, complete_job_observation, upgrade_counts
 from .plugin_settings import plugin_setting
-from .reservations import Reservation
-from .sync import DuplicateNetBoxRowsError
 
 logger = logging.getLogger(__name__)
 
@@ -50,25 +49,8 @@ def _sync_one_server(
     sync_prefixes: bool,
     sync_ip_ranges: bool,
     max_leases: int,
-    stats: dict[str, int],
-    *,
-    conflict_ips: set[str],
-    disagreement_ips: set[str],
-    duplicates: list[DuplicateNetBoxRowsError],
-) -> None:
-    """Sync a single server's leases, reservations, prefixes, and IP ranges.
-
-    The lease, Reservation, Subnet and Pool phases of each family run in one ``reconcile`` call (ADR 0006).
-
-    *conflict_ips* is a caller-owned set that collects the NetBox IPAM objects this run refused to change, so the caller can
-    name them in the job summary. One set per server, shared by both phases and both IP versions: a foreign IP that
-    has *both* a lease and a reservation is one conflict for the operator to resolve, not two.
-
-    *disagreement_ips* collects the IPAM objects whose owners report different facts (ADR 0006).
-
-    *duplicates* is a caller-owned list that collects the Kea subnets and
-    pools that match more than one NetBox row, so the caller can name them.
-    """
+) -> SyncReport:
+    """Reconcile every enabled family and publish completion from the whole run."""
     from .ipam_reconciliation import (
         LeasePhase,
         Phase,
@@ -78,17 +60,11 @@ def _sync_one_server(
         read_catalogue,
         reconcile,
     )
-    from .sync import cleanup_stale_ips_batch
 
+    combined = SyncReport()
     if not any((sync_leases, sync_reservations, sync_prefixes, sync_ip_ranges)):
-        return
-
-    all_synced: list[dict | Reservation] = []
-    # Records the job deliberately did not write, whose addresses cleanup must keep.
-    protected: list[dict | Reservation] = []
-    # The old stale cleanup is only safe when both sources contributed, otherwise it
-    # could remove IPs that exist in the source the run did not read.
-    cleanup_safe = sync_leases and sync_reservations
+        return combined
+    reports: dict[Family, SyncReport] = {}
     versions: tuple[tuple[Family, bool], ...] = ((4, server.dhcp4), (6, server.dhcp6))
     for version, enabled in versions:
         if not enabled:
@@ -119,54 +95,35 @@ def _sync_one_server(
             phases.append(SubnetPhase(observation))
         if sync_ip_ranges:
             phases.append(PoolPhase(observation))
-        if phases:
-            report = reconcile(server, version, phases)
-            stats["created"] += report.created
-            stats["updated"] += report.updated
-            stats["errors"] += report.errors
-            stats["prefix_errors"] += report.prefix_errors
-            duplicates.extend(report.duplicates)
-            stats["skipped"] += len(report.skipped_reservations)
-            conflict_ips.update(report.conflicts)
-            disagreement_ips.update(report.disagreements)
-            # Until #214 the old stale cleanup reads the reported records too; it never touches a linked row.
-            all_synced.extend(report.lease_records)
-            all_synced.extend(report.reservation_records)
-            protected.extend(report.skipped_reservations)
-            cleanup_safe &= report.complete
+        reports[version] = reconcile(server, version, phases)
+        combined.merge(reports[version])
 
-    stats["conflicts"] = len(conflict_ips)
-    stats["disagreements"] = len(disagreement_ips)
-    if disagreement_ips:
-        sample = sorted(disagreement_ips)[:_CONFLICT_SAMPLE_SIZE]
+    complete_job_observation(server, reports)
+    counts = upgrade_counts()
+    combined.waiting_objects = counts.waiting_objects
+    combined.unowned_objects = counts.unowned_objects
+
+    if combined.disagreements:
+        sample = sorted(combined.disagreements)[:_CONFLICT_SAMPLE_SIZE]
         logger.warning(
             "Server %s: %d NetBox IPAM object(s) keep their facts because their owners report different facts; first %d: %s",
             server.name,
-            len(disagreement_ips),
+            len(combined.disagreements),
             len(sample),
             ", ".join(sample),
         )
-    if conflict_ips:
-        sample = sorted(conflict_ips)[:_CONFLICT_SAMPLE_SIZE]
+    if combined.conflicts:
+        sample = sorted(combined.conflicts)[:_CONFLICT_SAMPLE_SIZE]
         logger.warning(
             "Server %s: %d NetBox IPAM object(s) left untouched: the description does not start with the sync marker,"
             " or the new marker and the note do not fit; first %d: %s",
             server.name,
-            len(conflict_ips),
+            len(combined.conflicts),
             len(sample),
             ", ".join(sample),
         )
 
-    if all_synced and stats["errors"] == 0 and cleanup_safe:
-        cleanup_stale_ips_batch(all_synced, protected)
-    elif all_synced:
-        logger.warning(
-            "Server %s: skipping stale-IP cleanup (errors=%d, prefix_errors=%d, cleanup_safe=%s)",
-            server.name,
-            stats["errors"],
-            stats.get("prefix_errors", 0),
-            cleanup_safe,
-        )
+    return combined
 
 
 @system_job(interval=_DEFAULT_INTERVAL)
@@ -312,19 +269,12 @@ class KeaIpamSyncJob(JobRunner):
             servers = list(server_qs)
 
             if not servers:
-                self.logger.info("No Kea servers configured — nothing to sync.")
-                return
+                self.logger.info("No Kea servers configured. Count unowned IPAM objects.")
 
             self.logger.info(f"Starting Kea IPAM sync for {len(servers)} server(s).")
-            total: dict[str, int] = {
-                "created": 0,
-                "updated": 0,
-                "errors": 0,
-                "prefix_errors": 0,
-                "conflicts": 0,
-                "disagreements": 0,
-                "skipped": 0,
-            }
+            total = SyncReport()
+            total_conflicts = 0
+            total_disagreements = 0
 
             for server in servers:
                 # In Run Now mode (server_pk provided), honour the explicit selection
@@ -340,78 +290,69 @@ class KeaIpamSyncJob(JobRunner):
                 effective_ip_ranges = sync_ip_ranges and server.sync_ip_ranges_enabled
 
                 self.logger.debug(f"Syncing server: {server.name} (pk={server.pk})")
-                server_stats: dict[str, int] = {
-                    "created": 0,
-                    "updated": 0,
-                    "errors": 0,
-                    "prefix_errors": 0,
-                    "conflicts": 0,
-                    "disagreements": 0,
-                    "skipped": 0,
-                }
-                # Foreign NetBox IPs this server refused to overwrite, deduplicated
-                # across the lease and reservation phases and both IP versions.
-                conflict_ips: set[str] = set()
-                disagreement_ips: set[str] = set()
-                duplicates: list[DuplicateNetBoxRowsError] = []
+                report = SyncReport()
 
                 try:
-                    _sync_one_server(
+                    report = _sync_one_server(
                         server,
                         effective_leases,
                         effective_reservations,
                         effective_prefixes,
                         effective_ip_ranges,
                         max_leases,
-                        server_stats,
-                        conflict_ips=conflict_ips,
-                        disagreement_ips=disagreement_ips,
-                        duplicates=duplicates,
                     )
                 except Exception:
                     self.logger.exception(f"Unhandled error syncing server {server.name}; see server logs")
-                    server_stats["errors"] += 1
+                    report.errors += 1
 
                 self.logger.info(
-                    f"Server {server.name}: created={server_stats['created']}"
-                    f" updated={server_stats['updated']} errors={server_stats['errors']}"
-                    f" prefix_errors={server_stats['prefix_errors']}"
-                    f" conflicts={server_stats['conflicts']}"
-                    f" disagreements={server_stats['disagreements']}"
-                    f" skipped={server_stats['skipped']}"
+                    f"Server {server.name}: created={report.created}"
+                    f" updated={report.updated} errors={report.errors}"
+                    f" prefix_errors={report.prefix_errors}"
+                    f" conflicts={len(report.conflicts)}"
+                    f" disagreements={len(report.disagreements)}"
+                    f" skipped={len(report.skipped_reservations)}"
+                    f" unowned={report.unowned} waiting={report.waiting}"
                 )
                 # No row pks here: the list URL applies the viewer's own IPAM permissions.
-                for dup in duplicates:
+                for dup in report.duplicates:
                     self.logger.error(
                         f"Server {server.name}: Kea {dup.kea_object} matches duplicate NetBox {dup.rows};"
                         f" the sync leaves them unchanged. Review them at {dup.list_url}"
                     )
-                for key in total:
-                    total[key] += server_stats.get(key, 0)
+                total.merge(report)
+                total_conflicts += len(report.conflicts)
+                total_disagreements += len(report.disagreements)
 
                 summary.append(
                     {
                         "name": server.name,
                         "pk": server.pk,
-                        "created": server_stats["created"],
-                        "updated": server_stats["updated"],
-                        "errors": server_stats["errors"],
-                        "prefix_errors": server_stats["prefix_errors"],
-                        "conflicts": server_stats["conflicts"],
-                        "conflict_sample": sorted(conflict_ips)[:_CONFLICT_SAMPLE_SIZE],
-                        "conflicts_truncated": max(0, len(conflict_ips) - _CONFLICT_SAMPLE_SIZE),
-                        "disagreements": server_stats["disagreements"],
-                        "skipped": server_stats["skipped"],
+                        "created": report.created,
+                        "updated": report.updated,
+                        "errors": report.errors,
+                        "prefix_errors": report.prefix_errors,
+                        "conflicts": len(report.conflicts),
+                        "conflict_sample": sorted(report.conflicts)[:_CONFLICT_SAMPLE_SIZE],
+                        "conflicts_truncated": max(0, len(report.conflicts) - _CONFLICT_SAMPLE_SIZE),
+                        "disagreements": len(report.disagreements),
+                        "skipped": len(report.skipped_reservations),
+                        "unowned": report.unowned,
+                        "waiting": report.waiting,
                     }
                 )
 
+            counts = upgrade_counts()
+            total.unowned_objects = counts.unowned_objects
+            total.waiting_objects = counts.waiting_objects
             self.logger.info(
                 f"Kea IPAM sync complete — servers={len(summary)}"
-                f" created={total['created']} updated={total['updated']}"
-                f" errors={total['errors']} prefix_errors={total['prefix_errors']}"
-                f" conflicts={total['conflicts']} disagreements={total['disagreements']} skipped={total['skipped']}"
+                f" created={total.created} updated={total.updated}"
+                f" errors={total.errors} prefix_errors={total.prefix_errors}"
+                f" conflicts={total_conflicts} disagreements={total_disagreements} skipped={len(total.skipped_reservations)}"
+                f" unowned={total.unowned} waiting={total.waiting}"
             )
-            if total["errors"] > 0 or total["prefix_errors"] > 0:
+            if total.errors > 0 or total.prefix_errors > 0:
                 raise JobFailed
         finally:
             if not isinstance(self.job.data, dict):
