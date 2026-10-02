@@ -106,6 +106,30 @@ class _SyncViewBase(TestCase):
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestMalformedLeaseSyncView(_SyncViewBase):
+    def test_nonstring_hostname_returns_a_generic_error_without_claiming(self):
+        for family, address, network in ((4, "198.18.0.10", "198.18.0.0/24"), (6, "2001:db8::10", "2001:db8::/64")):
+            for hostname in (42, True, [], {"private diagnostic": "hostname"}):
+                with (
+                    self.subTest(family=family, hostname=hostname),
+                    stub_kea(
+                        {
+                            **_catalogue_responses(family, 1, network),
+                            f"lease{family}-get": _lease_get(hostname),
+                        }
+                    ),
+                ):
+                    response = self.client.post(
+                        reverse(f"plugins:netbox_kea:server_lease{family}_sync", args=[self.server.pk]),
+                        {"ip_address": address},
+                    )
+                    self.assertEqual(response.status_code, 500)
+                    self.assertEqual(response.content, b"Sync error: see server logs for details.")
+                    self.assertFalse(NbIP.objects.exists())
+                    self.assertFalse(IPAMOwnershipLink.objects.exists())
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestLease4SyncView(_SyncViewBase):
     """POST to server_lease4_sync creates/updates a NetBox IPAddress."""
 

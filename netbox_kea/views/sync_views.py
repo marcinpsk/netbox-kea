@@ -68,7 +68,7 @@ class _BaseSyncView(ConditionalLoginRequiredMixin, View):
             outcome = next(iter(result.addresses.values()))
             if outcome.outcome == "error":
                 return HttpResponse("Sync error: see server logs for details.", status=500)
-        except (CatalogueUnavailable, ValueError, IntegrityError, ValidationError, OperationalError, ProgrammingError):
+        except (RuntimeError, ValueError, IntegrityError, ValidationError, OperationalError, ProgrammingError):
             logger.exception("Sync error for ip=%s", ip_str)
             return HttpResponse("Sync error: see server logs for details.", status=500)
 
