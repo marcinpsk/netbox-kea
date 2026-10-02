@@ -12,6 +12,7 @@ from pathlib import Path
 
 from django.apps import apps
 from django.db import connection
+from django.db.models.signals import post_save
 from django.test import SimpleTestCase, TestCase, override_settings
 from ipam.models import VRF, IPAddress, IPRange, Prefix
 from netaddr import IPNetwork
@@ -57,6 +58,71 @@ class ImportOwnershipTest(TestCase):
 
     def delegated(self):
         return Prefix.objects.get(prefix=self.network)
+
+    def test_shared_subnet_and_delegated_prefix_keeps_marker_and_repeat_import_is_unchanged(self):
+        self.network = self.config["subnet6"][0]["subnet"]
+        hosts = [{**self.identity, "prefixes": [self.network]}]
+        first = self.import_hosts(hosts)
+        prefix = self.delegated()
+        self.assertEqual(first.errors, 0, first.warnings)
+        self.assertEqual(prefix.description, "[kea-sync: subnet]")
+        self.assertEqual(
+            set(IPAMOwnershipLink.objects.filter(prefix=prefix).values_list("source", flat=True)),
+            {"subnet", "delegated-prefix"},
+        )
+        before = Prefix.objects.values().get(pk=prefix.pk)
+        second = self.import_hosts(hosts)
+        self.assertEqual(second.errors, 0, second.warnings)
+        self.assertEqual(Prefix.objects.values().get(pk=prefix.pk), before)
+
+    def test_delegated_writer_ignores_subnet_links_without_live_facts(self):
+        for state in ("stale", "factless"):
+            with self.subTest(state=state):
+                self.network = "2001:db8:100::/56" if state == "stale" else "2001:db8:200::/56"
+                claim(self.server, 6, [SubnetClaim(ipaddress.ip_network(self.network))], force=False)
+                link = IPAMOwnershipLink.objects.get(prefix=self.delegated(), source="subnet")
+                if state == "stale":
+                    link.stale_mark = next_confirmation_number()
+                else:
+                    link.facts = None
+                link.save()
+                summary = self.import_hosts([{**self.identity, "prefixes": [self.network]}])
+                self.assertEqual(summary.errors, 0, summary.warnings)
+                self.assertEqual(self.delegated().description, "[kea-sync: delegated prefix]")
+
+    def test_delegated_cleanup_preserves_live_subnet_marker(self):
+        self.network = self.config["subnet6"][0]["subnet"]
+        self.import_hosts([{**self.identity, "prefixes": [self.network]}])
+        summary = self.import_hosts([self.identity])
+        self.assertEqual(summary.errors, 0, summary.warnings)
+        self.assertEqual(self.delegated().description, "[kea-sync: subnet]")
+        self.assertEqual(
+            list(IPAMOwnershipLink.objects.filter(prefix=self.delegated()).values_list("source", flat=True)), ["subnet"]
+        )
+
+    def test_curated_delegated_prefix_is_attached_unchanged_and_warns(self):
+        prefix = Prefix.objects.create(prefix=self.network, description="Operator delegation")
+        before = Prefix.objects.values().get(pk=prefix.pk)
+        summary = self.import_hosts([{**self.identity, "prefixes": [self.network]}])
+        self.assertEqual(summary.errors, 0, summary.warnings)
+        self.assertEqual(Prefix.objects.values().get(pk=prefix.pk), before)
+        self.assertFalse(IPAMOwnershipLink.objects.filter(prefix=prefix).exists())
+        self.assertTrue(
+            apps.get_model("netbox_dhcp", "HostReservation").objects.get().ipv6_prefixes.filter(pk=prefix.pk).exists()
+        )
+        self.assertIn(
+            f"delegated prefix {self.network}: IPAM ownership conflict, Prefix left unchanged", summary.warnings
+        )
+
+    def test_duplicate_subnet_prefix_reports_error_and_imports_healthy_sibling(self):
+        network = self.config["subnet6"][0]["subnet"]
+        Prefix.objects.create(prefix=network)
+        Prefix.objects.create(prefix=network)
+        self.config["subnet6"].append({"id": 2, "subnet": "2001:db8:2::/64"})
+        summary = self.import_hosts([])
+        self.assertEqual((summary.errors, summary.subnets_created), (1, 1))
+        self.assertEqual(str(apps.get_model("netbox_dhcp", "Subnet").objects.get().prefix.prefix), "2001:db8:2::/64")
+        self.assertFalse(IPAMOwnershipLink.objects.filter(prefix__prefix=network).exists())
 
     def test_snapshot_disagreement_creates_no_address_and_reports_one_object(self):
         self.config["subnet6"].append({"id": 2, "subnet": "2001:db8:1::/80"})
@@ -280,6 +346,98 @@ class ImportOwnershipTest(TestCase):
         self.assertFalse(IPAddress.objects.filter(address__net_host="2001:db8:1::10").exists())
         self.assertTrue(IPAMOwnershipLink.objects.filter(ip_address__address__net_host="2001:db8:1::11").exists())
 
+    def test_mac_duplicate_after_claim_does_not_repeat_lookup_during_attachment(self):
+        from dcim.models import MACAddress
+
+        hardware = "aa:bb:cc:00:00:01"
+        claimed = []
+
+        def duplicate_after_create(sender, instance, created, **kwargs):
+            if created and not claimed:
+                claimed.append(instance.pk)
+                MACAddress.objects.create(mac_address=instance.mac_address)
+
+        post_save.connect(duplicate_after_create, sender=MACAddress)
+        try:
+            summary = self.import_hosts(
+                [
+                    {"subnet-id": 1, "hw-address": hardware, "ip-addresses": ["2001:db8:1::10"]},
+                    {**self.identity, "ip-addresses": ["2001:db8:1::11"]},
+                ]
+            )
+        finally:
+            post_save.disconnect(duplicate_after_create, sender=MACAddress)
+        self.assertEqual(MACAddress.objects.filter(mac_address=hardware).count(), 2)
+        self.assertEqual((summary.errors, summary.reservations_created), (0, 2), summary.warnings)
+        reservation = apps.get_model("netbox_dhcp", "HostReservation").objects.get(hw_address_id=claimed[0])
+        self.assertEqual(str(reservation.ipv6_addresses.get().address), "2001:db8:1::10/64")
+        self.assertEqual(IPAMOwnershipLink.objects.filter(source="reservation").count(), 2)
+
+    def test_shared_address_returns_each_hardware_and_hostname_pair(self):
+        from dcim.models import MACAddress
+
+        hosts = [
+            {
+                "subnet-id": 1,
+                "hw-address": "AA:BB:CC:00:00:01",
+                "hostname": "first.example",
+                "ip-addresses": ["2001:db8:1::10"],
+            },
+            {
+                "subnet-id": 1,
+                "hw-address": "aa:bb:cc:00:00:02",
+                "hostname": "second.example",
+                "ip-addresses": ["2001:db8:1::10"],
+            },
+            {
+                "subnet-id": 1,
+                "hw-address": "aa:bb:cc:00:00:01",
+                "hostname": "third.example",
+                "ip-addresses": ["2001:db8:1::11"],
+            },
+        ]
+        observation = _reservation_snapshot(self.config, 6, hosts)
+        result = claim(self.server, 6, observation.snapshot.records, force=False)
+        first = result.addresses["2001:db8:1::10"]
+        self.assertEqual(
+            set(first.resolved_macs), {("aa:bb:cc:00:00:01", "first.example"), ("aa:bb:cc:00:00:02", "second.example")}
+        )
+        for (hardware, hostname), mac in first.resolved_macs.items():
+            self.assertEqual(mac.pk, MACAddress.objects.get(mac_address=hardware).pk)
+            self.assertIn(hostname, mac.description)
+        third = result.addresses["2001:db8:1::11"]
+        self.assertEqual(set(third.resolved_macs), {("aa:bb:cc:00:00:01", "third.example")})
+        self.assertIn("third.example", next(iter(third.resolved_macs.values())).description)
+
+    def test_multiaddress_mac_failure_is_not_hidden_by_an_earlier_resolved_mac(self):
+        from dcim.models import MACAddress
+
+        hardware = "aa:bb:cc:00:00:01"
+        claimed = []
+
+        def duplicate_after_create(sender, instance, created, **kwargs):
+            if created and not claimed:
+                claimed.append(instance.pk)
+                MACAddress.objects.create(mac_address=instance.mac_address)
+
+        post_save.connect(duplicate_after_create, sender=MACAddress)
+        try:
+            summary = self.import_hosts(
+                [
+                    {"subnet-id": 1, "hw-address": hardware, "ip-addresses": ["2001:db8:1::10", "2001:db8:1::11"]},
+                    {**self.identity, "ip-addresses": ["2001:db8:1::12"]},
+                ]
+            )
+        finally:
+            post_save.disconnect(duplicate_after_create, sender=MACAddress)
+        self.assertEqual((summary.errors, summary.reservations_created), (1, 1), summary.warnings)
+        self.assertFalse(
+            apps.get_model("netbox_dhcp", "HostReservation").objects.filter(hw_address_id=claimed[0]).exists()
+        )
+        self.assertTrue(IPAMOwnershipLink.objects.filter(ip_address__address__net_host="2001:db8:1::10").exists())
+        self.assertFalse(IPAddress.objects.filter(address__net_host="2001:db8:1::11").exists())
+        self.assertTrue(IPAMOwnershipLink.objects.filter(ip_address__address__net_host="2001:db8:1::12").exists())
+
     def test_curated_prefix_and_range_are_attached_without_changes_and_reported(self):
         prefix = Prefix.objects.create(prefix="2001:db8:1::/64", description="Operator prefix")
         ip_range = IPRange.objects.create(
@@ -314,6 +472,26 @@ class ImportOwnershipTest(TestCase):
 
 @override_settings(PLUGINS_CONFIG=plugins_config())
 class TypedNetworkClaimTest(TestCase):
+    def test_pool_outside_claimed_subnet_fails_before_writing(self):
+        server = _make_db_server()
+        network = ipaddress.ip_network("198.18.0.0/24")
+        pool = parse_pool("198.18.1.10-198.18.1.20", ipaddress.ip_network("198.18.1.0/24"))
+        with self.assertRaisesMessage(ValueError, "Pool must be contained"):
+            claim(server, 4, [PoolClaim(pool, network)], force=False)
+        self.assertFalse(IPRange.objects.exists())
+        self.assertFalse(IPAMOwnershipLink.objects.exists())
+
+    def test_shared_pool_with_different_subnet_lengths_reports_disagreement(self):
+        server = _make_db_server()
+        network = ipaddress.ip_network("198.18.0.0/24")
+        pool = parse_pool("198.18.0.10-198.18.0.20", network)
+        result = claim(
+            server, 4, [PoolClaim(pool, network), PoolClaim(pool, ipaddress.ip_network("198.18.0.0/25"))], force=False
+        )
+        self.assertEqual(result.ranges["198.18.0.10 - 198.18.0.20"].outcome, "disagreement")
+        self.assertFalse(IPRange.objects.exists())
+        self.assertFalse(IPAMOwnershipLink.objects.exists())
+
     def test_wrong_network_family_fails_before_writing(self):
         server = _make_db_server()
         with self.assertRaisesMessage(ValueError, "network does not match"):
