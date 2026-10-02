@@ -332,8 +332,9 @@ The `Kea IPAM Sync` job runs automatically when `rqworker` is active:
      and the sync keeps it. To release an address from the sync, remove the marker or move it away from the start.
 4. Cleans up stale IPs (configurable via `stale_ip_cleanup`). A server's lease or reservation that Kea no longer
    reports loses its link. When the last link of every server to an address goes, `stale_ip_cleanup` applies, but
-   only after a run in which both the lease and the reservation sync completed. When either one is disabled or
-   fails, the address stays and a later run decides.
+   only after a complete lease sync and a complete reservation sync. If the server disables reservation sync,
+   a complete lease sync is sufficient. An unavailable `host_cmds` hook leaves the reservation source incomplete,
+   because config-file reservations can still exist. Failed or truncated lease reads keep their stale links.
 5. Links Subnets to Prefixes and Pools to IP Ranges in the server's `sync_vrf`. A complete Subnet or Pool phase
    drops its own stale links. These objects stay unchanged by default and are never deleted. The server that drops
    the last link can opt in to deprecation with `sync_deprecate_prefixes_and_ranges`. A deprecated object's last link

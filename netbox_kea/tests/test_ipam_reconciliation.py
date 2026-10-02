@@ -240,6 +240,159 @@ class JobLeasePhaseOwnershipTest(TestCase):
         self.assertEqual(summary["errors"], 0)
 
 
+@override_settings(PLUGINS_CONFIG=_config("remove"))
+class JobDisabledReservationCleanupTest(TestCase):
+    """A complete lease snapshot can finish cleanup when the Server disables Reservations."""
+
+    def _server_with_lease(self, family):
+        server = _make_db_server(
+            name=f"lease-owner-v{family}",
+            dhcp4=family == 4,
+            dhcp6=family == 6,
+            sync_reservations_enabled=False,
+            sync_prefixes_enabled=False,
+            sync_ip_ranges_enabled=False,
+        )
+        address = "198.18.0.25" if family == 4 else "2001:db8::25"
+        self._run(server, family, [_lease(address, "lease.example.invalid")])
+        ip = NbIP.objects.get(address__net_host=address)
+        self.assertEqual(ip.status, "dhcp")
+        self.assertEqual(IPAMOwnershipLink.objects.filter(ip_address=ip, source="lease").count(), 1)
+        return server, ip
+
+    def _run(self, server, family, leases=(), *, responses=None):
+        subnet = "198.18.0.0/24" if family == 4 else "2001:db8::/64"
+        registry = {
+            **_catalogue_responses_for_subnets(family, [{"id": 1, "subnet": subnet}]),
+            f"lease{family}-get-page": _lease_page(list(leases)),
+            "reservation-get-page": _res_page([]),
+            **(responses or {}),
+        }
+        job = Job.objects.create(name="Kea IPAM Sync", job_id=uuid.uuid4(), data={})
+        with stub_kea(registry):
+            KeaIpamSyncJob(job).run(server_pk=server.pk)
+        return job.data["summary"][0]
+
+    def test_complete_lease_snapshot_removes_the_last_link_when_reservations_are_disabled(self):
+        for family in (4, 6):
+            with self.subTest(family=family):
+                server, ip = self._server_with_lease(family)
+                self._run(server, family)
+                self.assertFalse(NbIP.objects.filter(pk=ip.pk).exists())
+                self.assertFalse(IPAMOwnershipLink.objects.filter(ip_address_id=ip.pk).exists())
+
+    @override_settings(PLUGINS_CONFIG=_config("deprecate"))
+    def test_complete_lease_snapshot_deprecates_and_retains_a_stale_link(self):
+        for family in (4, 6):
+            with self.subTest(family=family):
+                server, ip = self._server_with_lease(family)
+                self._run(server, family)
+                ip.refresh_from_db()
+                self.assertEqual(ip.status, "deprecated")
+                link = IPAMOwnershipLink.objects.get(ip_address=ip)
+                self.assertIsNotNone(link.stale_mark)
+                self._run(server, family, [_lease(str(ip.address.ip), "lease.example.invalid")])
+                ip.refresh_from_db()
+                link.refresh_from_db()
+                self.assertEqual(ip.status, "dhcp")
+                self.assertIsNone(link.stale_mark)
+
+    @override_settings(PLUGINS_CONFIG=_config("none"))
+    def test_complete_lease_snapshot_unlinks_without_changing_the_address(self):
+        for family in (4, 6):
+            with self.subTest(family=family):
+                server, ip = self._server_with_lease(family)
+                self._run(server, family)
+                ip.refresh_from_db()
+                self.assertEqual(ip.status, "dhcp")
+                self.assertFalse(IPAMOwnershipLink.objects.filter(ip_address=ip).exists())
+
+    def test_failed_lease_snapshot_keeps_all_stale_links(self):
+        for family in (4, 6):
+            with self.subTest(family=family):
+                server, ip = self._server_with_lease(family)
+                address = "198.18.0.26" if family == 4 else "2001:db8::26"
+                self._run(server, family, [_lease(str(ip.address.ip)), _lease(address)])
+                links = list(IPAMOwnershipLink.objects.filter(server=server).values_list("pk", "ip_address_id"))
+                self.assertEqual(len(links), 2)
+                with self.assertRaises(JobFailed):
+                    self._run(server, family, responses={f"lease{family}-get-page": {"result": 1}})
+                self.assertEqual(
+                    list(IPAMOwnershipLink.objects.filter(server=server).values_list("pk", "ip_address_id")), links
+                )
+                self.assertEqual(NbIP.objects.filter(pk__in=[pk for _, pk in links], status="dhcp").count(), 2)
+
+    def test_truncated_lease_snapshot_keeps_all_stale_links(self):
+        for family in (4, 6):
+            with self.subTest(family=family):
+                server, ip = self._server_with_lease(family)
+                address = "198.18.0.26" if family == 4 else "2001:db8::26"
+                self._run(server, family, [_lease(str(ip.address.ip)), _lease(address)])
+                links = list(IPAMOwnershipLink.objects.filter(server=server).values_list("pk", "ip_address_id"))
+                self.assertEqual(len(links), 2)
+                live = "198.18.0.30" if family == 4 else "2001:db8::30"
+                overflow = "198.18.0.31" if family == 4 else "2001:db8::31"
+                with self.settings(PLUGINS_CONFIG=plugins_config(sync_max_leases_per_server=1)):
+                    self._run(server, family, [_lease(live), _lease(overflow)])
+                self.assertEqual(
+                    list(
+                        IPAMOwnershipLink.objects.filter(pk__in=[pk for pk, _ in links]).values_list(
+                            "pk", "ip_address_id"
+                        )
+                    ),
+                    links,
+                )
+                self.assertEqual(NbIP.objects.filter(pk__in=[pk for _, pk in links], status="dhcp").count(), 2)
+                self.assertTrue(NbIP.objects.filter(address__net_host=live).exists())
+                self.assertFalse(NbIP.objects.filter(address__net_host=overflow).exists())
+
+    def test_unavailable_host_hook_keeps_the_last_link_with_config_file_reservations(self):
+        for family in (4, 6):
+            with self.subTest(family=family):
+                server, ip = self._server_with_lease(family)
+                server.sync_reservations_enabled = True
+                server.save(update_fields=["sync_reservations_enabled"])
+                reservation = {"hw-address": "02:00:00:00:00:25"}
+                reservation["ip-address" if family == 4 else "ip-addresses"] = (
+                    str(ip.address.ip) if family == 4 else [str(ip.address.ip)]
+                )
+                subnet = "198.18.0.0/24" if family == 4 else "2001:db8::/64"
+                responses = {
+                    **_catalogue_responses_for_subnets(
+                        family, [{"id": 1, "subnet": subnet, "reservations": [reservation]}]
+                    ),
+                    "reservation-get-page": {"result": 2, "text": "unknown command"},
+                }
+                self._run(server, family, responses=responses)
+                ip.refresh_from_db()
+                self.assertEqual(ip.status, "dhcp")
+                link = IPAMOwnershipLink.objects.get(ip_address=ip)
+                self.assertEqual(link.source, "lease")
+                self.assertIsNone(link.stale_mark)
+
+    def test_global_reservation_toggle_does_not_relax_the_server_last_link_guard(self):
+        from netbox_kea.tests.test_jobs import _set_sync_config
+
+        server, ip = self._server_with_lease(4)
+        server.sync_reservations_enabled = True
+        server.save(update_fields=["sync_reservations_enabled"])
+        _set_sync_config(sync_reservations_enabled=False)
+        self._run(server, 4)
+        self.assertTrue(NbIP.objects.filter(pk=ip.pk).exists())
+        self.assertIsNone(IPAMOwnershipLink.objects.get(ip_address=ip).stale_mark)
+
+    def test_reservation_only_call_keeps_its_last_link_when_the_server_disables_reservations(self):
+        server = _server("partial-reservations", sync_reservations_enabled=False)
+        address = "198.18.0.25"
+        subnet = {"id": 1, "subnet": "198.18.0.0/24"}
+        _reconcile(server, reservations=[_reservation(address)], sources=("reservation",), subnets=[subnet])
+        ip = NbIP.objects.get(address__net_host=address)
+        report = _reconcile(server, sources=("reservation",), subnets=[subnet])
+        self.assertTrue(report.complete)
+        self.assertTrue(NbIP.objects.filter(pk=ip.pk, status="reserved").exists())
+        self.assertEqual(IPAMOwnershipLink.objects.get(ip_address=ip).source, "reservation")
+
+
 @override_settings(PLUGINS_CONFIG=_config("deprecate"))
 class JobDeprecatedIPReleaseTest(TestCase):
     def test_operator_release_of_deprecated_ip_drops_the_marked_link_and_reports_conflict(self):
