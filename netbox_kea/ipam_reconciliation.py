@@ -469,14 +469,12 @@ def _adoption_waits(link: IPAMOwnershipLink, object_field: str, pending: set[tup
 
 
 def _cleanup_link(pk: int) -> IPAMOwnershipLink | None:
-    """Hold adoption policy writes until this cleanup transaction commits."""
-    link = IPAMOwnershipLink.objects.filter(pk=pk).first()
+    """Lock the link before policy writes, so a Server cascade cannot reverse the lock order."""
+    link = IPAMOwnershipLink.objects.select_for_update().filter(pk=pk).first()
     if link is not None and link.adopted:
         with connection.cursor() as cursor:
             # Table locks also cover new Servers and bulk configuration updates.
             cursor.execute("LOCK TABLE netbox_kea_server, netbox_kea_syncconfig IN SHARE MODE")
-        # A Server deletion may have removed the link while the policy lock waited.
-        link = IPAMOwnershipLink.objects.filter(pk=pk).first()
     return link
 
 
