@@ -7,7 +7,7 @@ import unittest
 import uuid
 from unittest.mock import patch
 
-from core.models import ObjectChange
+from core.models import Job, ObjectChange
 from django.apps import apps
 from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
@@ -16,11 +16,13 @@ from ipam.models import VRF, IPAddress, IPRange, Prefix
 from netbox.context_managers import event_tracking
 
 from netbox_kea.ipam_reconciliation import LeasePhase, PoolPhase, SubnetPhase, read_catalogue, reconcile
+from netbox_kea.jobs import KeaIpamSyncJob
 from netbox_kea.mappers.kea_to_dhcp import parse_dhcp_config
 from netbox_kea.models import IPAMOwnershipLink
 from netbox_kea.tests.kea_stub import _catalogue_responses_for_subnets, stub_kea
 from netbox_kea.tests.test_integration_dhcp_plugin import _reservation_snapshot
-from netbox_kea.tests.test_ipam_reconciliation import _kea, _lease, _reconcile, _reservation, _run_job
+from netbox_kea.tests.test_ipam_reconciliation import _kea, _lease, _reconcile, _reservation
+from netbox_kea.tests.test_jobs import _patch_kea
 from netbox_kea.tests.utils import _make_db_server, plugins_config
 
 
@@ -268,14 +270,18 @@ class IPAMChangeRecordTest(TestCase):
                     self.assertEqual(change.postchange_data["status"], new)
 
     def test_complete_job_keeps_previous_server_observation_receipt(self):
-        with event_tracking(self.request):
-            _run_job(self.server, [], [])
+        job = Job.objects.create(name=KeaIpamSyncJob.name, job_id=uuid.uuid4(), user=self.request.user)
+        with _patch_kea(leases4=[], reservations=[]):
+            KeaIpamSyncJob.handle(job, server_pk=self.server.pk)
+        job.refresh_from_db()
+        self.assertEqual(job.status, "completed")
         change = ObjectChange.objects.get(
             changed_object_type=ContentType.objects.get_for_model(self.server),
             changed_object_id=self.server.pk,
-            request_id=self.request.id,
             action="update",
         )
+        self.assertEqual(change.user_id, self.request.user.pk)
+        self.assertNotEqual(change.request_id, self.request.id)
         self.assertEqual(change.prechange_data["ipam_initial_observations"], {})
         self.assertIsNone(change.prechange_data["ipam_first_complete_at"])
         self.assertIn("job", change.postchange_data["ipam_initial_observations"])

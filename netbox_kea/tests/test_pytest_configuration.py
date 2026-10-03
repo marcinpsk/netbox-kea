@@ -1262,14 +1262,17 @@ def test_ci_pins_the_netbox_release_the_query_counts_describe():
 
 
 def test_query_count_assertion_sites_still_exist():
-    """Fail when NetBox moves the helper the conftest guard patches.
-
-    A renamed import would make the guard patch nothing, so every release but the
-    recorded one would start failing on counts again with no sign of why.
-    """
+    """Fail when the recorded NetBox release moves its query-count helper."""
     import importlib
 
-    from netbox_kea.tests.conftest import QUERY_COUNT_ASSERTION_SITES
+    from netbox_kea.tests.conftest import (
+        QUERY_COUNT_ASSERTION_SITES,
+        QUERY_COUNT_NETBOX_VERSION,
+        running_netbox_version,
+    )
+
+    if running_netbox_version() != QUERY_COUNT_NETBOX_VERSION:
+        pytest.skip(f"Query-count assertion sites are bound to NetBox {QUERY_COUNT_NETBOX_VERSION}.")
 
     for module_name in QUERY_COUNT_ASSERTION_SITES:
         module = importlib.import_module(module_name)

@@ -169,7 +169,7 @@ class TestServerSyncNowView(TestCase):
         url = reverse("plugins:netbox_kea:server_sync_now", args=[self.server.pk])
         with patch("netbox_kea.views.sync_jobs.KeaIpamSyncJob", autospec=True) as MockJob:
             response = self.client.post(url)
-        MockJob.enqueue.assert_called_once_with(instance=self.server, server_pk=self.server.pk)
+        MockJob.enqueue.assert_called_once_with(instance=self.server, user=self.user, server_pk=self.server.pk)
         self.assertRedirects(
             response,
             reverse("plugins:netbox_kea:server_sync_status", args=[self.server.pk]),

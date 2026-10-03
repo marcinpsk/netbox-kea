@@ -62,6 +62,7 @@ def _set_sync_config(**fields) -> None:
 def _make_job() -> MagicMock:
     """Create a minimal mock Job object for JobRunner.__init__."""
     mock_job = MagicMock()  # mock-ok: NetBox job-runner stand-in
+    mock_job.user = None
     mock_job.data = {}
     mock_job.log = MagicMock()  # mock-ok: job log sink
     return mock_job
