@@ -45,11 +45,9 @@ _INT_PK_RE = re.compile(r"/servers/(\d+)/")
 
 
 def _make_db_server(**kwargs) -> Server:
-    """Create and persist a Server without live connectivity checks.
+    """Create a persisted Server fixture with sensible defaults.
 
-    ``Server.objects.create()`` skips ``Model.clean()``, so no Kea connectivity
-    check is triggered.  The ``PLUGINS_CONFIG`` override is applied by the calling
-    test class.
+    The calling test class applies the PLUGINS_CONFIG override.
     """
     defaults = {
         "name": "test-kea",

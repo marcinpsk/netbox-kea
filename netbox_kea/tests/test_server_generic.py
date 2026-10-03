@@ -9,11 +9,9 @@ the hand-rolled view tests do not assert (object-permission enforcement, the
 changelog view, bulk import/edit/delete, and the REST API, which had no mixin
 coverage at all).
 
-``Server.clean()`` runs a live ``version-get`` connectivity check per enabled
-service (see models.py), and NetBox's REST serializer calls ``full_clean()`` on
-create/update, so any create/edit/bulk path would otherwise try to reach a real
-Kea daemon. Each test activates ``stub_kea`` to answer that check at the HTTP
-boundary — the real ``clean()`` runs, only the transport is stubbed.
+Server submission adapters check live connectivity on create or a connection change.
+Each test answers those checks at the external HTTP boundary. Local model validation
+runs without Kea requests.
 """
 
 from __future__ import annotations
@@ -30,19 +28,10 @@ _VERSION_OK = {"result": 0, "arguments": {"extended": "3.2.0"}}
 
 
 class _ServerGenericTestMixin:
-    """Answer ``Server.clean()``'s live ``version-get`` check at the HTTP boundary.
+    """Answer submission connectivity checks at the external HTTP boundary.
 
-    ``Server.clean()`` runs a live ``version-get`` per enabled service, and NetBox's
-    REST serializer calls ``full_clean()`` on create/update, so every create/edit/bulk
-    path would otherwise try to reach a real Kea daemon. ``stub_kea`` answers it at the
-    transport boundary — the real ``clean()`` runs, only the HTTP call is stubbed.
-    ``setUpTestData`` builds fixtures with ``bulk_create`` (which skips ``Model.clean()``),
-    so the stub is only exercised by the paths that genuinely run the check.
-
-    The exact SQL-query-count baselines the list-view tests assert against live in
-    ``tests/query_counts.json`` (recorded with ``UPDATE_QUERY_COUNTS=1``); the unit-test
-    CI pins the same NetBox version as the devcontainer so those counts stay stable and
-    catch N+1 drift.
+    The native view mixins validate real forms, serializers and models. Fixtures use
+    bulk_create. SQL-query baselines are scoped to the pinned NetBox release.
     """
 
     def setUp(self):
