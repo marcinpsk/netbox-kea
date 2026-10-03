@@ -469,6 +469,60 @@ class TestOwnershipClaimBehavior(TestCase):
                 self.assertEqual(str(claimed.ip.address), "198.18.0.20/24")
                 self.assertEqual(self._lease().outcome, "unchanged")
 
+    def test_forced_claim_preserves_the_full_operator_note(self):
+        from ipam.models import IPAddress
+
+        for source, claim_record, status in (
+            ("lease", self._lease, "dhcp"),
+            ("reservation", self._reservation, "reserved"),
+        ):
+            for note in ("", "  Printer on floor 2\nKeep this note.  "):
+                with self.subTest(source=source, note=note):
+                    IPAddress.objects.all().delete()
+                    row = IPAddress.objects.create(address="198.18.0.20/32", status="active", description=note)
+                    claimed = claim_record(force=True)
+                    row.refresh_from_db()
+                    expected = f"[kea-sync: {source}]" + (f" {note}" if note else "")
+                    self.assertEqual((claimed.outcome, claimed.ip.pk), ("updated", row.pk))
+                    self.assertEqual(
+                        (str(row.address), row.status, row.dns_name, row.description),
+                        ("198.18.0.20/24", status, "host.example.invalid", expected),
+                    )
+                    self.assertEqual(claim_record().outcome, "unchanged")
+
+    def test_forced_claim_refuses_an_operator_note_that_exceeds_the_description_limit(self):
+        from ipam.models import IPAddress
+
+        from netbox_kea.models import IPAMOwnershipLink
+
+        for source, claim_record, status in (
+            ("lease", self._lease, "dhcp"),
+            ("reservation", self._reservation, "reserved"),
+        ):
+            for extra, outcome in ((0, "updated"), (1, "conflict")):
+                with self.subTest(source=source, extra=extra):
+                    IPAddress.objects.all().delete()
+                    note = "n" * (200 - len(f"[kea-sync: {source}] ") + extra)
+                    row = IPAddress.objects.create(
+                        address="198.18.0.20/32", status="active", dns_name="operator.example.invalid", description=note
+                    )
+                    claimed = claim_record(force=True)
+                    row.refresh_from_db()
+                    self.assertEqual((claimed.outcome, claimed.ip.pk), (outcome, row.pk))
+                    if extra:
+                        self.assertFalse(claimed.synchronized)
+                        self.assertEqual(
+                            (str(row.address), row.status, row.dns_name, row.description),
+                            ("198.18.0.20/32", "active", "operator.example.invalid", note),
+                        )
+                    else:
+                        self.assertTrue(claimed.synchronized)
+                        self.assertEqual((row.status, row.description), (status, f"[kea-sync: {source}] {note}"))
+                        self.assertEqual(len(row.description), 200)
+                    link = IPAMOwnershipLink.objects.get(ip_address=row)
+                    self.assertEqual((link.server_id, link.source), (self.server.pk, source))
+                    self.assertEqual(link.facts, {"hostname": "host.example.invalid", "prefix_length": 24})
+
     def test_reservation_force_claims_foreign_row_and_corrects_its_mask(self):
         from ipam.models import IPAddress
 

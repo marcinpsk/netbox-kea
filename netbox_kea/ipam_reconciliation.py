@@ -58,12 +58,14 @@ def _get_stale_cleanup_mode() -> StaleCleanupMode:
 def _ip_description(description: str, status: str) -> str | None:
     """Rewrite an owned marker or mark an explicitly claimed object.
 
-    Keep the operator note after an existing marker. Return None when the new marker and note do not fit.
+    Keep the operator note, including an unmarked description. Return None when the new marker and note do not fit.
     Callers decide whether the object is eligible before they call this helper.
     """
     kind = status_kind(status)
     marker = parse_marker(description)
-    return rewrite_marker(marker, kind) if marker is not None else render_marker(kind)
+    if marker is None:
+        marker = Marker(kind, f" {description}" if description else "", legacy=False)
+    return rewrite_marker(marker, kind)
 
 
 def _ip_fields(status: str, hostname: str, description: str) -> dict[str, str]:
