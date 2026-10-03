@@ -29,9 +29,12 @@ class NetBoxKeaConfig(PluginConfig):
         validate_settings(user_config)
 
     def ready(self) -> None:
-        """Register the netbox-branching integration after Django is fully initialised."""
+        """Register optional integrations after Django is fully initialised."""
         super().ready()
         branching.register()
+        from .integrations.dhcp_plugin import register_link_cleanup
+
+        register_link_cleanup()
 
 
 config = NetBoxKeaConfig

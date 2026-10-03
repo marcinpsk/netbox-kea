@@ -41,6 +41,48 @@ User = get_user_model()
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
+
+def linked_dhcp_targets(server):
+    """Create linked Subnets and a Global Reservation with colliding object IDs."""
+    from django.apps import apps
+    from ipam.models import Prefix
+
+    from netbox_kea.models import KeaDhcpLink
+
+    dhcp_server = apps.get_model("netbox_dhcp", "DHCPServer").objects.create(name=server.name)
+    subnet_model = apps.get_model("netbox_dhcp", "Subnet")
+    reservation_model = apps.get_model("netbox_dhcp", "HostReservation")
+    targets = [
+        subnet_model.objects.create(
+            pk=100 + index,
+            name=f"linked-subnet-{index}",
+            subnet_id=100 + index,
+            dhcp_server=dhcp_server,
+            prefix=Prefix.objects.create(prefix=f"198.18.{index}.0/24"),
+        )
+        for index in range(2)
+    ]
+    targets.append(
+        reservation_model.objects.create(
+            pk=100, name="linked-global-reservation", dhcp_server=dhcp_server, duid="00:01:02:03"
+        )
+    )
+    links = [
+        KeaDhcpLink.objects.create(
+            server=server,
+            family=4,
+            sys4_object=target,
+            **(
+                {"kea_subnet_id": index + 1}
+                if isinstance(target, subnet_model)
+                else {"kea_identity": "duid:00:01:02:03"}
+            ),
+        )
+        for index, target in enumerate(targets)
+    ]
+    return tuple(zip(targets, links, strict=True))
+
+
 _INT_PK_RE = re.compile(r"/servers/(\d+)/")
 
 
