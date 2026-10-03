@@ -66,41 +66,15 @@ def _ip_description(description: str, status: str) -> str | None:
     return rewrite_marker(marker, kind) if marker is not None else render_marker(kind)
 
 
-def _apply_ip_fields(ip_obj: IPAddress, status: str, hostname: str, description: str) -> bool:
-    """Apply *status*, *hostname* (dns_name), and *description* to *ip_obj*.
+def _ip_fields(status: str, hostname: str, description: str) -> dict[str, str]:
+    """Return the desired IP fields without changing the loaded object.
 
-    The caller gets *description* from :func:`_ip_description`, so the marker kind follows *status* and
-    self-heals on every run: an IP first created from a lease but later (also) reserved no longer stays
-    marked ``lease``.
-
-    Returns ``True`` when any field was changed and the object should be saved.
+    An empty hostname preserves a manually maintained DNS name. The caller compares and applies the same fields.
     """
-    changed = False
-
-    if ip_obj.status != status:
-        ip_obj.status = status
-        changed = True
-
-    # Only update dns_name when the caller provides a non-empty hostname;
-    # this prevents overwriting a manually maintained dns_name.
-    if hostname and ip_obj.dns_name != hostname:
-        ip_obj.dns_name = hostname
-        changed = True
-
-    if ip_obj.description != description:
-        ip_obj.description = description
-        changed = True
-
-    return changed
-
-
-def _apply_ip_mask(ip_obj: IPAddress, ip_str: str, prefix_len: int) -> bool:
-    """Apply the reported mask to an eligible IP address and return whether it changed."""
-    desired = f"{ip_str}/{prefix_len}"
-    if str(ip_obj.address) == desired:
-        return False
-    ip_obj.address = desired
-    return True
+    fields = {"status": status, "description": description}
+    if hostname:
+        fields["dns_name"] = hostname
+    return fields
 
 
 def _record_hostname(record: dict) -> str:
@@ -435,6 +409,7 @@ def _complete_observation(server: Server, workflow: Workflow, observed: SourceSc
             return
         receipts = _receipts(current)
         receipts[workflow] = _ObservationReceipt(observed, timezone.now())
+        current.snapshot()
         current.ipam_initial_observations = {key: receipt.stored() for key, receipt in receipts.items()}
         if current.ipam_first_complete_at is None and all(
             not scope or (key in receipts and scope <= receipts[key].sources) for key, scope in required.items()
@@ -985,6 +960,7 @@ def _claim(
             if conflicts is not None:
                 conflicts.add(report.address)
         elif eligible and report.facts is not None:
+            legacy[0].snapshot()
             legacy[0].vrf_id = vrf_id
             legacy[0].save()
             rows = legacy
@@ -1052,9 +1028,13 @@ def _apply_claim(
         # The new marker and the operator note do not fit: the object stays as it is, and the owner keeps its link.
         _store_link(own, server, family, source, ip, facts.stored(), stale_mark=_kept_mark(own), adopted=adopted)
         return "conflict"
-    changed = _apply_ip_fields(ip, status=status, hostname=applied.hostname, description=description)
-    changed = _apply_ip_mask(ip, report.address, applied.prefix_length) or changed
+    fields = _ip_fields(status, applied.hostname, description)
+    fields["address"] = f"{report.address}/{applied.prefix_length}"
+    changed = any(str(getattr(ip, name)) != value for name, value in fields.items())
     if changed:
+        ip.snapshot()
+        for name, value in fields.items():
+            setattr(ip, name, value)
         ip.save()
     _store_link(own, server, family, source, ip, facts.stored(), stale_mark=None, adopted=adopted)
     return "updated" if changed else "unchanged"
@@ -1108,8 +1088,12 @@ def _restatus(ip: IPAddress, links: Sequence[IPAMOwnershipLink]) -> _Outcome:
     description = _ip_description(ip.description, status)
     if description is None:
         return "conflict"
-    if not _apply_ip_fields(ip, status=status, hostname=_implied_hostname(links), description=description):
+    fields = _ip_fields(status, _implied_hostname(links), description)
+    if all(str(getattr(ip, name)) == value for name, value in fields.items()):
         return "unchanged"
+    ip.snapshot()
+    for name, value in fields.items():
+        setattr(ip, name, value)
     ip.save()
     return "updated"
 
@@ -1281,6 +1265,7 @@ def _remove_stale_link(
     link.stale_mark = cutoff
     link.save(update_fields=["stale_mark"])
     if ip.status != "deprecated":
+        ip.snapshot()
         ip.status = "deprecated"
         ip.save()
     return "deprecated"
@@ -1406,6 +1391,7 @@ def _claim_network(
     fields.update(status="active", description=description)
     changed = any(str(getattr(obj, name)) != str(value) for name, value in fields.items())
     if changed:
+        obj.snapshot()
         for name, value in fields.items():
             setattr(obj, name, value)
         obj.save()
@@ -1473,6 +1459,7 @@ def _remove_stale_network_link(candidate: IPAMOwnershipLink, field_name: str, cu
                 return "conflict"
             changed = locked.status != "active" or locked.description != description
             if changed:
+                locked.snapshot()
                 locked.status = "active"
                 locked.description = description
                 locked.save()
@@ -1491,6 +1478,7 @@ def _remove_stale_network_link(candidate: IPAMOwnershipLink, field_name: str, cu
     link.stale_mark = cutoff
     link.save(update_fields=["stale_mark"])
     if locked.status != "deprecated":
+        locked.snapshot()
         locked.status = "deprecated"
         locked.save()
     return "deprecated"

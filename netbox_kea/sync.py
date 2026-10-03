@@ -105,8 +105,10 @@ def sync_mac_address(hw_address: str, hostname: str = ""):
 
         mac_str = str(EUI(hw_address, dialect=mac_unix_expanded))
         mac_obj, _ = MACAddress.objects.get_or_create(mac_address=mac_str)
-        if hostname and _update_mac_description(mac_obj, hostname):
-            mac_obj.save()
+        if hostname:
+            mac_obj.snapshot()
+            if _update_mac_description(mac_obj, hostname):
+                mac_obj.save()
     # The exception text can repeat the MAC address, so only its type goes to the log.
     except (ProgrammingError, OperationalError, IntegrityError) as exc:
         logger.debug("DB error while syncing a MAC address to NetBox DCIM: %s", type(exc).__name__)
