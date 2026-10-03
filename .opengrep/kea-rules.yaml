@@ -447,6 +447,30 @@ rules:
           except (..., requests.RequestException, ...) as $E:
               ...
 
+  - id: kea-mac-sync-write-without-savepoint
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Run MAC lookup and save in transaction.atomic() before catching their errors.
+      A failed MAC write must not abort the caller's IPAM claim.
+    metadata:
+      category: correctness
+      confidence: HIGH
+    paths:
+      include:
+        - "netbox_kea/sync.py"
+        - "kea-mac-sync-write-without-savepoint.py"
+    patterns:
+      - pattern-inside: |
+          def sync_mac_address(...):
+              ...
+      - pattern-either:
+          - pattern: dcim.models.MACAddress.objects.get_or_create(...)
+          - pattern: $MAC.save(...)
+      - pattern-not-inside: |
+          with django.db.transaction.atomic(...):
+              ...
+
   - id: netbox-ipam-mutation-outside-reconciliation
     languages: [python]
     severity: ERROR

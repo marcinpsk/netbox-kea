@@ -133,6 +133,51 @@ class TestMalformedLeaseSyncView(_SyncViewBase):
 class TestLease4SyncView(_SyncViewBase):
     """POST to server_lease4_sync creates/updates a NetBox IPAddress."""
 
+    def test_failed_mac_update_keeps_the_lease_claim_and_rolls_back_only_the_mac(self):
+        from dcim.models import MACAddress
+        from django.db import connection
+
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "ALTER TABLE dcim_macaddress ADD CONSTRAINT reject_sync_hostname "
+                "CHECK (description <> 'dhcp_hostname: rejected.example.invalid')"
+            )
+        for index, existing in enumerate((False, True)):
+            hardware = f"02:00:00:00:00:{index + 1:02x}"
+            address = f"198.18.0.{10 + index}"
+            original = "Operator description"
+            if existing:
+                MACAddress.objects.create(mac_address=hardware, description=original)
+            with (
+                self.subTest(existing=existing),
+                stub_kea(
+                    {
+                        **_catalogue_responses(4, 1, "198.18.0.0/24"),
+                        "lease4-get": _lease_get("rejected.example.invalid", **{"hw-address": hardware}),
+                    }
+                ),
+            ):
+                response = self.client.post(self._url(), {"ip_address": address})
+                self.assertContains(response, f"{address}/24")
+                ip = NbIP.objects.get(address__net_host=address)
+                self.assertEqual((ip.status, ip.dns_name), ("dhcp", "rejected.example.invalid"))
+                self.assertEqual(IPAMOwnershipLink.objects.get(ip_address=ip).server_id, self.server.pk)
+                if existing:
+                    self.assertEqual(MACAddress.objects.get(mac_address=hardware).description, original)
+                else:
+                    self.assertFalse(MACAddress.objects.filter(mac_address=hardware).exists())
+            with stub_kea(
+                {
+                    **_catalogue_responses(4, 1, "198.18.0.0/24"),
+                    "lease4-get": _lease_get("accepted.example.invalid", **{"hw-address": hardware}),
+                }
+            ):
+                response = self.client.post(self._url(), {"ip_address": address})
+            self.assertContains(response, f"{address}/24")
+            self.assertEqual(
+                MACAddress.objects.get(mac_address=hardware).description, "dhcp_hostname: accepted.example.invalid"
+            )
+
     def test_malformed_lease_subnet_id_returns_a_generic_error_without_claiming(self):
         from netbox_kea.models import IPAMOwnershipLink
 
