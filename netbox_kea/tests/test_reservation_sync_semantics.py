@@ -5,11 +5,12 @@ from ipaddress import ip_address, ip_network
 from unittest.mock import patch
 
 from django.db import DatabaseError, connection
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.test.utils import CaptureQueriesContext
 from ipam.models import IPAddress
 
 from netbox_kea import sync as sync_module
+from netbox_kea.ipam_reconciliation import claim
 from netbox_kea.reservations import (
     GlobalReservationScope,
     InSubnetReservationScope,
@@ -19,10 +20,19 @@ from netbox_kea.reservations import (
     ReservationSynchronizationState,
 )
 from netbox_kea.subnet_catalogue import SubnetIdentity
-from netbox_kea.sync import reservation_synchronization_state, sync_reservation_to_netbox
+from netbox_kea.sync import reservation_synchronization_state
+
+from .utils import _make_db_server, plugins_config
 
 
+@override_settings(PLUGINS_CONFIG=plugins_config())
 class TestTypedReservationSynchronization(TestCase):
+    def setUp(self):
+        self.server = _make_db_server()
+
+    def _claim(self, reservation):
+        return claim(self.server, reservation.family, [reservation], force=False)
+
     def test_synchronizes_every_ipv6_address_as_one_result(self):
         reservation = IPv6Reservation(
             scope=InSubnetReservationScope(SubnetIdentity(30, ip_network("2001:db8::/64"))),
@@ -32,38 +42,37 @@ class TestTypedReservationSynchronization(TestCase):
             hostname="multi.example.invalid",
         )
 
-        result = sync_reservation_to_netbox(reservation, cleanup=False)
+        result = self._claim(reservation)
 
-        self.assertEqual(result.state.label, "Synchronized")
-        self.assertEqual((result.state.synchronized, result.state.total), (2, 2))
-        self.assertEqual(result.created, 2)
+        self.assertEqual(
+            reservation_synchronization_state(reservation, result.synchronized_addresses).label, "Synchronized"
+        )
+        self.assertEqual(
+            (
+                reservation_synchronization_state(reservation, result.synchronized_addresses).synchronized,
+                reservation_synchronization_state(reservation, result.synchronized_addresses).total,
+            ),
+            (2, 2),
+        )
+        self.assertEqual(sum(row.outcome == "created" for row in result.addresses.values()), 2)
         stored = [str(address) for address in IPAddress.objects.order_by("pk").values_list("address", flat=True)]
         self.assertEqual(stored, ["2001:db8::20/64", "2001:db8::21/64"])
 
-    def test_state_is_read_only_when_a_caller_asks_for_it(self):
-        """Charge the synchronization-state query to the caller that reads it.
-
-        A bulk synchronization uses only the counts, so reading the state for every
-        record would add one IPAM query per record for a value nobody consumes.
-        """
+    def test_claim_outcomes_supply_a_badge_without_an_extra_database_query(self):
         reservation = IPv6Reservation(
             scope=InSubnetReservationScope(SubnetIdentity(30, ip_network("2001:db8::/64"))),
             identity=ReservationIdentity("duid", "00:01:02:03"),
             addresses=(ip_address("2001:db8::20"),),
             delegated_prefixes=(),
         )
-
-        result = sync_reservation_to_netbox(reservation, cleanup=False)
-        self.assertEqual(result.created, 1)
-
-        # An eagerly computed state would already be in hand, costing nothing to read.
-        with CaptureQueriesContext(connection) as first_read:
-            self.assertEqual(result.state.label, "Synchronized")
-        self.assertGreater(len(first_read.captured_queries), 0)
-
-        with CaptureQueriesContext(connection) as second_read:
-            self.assertEqual(result.state.label, "Synchronized")
-        self.assertEqual(second_read.captured_queries, [])
+        result = self._claim(reservation)
+        with CaptureQueriesContext(connection) as outcome_read:
+            state = reservation_synchronization_state(reservation, result.synchronized_addresses)
+        self.assertEqual(state.label, "Synchronized")
+        self.assertEqual(outcome_read.captured_queries, [])
+        with CaptureQueriesContext(connection) as fresh_read:
+            self.assertEqual(reservation_synchronization_state(reservation).label, "Synchronized")
+        self.assertEqual(len(fresh_read.captured_queries), 1)
 
     def test_reports_partial_state_for_one_of_two_managed_addresses(self):
         reservation = IPv6Reservation(
@@ -75,7 +84,7 @@ class TestTypedReservationSynchronization(TestCase):
         IPAddress.objects.create(
             address="2001:db8::20/64",
             status="reserved",
-            description="Synced from Kea DHCP reservation",
+            description="[kea-sync: reservation]",
         )
 
         state = reservation_synchronization_state(reservation)
@@ -95,13 +104,24 @@ class TestTypedReservationSynchronization(TestCase):
             addresses=(),
         )
 
-        global_result = sync_reservation_to_netbox(global_reservation, cleanup=False)
-        addressless_result = sync_reservation_to_netbox(addressless, cleanup=False)
+        global_result = self._claim(global_reservation)
+        addressless_result = self._claim(addressless)
 
-        self.assertEqual(global_result.state.label, "Not Applicable")
-        self.assertIn("Global", global_result.state.reason)
-        self.assertEqual(addressless_result.state.label, "Not Applicable")
-        self.assertIn("allocation address", addressless_result.state.reason)
+        self.assertEqual(
+            reservation_synchronization_state(global_reservation, global_result.synchronized_addresses).label,
+            "Not Applicable",
+        )
+        self.assertIn(
+            "Global", reservation_synchronization_state(global_reservation, global_result.synchronized_addresses).reason
+        )
+        self.assertEqual(
+            reservation_synchronization_state(addressless, addressless_result.synchronized_addresses).label,
+            "Not Applicable",
+        )
+        self.assertIn(
+            "allocation address",
+            reservation_synchronization_state(addressless, addressless_result.synchronized_addresses).reason,
+        )
         self.assertFalse(IPAddress.objects.exists())
 
     def test_reports_unknown_when_the_ipam_read_fails(self):
@@ -136,9 +156,9 @@ class TestTypedReservationSynchronization(TestCase):
             return real_bulk_fetch(addresses)
 
         with patch.object(sync_module, "bulk_fetch_netbox_ips", recording_bulk_fetch):
-            result = sync_reservation_to_netbox(reservation, cleanup=False)
-            # Read the state inside the patch: it is computed on access, not during sync.
-            self.assertEqual(result.state.label, "Synchronized")
+            self._claim(reservation)
+            # The badge query runs only when the caller explicitly reads it.
+            self.assertEqual(reservation_synchronization_state(reservation).label, "Synchronized")
 
         # Reading the state costs exactly one IPAM read. A Not Applicable pre-check that
         # called reservation_synchronization_state() added a second, discarded read.

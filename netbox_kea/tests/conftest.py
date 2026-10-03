@@ -79,8 +79,10 @@ def _query_counts_only_on_the_recorded_netbox():
         stacklevel=1,
     )
     with ExitStack() as sites:
-        for module in QUERY_COUNT_ASSERTION_SITES:
-            sites.enter_context(patch(f"{module}.assert_expected_query_count", _skip_query_count_assertion))
+        for module_name in QUERY_COUNT_ASSERTION_SITES:
+            module = importlib.import_module(module_name)
+            if hasattr(module, "assert_expected_query_count"):
+                sites.enter_context(patch.object(module, "assert_expected_query_count", _skip_query_count_assertion))
         yield
 
 

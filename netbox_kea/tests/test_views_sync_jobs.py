@@ -169,7 +169,7 @@ class TestServerSyncNowView(TestCase):
         url = reverse("plugins:netbox_kea:server_sync_now", args=[self.server.pk])
         with patch("netbox_kea.views.sync_jobs.KeaIpamSyncJob", autospec=True) as MockJob:
             response = self.client.post(url)
-        MockJob.enqueue.assert_called_once_with(instance=self.server, server_pk=self.server.pk)
+        MockJob.enqueue.assert_called_once_with(instance=self.server, user=self.user, server_pk=self.server.pk)
         self.assertRedirects(
             response,
             reverse("plugins:netbox_kea:server_sync_status", args=[self.server.pk]),
@@ -206,6 +206,22 @@ class TestServerSyncToggleView(TestCase):
         self.client.post(url)
         self.server.refresh_from_db()
         self.assertFalse(self.server.sync_enabled)
+
+    def test_toggle_change_record_keeps_the_previous_sync_state(self):
+        from core.models import ObjectChange
+        from django.contrib.contenttypes.models import ContentType
+
+        url = reverse("plugins:netbox_kea:server_sync_toggle", args=[self.server.pk])
+        response = self.client.post(url)
+        self.assertEqual(response.status_code, 302)
+        change = ObjectChange.objects.get(
+            changed_object_type=ContentType.objects.get_for_model(self.server),
+            changed_object_id=self.server.pk,
+            action="update",
+        )
+        self.assertIsNotNone(change.prechange_data)
+        self.assertIs(change.prechange_data["sync_enabled"], True)
+        self.assertIs(change.postchange_data["sync_enabled"], False)
 
     def test_post_toggles_sync_enabled_false_to_true(self):
         self.server.sync_enabled = False

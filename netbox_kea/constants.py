@@ -3,7 +3,7 @@
 # SPDX-FileCopyrightText: 2026 Andrew Backeby <andrew@backeby.eu>
 # SPDX-License-Identifier: Apache-2.0
 import ipaddress
-from typing import Literal
+from typing import Literal, get_args
 
 # The DHCP address families, and the value types their records carry. Defined here
 # because both the Reservation domain and the Subnet Catalogue describe the same two
@@ -12,6 +12,9 @@ from typing import Literal
 # The "Value" suffix is deliberate. netaddr exports its own IPAddress and IPNetwork,
 # which this package also uses, and the two are not interchangeable: the same address
 # built by each library compares unequal, so a mix-up makes a duplicate check miss.
+# NetBox stores IPRange.size in a PostgreSQL integer column.
+IP_RANGE_MAX_SIZE = 2_147_483_647
+
 Family = Literal[4, 6]
 IPAddressValue = ipaddress.IPv4Address | ipaddress.IPv6Address
 IPNetworkValue = ipaddress.IPv4Network | ipaddress.IPv6Network
@@ -242,3 +245,7 @@ KEA_DHCP6_STD_OPTIONS: list[tuple[str, int]] = [
 def kea_std_options(version: int) -> list[tuple[str, int]]:
     """Return the standard option (name, code) list for the given DHCP version."""
     return KEA_DHCP6_STD_OPTIONS if version == 6 else KEA_DHCP4_STD_OPTIONS
+
+
+StaleCleanupMode = Literal["remove", "deprecate", "none"]
+STALE_CLEANUP_MODES: tuple[StaleCleanupMode, ...] = get_args(StaleCleanupMode)

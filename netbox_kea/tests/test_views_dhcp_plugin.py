@@ -23,10 +23,10 @@ from netbox_kea.kea import KeaClient, KeaException
 from netbox_kea.views import dhcp_plugin_sync as dps
 
 from .kea_stub import _res_page, _subnet_list, stub_kea
-from .utils import _make_db_server
+from .utils import _make_db_server, plugins_config
 
 DHCP_PLUGIN = "netbox_dhcp"
-_PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30}}
+_PLUGINS_CONFIG = plugins_config()
 
 
 def _request_version(body: dict) -> int:
@@ -113,7 +113,7 @@ class FetchReservationSnapshotTest(TestCase):
             snapshot = dps._fetch_reservation_snapshot(self._server(), 4)
 
         self.assertIsNotNone(snapshot)
-        self.assertFalse(snapshot.complete)
+        self.assertFalse(snapshot.snapshot.complete)
 
     def test_returns_none_when_the_supported_snapshot_read_fails(self):
         responses = _sync_responses({4: {"subnet4": [{"id": 1, "subnet": "198.18.0.0/24"}]}})

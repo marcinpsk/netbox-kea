@@ -19,11 +19,11 @@ from netbox_kea.api.serializers import ServerSerializer
 from netbox_kea.models import Server
 
 from .kea_stub import stub_kea
-from .utils import _make_db_server
+from .utils import _make_db_server, plugins_config
 
 User = get_user_model()
 
-_PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30}}
+_PLUGINS_CONFIG = plugins_config()
 _VERSION_OK = {"version-get": {"result": 0, "arguments": {"extended": "2.4.0"}}}
 
 #: Every boolean the periodic sync job and the DHCP-plugin tab gate read.
@@ -33,6 +33,7 @@ SYNC_BOOLEANS = (
     "sync_reservations_enabled",
     "sync_prefixes_enabled",
     "sync_ip_ranges_enabled",
+    "sync_deprecate_prefixes_and_ranges",
     "sync_dhcp_plugin_enabled",
 )
 
@@ -107,6 +108,7 @@ class TestServerSyncFieldsOverRest(TestCase):
             "sync_reservations_enabled": False,
             "sync_prefixes_enabled": False,
             "sync_ip_ranges_enabled": False,
+            "sync_deprecate_prefixes_and_ranges": True,
             "sync_dhcp_plugin_enabled": True,
             "sync_vrf": self.vrf.pk,
         }

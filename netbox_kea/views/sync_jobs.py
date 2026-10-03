@@ -244,7 +244,7 @@ class ServerSyncNowView(LoginRequiredMixin, View):
             return HttpResponseForbidden()
         server = get_object_or_404(Server.objects.restrict(request.user, "change"), pk=pk)
         try:
-            KeaIpamSyncJob.enqueue(instance=server, server_pk=server.pk)
+            KeaIpamSyncJob.enqueue(instance=server, user=request.user, server_pk=server.pk)
             messages.success(request, f"Sync job enqueued for {server.name}.")
         except Exception:
             logger.exception("Failed to enqueue sync job for server %s", server.name)
@@ -260,6 +260,7 @@ class ServerSyncToggleView(LoginRequiredMixin, View):
         if not request.user.has_perm("netbox_kea.change_server"):
             return HttpResponseForbidden()
         server = get_object_or_404(Server.objects.restrict(request.user, "change"), pk=pk)
+        server.snapshot()
         server.sync_enabled = not server.sync_enabled
         try:
             server.save(update_fields=["sync_enabled"])

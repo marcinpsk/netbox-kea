@@ -1844,3 +1844,13 @@ class TestSubnetConfirmForm(SimpleTestCase):
         for cidr in ("", "nonsense", "2001:db8::/64"):
             with self.subTest(cidr=cidr):
                 self.assertFalse(SubnetConfirmForm(data={"subnet_cidr": cidr}, family=4).is_valid())
+
+
+class TestSyncVRFHelp(TestCase):
+    """Both operator forms explain the scope of the selected VRF."""
+
+    def test_edit_help_includes_reservation_addresses(self):
+        self.assertIn("reservation", str(ServerForm().fields["sync_vrf"].help_text).lower())
+
+    def test_import_help_includes_reservation_addresses(self):
+        self.assertIn("reservation", str(ServerImportForm().fields["sync_vrf"].help_text).lower())
