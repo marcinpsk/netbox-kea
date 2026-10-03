@@ -74,6 +74,12 @@ NetBox plugin for the [Kea DHCP](https://www.isc.org/kea/) server. Manage your D
 **DHCP Control**
 - Enable/disable DHCPv4 and DHCPv6 daemons from the NetBox UI
 
+**Server connection validation**
+- Creating a Server or changing connection values checks every enabled DHCP service.
+- Connection values include URLs, credentials, TLS settings, Control Agent routing and enabled DHCP families.
+- Metadata changes, such as names, tags and sync settings, work while Kea is unavailable. Submitting unchanged connection values sends no connectivity request.
+- Bulk edits reject the entire batch if one changed connection fails its check.
+
 **Dual-URL Server**
 - Optional separate URLs for the DHCPv4 and DHCPv6 endpoints
 - Supports Kea 3.0+ (each daemon exposes its own HTTP control socket) and split v4/v6 deployments
