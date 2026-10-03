@@ -60,7 +60,7 @@ SITES = (
     SaveSite("ipam_reconciliation.py", "_remove_stale_link", "link", "plain"),
     SaveSite("ipam_reconciliation.py", "_remove_stale_network_link", "link", "plain"),
     SaveSite("views/sync_jobs.py", "SyncJobsView.post", "sync_cfg", "plain"),
-    SaveSite("jobs.py", "KeaIpamSyncJob.run", "self.job", "framework"),
+    SaveSite("jobs.py", "KeaIpamSyncJob._run_sync", "self.job", "framework"),
     SaveSite("models.py", "Server.save", "super()", "framework"),
     SaveSite("models.py", "SyncConfig.save", "super()", "framework"),
 )

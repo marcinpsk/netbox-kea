@@ -343,6 +343,14 @@ The `Kea IPAM Sync` job runs automatically when `rqworker` is active:
 6. One server failing does not block others
 7. Summary logged per server and in total
 
+Each execution groups its native changelog records under one request ID, including MAC address changes.
+**Sync now** records the initiating user. Scheduled runs use the reserved user `netbox-kea-sync`.
+A job whose initiating user was deleted also uses system attribution.
+
+The job creates this attribution account inactive, with an unusable password and no permissions.
+Keep it inactive and without access grants. If an existing account with that name has login access or
+permissions, the job fails before synchronization and leaves the account unchanged.
+
 Each server's summary reports `created`, `updated`, `errors`, `prefix_errors`, `conflicts`, `disagreements`,
 `skipped`, `unowned` and `waiting`:
 

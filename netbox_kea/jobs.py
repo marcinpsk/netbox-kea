@@ -16,9 +16,16 @@ The ``PLUGINS_CONFIG["netbox_kea"]`` settings and their rules are in ``plugin_se
 from __future__ import annotations
 
 import logging
+from contextvars import copy_context
 from typing import TYPE_CHECKING, Any
+from uuid import UUID, uuid4
 
+from core import signals as core_signals
 from core.exceptions import JobFailed
+from django.contrib.auth import get_user_model
+from django.contrib.auth.hashers import make_password
+from django.http import HttpRequest
+from netbox.context_managers import event_tracking
 from netbox.jobs import JobRunner, system_job
 
 if TYPE_CHECKING:
@@ -40,6 +47,13 @@ _DEFAULT_INTERVAL = 5
 #: How many conflicting IPs to name in the job summary and log line.  A bare count
 #: tells an operator nothing about which manually-curated IPs the sync left alone.
 _CONFLICT_SAMPLE_SIZE = 20
+_SYNC_USER = "netbox-kea-sync"
+
+
+class _SyncJobRequest(HttpRequest):
+    """An empty worker request with NetBox's change-tracking request ID."""
+
+    id: UUID
 
 
 def _sync_one_server(
@@ -137,6 +151,18 @@ class KeaIpamSyncJob(JobRunner):
 
     class Meta:
         name = "Kea IPAM Sync"
+
+    def __init__(self, job: Any) -> None:
+        """Use the same job logger on each supported native runner."""
+        super().__init__(job)
+        self.logger = logging.getLogger(f"netbox.jobs.{type(self).__name__}")
+        self.logger.setLevel(logging.DEBUG)
+
+    @classmethod
+    def handle(cls, job: Any, *args: Any, **kwargs: Any) -> None:
+        """Refresh the queued actor before native lifecycle writes can restore a deleted user."""
+        job.refresh_from_db(fields=["user"])
+        super().handle(job, *args, **kwargs)
 
     @classmethod
     def enqueue_once(
@@ -238,9 +264,59 @@ class KeaIpamSyncJob(JobRunner):
 
     def run(self, *args: Any, **kwargs: Any) -> None:
         """Execute the sync across all servers. It fails before any read when a branch is active in the worker."""
+        self._fail_in_branch()
+        copy_context().run(self._run_tracked, *args, **kwargs)
+
+    def _run_tracked(self, *args: Any, **kwargs: Any) -> None:
+        """Track one execution without leaking native tracking state into the caller."""
+        # Older supported NetBox releases have no delete suppression history.
+        clear_history = getattr(core_signals, "clear_signal_history", None)
+        if clear_history is not None:
+            clear_history(sender=type(self))
+        try:
+            request = _SyncJobRequest()
+            request.method = "POST"
+            request.path = "/plugins/kea/sync-jobs/"
+            request.user = self._change_actor()
+            request.id = uuid4()
+            with event_tracking(request):
+                self._run_sync(*args, **kwargs)
+        finally:
+            if clear_history is not None:
+                clear_history(sender=type(self))
+
+    def _change_actor(self) -> Any:
+        """Return the initiator, or reserve a disabled account for system attribution."""
+        if self.job.user is not None:
+            return self.job.user
+        user_model: Any = get_user_model()
+        actor, _ = user_model.objects.get_or_create(
+            username__iexact=_SYNC_USER,
+            defaults={
+                "username": _SYNC_USER,
+                "is_active": False,
+                "is_superuser": False,
+                "password": make_password(None),
+            },
+        )
+        if (
+            actor.username != _SYNC_USER
+            or actor.is_active
+            or actor.is_superuser
+            or getattr(actor, "is_staff", False)
+            or actor.has_usable_password()
+            or actor.groups.exists()
+            or actor.user_permissions.exists()
+            or actor.object_permissions.exists()
+        ):
+            self.job.error = f"Reserved user {_SYNC_USER} must be inactive, without a usable password or permissions."
+            raise JobFailed(self.job.error)
+        return actor
+
+    def _run_sync(self, *args: Any, **kwargs: Any) -> None:
+        """Apply the configured synchronization and retain the per-server summary."""
         from .models import Server, SyncConfig
 
-        self._fail_in_branch()
         summary: list[dict] = []
         try:
             sync_cfg = SyncConfig.get()

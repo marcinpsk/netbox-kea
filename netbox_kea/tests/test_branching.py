@@ -1289,6 +1289,29 @@ class SyncJobInBranchTest(TransactionTestCase):
         self.assertEqual([query["sql"] for query in (*on_main.captured_queries, *on_branch.captured_queries)], [])
         self.assertIn(branch.name, job.error)
 
+    def test_the_real_runner_refuses_a_branch_without_actor_or_sync_side_effects(self):
+        from core.models import ObjectChange
+
+        _make_db_server(name="job")
+        branch = _provisioned_branch(self, "job-runner")
+        job = Job.objects.create(name=KeaIpamSyncJob.name, job_id=uuid.uuid4())
+        changes_before = ObjectChange.objects.count()
+
+        with activate_branch(branch), stub_kea({}) as kea, CaptureQueriesContext(connections["default"]) as queries:
+            KeaIpamSyncJob.handle(job)
+
+        job.refresh_from_db()
+        self.assertEqual(job.status, "failed")
+        self.assertIn(branch.name, job.error)
+        self.assertEqual(kea.commands(), [])
+        self.assertFalse(get_user_model().objects.filter(username__iexact="netbox-kea-sync").exists())
+        self.assertEqual(ObjectChange.objects.count(), changes_before)
+        self.assertFalse(IPAddress.objects.exists())
+        self.assertFalse(Prefix.objects.exists())
+        self.assertFalse(IPRange.objects.exists())
+        sync_tables = ("netbox_kea_server", "netbox_kea_syncconfig", "ipam_ipaddress", "ipam_prefix", "ipam_iprange")
+        self.assertFalse(any(table in query["sql"] for table in sync_tables for query in queries.captured_queries))
+
 
 # Guard 3 in a provisioned branch: the Kea transport.
 
