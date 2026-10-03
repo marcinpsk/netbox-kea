@@ -185,7 +185,7 @@ provisioned branch.
 | D9 | `Server.clean()` sends `version-get` | Out of scope, a follow-up | Move the connectivity check out of `clean()` into the form and serializer validation | A Server change record created by a Tag delete in a branch is written to main's changelog: the ObjectChange takes the loaded Server's database through its ContentType foreign key (`NB/netbox/models/features.py:117-127`, `NBB/database.py:49-50`), and NBB records no ChangeDiff for it (`NBB/signal_receivers.py:125-127`). Under D1 no Server change reaches a branch changelog, so no merge replays `Server.clean()` |
 | D10 | Kea client used from a thread pool | The client records the branch state at construction; `clone()` keeps it | Context variable only | Thread-pool workers do not inherit context variables; clones run in pools (`kea.py:772-789`, `views/leases.py:944`) |
 | D11 | Stale branch selection | Refuse with 409 `branch_selection_unusable` | Run the request on main, as for every NetBox view | A stale cookie or unready query runs on main (`NBB/utilities.py:548-597`, `NBB/middleware.py:53-89`), which the "no silent fallback" constraint forbids |
-| D12 | Write controls in the UI | A banner; the IPAddress panel hides its add links | Disable mutation controls | 44 mutation views. Refusal already meets condition 1; disabling controls is a follow-up |
+| D12 | Write controls in the UI | Disable mutation controls in the final rendered HTML, with an accessible reason; keep the banner and the IPAddress panel policy | Separate template annotations or browser-only disabling | Completed. `BranchRefusalMiddleware` transforms full pages and HTMX fragments through `branch_controls.py`. Targets come from the shared unsafe callback predicate, `_KeaChangeMixin` and generic CRUD classes. Mixed-method read pages remain navigable. Safe reads and main responses retain their behavior. The refusal seams remain the backstop for stale pages and direct requests |
 | D13 | Early Server delete guard | `pre_delete` receiver | At `delete()`, because `JobsMixin.delete()` removes jobs before the collector runs | `JobsMixin.delete()` wraps the job deletion and `super().delete()` in one `atomic(using=...)` (`NB/netbox/models/features.py:513-520`), so a `pre_delete` refusal rolls the job deletion back. Reopen if NetBox removes that transaction |
 | D14 | Startup validation of `exempt_models` | None; every plugin model remains main-only, including the ADR 0006 ownership link | Reject exemptions that break the required branchable set | No plugin model is branchable today, so no exemption can break the set |
 | D15 | Branch table footprint check per request | None | Validate before reads and core actions | Constraint: no branch predates this release. Guard 2 blocks a new branchable model without a design decision |
@@ -472,7 +472,11 @@ tests skipped. With real provisioning, it covers guards 1 to 4 and:
 - `snapshot()` before plugin updates (13 sites) and `KeaIpamSyncJob` writing IPAM with no
   ObjectChange: main changelog defects. With branching, merge conflict detection cannot see the
   job's edits.
-- Disabling mutation controls in a branch (D12).
+Mutation controls in a branch (D12) are complete. The rendered-response transformation disables
+mutation navigation, unsafe form submissions and HTMX requests. Focusable wrappers show the
+reason on hover and keyboard focus. Fixed tooltips remain visible outside responsive tables.
+The response tests walk provisioned-branch pages and cover native submission semantics, HTMX
+fragments and compression.
 
 ### Increments
 
