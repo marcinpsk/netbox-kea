@@ -7,6 +7,7 @@ from netbox.api.serializers import NetBoxModelSerializer
 from rest_framework import serializers
 
 from ..models import Server
+from ..server_connection import CONNECTION_FIELDS, connection_values, validate_connection_change
 
 #: Columns migration 0016 moved from NULL-or-blank to blank only. Every released
 #: version answered GET with null for these when unset.
@@ -46,6 +47,17 @@ class ServerSerializer(NetBoxModelSerializer):
         if isinstance(data, dict) and not isinstance(data, QueryDict):
             data = {key: "" if value is None and key in _OPTIONAL_TEXT_FIELDS else value for key, value in data.items()}
         return super().to_internal_value(data)
+
+    def validate(self, data):
+        """Check changed connections after native local and related-object validation."""
+        before = connection_values(self.instance) if self.instance is not None else None
+        validated = super().validate(data)
+        if not self.nested:
+            candidate = self.instance
+            if candidate is None:
+                candidate = Server(**{field: validated[field] for field in CONNECTION_FIELDS if field in validated})
+            validate_connection_change(candidate, before)
+        return validated
 
     class Meta:
         model = Server

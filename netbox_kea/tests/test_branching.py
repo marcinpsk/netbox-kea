@@ -76,6 +76,7 @@ from netbox_kea.tests.utils import (  # noqa: E402
     DISPATCHED_EVENTS,
     _make_db_server,
     _refusal_receivers,
+    linked_dhcp_targets,
 )
 
 # Changing this set needs a design decision (docs/design/ipam-ownership-branching.md).
@@ -850,6 +851,50 @@ def _save_with(instance: models.Model, **fields: object) -> None:
     for name, value in fields.items():
         setattr(instance, name, value)
     instance.save()
+
+
+class DhcpTargetBranchLifecycleTest(TransactionTestCase):
+    """DHCP target deletes keep main's links in a branch and remove them during merge."""
+
+    def setUp(self):
+        if not apps.is_installed("netbox_dhcp"):
+            if _required:
+                self.fail("The branching CI job requires netbox_dhcp for target deletion tests.")
+            self.skipTest("netbox_dhcp is not installed")
+        self.user = get_user_model().objects.create_superuser("dhcp-target-admin")
+        self.server = _make_db_server(name="dhcp-target-links")
+        self.targets = linked_dhcp_targets(self.server)
+        self.branch = _provisioned_branch(self, "dhcp target delete")
+
+    def _delete_and_merge(self, *, queryset):
+        link_pks = {link.pk for _, link in self.targets}
+        with activate_branch(self.branch), event_tracking(_change_request(self.user)):
+            for target, _ in self.targets:
+                with self.subTest(model=target._meta.label, object_id=target.pk):
+                    self.assertTrue(supports_branching(type(target)))
+                    if queryset:
+                        type(target).objects.filter(pk=target.pk).delete()
+                    else:
+                        type(target).objects.get(pk=target.pk).delete()
+                    self.assertFalse(type(target).objects.filter(pk=target.pk).exists())
+                    self.assertSetEqual(set(KeaDhcpLink.objects.values_list("pk", flat=True)), link_pks)
+        for target, _ in self.targets:
+            self.assertTrue(type(target).objects.filter(pk=target.pk).exists())
+        self.assertSetEqual(set(KeaDhcpLink.objects.values_list("pk", flat=True)), link_pks)
+
+        self.branch.merge(user=self.user)
+
+        self.branch.refresh_from_db()
+        self.assertEqual(self.branch.status, BranchStatusChoices.MERGED)
+        for target, link in self.targets:
+            self.assertFalse(type(target).objects.filter(pk=target.pk).exists())
+            self.assertFalse(KeaDhcpLink.objects.filter(pk=link.pk).exists())
+
+    def test_target_instance_deletes_keep_links_until_merge(self):
+        self._delete_and_merge(queryset=False)
+
+    def test_target_queryset_deletes_keep_links_until_merge(self):
+        self._delete_and_merge(queryset=True)
 
 
 class PluginRowWritesInBranchTest(TransactionTestCase):
@@ -1673,8 +1718,7 @@ class UrlTreeGuardTest(TransactionTestCase):
         client, headers = self._client(user, route, None)
         with stub_kea(_recorded_kea()) as kea:
             on_main = client.generic(method, url, headers=headers)
-        # The format-suffix URLs of the REST Kea actions answer 500 on main (#245).
-        if method == "GET" and "format" not in route.parameters:
+        if method == "GET":
             self.assertEqual(on_main.status_code, _main_get_status(route), f"{url} on main: {kea.commands()}")
 
         client, headers = self._client(user, route, branch)

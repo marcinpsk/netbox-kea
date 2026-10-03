@@ -72,6 +72,7 @@ class UpgradeAdoptionTest(TestCase):
 
     def test_rest_edit_preserves_completion_written_during_connectivity_check(self):
         server = _server("owner")
+        self.assertTrue(server.ssl_verify)
         user = get_user_model().objects.create(username="concurrent-operator", is_superuser=True)
         client = APIClient()
         client.force_authenticate(user)
@@ -84,16 +85,18 @@ class UpgradeAdoptionTest(TestCase):
             observed["completed"] = server.ipam_first_complete_at
             return {"result": 0, "arguments": {"extended": "test"}}
 
-        with _kea(responses={"version-get": finish_job}):
+        with _kea(responses={"version-get": finish_job}) as kea:
             response = client.patch(
                 reverse("plugins-api:netbox_kea-api:server-detail", args=[server.pk]),
-                {"name": "edited-owner"},
+                {"name": "edited-owner", "ca_url": server.ca_url, "ssl_verify": False},
                 format="json",
             )
         self.assertEqual(response.status_code, 200)
+        self.assertEqual(kea.commands(), ["version-get"])
         self.assertIsNotNone(observed["completed"])
         server.refresh_from_db()
         self.assertEqual(server.name, "edited-owner")
+        self.assertFalse(server.ssl_verify)
         self.assertEqual(server.ipam_initial_observations, observed["receipts"])
         self.assertEqual(server.ipam_first_complete_at, observed["completed"])
 

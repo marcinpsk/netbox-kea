@@ -215,6 +215,24 @@ def _identity_from_request(request: HttpRequest, version: Family) -> Reservation
         raise BadRequest(f"Invalid DHCPv{version} Reservation Identity.") from exc
 
 
+def _read_reservation_target(
+    server: Server,
+    version: Family,
+    subnet: VerifiedSubnet | None,
+    catalogue: CatalogueSnapshot,
+    identity: ReservationIdentity,
+) -> tuple[Reservation, KeaClient, CatalogueSnapshot]:
+    """Read one exact Reservation within a verified Subnet."""
+    if subnet is None:
+        raise Http404("Reservation Subnet not found.")
+    scope = InSubnetReservationScope(subnet.identity)
+    client = server.get_client(version=version)
+    reservation = client.reservation_by_identity(version, catalogue, scope, identity)
+    if reservation is None:
+        raise Http404("Reservation not found.")
+    return reservation, client, catalogue
+
+
 @contextmanager
 def _reservation_target_scope(
     server: Server,
@@ -225,17 +243,10 @@ def _reservation_target_scope(
     """Keep one Reservation target and its Catalogue Snapshot live through mutation."""
     with MutationScope(server, version) as mutation_scope:
         subnet = mutation_scope.find_by_id(subnet_id)
-        if subnet is None:
-            raise Http404("Reservation Subnet not found.")
-        scope = InSubnetReservationScope(subnet.identity)
         catalogue = mutation_scope.snapshot
         if catalogue is None:
             raise RuntimeError("The Subnet Catalogue is unavailable.")
-        client = server.get_client(version=version)
-        reservation = client.reservation_by_identity(version, catalogue, scope, identity)
-        if reservation is None:
-            raise Http404("Reservation not found.")
-        yield reservation, client, catalogue
+        yield _read_reservation_target(server, version, subnet, catalogue, identity)
 
 
 def _load_target(
@@ -244,9 +255,11 @@ def _load_target(
     subnet_id: int,
     identity: ReservationIdentity,
 ) -> Reservation:
-    """Return one validated Reservation without exposing its expired Catalogue Snapshot."""
-    with _reservation_target_scope(server, version, subnet_id, identity) as (reservation, _client, _catalogue):
-        return reservation
+    """Return one live Reservation without invalidating the display snapshots."""
+    observation = subnet_catalogue.read_identity(server, version)
+    subnet = observation.find_by_id(subnet_id)
+    reservation, _client, _catalogue = _read_reservation_target(server, version, subnet, observation.snapshot, identity)
+    return reservation
 
 
 def _journal_mutation(

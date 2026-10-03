@@ -55,7 +55,9 @@ if TYPE_CHECKING:
 
 from django.apps import apps
 from django.db import transaction
+from django.db.models.signals import post_delete
 
+from .. import branching
 from ..constants import IPNetworkValue
 from ..dhcp_options import DHCPOption
 from ..kea import subnet_network
@@ -80,6 +82,28 @@ PLUGIN_APP_LABEL = "netbox_dhcp"
 def is_available() -> bool:
     """Return ``True`` when the optional NetBox DHCP plugin is installed."""
     return apps.is_installed(PLUGIN_APP_LABEL)
+
+
+def register_link_cleanup() -> None:
+    """Remove stale Kea links when a supported DHCP target is deleted on main."""
+    if not is_available():
+        return
+    for name in ("Subnet", "HostReservation"):
+        model = _model(name)
+        post_delete.connect(
+            _delete_target_links,
+            sender=model,
+            dispatch_uid=f"netbox_kea.dhcp_target_links.{model._meta.label}",
+        )
+
+
+def _delete_target_links(sender, instance, using: str, **kwargs) -> None:
+    if branching.active_branch() is not None:
+        return
+    from django.contrib.contenttypes.models import ContentType
+
+    content_type = ContentType.objects.db_manager(using).get_for_model(sender)
+    _link_model().objects.using(using).filter(object_type_id=content_type.pk, object_id=instance.pk).delete()
 
 
 def _ownership_report() -> SyncReport:
