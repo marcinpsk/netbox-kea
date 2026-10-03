@@ -10,7 +10,7 @@ import pytest
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.db.models.signals import pre_delete, pre_save
-from django.test import SimpleTestCase, TestCase
+from django.test import SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 
 from netbox_kea import branching
@@ -72,6 +72,16 @@ class MiddlewareWithoutBranchingTest(TestCase):
         self.assertEqual(kea.commands(), ["version-get"])
         server.refresh_from_db()
         self.assertEqual(server.ca_url, "https://after.example.com")
+
+    @override_settings(ROOT_URLCONF="netbox_kea.tests.branch_control_urls")
+    def test_rendered_controls_keep_their_original_bytes_without_branching(self):
+        from netbox_kea.tests.branch_control_urls import HTML
+
+        self.client.force_login(get_user_model().objects.create_superuser("no-branch-controls"))
+        response = self.client.get("/kea-controls/read/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, HTML.encode())
 
 
 def _imports_netbox_branching(path: Path) -> bool:
