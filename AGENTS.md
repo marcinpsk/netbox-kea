@@ -173,8 +173,9 @@ URL request
   `dhcp6_url` (dual-URL mode), CA and per-protocol credentials, TLS fields
   (`ssl_verify`, `ca_file_path`, `client_cert_path`, `client_key_path`),
   `has_control_agent`, per-server IPAM sync toggles, `sync_vrf` (`PROTECT` FK to `ipam.VRF`;
-  blank = global table), and `persist_config`. `clean()` runs a **live
-  `version-get` connectivity check** per enabled service before saving.
+  blank = global table), and `persist_config`. `clean()` validates local settings only.
+  `server_connection.py` checks enabled services on UI, REST, CSV and bulk submissions
+  that create a Server or change connection values. Metadata and unchanged connection values send no HTTP.
   `get_client(version=4|6|None)` returns a protocol-aware `KeaClient`.
 - **`SyncConfig` model** (`models.py`): singleton (pk=1) for global sync settings —
   `interval_minutes`, `sync_enabled` (global kill-switch), type toggles. Migration 0018
@@ -408,9 +409,9 @@ resort, reserved for true external boundaries you cannot run locally.
   `NetBoxModel` with standard generic views + `NetBoxModelViewSet`), use NetBox's
   `ViewTestCases` / `APIViewTestCases` (see `test_server_generic.py`). Wire plugin
   namespaces: UI `_get_base_url` → `plugins:netbox_kea:server_{}`; API
-  `view_namespace = "plugins-api:netbox_kea"`. `Server.clean()`'s live check (and the
-  REST serializer's `full_clean()`) are answered by `stub_kea({"version-get": ...})`
-  in `setUp`; build fixtures with `bulk_create` (skips `Model.clean()`). These mixins
+  `view_namespace = "plugins-api:netbox_kea"`. Submission connectivity checks are
+  answered by `stub_kea({"version-get": ...})` in `setUp`. Model validation is local;
+  build fixtures with `bulk_create`. These mixins
   don't fit the Kea-proxy views (leases/subnets/reservations over live daemon data) —
   those stay `stub_kea`-driven.
 - **Query-count baselines.** The list-view mixins assert an exact SQL query count
