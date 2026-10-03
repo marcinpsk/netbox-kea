@@ -15,6 +15,7 @@ from typing import Any
 
 from django.apps import apps
 from django.contrib import messages
+from django.core.exceptions import ObjectDoesNotExist
 from django.db import models
 from django.db.models.signals import pre_delete, pre_save
 from django.http import HttpRequest, HttpResponse, JsonResponse
@@ -122,7 +123,10 @@ def _refuse_delete_in_branch(sender: Any, instance: Any, **kwargs: Any) -> None:
 def _refuse_owned_delete_in_branch(sender: Any, instance: Any, **kwargs: Any) -> None:
     if (branch := active_branch()) is None:
         return
-    owned = instance.owned_object
+    try:
+        owned = instance.owned_object
+    except ObjectDoesNotExist:
+        raise BranchActive(f"A delete of {sender._meta.label} {instance.pk}", branch) from None
     raise BranchActive(
         f"A delete of {owned._meta.verbose_name} {owned}, which Kea Server {instance.server} owns,", branch
     )

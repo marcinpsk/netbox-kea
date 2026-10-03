@@ -1436,6 +1436,8 @@ class IPAMPhaseConcurrencyTest(TransactionTestCase):
         return holder
 
     def _start(self, name: str, work: Callable[[], object]) -> threading.Thread:
+        self.results.pop(name, None)
+
         def run():
             try:
                 self.results[name] = work()
@@ -1589,7 +1591,75 @@ class IPAMPhaseConcurrencyTest(TransactionTestCase):
         ip.refresh_from_db()
         self.assertEqual(ip.status, "deprecated")
 
-    def _delete_server_during_cleanup(self, owner, deleted_server, phases=None):
+    def test_job_does_not_publish_completion_when_a_policy_save_refuses_cleanup(self):
+        from django.db import DatabaseError, transaction
+
+        from netbox_kea.jobs import _sync_one_server
+        from netbox_kea.models import SyncConfig
+
+        policy_server = _server("policy-server", sync_enabled=False)
+        for index, policy in enumerate(("server", "sync-config"), start=1):
+            with self.subTest(policy=policy):
+                owner = _server(f"owner-{policy}")
+                _run_job(owner, [])
+                address = f"198.18.0.{index}"
+                ip = NbIP.objects.create(address=f"{address}/24", description="[kea-sync: lease]")
+                _reconcile(owner, [_lease(address)])
+                owner.refresh_from_db()
+                before = owner.ipam_initial_observations
+                first_complete = owner.ipam_first_complete_at
+                saved = threading.Event()
+                resume_save = threading.Event()
+                sqlstates = []
+
+                def save_policy(policy=policy, saved=saved, resume_save=resume_save):
+                    with transaction.atomic():
+                        if policy == "server":
+                            current = type(policy_server).objects.get(pk=policy_server.pk)
+                            current.name = "policy-server-saved"
+                            current.save(update_fields=["name"])
+                        else:
+                            current = SyncConfig.get()
+                            current.interval_minutes += 1
+                            current.save(update_fields=["interval_minutes"])
+                        saved.set()
+                        if not resume_save.wait(timeout=30):
+                            raise TimeoutError("Policy save was not resumed")
+
+                def observe_cleanup(execute, sql, params, many, context, sqlstates=sqlstates):
+                    try:
+                        return execute(sql, params, many, context)
+                    except DatabaseError as exc:
+                        sqlstates.append(getattr(exc.__cause__, "sqlstate", None))
+                        raise
+
+                self._start(policy, save_policy)
+                try:
+                    self.assertTrue(saved.wait(timeout=30), self.results)
+                    with _kea(), connection.execute_wrapper(observe_cleanup):
+                        report = _sync_one_server(owner, True, True, True, True, 0)
+                finally:
+                    resume_save.set()
+                    self._join()
+
+                self.assertNotIsInstance(self.results[policy], BaseException)
+                self.assertEqual(sqlstates, ["55P03"])
+                self.assertEqual((report.errors, report.prefix_errors), (1, 0))
+                self.assertFalse(report.complete)
+                self.assertTrue(IPAMOwnershipLink.objects.filter(server=owner, ip_address=ip).exists())
+                owner.refresh_from_db()
+                self.assertEqual(owner.ipam_initial_observations, before)
+                self.assertEqual(owner.ipam_first_complete_at, first_complete)
+
+                with _kea():
+                    retry = _sync_one_server(owner, True, True, True, True, 0)
+                self.assertEqual((retry.errors, retry.prefix_errors), (0, 0))
+                self.assertTrue(retry.complete)
+                self.assertFalse(NbIP.objects.filter(pk=ip.pk).exists())
+                owner.refresh_from_db()
+                self.assertNotEqual(owner.ipam_initial_observations, before)
+
+    def _delete_server_during_cleanup(self, owner, deleted_server, phases=None, *, expect_lock_error: bool):
         from django.db import DatabaseError
 
         from netbox_kea.models import Server
@@ -1635,9 +1705,9 @@ class IPAMPhaseConcurrencyTest(TransactionTestCase):
 
         self.assertNotIsInstance(self.results["delete-server"], BaseException)
         report = self._report("cleanup")
-        self.assertLessEqual(report.errors + report.prefix_errors, 1)
-        self.assertTrue(set(sqlstates) <= {"55P03"}, sqlstates)
-        if sqlstates:
+        self.assertEqual(sqlstates, ["55P03"] if expect_lock_error else [])
+        self.assertEqual(report.errors + report.prefix_errors, int(expect_lock_error))
+        if expect_lock_error:
             self.assertFalse(report.complete)
             with _kea():
                 retry = reconcile(owner, 4, phases)
@@ -1650,7 +1720,7 @@ class IPAMPhaseConcurrencyTest(TransactionTestCase):
         ip = NbIP.objects.create(address="198.18.0.1/24", description="[kea-sync: lease]")
         _reconcile(owner, [_lease("198.18.0.1")])
 
-        self._delete_server_during_cleanup(owner, owner)
+        self._delete_server_during_cleanup(owner, owner, expect_lock_error=True)
 
         self.assertFalse(IPAMOwnershipLink.objects.filter(ip_address=ip).exists())
         ip.refresh_from_db()
@@ -1668,7 +1738,7 @@ class IPAMPhaseConcurrencyTest(TransactionTestCase):
         ip.description = "Operator address"
         ip.save(update_fields=["description"])
 
-        self._delete_server_during_cleanup(owner, sibling)
+        self._delete_server_during_cleanup(owner, sibling, expect_lock_error=True)
 
         self.assertFalse(IPAMOwnershipLink.objects.filter(ip_address=ip).exists())
         ip.refresh_from_db()
@@ -1702,7 +1772,7 @@ class IPAMPhaseConcurrencyTest(TransactionTestCase):
                 with stub_kea(_catalogue_responses_for_subnets(4, [])):
                     phase = phase_type(read_catalogue(owner, 4))
 
-                self._delete_server_during_cleanup(owner, sibling, phases=[phase])
+                self._delete_server_during_cleanup(owner, sibling, phases=[phase], expect_lock_error=True)
 
                 self.assertFalse(IPAMOwnershipLink.objects.filter(**{field: obj}).exists())
                 obj.refresh_from_db()
