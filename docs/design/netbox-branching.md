@@ -123,7 +123,7 @@ Cascades with a branch active (*derived*):
 |---|---|
 | Delete a Server | Branch Server row deleted. `KeaDhcpLink` rows (table not copied) deleted **in main**, with no ObjectChange. `core.Job`, Bookmark and Subscription rows deleted in main |
 | Delete the VRF in `Server.sync_vrf` | Branch Server copy nulled, with no ObjectChange (`related_name="+"` hides the relation from NetBox's changelog loop). Main unchanged until merge |
-| Delete a netbox_dhcp object a `KeaDhcpLink` points at | No cascade (GenericForeignKey). The main link row points at a deleted id. Same without branching |
+| Delete a netbox_dhcp object a `KeaDhcpLink` points at | Target delete receivers remove matching links in the same transaction on main. A branch delete leaves main's links unchanged |
 | Delete an IPAM object the sync wrote | No plugin table references it (ADR 0006 is accepted, not implemented). netbox_dhcp `PROTECT` keys raise `ProtectedError` for Prefix and IPRange |
 
 Migrations: only 0015 has `RunPython` (deletes invalid `KeaDhcpLink` rows); branch migrate fakes it,
@@ -176,7 +176,7 @@ provisioned branch.
 |---|---|---|---|---|
 | D1 | Is `Server` branchable | No: resolver `False`. One row per pk, so the Kea client and the Redis keys always use main's current connection fields | Yes. Branch reads use the branch copy's connection fields. Branch sync is refused when main changed Server create, delete or connection fields; the operator recreates the branch | Server changelogs censor passwords (`models.py:341-361`), so a synced connection edit writes a censored password into the branch copy. Sync selects by branchable type (`NBB/models/branches.py:412-426`), so a main-only Server never syncs. With a branchable Server, any main edit of a Server's connection fields blocks sync of every open branch, and the design needs a cache bypass (D6), sync and merge validators (D8), and a stale-copy policy; a main-only Server needs none of them |
 | D2 | `Server.sync_vrf` | `SET_NULL` to `PROTECT` | Keep `SET_NULL`; make the reverse relation visible so NetBox snapshots the Server before it nulls the key | With Server main-only, a `SET_NULL` cascade from a branch VRF delete runs on the branch connection and resolves `netbox_kea_server` to main, so main changes at once. `PROTECT` raises in `Collector.collect()` before any write or signal. Today a VRF delete silently moves the next sync into the global VRF. **Operator-visible change in main:** a VRF that a Server syncs into can no longer be deleted until the Server stops using it |
-| D3 | `KeaDhcpLink` | Main-only; a link to a deleted target stays until the next import relinks (today's behaviour) | Branchable, plus receivers that delete links when a netbox_dhcp target is deleted | A receiver running in a branch against a main-only table deletes main rows. Branchable links need revert and sync validators (sync writes synthetic DELETEs for them, `branches.py:837-897`). Readers already treat a missing target as absent (`integrations/dhcp_plugin.py:650-654`). The receivers improve main without branching too; they are a follow-up. Reopen if a reader treats a dangling link as a live object |
+| D3 | `KeaDhcpLink` | Main-only; target delete receivers clean up links on main and skip active branches | Branchable, plus receivers that delete links when a netbox_dhcp target is deleted | A receiver running in a branch against a main-only table would delete main rows, so it skips every active branch. Merge replays the target delete on main and removes its links in that transaction. Branchable links would need revert and sync validators. Readers treat a missing target as absent |
 | D4 | Refusal seams | Middleware (by HTTP method), the Kea transport, `pre_save`/`pre_delete` receivers on the three plugin models, a job guard | Middleware (by classified operation), view dispatch again for `AsyncViewJob`, REST action guards, guards on every domain write, an AST write-boundary gate | Every plugin HTTP entry, including those that enqueue `AsyncViewJob` or `AsyncAPIJob`, passes plugin middleware first. A job can only be queued by a request that the middleware already let through, so a branch-context plugin job cannot exist. A Custom Script reaches plugin write code without plugin middleware (`NB/extras/jobs.py:398-403`); the transport and the receivers refuse its Kea mutations and plugin instance writes, and the contract lists the rest. Reopen on another caller that reaches plugin write code with a branch active and without plugin middleware |
 | D5 | Read versus write | HTTP method; no exceptions | A classified inventory of every operation | The one read-only POST (lease bulk delete confirmation, `views/leases.py:534-548`) leads only to a delete that is refused anyway. No GET reaches a Kea write |
 | D6 | Redis caches in a branch | Shared; valid because D1 gives one connection per Server | Bypass both caches in a branch | Follows D1 |
@@ -391,8 +391,9 @@ validator is registered. Known limits, documented:
   (TaggedItem is branchable), and NetBox writes the Server change record to main's changelog
   before any merge (see D9). Merge replays the Tag delete in main. A revert of that merge
   does not restore the Servers' tag assignments.
-- A link whose netbox_dhcp target a merged branch deleted stays until the next import relinks
-  (today's behaviour for a delete in main).
+- A merge replays a linked netbox_dhcp target delete on main. The delete receiver removes its
+  links in the same transaction. A revert can restore the target, but does not restore its links;
+  the next import relinks it.
 
 ### Migrations
 
@@ -460,8 +461,9 @@ tests skipped. With real provisioning, it covers guards 1 to 4 and:
 - a Tag on a Server deleted in a branch: the Server change record is in main's changelog and no
   Server ChangeDiff exists; after merge, main's Server has lost the tag, its other fields
   (credentials included) are unchanged, and the Kea stub recorded nothing;
-- a netbox_dhcp Subnet delete in a branch leaves main's link; merge leaves it dangling; the next
-  import relinks.
+- netbox_dhcp Subnet and Global Reservation deletes in a branch leave main's links; merge
+  removes them. Instance and queryset deletes run through real provisioned branches. Main
+  deletion tests also cover content type and object ID isolation, and transaction rollback.
 
 ### Out of scope, follow-ups
 
@@ -470,7 +472,6 @@ tests skipped. With real provisioning, it covers guards 1 to 4 and:
 - `snapshot()` before plugin updates (13 sites) and `KeaIpamSyncJob` writing IPAM with no
   ObjectChange: main changelog defects. With branching, merge conflict detection cannot see the
   job's edits.
-- netbox_dhcp target deletion receivers for `KeaDhcpLink` (D3).
 - Disabling mutation controls in a branch (D12).
 
 ### Increments
