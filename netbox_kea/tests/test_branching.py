@@ -930,6 +930,29 @@ class PluginRowWritesInBranchTest(TransactionTestCase):
 
         self.assertTrue(Job.objects.filter(pk=job.pk).exists(), "the refused delete removed the Server's job")
 
+    def test_deletes_are_refused_when_main_created_the_owned_object_after_provisioning(self):
+        objects = (
+            IPAddress.objects.create(address="198.18.0.10/24"),
+            Prefix.objects.create(prefix="198.18.0.0/24"),
+            IPRange.objects.create(
+                start_address=IPNetwork("198.18.0.100/24"), end_address=IPNetwork("198.18.0.199/24")
+            ),
+        )
+        links = [_link(self.server, obj) for obj in objects]
+        before = _ipam_state()
+        for obj, link in zip(objects, links, strict=True):
+            with self.subTest(model=obj._meta.label), activate_branch(self.branch):
+                self.assertFalse(type(obj).objects.filter(pk=obj.pk).exists())
+                with self.assertRaises(branching.BranchActive) as refused:
+                    IPAMOwnershipLink.objects.filter(pk=link.pk).delete()
+                self.assertIs(refused.exception.branch, self.branch)
+                self.assertIn(f"A delete of {link._meta.label} {link.pk}", str(refused.exception))
+
+        with activate_branch(self.branch), self.assertRaises(branching.BranchActive):
+            Server.objects.filter(pk=self.server.pk).delete()
+
+        self.assertEqual(_ipam_state(), before)
+
     def test_on_main_a_save_and_a_delete_are_not_refused(self):
         self.server.ca_url = _AFTER
         self.server.save()
