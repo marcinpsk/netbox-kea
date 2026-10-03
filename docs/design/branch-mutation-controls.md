@@ -65,3 +65,22 @@ The Server response and browser regressions failed before the transformation and
 The route-derived page walk compares populated main and branch pages, including HTMX fragments. An independent scan rejects remaining mutation targets. The browser coverage checks all six requested page families, hover and keyboard explanations, tooltip clipping, a refreshed lease table and native Enter submission. It compares real Kea and NetBox state before and after the interactions. Stale enabled pages still exercise the refusal backstop.
 
 Main responses, absent-plugin responses, JSON and streaming responses retain their behavior. The response tests also cover the real compression middleware chain and distinct tooltip identifiers across fragments.
+
+## Response encoder ordering, candidate r3
+
+The rendered-response seam assumes decoded HTML. An additional inner gzip middleware can encode the response before the transformer and cause a decode error. NetBox appends plugin middleware in plugin order, then imports local settings. Its plugin validation hook therefore cannot inspect the complete chain. The accepted middleware owner must validate the completed chain without mutating another plugin's configuration.
+
+The coordinator and an independent GPT-6.1 Sol designer considered the same factual brief without seeing each other's proposals. Both selected validation in `branching.py`, called during plugin readiness and middleware construction. The class guard recognizes Django gzip middleware and its subclasses and requires each encoder before every branch-refusal middleware in request order. This makes encoding run after HTML transformation on the response path. An invalid order raises an actionable configuration error before a view runs. Without branching, the guard is inactive.
+
+| Decision | Coordinator | Independent designer | Disposition |
+| --- | --- | --- | --- |
+| Owner and seam | Completed Django middleware chain in `branching.py` | Same | Adopt. Both readiness and rebuilt handlers use one validator. |
+| Configuration | Validate and explain the order | Same | Adopt. Do not silently reorder another plugin. |
+| Encoder detection | Django gzip and subclasses | Same | Adopt a bounded class guard. Generic middleware factories cannot be reliably classified as encoders. |
+| Unknown encoded HTML | Explain the unsupported ordering before decoding | Same | Adopt a diagnostic backstop. Do not skip mutation disabling. |
+
+Decompressing and recompressing is rejected because it transfers compression and metadata ownership and can discard Django's security padding. Returning encoded HTML without transformation is rejected because it keeps enabled mutation controls. Moving policy into individual views or templates is rejected because it loses coverage of inherited controls and fragments.
+
+Acceptance for r3: a real correctly ordered gzip chain returns compressed disabled controls with valid length and `Vary`; known wrong order fails while loading the chain and at readiness; subclasses and duplicate mixed-order encoders are checked; absent branching retains its behavior. A custom pre-encoded HTML response raises an explicit configuration error without a silent bypass. The remaining response-type guards continue to pass.
+
+Astra at high reasoning ratified r3 in a read-only sandbox. The implementation uses one validator at readiness and handler construction. The real regressions failed before the fix: incorrect middleware order was accepted, and a pre-encoded response raised a decode error. After the fix, the complete branching module passed with 84 tests and 1,107 subtests. The absent-plugin module passed with nine tests. The correctly ordered chain retains compressed disabled controls, response length and `Vary`. Main, non-HTML and streaming response controls also pass.

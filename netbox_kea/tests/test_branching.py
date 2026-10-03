@@ -2147,15 +2147,26 @@ class RenderedSubmissionControlsTest(TransactionTestCase):
 
         from bs4 import BeautifulSoup
 
-        middleware = ["django.middleware.gzip.GZipMiddleware", *settings.MIDDLEWARE]
+        middleware = [
+            "django.middleware.gzip.GZipMiddleware",
+            "netbox_kea.tests.branch_control_urls.passthrough",
+            *settings.MIDDLEWARE,
+        ]
         with override_settings(MIDDLEWARE=middleware):
             response = self.client.get("/kea-controls/read/", headers={"Accept-Encoding": "gzip"})
 
         self.assertEqual(response["Content-Encoding"], "gzip")
+        self.assertIn("Accept-Encoding", response["Vary"])
         page = BeautifulSoup(gzip.decompress(response.content), "html.parser")
         self.assertEqual(page.find(id="save")["aria-disabled"], "true")
         self.assertFalse(page.find(id="edit").has_attr("href"))
         self.assertEqual(int(response["Content-Length"]), len(response.content))
+
+    def test_preencoded_html_reports_a_configuration_error_before_decoding(self):
+        from django.core.exceptions import ImproperlyConfigured
+
+        with self.assertRaisesRegex(ImproperlyConfigured, "before.*BranchRefusalMiddleware"):
+            self.client.get("/kea-controls/read/?response=encoded")
 
     def test_htmx_fragments_disable_controls_with_their_own_accessible_reasons(self):
         from bs4 import BeautifulSoup
@@ -2169,3 +2180,44 @@ class RenderedSubmissionControlsTest(TransactionTestCase):
             reason_ids.append(wrapper["aria-describedby"])
             self.assertEqual(page.find(id=reason_ids[-1])["role"], "tooltip")
         self.assertNotEqual(*reason_ids, "a fragment must not reuse a tooltip ID that can remain on the full page")
+
+
+class ResponseMiddlewareOrderTest(SimpleTestCase):
+    def test_gzip_after_refusal_is_rejected_while_loading_the_real_chain(self):
+        from django.core.exceptions import ImproperlyConfigured
+        from django.core.handlers.base import BaseHandler
+
+        for encoder in (
+            "django.middleware.gzip.GZipMiddleware",
+            "netbox_kea.tests.branch_control_urls.GZipSubclass",
+            "netbox_kea.tests.branch_control_urls.GZipAlias",
+        ):
+            for refusal in (
+                "netbox_kea.branching.BranchRefusalMiddleware",
+                "netbox_kea.tests.branch_control_urls.RefusalSubclass",
+                "netbox_kea.tests.branch_control_urls.RefusalAlias",
+            ):
+                for outer in ([], ["django.middleware.gzip.GZipMiddleware"]):
+                    with self.subTest(encoder=encoder, refusal=refusal, outer=outer):
+                        with override_settings(MIDDLEWARE=[*outer, refusal, encoder]):
+                            with self.assertRaisesRegex(ImproperlyConfigured, "before.*BranchRefusalMiddleware"):
+                                BaseHandler().load_middleware()
+
+    def test_startup_registration_rejects_wrong_gzip_order(self):
+        from django.core.exceptions import ImproperlyConfigured
+
+        middleware = [*settings.MIDDLEWARE, "django.middleware.gzip.GZipMiddleware"]
+        with override_settings(MIDDLEWARE=middleware):
+            with self.assertRaisesRegex(ImproperlyConfigured, "before.*BranchRefusalMiddleware"):
+                apps.get_app_config("netbox_kea").ready()
+
+    def test_correct_order_accepts_a_regular_middleware_factory(self):
+        from django.core.handlers.base import BaseHandler
+
+        middleware = [
+            "django.middleware.gzip.GZipMiddleware",
+            "netbox_kea.tests.branch_control_urls.passthrough",
+            *settings.MIDDLEWARE,
+        ]
+        with override_settings(MIDDLEWARE=middleware):
+            BaseHandler().load_middleware()

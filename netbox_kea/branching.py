@@ -16,14 +16,17 @@ from http import HTTPStatus
 from typing import Any
 
 from django.apps import apps
+from django.conf import settings
 from django.contrib import messages
-from django.core.exceptions import ObjectDoesNotExist
+from django.core.exceptions import ImproperlyConfigured, ObjectDoesNotExist
 from django.db import connections, models
 from django.db.models.signals import pre_delete, pre_save
 from django.http import HttpRequest, HttpResponse, JsonResponse
+from django.middleware.gzip import GZipMiddleware
 from django.shortcuts import render
 from django.urls import reverse
 from django.utils.html import escape
+from django.utils.module_loading import import_string
 from django_htmx.http import HttpResponseClientRedirect, HttpResponseClientRefresh
 from rest_framework.permissions import SAFE_METHODS
 from utilities.exceptions import AbortRequest
@@ -175,6 +178,7 @@ def register() -> None:
     """Register the resolver with netbox-branching and connect the plugin row receivers, from the plugin's ready()."""
     if not installed():
         return
+    _validate_response_middleware()
     from netbox_branching.utilities import register_branching_resolver
 
     register_branching_resolver(is_branchable)
@@ -437,10 +441,28 @@ def refuse_unusable_selection(request: HttpRequest) -> HttpResponse:
     return _refusal(request, _UNUSABLE_TEXT, BRANCH_SELECTION_UNUSABLE, htmx)
 
 
+def _validate_response_middleware() -> None:
+    if not installed():
+        return
+    refusal_seen = False
+    for path in settings.MIDDLEWARE:
+        middleware = import_string(path)
+        if not isinstance(middleware, type):
+            continue
+        if issubclass(middleware, GZipMiddleware) and refusal_seen:
+            raise ImproperlyConfigured(
+                f"{path} must appear before netbox_kea.branching.BranchRefusalMiddleware in MIDDLEWARE. "
+                "NetBox appends plugin middleware in PLUGINS order."
+            )
+        if issubclass(middleware, BranchRefusalMiddleware):
+            refusal_seen = True
+
+
 class BranchRefusalMiddleware:
     """Refuse plugin changes in a branch or with an unusable branch selection, and name the sources in a branch."""
 
     def __init__(self, get_response: Callable[[HttpRequest], HttpResponse]) -> None:
+        _validate_response_middleware()
         self.get_response = get_response
 
     def __call__(self, request: HttpRequest) -> HttpResponse:
@@ -462,6 +484,11 @@ class BranchRefusalMiddleware:
             and not response.streaming
             and response.get("Content-Type", "").split(";", 1)[0] == "text/html"
         ):
+            if response.get("Content-Encoding", "identity").strip().lower() not in ("", "identity"):
+                raise ImproperlyConfigured(
+                    "HTML must remain unencoded before netbox_kea.branching.BranchRefusalMiddleware "
+                    "disables mutation controls. Place response encoders before it in MIDDLEWARE."
+                )
             from .branch_controls import disable_mutations
 
             content = disable_mutations(
