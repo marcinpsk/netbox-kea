@@ -2,12 +2,33 @@
 # SPDX-License-Identifier: Apache-2.0
 """Real unannotated callbacks exercise the rendered branch controls contract."""
 
+import gzip
+
 from django.http import HttpResponse, JsonResponse, StreamingHttpResponse
+from django.middleware.gzip import GZipMiddleware
 from django.urls import path
 from django.views import View
 from netbox.urls import urlpatterns as netbox_urlpatterns
 
+from netbox_kea.branching import BranchRefusalMiddleware
 from netbox_kea.views._base import _KeaChangeMixin
+
+GZipAlias = GZipMiddleware
+RefusalAlias = BranchRefusalMiddleware
+
+
+class GZipSubclass(GZipMiddleware):
+    """A configured encoder can use a class defined by another plugin."""
+
+
+class RefusalSubclass(BranchRefusalMiddleware):
+    """A configured refusal middleware can use a subclass path."""
+
+
+def passthrough(get_response):
+    """A regular middleware factory remains valid in the configured chain."""
+    return get_response
+
 
 HTML = """
 <a id="edit" href="/kea-controls/change/">Edit</a>
@@ -44,6 +65,10 @@ def read(request):
         return JsonResponse({"html": HTML})
     if mode == "stream":
         return StreamingHttpResponse([HTML.encode()])
+    if mode == "encoded":
+        response = HttpResponse(gzip.compress(HTML.encode()))
+        response["Content-Encoding"] = "gzip"
+        return response
     response = HttpResponse(HTML)
     response["Content-Length"] = str(len(response.content))
     return response

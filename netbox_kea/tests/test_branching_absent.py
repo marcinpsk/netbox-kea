@@ -39,6 +39,14 @@ class WithoutBranchingTest(SimpleTestCase):
 
         self.assertNotIn("netbox_branching", sys.modules)
 
+    def test_encoder_order_does_not_restrict_an_installation_without_branching(self):
+        from django.core.handlers.base import BaseHandler
+
+        middleware = [*settings.MIDDLEWARE, "django.middleware.gzip.GZipMiddleware"]
+        with override_settings(MIDDLEWARE=middleware):
+            branching.register()
+            BaseHandler().load_middleware()
+
     def test_only_the_branching_module_imports_netbox_branching(self):
         package = Path(branching.__file__).parent
         importers = sorted(
