@@ -335,6 +335,35 @@ def plugin_owned(view_func: Callable[..., Any]) -> bool:
     return view_func.__module__.split(".")[0] == APP_LABEL
 
 
+def unsafe_plugin_request(view_func: Callable[..., Any], method: str | None) -> bool:
+    """Return whether branch policy refuses this callback and HTTP method."""
+    return plugin_owned(view_func) and (method or "").upper() not in SAFE_METHODS
+
+
+def mutation_form(view_func: Callable[..., Any]) -> bool:
+    """Recognize change-form navigation from the view's existing permission and CRUD classes."""
+    from netbox.views import generic
+
+    from .views._base import _KeaChangeMixin
+
+    view = getattr(view_func, "view_class", None) or getattr(view_func, "cls", None)
+    return (
+        plugin_owned(view_func)
+        and isinstance(view, type)
+        and issubclass(
+            view,
+            (
+                _KeaChangeMixin,
+                generic.ObjectEditView,
+                generic.ObjectDeleteView,
+                generic.BulkEditView,
+                generic.BulkDeleteView,
+                generic.BulkImportView,
+            ),
+        )
+    )
+
+
 def main_url() -> str:
     """Return the Server list on main: the explicit switch to main, with nothing taken from a request."""
     from netbox_branching.constants import QUERY_PARAM
@@ -428,6 +457,19 @@ class BranchRefusalMiddleware:
             response[SOURCES_HEADER] = (
                 f"kea=live; plugin=main; dhcp-import-mappings={mappings}; branch={branch.schema_id}"
             )
+        if (
+            plugin_owned(match.func)
+            and not response.streaming
+            and response.get("Content-Type", "").split(";", 1)[0] == "text/html"
+        ):
+            from .branch_controls import disable_mutations
+
+            content = disable_mutations(
+                request, response.content.decode(response.charset), _branch_refused_text(branch)
+            )
+            if content is not None:
+                response.content = content
+                response.headers.pop("Content-Length", None)
         return response
 
     def process_view(
@@ -440,7 +482,7 @@ class BranchRefusalMiddleware:
         if isinstance(branch, HttpResponse):
             # netbox-branching 1.2.1 activates its own 400 as the branch when an API header names an unready branch.
             return branch
-        if request.method in SAFE_METHODS:
+        if not unsafe_plugin_request(view_func, request.method):
             return None
         if branch is not None:
             return refuse_active_branch(request, branch)

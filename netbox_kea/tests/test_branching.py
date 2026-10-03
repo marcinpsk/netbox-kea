@@ -20,7 +20,7 @@ from ipaddress import ip_address
 from pathlib import Path
 from threading import Event
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urljoin, urlsplit
 
 import pytest
 
@@ -1701,6 +1701,8 @@ def _route_query(route: _Route, ip: IPAddress) -> str:
         return urlencode({"ip": str(ip.address.ip)})
     if short in ("server-leases4", "server-leases6"):
         return urlencode({"ip_address": _KEA_OBJECTS[int(short[-1])].lease["ip-address"]})
+    if short in ("server_leases4", "server_leases6"):
+        return urlencode({"by": "ip", "q": _KEA_OBJECTS[int(short[-1])].lease["ip-address"]})
     if short in ("server-reservations4", "server-reservations6"):
         return urlencode({"limit": 100})
     return ""
@@ -1917,3 +1919,253 @@ class TagWriterRecoveryTest(TransactionTestCase):
         branch.refresh_from_db()
         self.assertEqual(branch.status, "merged")
         self.assertTrue(blocked, "The tag writer committed newer target semantics before native deletion")
+
+
+class RenderedBranchControlsTest(TransactionTestCase):
+    """A branch page disables changes before JavaScript runs and keeps main controls enabled."""
+
+    def test_server_edit_and_delete_links_are_disabled_only_in_a_branch(self):
+        user = get_user_model().objects.create_superuser("branch-controls")
+        server = _make_db_server(name="branch-controls")
+        branch = _provisioned_branch(self, "controls")
+        client = Client()
+        client.force_login(user)
+        url = reverse("plugins:netbox_kea:server", args=[server.pk])
+        edit = reverse("plugins:netbox_kea:server_edit", args=[server.pk])
+        delete = reverse("plugins:netbox_kea:server_delete", args=[server.pk])
+
+        with stub_kea(_recorded_kea()):
+            on_main = client.get(url)
+            client.cookies[COOKIE_NAME] = branch.schema_id
+            in_branch = client.get(url)
+
+        self.assertContains(on_main, f'href="{edit}"')
+        self.assertContains(on_main, f'hx-get="{delete}"')
+        self.assertNotContains(in_branch, f'href="{edit}"')
+        self.assertNotContains(in_branch, f'hx-get="{delete}"')
+        self.assertContains(in_branch, 'aria-disabled="true"')
+        self.assertContains(in_branch, "Switch to main to make this change.")
+
+    def test_every_rendered_plugin_page_disables_its_known_mutation_controls(self):
+        from bs4 import BeautifulSoup
+
+        user = get_user_model().objects.create_superuser("page-controls")
+        server = _make_db_server(name="page-controls", dhcp4=True, dhcp6=True, has_control_agent=True)
+        ip = IPAddress.objects.create(address="192.0.2.16/24", dns_name="r4.example.com")
+        ip.refresh_from_db()
+        branch = _provisioned_branch(self, "page controls")
+        self.client.force_login(user)
+        routes = [route for route in _plugin_routes() if not route.api]
+        plugin_paths = {urlsplit(_route_url(route, server, ip)).path for route in routes}
+        mutation_paths = {
+            urlsplit(_route_url(route, server, ip)).path
+            for route in routes
+            if re.search(r"(?:add|edit|delete|import|enable|disable)$", route.name)
+        }
+        checked = 0
+        covered = set()
+        for route in routes:
+            if _main_get_status(route) != 200:
+                continue
+            url = _route_url(route, server, ip)
+            for htmx in (False, True):
+                headers = {"HX-Request": "true"} if htmx else {}
+                self.client.cookies.pop(COOKIE_NAME, None)
+                with stub_kea(_recorded_kea()):
+                    main = self.client.get(url, headers=headers)
+                self.client.cookies[COOKIE_NAME] = branch.schema_id
+                with stub_kea(_recorded_kea()):
+                    response = self.client.get(url, headers=headers)
+                with self.subTest(route=route.name, htmx=htmx):
+                    self.assertEqual(response.status_code, 200)
+                    if not main.get("Content-Type", "").startswith("text/html"):
+                        continue
+                    before = BeautifulSoup(main.content, "html.parser")
+                    after = BeautifulSoup(response.content, "html.parser")
+                    self._assert_no_active_mutation_targets(after, url, mutation_paths, plugin_paths)
+                    for control in before.find_all(["a", "button", "input"]):
+                        if control.has_attr("disabled"):
+                            continue
+                        mutation = False
+                        for attr in ("href", "hx-get", "data-hx-get"):
+                            target = control.get(attr)
+                            if target and urlsplit(urljoin(url, target)).path in mutation_paths:
+                                mutation = True
+                        for attr in (
+                            "hx-post",
+                            "hx-put",
+                            "hx-patch",
+                            "hx-delete",
+                            "data-hx-post",
+                            "data-hx-put",
+                            "data-hx-patch",
+                            "data-hx-delete",
+                        ):
+                            target = control.get(attr)
+                            if target is not None and urlsplit(urljoin(url, target)).path in plugin_paths:
+                                mutation = True
+                        form = control.find_parent("form")
+                        kind = control.get("type", "submit" if control.name == "button" else "text")
+                        if form and kind in ("submit", "image"):
+                            method = control.get("formmethod", form.get("method", "get")).lower()
+                            target = control.get("formaction", form.get("action", ""))
+                            if method == "post" and urlsplit(urljoin(url, target)).path in plugin_paths:
+                                mutation = True
+                        if not mutation:
+                            continue
+                        checked += 1
+                        covered.add(route.name)
+                        candidates = [
+                            candidate
+                            for candidate in after.find_all(control.name)
+                            if candidate.get_text(" ", strip=True) == control.get_text(" ", strip=True)
+                            and candidate.get("name") == control.get("name")
+                            and candidate.get("value") == control.get("value")
+                        ]
+                        self.assertTrue(candidates, f"the branch omitted {control} on {url}")
+                        self.assertTrue(
+                            any(candidate.get("aria-disabled") == "true" for candidate in candidates),
+                            f"enabled {control} on {url}",
+                        )
+        self.assertGreater(checked, 100, "the recorded pages must populate their mutation controls")
+        for name in (
+            "server",
+            "server_subnets4",
+            "server_shared_networks4",
+            "server_reservations4",
+            "server_leases4",
+            "sync_jobs",
+        ):
+            self.assertIn(f"plugins:netbox_kea:{name}", covered)
+
+    def _assert_no_active_mutation_targets(self, page, url, mutation_paths, plugin_paths):
+        for control in page.find_all(True):
+            for attr in ("href", "hx-get", "data-hx-get"):
+                target = control.get(attr)
+                if target:
+                    self.assertNotIn(
+                        urlsplit(urljoin(url, target)).path,
+                        mutation_paths,
+                        f"active {attr} on {control} at {url}",
+                    )
+            for attr in (
+                "hx-post",
+                "hx-put",
+                "hx-patch",
+                "hx-delete",
+                "data-hx-post",
+                "data-hx-put",
+                "data-hx-patch",
+                "data-hx-delete",
+            ):
+                target = control.get(attr)
+                if target is not None:
+                    self.assertNotIn(
+                        urlsplit(urljoin(url, target)).path,
+                        plugin_paths,
+                        f"active {attr} on {control} at {url}",
+                    )
+            if control.name == "form" and control.get("method", "get").lower() == "post":
+                self.assertNotIn(
+                    urlsplit(urljoin(url, control.get("action", ""))).path,
+                    plugin_paths,
+                    f"active POST form at {url}",
+                )
+
+
+@override_settings(ROOT_URLCONF="netbox_kea.tests.branch_control_urls")
+class RenderedSubmissionControlsTest(TransactionTestCase):
+    """Rendered responses preserve read controls and refuse browser submission semantics."""
+
+    def setUp(self):
+        self.client.force_login(get_user_model().objects.create_superuser("submission-controls"))
+        self.branch = _provisioned_branch(self, "submission controls")
+        self.client.cookies[COOKIE_NAME] = self.branch.schema_id
+
+    def test_real_forms_and_overrides_refuse_writes_but_preserve_safe_controls(self):
+        from bs4 import BeautifulSoup
+
+        response = self.client.get("/kea-controls/read/")
+        self.assertEqual(response.status_code, 200)
+        page = BeautifulSoup(response.content, "html.parser")
+        for name in ("save", "image", "external", "override", "invalid-type"):
+            with self.subTest(control=name):
+                self.assertEqual(page.find(id=name).get("aria-disabled"), "true")
+                self.assertTrue(page.find(id=name).has_attr("disabled"))
+        self.assertEqual(page.find(id="implicit").get("method"), "dialog", "implicit submission must not send POST")
+        self.assertFalse(page.find(id="implicit").has_attr("action"))
+        for name in ("export", "menu", "find", "default-get", "htmx-read"):
+            with self.subTest(control=name):
+                self.assertFalse(page.find(id=name).has_attr("disabled"))
+                self.assertFalse(page.find(id=name).has_attr("aria-disabled"))
+        self.assertEqual(page.find(id="implicit-only")["method"], "dialog")
+        self.assertEqual(page.find(id="jobs")["href"], "/plugins/kea/sync-jobs/")
+        self.assertEqual(page.find(id="export-inherited-action")["formaction"], "/kea-controls/read/")
+        self.assertFalse(page.find("input", attrs={"name": "query", "value": "example"}).has_attr("disabled"))
+        self.assertEqual(page.find(id="nested-read")["hx-get"], "/kea-controls/read/")
+        self.assertFalse(page.find(id="nested-read").find_parent(attrs={"aria-disabled": "true"}))
+        self.assertEqual(page.find(id="export")["formmethod"], "get")
+        self.assertEqual(page.find(id="export")["formaction"], "/kea-controls/read/")
+        self.assertEqual(page.find(id="search")["method"], "get")
+        self.assertEqual(page.find(id="cancel")["href"], "/kea-controls/read/")
+        self.assertEqual(page.find(id="read")["href"], "/kea-controls/read/")
+        self.assertEqual(page.find(id="foreign")["href"], "https://example.invalid/kea-controls/change/")
+        self.assertEqual(page.find(id="missing")["href"], "/kea-controls/unknown/")
+        for name in ("edit", "modal", "patch"):
+            with self.subTest(control=name):
+                control = page.find(id=name)
+                self.assertEqual(control["aria-disabled"], "true")
+                self.assertFalse(any(key in control.attrs for key in ("href", "hx-get", "data-hx-patch")))
+                wrapper = control.parent
+                self.assertEqual(wrapper["tabindex"], "0")
+                tooltip = page.find(id=wrapper["aria-describedby"])
+                self.assertIn("Switch to main", tooltip.get_text())
+        self.assertFalse(page.find(id="inherited").find_parent("div").has_attr("data-hx-post"))
+        self.assertEqual(page.find(id="nested-read").find_parent("div")["hx-target"], "#results")
+        self.assertEqual(page.find(id="nested-read").find_parent("div")["hx-swap"], "innerHTML")
+        self.assertTrue(page.find(id="inherited").has_attr("disabled"))
+        if "Content-Length" in response:
+            self.assertEqual(
+                int(response["Content-Length"]), len(response.content), "outer middleware may recompute length"
+            )
+
+    def test_main_html_non_html_and_streaming_responses_keep_their_bytes(self):
+        from netbox_kea.tests.branch_control_urls import HTML
+
+        del self.client.cookies[COOKIE_NAME]
+        on_main = self.client.get("/kea-controls/read/")
+        self.assertEqual(on_main.content, HTML.encode())
+        self.client.cookies[COOKIE_NAME] = self.branch.schema_id
+        non_html = self.client.get("/kea-controls/read/?response=json")
+        self.assertEqual(non_html.json(), {"html": HTML})
+        stream = self.client.get("/kea-controls/read/?response=stream")
+        self.assertTrue(stream.streaming)
+        self.assertEqual(b"".join(stream.streaming_content), HTML.encode())
+
+    def test_compression_runs_after_controls_are_disabled(self):
+        import gzip
+
+        from bs4 import BeautifulSoup
+
+        middleware = ["django.middleware.gzip.GZipMiddleware", *settings.MIDDLEWARE]
+        with override_settings(MIDDLEWARE=middleware):
+            response = self.client.get("/kea-controls/read/", headers={"Accept-Encoding": "gzip"})
+
+        self.assertEqual(response["Content-Encoding"], "gzip")
+        page = BeautifulSoup(gzip.decompress(response.content), "html.parser")
+        self.assertEqual(page.find(id="save")["aria-disabled"], "true")
+        self.assertFalse(page.find(id="edit").has_attr("href"))
+        self.assertEqual(int(response["Content-Length"]), len(response.content))
+
+    def test_htmx_fragments_disable_controls_with_their_own_accessible_reasons(self):
+        from bs4 import BeautifulSoup
+
+        responses = [self.client.get("/kea-controls/read/", headers={"HX-Request": "true"}) for _ in range(2)]
+        reason_ids = []
+        for response in responses:
+            page = BeautifulSoup(response.content, "html.parser")
+            self.assertEqual(page.find(id="save")["aria-disabled"], "true")
+            wrapper = page.find(id="save").parent
+            reason_ids.append(wrapper["aria-describedby"])
+            self.assertEqual(page.find(id=reason_ids[-1])["role"], "tooltip")
+        self.assertNotEqual(*reason_ids, "a fragment must not reuse a tooltip ID that can remain on the full page")
