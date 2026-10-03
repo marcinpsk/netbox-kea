@@ -466,8 +466,7 @@ def _apply_global_settings(dhcp_server, settings: dict, summary: ImportSummary, 
     if not settings:
         return
     model_fields = {f.name for f in dhcp_server._meta.get_fields()}
-    changed: list[str] = []
-    dhcp_server.snapshot()
+    changed: dict = {}
     for kea_key, attr, transform in _SERVER_FIELDS:
         if attr not in model_fields or kea_key not in settings:
             continue
@@ -478,13 +477,14 @@ def _apply_global_settings(dhcp_server, settings: dict, summary: ImportSummary, 
         if primary:
             # This family owns the global config — mirror changed values on re-import.
             if current != value:
-                setattr(dhcp_server, attr, value)
-                changed.append(attr)
+                changed[attr] = value
         elif _is_unset(current):
             # Secondary protocol only fills gaps the primary family did not set.
-            setattr(dhcp_server, attr, value)
-            changed.append(attr)
+            changed[attr] = value
     if changed:
+        dhcp_server.snapshot()
+        for attr, value in changed.items():
+            setattr(dhcp_server, attr, value)
         try:
             with transaction.atomic():
                 dhcp_server.save()
@@ -492,11 +492,11 @@ def _apply_global_settings(dhcp_server, settings: dict, summary: ImportSummary, 
             summary.errors += 1
             summary.warn(f"DHCPServer settings: {exc}")
             # Children diff against this instance, so it must hold the persisted values.
-            dhcp_server.refresh_from_db(fields=changed)
+            dhcp_server.refresh_from_db(fields=list(changed))
 
 
-def _apply_inherited_settings(obj, parent, settings: dict, field_map, summary: ImportSummary) -> bool:
-    """Mirror *obj*'s tuning fields to Kea, storing only genuine overrides.
+def _inherited_settings_fields(obj, parent, settings: dict, field_map, summary: ImportSummary) -> dict:
+    """Plan *obj*'s tuning fields from Kea, storing only genuine overrides.
 
     ``config-get`` returns every value fully inherited, so a field is stored on the
     child only when it is present and **differs** from the stored *parent*
@@ -504,10 +504,10 @@ def _apply_inherited_settings(obj, parent, settings: dict, field_map, summary: I
     reports — is **cleared**, so a removed Kea override does not linger as stale data
     on re-import.  The ``model_fields`` guard skips fields *obj* does not have, so one
     field map serves models with different mixins (e.g. ``Subnet`` vs ``ClientClass``).
-    Returns ``True`` if any field on *obj* changed.
+    Return the desired fields without changing *obj*.
     """
     model_fields = {f.name for f in obj._meta.get_fields()}
-    changed = False
+    fields = {}
     for kea_key, attr, transform in field_map:
         if attr not in model_fields:
             continue
@@ -521,10 +521,8 @@ def _apply_inherited_settings(obj, parent, settings: dict, field_map, summary: I
             # (e.g. "" for a non-null CharField like hostname_char_set) otherwise.
             db_field = obj._meta.get_field(attr)
             desired = None if db_field.null else db_field.get_default()
-        if getattr(obj, attr, None) != desired:
-            setattr(obj, attr, desired)
-            changed = True
-    return changed
+        fields[attr] = desired
+    return fields
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -553,6 +551,19 @@ def _client_class_name(server, kea_name: str) -> str:
     return f"{server.name}: {kea_name}"[:255]
 
 
+def _client_class_changes(obj, dhcp_server, intent: ClientClassIntent, summary: ImportSummary) -> dict:
+    """Plan the changed identity, expressions and inherited fields of one Client Class."""
+    fields = {
+        "dhcp_server_id": dhcp_server.pk,
+        "test": intent.test or "",
+        "template_test": intent.template_test or "",
+    }
+    if intent.only_in_additional_list is not None:
+        fields["only_in_additional_list"] = intent.only_in_additional_list
+    fields.update(_inherited_settings_fields(obj, dhcp_server, intent.settings, _COMMON_FIELDS, summary))
+    return {name: value for name, value in fields.items() if getattr(obj, name) != value}
+
+
 def upsert_client_class(server, dhcp_server, intent: ClientClassIntent, custom_defs, summary: ImportSummary):
     """Get/create the DHCP-plugin ``ClientClass`` for *intent* (match by namespaced name)."""
     ClientClass = _model("ClientClass")
@@ -561,29 +572,20 @@ def upsert_client_class(server, dhcp_server, intent: ClientClassIntent, custom_d
     created = obj is None
     if obj is None:
         obj = ClientClass(name=cc_name, dhcp_server=dhcp_server)
+        changes = _client_class_changes(obj, dhcp_server, intent, summary)
     else:
+        changes = _client_class_changes(obj, dhcp_server, intent, summary)
+        if not changes:
+            upsert_options(obj, intent.options, intent.family, dhcp_server, custom_defs, summary)
+            return obj
         obj.snapshot()
 
-    changed = created
-    if obj.dhcp_server_id != dhcp_server.pk:
-        obj.dhcp_server = dhcp_server
-        changed = True
-    if obj.test != (intent.test or ""):
-        obj.test = intent.test or ""
-        changed = True
-    if obj.template_test != (intent.template_test or ""):
-        obj.template_test = intent.template_test or ""
-        changed = True
-    if intent.only_in_additional_list is not None and obj.only_in_additional_list != intent.only_in_additional_list:
-        obj.only_in_additional_list = intent.only_in_additional_list
-        changed = True
-    if _apply_inherited_settings(obj, dhcp_server, intent.settings, _COMMON_FIELDS, summary):
-        changed = True
+    for name, value in changes.items():
+        setattr(obj, name, value)
 
     try:
-        if changed:
-            with transaction.atomic():
-                obj.save()
+        with transaction.atomic():
+            obj.save()
     except Exception as exc:  # noqa: BLE001 — one bad class must not abort the import
         summary.errors += 1
         summary.warn(f"client-class {intent.name}: {exc}")
@@ -591,7 +593,7 @@ def upsert_client_class(server, dhcp_server, intent: ClientClassIntent, custom_d
 
     if created:
         summary.client_classes_created += 1
-    elif changed:
+    else:
         summary.client_classes_updated += 1
 
     upsert_options(obj, intent.options, intent.family, dhcp_server, custom_defs, summary)
@@ -649,17 +651,15 @@ def upsert_subnet(server, dhcp_server, intent: SubnetIntent, summary: ImportSumm
             if result.outcome in {"conflict", "disagreement"}:
                 summary.warn(f"subnet {network}: IPAM ownership {result.outcome}, Prefix left unchanged")
             if existing is not None:
-                existing.snapshot()
-                if existing.prefix_id != prefix_obj.pk:
-                    existing.prefix = prefix_obj
-                    changed = True
-                if existing.dhcp_server_id != dhcp_server.pk or existing.shared_network_id is not None:
-                    existing.dhcp_server = dhcp_server
-                    existing.shared_network = None
-                    changed = True
-                if _apply_inherited_settings(existing, dhcp_server, intent.settings, _SUBNET_FIELDS, summary):
-                    changed = True
+                fields = {"prefix_id": prefix_obj.pk, "dhcp_server_id": dhcp_server.pk, "shared_network_id": None}
+                fields.update(
+                    _inherited_settings_fields(existing, dhcp_server, intent.settings, _SUBNET_FIELDS, summary)
+                )
+                changed = any(getattr(existing, name) != value for name, value in fields.items())
                 if changed:
+                    existing.snapshot()
+                    for name, value in fields.items():
+                        setattr(existing, name, value)
                     existing.save()
                 subnet_obj = existing
             else:
@@ -670,7 +670,10 @@ def upsert_subnet(server, dhcp_server, intent: SubnetIntent, summary: ImportSumm
                     dhcp_server=dhcp_server,
                     shared_network=None,
                 )
-                _apply_inherited_settings(subnet_obj, dhcp_server, intent.settings, _SUBNET_FIELDS, summary)
+                for name, value in _inherited_settings_fields(
+                    subnet_obj, dhcp_server, intent.settings, _SUBNET_FIELDS, summary
+                ).items():
+                    setattr(subnet_obj, name, value)
                 subnet_obj.save()
                 if intent.kea_subnet_id is not None:
                     # Key on the authoritative Kea identity, not the sys4 object: a stale

@@ -16,10 +16,7 @@ from pathlib import Path
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 MUTATORS = {
-    "_apply_ip_fields",
-    "_apply_ip_mask",
     "_update_mac_description",
-    "_apply_inherited_settings",
     "_apply_reservation_identifier",
 }
 
@@ -104,7 +101,7 @@ def _scopes(body: list[ast.stmt], prefix: str = "") -> list[tuple[str, ast.AST]]
 
 
 class Sequence:
-    """Check direct field changes and five recognized mutators at one site."""
+    """Check direct field changes and recognized mutators at one site."""
 
     def __init__(self, site: SaveSite):
         self.site = site

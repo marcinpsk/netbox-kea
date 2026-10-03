@@ -5,6 +5,7 @@
 import copy
 import unittest
 import uuid
+from unittest.mock import patch
 
 from core.models import ObjectChange
 from django.apps import apps
@@ -16,6 +17,7 @@ from netbox.context_managers import event_tracking
 
 from netbox_kea.ipam_reconciliation import LeasePhase, PoolPhase, SubnetPhase, read_catalogue, reconcile
 from netbox_kea.mappers.kea_to_dhcp import parse_dhcp_config
+from netbox_kea.models import IPAMOwnershipLink
 from netbox_kea.tests.kea_stub import _catalogue_responses_for_subnets, stub_kea
 from netbox_kea.tests.test_integration_dhcp_plugin import _reservation_snapshot
 from netbox_kea.tests.test_ipam_reconciliation import _kea, _lease, _reconcile, _reservation, _run_job
@@ -29,6 +31,99 @@ class IPAMChangeRecordTest(TestCase):
         self.request = RequestFactory().post("/plugins/kea/sync/")
         self.request.user = get_user_model().objects.create_user("sync-operator")
         self.request.id = uuid.uuid4()
+
+    def test_unchanged_lease_and_reservation_confirm_links_without_ip_snapshots(self):
+        subnets = [{"id": 1, "subnet": "198.18.0.0/24"}]
+        leases = [_lease("198.18.0.42")]
+        reservations = [_reservation("198.18.0.43")]
+        seeded = _reconcile(self.server, leases, reservations, subnets=subnets)
+        self.assertEqual(seeded.errors, 0)
+        IPAddress.objects.update(dns_name="operator.example.invalid")
+        before = dict(IPAMOwnershipLink.objects.values_list("pk", "confirmation"))
+
+        with (
+            event_tracking(self.request),
+            patch.object(IPAddress, "snapshot", autospec=True, side_effect=IPAddress.snapshot) as snapshots,
+        ):
+            report = _reconcile(self.server, leases, reservations, subnets=subnets)
+
+        self.assertEqual(report.errors, 0)
+        self.assertEqual(report.created, 0)
+        self.assertEqual(report.updated, 0)
+        snapshots.assert_not_called()
+        after = dict(IPAMOwnershipLink.objects.values_list("pk", "confirmation"))
+        self.assertEqual(before.keys(), after.keys())
+        self.assertTrue(all(after[pk] > confirmation for pk, confirmation in before.items()))
+        self.assertEqual(set(IPAddress.objects.values_list("dns_name", flat=True)), {"operator.example.invalid"})
+        self.assertFalse(
+            ObjectChange.objects.filter(
+                changed_object_type=ContentType.objects.get_for_model(IPAddress), request_id=self.request.id
+            ).exists()
+        )
+
+    def test_stale_owner_cleanup_with_matching_live_lease_skips_ip_snapshot(self):
+        subnets = [{"id": 1, "subnet": "198.18.0.0/24"}]
+        leases = [_lease("198.18.0.42", "phone.example.invalid")]
+        other = _make_db_server(name="other-owner", ca_url="https://other.example.invalid", dhcp6=False)
+        for owner in (self.server, other):
+            seeded = _reconcile(owner, leases, subnets=subnets)
+            self.assertEqual(seeded.errors, 0)
+        ip = IPAddress.objects.get(address__net_host="198.18.0.42")
+        remaining = IPAMOwnershipLink.objects.get(server=other, ip_address=ip)
+
+        with (
+            event_tracking(self.request),
+            patch.object(IPAddress, "snapshot", autospec=True, side_effect=IPAddress.snapshot) as snapshots,
+        ):
+            report = _reconcile(self.server, subnets=subnets)
+
+        self.assertEqual(report.errors, 0)
+        self.assertEqual(report.cleaned, 1)
+        self.assertEqual(report.updated, 0)
+        snapshots.assert_not_called()
+        self.assertEqual(list(IPAMOwnershipLink.objects.values_list("pk", flat=True)), [remaining.pk])
+        ip.refresh_from_db()
+        self.assertEqual(ip.status, "dhcp")
+        self.assertEqual(ip.dns_name, "phone.example.invalid")
+        self.assertFalse(
+            ObjectChange.objects.filter(
+                changed_object_type=ContentType.objects.get_for_model(ip),
+                changed_object_id=ip.pk,
+                request_id=self.request.id,
+            ).exists()
+        )
+
+    def test_each_lease_field_change_snapshots_previous_values_once(self):
+        subnets = [{"id": 1, "subnet": "198.18.0.0/24"}]
+        leases = [_lease("198.18.0.42", "phone.example.invalid")]
+        seeded = _reconcile(self.server, leases, subnets=subnets)
+        self.assertEqual(seeded.errors, 0)
+        ip = IPAddress.objects.get(address__net_host="198.18.0.42")
+        for field, old, new in (
+            ("status", "reserved", "dhcp"),
+            ("dns_name", "old.example.invalid", "phone.example.invalid"),
+            ("description", "[kea-sync: reservation] operator note", "[kea-sync: lease] operator note"),
+            ("address", "198.18.0.42/32", "198.18.0.42/24"),
+        ):
+            with self.subTest(field=field):
+                IPAddress.objects.filter(pk=ip.pk).update(**{field: old})
+                self.request.id = uuid.uuid4()
+                with (
+                    event_tracking(self.request),
+                    patch.object(IPAddress, "snapshot", autospec=True, side_effect=IPAddress.snapshot) as snapshots,
+                ):
+                    report = _reconcile(self.server, leases, subnets=subnets)
+                self.assertEqual(report.errors, 0)
+                self.assertEqual(report.updated, 1)
+                snapshots.assert_called_once()
+                change = ObjectChange.objects.get(
+                    changed_object_type=ContentType.objects.get_for_model(ip),
+                    changed_object_id=ip.pk,
+                    request_id=self.request.id,
+                    action="update",
+                )
+                self.assertEqual(change.prechange_data[field], old)
+                self.assertEqual(change.postchange_data[field], new)
 
     def test_lease_update_keeps_previous_ip_address_fields(self):
         ip = IPAddress.objects.create(
@@ -217,6 +312,73 @@ class DHCPImportChangeRecordTest(TestCase):
         if not apps.is_installed("netbox_dhcp"):
             raise unittest.SkipTest("netbox_dhcp not installed")
         super().setUpClass()
+
+    def test_unchanged_server_class_and_subnet_reimport_skip_snapshots(self):
+        from netbox_kea.integrations.dhcp_plugin import import_server_config
+
+        server = _make_db_server(name="snapshot-server", ca_url="https://kea.example.invalid", dhcp6=False)
+        config = {
+            "valid-lifetime": 3600,
+            "client-classes": [{"name": "phones", "test": "option[60].text == 'phone'", "valid-lifetime": 1800}],
+            "subnet4": [{"id": 1, "subnet": "198.18.0.0/24", "valid-lifetime": 7200}],
+        }
+        first = import_server_config(server, parse_dhcp_config(config, 4), _reservation_snapshot(config, 4))
+        self.assertEqual(first.errors, 0, first.warnings)
+        self.assertEqual(first.client_classes_created, 1)
+        self.assertEqual(first.subnets_created, 1)
+        request = RequestFactory().post("/plugins/kea/import/")
+        request.user = get_user_model().objects.create_user("import-operator")
+        request.id = uuid.uuid4()
+        for model_name in ("DHCPServer", "ClientClass", "Subnet"):
+            model = apps.get_model("netbox_dhcp", model_name)
+            with (
+                self.subTest(model=model_name),
+                event_tracking(request),
+                patch.object(model, "snapshot", autospec=True, side_effect=model.snapshot) as snapshots,
+            ):
+                second = import_server_config(server, parse_dhcp_config(config, 4), _reservation_snapshot(config, 4))
+                self.assertEqual(second.errors, 0, second.warnings)
+                self.assertEqual(second.client_classes_updated, 0)
+                self.assertEqual(second.subnets_updated, 0)
+                snapshots.assert_not_called()
+                self.assertFalse(
+                    ObjectChange.objects.filter(
+                        changed_object_type=ContentType.objects.get_for_model(model), request_id=request.id
+                    ).exists()
+                )
+
+    def test_secondary_server_settings_snapshot_only_when_a_gap_is_filled(self):
+        from netbox_kea.integrations.dhcp_plugin import import_server_config
+
+        server = _make_db_server(name="dualstack-snapshot-server", ca_url="https://kea.example.invalid")
+        primary = {"valid-lifetime": 3600, "subnet4": []}
+        first = import_server_config(server, parse_dhcp_config(primary, 4), _reservation_snapshot(primary, 4))
+        self.assertEqual(first.errors, 0, first.warnings)
+        secondary = {"valid-lifetime": 4000, "preferred-lifetime": 3000, "subnet6": []}
+        model = apps.get_model("netbox_dhcp", "DHCPServer")
+        request = RequestFactory().post("/plugins/kea/import/")
+        request.user = get_user_model().objects.create_user("import-operator")
+        request.id = uuid.uuid4()
+        with (
+            event_tracking(request),
+            patch.object(model, "snapshot", autospec=True, side_effect=model.snapshot) as snapshots,
+        ):
+            filled = import_server_config(server, parse_dhcp_config(secondary, 6), _reservation_snapshot(secondary, 6))
+        self.assertEqual(filled.errors, 0, filled.warnings)
+        snapshots.assert_called_once()
+        change = ObjectChange.objects.get(
+            changed_object_type=ContentType.objects.get_for_model(model), request_id=request.id, action="update"
+        )
+        self.assertIsNone(change.prechange_data["preferred_lifetime"])
+        self.assertEqual(change.postchange_data["preferred_lifetime"], 3000)
+        self.assertEqual(change.postchange_data["valid_lifetime"], 3600)
+
+        with patch.object(model, "snapshot", autospec=True, side_effect=model.snapshot) as snapshots:
+            unchanged = import_server_config(
+                server, parse_dhcp_config(secondary, 6), _reservation_snapshot(secondary, 6)
+            )
+        self.assertEqual(unchanged.errors, 0, unchanged.warnings)
+        snapshots.assert_not_called()
 
     def test_reimport_keeps_previous_server_class_subnet_option_and_reservation_fields(self):
         from netbox_kea.integrations.dhcp_plugin import import_server_config
