@@ -30,9 +30,8 @@ and save count for each current site. It covers 25 saves: 15 loaded updates and
 save or a changed save count requires an inventory review.
 
 For loaded sites, a small local walk checks standalone snapshots, direct field
-assignments, `setattr()` and five named mutation helpers: `_apply_ip_fields`,
-`_apply_ip_mask`, `_update_mac_description`, `_apply_inherited_settings` and
-`_apply_reservation_identifier`. The receiver must be the direct first argument
+assignments, `setattr()` and two named mutation helpers: `_update_mac_description`
+and `_apply_reservation_identifier`. The receiver must be the direct first argument
 of a recognized helper. The current Option, ClientClass and HostReservation
 branches also admit their explicitly named constructors before a first save.
 
@@ -68,7 +67,7 @@ above. The runtime snapshot fix and its real ObjectChange tests remain intact.
 Each of the fifteen runtime snapshots is removed and moved after mutation in
 memory. All thirty variants must produce a snapshot or mutation diagnostic.
 Nearby controls cover early, missing, late, conditional and wrong-receiver
-snapshots, the five mutation helpers, new saves and changed save counts. The
+snapshots, the mutation helpers, new saves and changed save counts. The
 production tree and hook provide passing controls. Native focused tests, Ruff,
 format checks and the zero-new-error mypy gate precede final whole-suite validation
 and a scoped adversarial review.
