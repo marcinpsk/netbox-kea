@@ -378,6 +378,9 @@ deletion signals or writes (`DJ/db/models/deletion.py:343-357`); NetBox's delete
   one-time backfill. `SyncConfig.get()` becomes a plain read, and `backfill_applied` is removed.
 - Redis writes on display stay: the cache is derived from live Kea and, with Server main-only, is
   the same for main and every branch.
+- Reservation edit and delete GET pages validate their targets through a live Subnet Identity
+  read that preserves the display snapshots. Their POST handlers enter `MutationScope`, which
+  invalidates both display snapshots before and after the operation.
 
 ### Merge, discard, revert
 
@@ -469,8 +472,6 @@ tests skipped. With real provisioning, it covers guards 1 to 4 and:
   job's edits.
 - netbox_dhcp target deletion receivers for `KeaDhcpLink` (D3).
 - Disabling mutation controls in a branch (D12).
-- The reservation edit and delete GET pages invalidate the Redis cache through `MutationScope`
-  (`views/reservation_mutations.py:218-249`); harmless under this design, but a GET should not.
 
 ### Increments
 

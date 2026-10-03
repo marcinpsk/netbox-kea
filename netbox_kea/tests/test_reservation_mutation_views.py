@@ -9,6 +9,7 @@ import requests
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.urls import reverse
 
+from netbox_kea import server_configuration
 from netbox_kea.subnet_catalogue import display
 
 from .kea_stub import _res_get, _res_page, _reservation_mutation_commands, _subnet_list, queued, stub_kea
@@ -47,6 +48,64 @@ def _identity_query(identifier: str = "aa:bb:cc:dd:ee:ff", identifier_type: str 
 
 
 class TestReservationMutationViews(_ViewTestBase):
+    def test_edit_and_delete_get_keep_both_display_snapshots(self):
+        for version, cidr, identifier_type, identifier in (
+            (4, "198.18.0.0/24", "hw-address", "02:00:00:00:00:01"),
+            (6, "2001:db8::/64", "duid", "00:01:02:03"),
+        ):
+            for action in ("edit", "delete"):
+                with self.subTest(version=version, action=action):
+                    server_configuration.invalidate(self.server, version)
+                    responses = _mutation_responses(version, 20, cidr, [identifier_type])
+                    responses["reservation-get"] = _res_get({"subnet-id": 20, identifier_type: identifier})
+                    url = reverse(f"plugins:netbox_kea:server_reservation{version}_{action}", args=[self.server.pk, 20])
+                    with stub_kea(responses) as kea:
+                        configuration = server_configuration.display(self.server, version)
+                        catalogue = display(self.server, version)
+                        response = self.client.get(f"{url}?{_identity_query(identifier, identifier_type)}")
+                        self.assertEqual(response.status_code, 200)
+                        commands_after_get = kea.commands()
+                        self.assertEqual(server_configuration.display(self.server, version), configuration)
+                        self.assertEqual(display(self.server, version), catalogue)
+                        self.assertEqual(kea.commands(), commands_after_get)
+
+    def test_edit_and_delete_post_invalidate_both_display_snapshots(self):
+        for version, cidr, identifier_type, identifier in (
+            (4, "198.18.0.0/24", "hw-address", "02:00:00:00:00:01"),
+            (6, "2001:db8::/64", "duid", "00:01:02:03"),
+        ):
+            for action in ("edit", "delete"):
+                with self.subTest(version=version, action=action):
+                    server_configuration.invalidate(self.server, version)
+                    current = {"subnet-id": 20, identifier_type: identifier, "hostname": "old.example.invalid"}
+                    responses = _mutation_responses(version, 20, cidr, [identifier_type])
+                    url = reverse(f"plugins:netbox_kea:server_reservation{version}_{action}", args=[self.server.pk, 20])
+                    url = f"{url}?{_identity_query(identifier, identifier_type)}"
+                    with stub_kea({**responses, "reservation-get": _res_get(current)}):
+                        form_page = self.client.get(url)
+                        self.assertEqual(form_page.status_code, 200)
+                        configuration = server_configuration.display(self.server, version)
+                        catalogue = display(self.server, version)
+                    data = {}
+                    command = "reservation-del"
+                    final = {"result": 3}
+                    if action == "edit":
+                        data = {
+                            "hostname": "new.example.invalid",
+                            "managed_fingerprint": form_page.context["form"].initial["managed_fingerprint"],
+                        }
+                        command = "reservation-update"
+                        final = _res_get({**current, "hostname": "new.example.invalid"})
+                    responses.update(
+                        {"reservation-get": queued(_res_get(current), _res_get(current), final), command: {"result": 0}}
+                    )
+                    with stub_kea(responses) as kea:
+                        response = self.client.post(url, data)
+                        self.assertEqual(response.status_code, 302)
+                        self.assertEqual(kea.commands().count(command), 1)
+                        self.assertNotEqual(server_configuration.display(self.server, version), configuration)
+                        self.assertNotEqual(display(self.server, version), catalogue)
+
     def test_add_form_uses_live_identifier_choices_and_explains_relay_remote_id(self):
         responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address", "flex-id"])
         url = reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk])
