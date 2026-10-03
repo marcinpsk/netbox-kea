@@ -15,7 +15,7 @@ from typing import Any
 
 from django.apps import apps
 from django.contrib import messages
-from django.core.exceptions import ObjectDoesNotExist
+from django.core.exceptions import ImproperlyConfigured, ObjectDoesNotExist
 from django.db import models
 from django.db.models.signals import pre_delete, pre_save
 from django.http import HttpRequest, HttpResponse, JsonResponse
@@ -99,6 +99,8 @@ def is_branchable(model: type[models.Model]) -> bool | None:
     relations that a delete in a branch reaches, and fails when one is outside the design. netbox-branching
     also calls this with historical models.
     """
+    if model._meta.label_lower == "netbox_kea.keadhcplink":
+        return True
     return False if model._meta.app_label == APP_LABEL else None
 
 
@@ -110,6 +112,8 @@ def register() -> None:
 
     register_branching_resolver(is_branchable)
     connect_branch_refusal()
+    if apps.is_installed("netbox_dhcp"):
+        prototype_connect_mapping_guards()
 
 
 def _refuse_save_in_branch(sender: Any, instance: Any, **kwargs: Any) -> None:
@@ -153,7 +157,8 @@ def connect_refusal(model: type[models.Model]) -> None:
 def connect_branch_refusal() -> None:
     """Refuse a save or a delete of every netbox_kea row in a branch: the resolver keeps each model in main."""
     for model in apps.get_app_config(APP_LABEL).get_models():
-        connect_refusal(model)
+        if model._meta.model_name != "keadhcplink":
+            connect_refusal(model)
 
 
 def plugin_owned(view_func: Callable[..., Any]) -> bool:
@@ -275,3 +280,208 @@ class BranchRefusalMiddleware:
         if isinstance(exception.branch, HttpResponse):
             return exception.branch
         return refuse_active_branch(request, exception.branch)
+
+
+# Throwaway guards for the real-database prototype. These are not a production implementation.
+
+
+def prototype_mapping_table(branch):
+    """Check that this branch owns the required mapping columns."""
+    from django.db import connections
+
+    with connections[branch.connection_name].cursor() as cursor:
+        cursor.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_schema = %s AND table_name = %s",
+            [branch.schema_name, "netbox_kea_keadhcplink"],
+        )
+        return {"id", "server_id", "object_id", "object_type_id", "last_updated"}.issubset(
+            {row[0] for row in cursor.fetchall()}
+        )
+
+
+def prototype_mapping_lock(using):
+    """Serialize metadata writers for the current transaction."""
+    from django.db import connections
+
+    if not connections[using].in_atomic_block:
+        raise ImproperlyConfigured("Prototype mapping writes require an atomic operation")
+    with connections[using].cursor() as cursor:
+        cursor.execute("SELECT pg_advisory_xact_lock(%s)", [0x4B45414D4150])
+
+
+def prototype_mapping_context(model):
+    """Refuse unsafe branch routing before a mapping operation."""
+    branch = active_branch()
+    if branch is None:
+        return
+    from netbox_branching.utilities import supports_branching
+
+    from .models import KeaDhcpLink
+
+    if not prototype_mapping_table(branch):
+        raise AbortRequest("Create a fresh branch to change DHCP Import Mappings")
+    if not supports_branching(KeaDhcpLink) or not supports_branching(model):
+        raise AbortRequest("Branching configuration excludes this DHCP Import Mapping or target")
+
+
+def prototype_replay_branch(model, object_id):
+    """Read synchronous provenance for the current replay deletion."""
+    from core.models import ObjectChange
+    from django.contrib.contenttypes.models import ContentType
+    from netbox.context import current_request
+
+    request = current_request.get()
+    if request is None:
+        return None
+    change = (
+        ObjectChange.objects.using("default")
+        .filter(
+            request_id=request.id,
+            changed_object_type=ContentType.objects.get_for_model(model),
+            changed_object_id=object_id,
+            action="delete",
+        )
+        .order_by("-pk")
+        .first()
+    )
+    if change is None:
+        return None
+    try:
+        return change.application.branch
+    except ObjectDoesNotExist:
+        return None
+
+
+def prototype_mapping_identity(data):
+    """Select the semantic source and target identity fields."""
+    return tuple(
+        data.get(field) for field in ("server", "family", "kea_subnet_id", "kea_identity", "object_type", "object_id")
+    )
+
+
+def prototype_mapping_coverage(branch, link):
+    """Require matching reversible history for the current mapping."""
+    from django.contrib.contenttypes.models import ContentType
+
+    changes = branch.get_changes().filter(
+        changed_object_type=ContentType.objects.get_for_model(type(link)),
+        changed_object_id=link.pk,
+        action="delete",
+    )
+    identity = prototype_mapping_identity(link.serialize_object())
+    if not any(prototype_mapping_identity(change.prechange_data) == identity for change in changes):
+        raise AbortRequest("Main has a DHCP Import Mapping this branch cannot restore. Recreate the branch")
+
+
+def prototype_target_delete(sender, instance, using, **kwargs):
+    """Check target cleanup inside the deleting transaction."""
+    from django.contrib.contenttypes.models import ContentType
+
+    from .models import KeaDhcpLink
+
+    prototype_mapping_lock(using)
+    prototype_mapping_context(sender)
+    if active_branch() is not None:
+        return
+    branch = prototype_replay_branch(sender, instance.pk)
+    if branch is None or branch.status != "merging":
+        return
+    links = KeaDhcpLink.objects.using(using).filter(
+        object_type=ContentType.objects.get_for_model(sender),
+        object_id=instance.pk,
+    )
+    for link in links:
+        prototype_mapping_coverage(branch, link)
+
+
+def prototype_mapping_delete(sender, instance, using, **kwargs):
+    """Check direct replay deletion of a mapping."""
+    prototype_mapping_lock(using)
+    prototype_mapping_context(sender)
+    if active_branch() is not None:
+        return
+    branch = prototype_replay_branch(sender, instance.pk)
+    if branch is not None and branch.status == "merging":
+        prototype_mapping_coverage(branch, instance)
+
+
+def prototype_mapping_save(sender, instance, using, **kwargs):
+    """Validate destination identities and snapshot real updates."""
+    from .models import Server
+
+    prototype_mapping_lock(using)
+    prototype_mapping_context(sender)
+    model = instance.object_type.model_class()
+    if model is None or model._meta.label_lower not in {"netbox_dhcp.subnet", "netbox_dhcp.hostreservation"}:
+        raise AbortRequest("Unsupported DHCP Import Mapping target")
+    prototype_mapping_context(model)
+    if instance.family not in (4, 6) or not model.objects.using(using).filter(pk=instance.object_id).exists():
+        raise AbortRequest("DHCP Import Mapping target is unavailable")
+    if not Server.objects.using("default").filter(pk=instance.server_id).exists():
+        raise AbortRequest("DHCP Import Mapping Server is unavailable")
+    if instance._state.adding and instance.pk and sender.objects.using(using).filter(pk=instance.pk).exists():
+        raise AbortRequest("A newer DHCP Import Mapping already uses this identity")
+    if not instance._state.adding:
+        old = sender.objects.using(using).get(pk=instance.pk)
+        old.snapshot()
+        instance._prechange_snapshot = old._prechange_snapshot
+
+
+def prototype_target_save(sender, instance, using, **kwargs):
+    """Serialize transactional target writes and refuse identity reuse."""
+    from django.db import connections
+
+    prototype_mapping_context(sender)
+    if connections[using].in_atomic_block:
+        prototype_mapping_lock(using)
+    if instance._state.adding and instance.pk and sender.objects.using(using).filter(pk=instance.pk).exists():
+        raise AbortRequest("A newer DHCP object already uses this identity")
+
+
+def prototype_mapping_preaction(sender, branch, **kwargs):
+    """Explain unsupported replay and reset native request history."""
+    from core import signals as core_signals
+
+    relevant = (
+        branch.get_changes()
+        .filter(
+            changed_object_type__app_label="netbox_dhcp",
+            changed_object_type__model__in=("subnet", "hostreservation"),
+            action="delete",
+        )
+        .exists()
+    )
+    link_deletes = (
+        branch.get_changes()
+        .filter(
+            changed_object_type__app_label="netbox_kea",
+            changed_object_type__model="keadhcplink",
+            action="delete",
+        )
+        .exists()
+    )
+    if relevant or link_deletes:
+        if not prototype_mapping_table(branch):
+            raise AbortRequest("Create a fresh branch to merge or revert DHCP Import Mappings")
+        if link_deletes and branch.merge_strategy != "squash":
+            raise AbortRequest("DHCP Import Mapping deletion requires the squash strategy")
+    # Match the real request boundary and the plugin's existing tracked job pattern.
+    clear = getattr(core_signals, "clear_signal_history", None)
+    if clear is not None:
+        clear(sender=sender)
+
+
+def prototype_connect_mapping_guards():
+    """Connect the throwaway lifecycle probes and guards."""
+    from netbox_branching.signals import pre_merge, pre_revert
+
+    from .models import KeaDhcpLink
+
+    pre_save.connect(prototype_mapping_save, sender=KeaDhcpLink, dispatch_uid="prototype.mapping.save")
+    pre_delete.connect(prototype_mapping_delete, sender=KeaDhcpLink, dispatch_uid="prototype.mapping.delete")
+    for name in ("Subnet", "HostReservation"):
+        model = apps.get_model("netbox_dhcp", name)
+        pre_delete.connect(prototype_target_delete, sender=model, dispatch_uid=f"prototype.target.delete.{name}")
+        pre_save.connect(prototype_target_save, sender=model, dispatch_uid=f"prototype.target.save.{name}")
+    pre_merge.connect(prototype_mapping_preaction, dispatch_uid="prototype.mapping.merge")
+    pre_revert.connect(prototype_mapping_preaction, dispatch_uid="prototype.mapping.revert")

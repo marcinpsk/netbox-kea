@@ -1,0 +1,69 @@
+diff --git a/netbox_kea/tests/test_branching.py b/netbox_kea/tests/test_branching.py
+index a4b42f36..19e008cf 100644
+--- a/netbox_kea/tests/test_branching.py
++++ b/netbox_kea/tests/test_branching.py
+@@ -899,0 +900,64 @@ class DhcpTargetBranchLifecycleTest(TransactionTestCase):
++class DhcpSubnetImportBranchRecoveryTest(TransactionTestCase):
++    """An imported DHCP Subnet keeps its identity after a merged delete is reverted."""
++
++    def setUp(self):
++        if not apps.is_installed("netbox_dhcp"):
++            if _required:
++                self.fail("The branching CI job requires netbox_dhcp for import recovery tests.")
++            self.skipTest("netbox_dhcp is not installed")
++        self.user = get_user_model().objects.create_superuser("dhcp-import-recovery-admin")
++        self.server = _make_db_server(name="dhcp-import-recovery", dhcp6=False)
++
++    def test_reimport_relinks_the_same_subnet_after_merge_and_revert(self):
++        from django.utils.dateparse import parse_datetime
++
++        from netbox_kea.integrations.dhcp_plugin import import_server_config
++        from netbox_kea.mappers.kea_to_dhcp import parse_dhcp_config
++
++        Subnet = apps.get_model("netbox_dhcp", "Subnet")
++        intent = parse_dhcp_config({"subnet4": [{"id": 7, "subnet": "198.18.0.0/24"}]}, 4)
++        with event_tracking(_change_request(self.user)):
++            imported = import_server_config(self.server, intent)
++        self.assertEqual(imported.errors, 0, imported.warnings)
++        target = Subnet.objects.get()
++        target_pk = target.pk
++        expected_created = parse_datetime(target.serialize_object()["created"])
++        link = KeaDhcpLink.objects.get(server=self.server, family=4, kea_subnet_id=7)
++        self.assertEqual(link.sys4_object, target)
++        branch = _provisioned_branch(self, "DHCP import recovery")
++
++        with activate_branch(branch), event_tracking(_change_request(self.user)):
++            Subnet.objects.get(pk=target_pk).delete()
++            self.assertFalse(Subnet.objects.filter(pk=target_pk).exists())
++            self.assertTrue(KeaDhcpLink.objects.filter(pk=link.pk).exists())
++        self.assertTrue(Subnet.objects.filter(pk=target_pk).exists())
++
++        branch.merge(user=self.user)
++        branch.refresh_from_db()
++        self.assertEqual(branch.status, BranchStatusChoices.MERGED)
++        self.assertFalse(Subnet.objects.filter(pk=target_pk).exists())
++        self.assertFalse(KeaDhcpLink.objects.filter(pk=link.pk).exists())
++
++        branch.revert(user=self.user)
++        branch.refresh_from_db()
++        self.assertEqual(branch.status, BranchStatusChoices.READY)
++        restored = Subnet.objects.get(pk=target_pk)
++        self.assertEqual(restored.name, target.name)
++        self.assertEqual(restored.created, expected_created)
++        self.assertFalse(KeaDhcpLink.objects.filter(pk=link.pk).exists())
++
++        recovered = import_server_config(self.server, intent)
++
++        self.assertEqual(recovered.errors, 0, recovered.warnings)
++        self.assertEqual(list(Subnet.objects.values_list("pk", flat=True)), [target_pk])
++        relinked = KeaDhcpLink.objects.get(server=self.server, family=4, kea_subnet_id=7)
++        self.assertEqual(relinked.sys4_object, restored)
++        repeated = import_server_config(self.server, intent)
++        self.assertEqual(repeated.errors, 0, repeated.warnings)
++        self.assertEqual(repeated.subnets_created, 0)
++        self.assertEqual(list(Subnet.objects.values_list("pk", flat=True)), [target_pk])
++        self.assertEqual(
++            list(KeaDhcpLink.objects.filter(server=self.server).values_list("pk", flat=True)), [relinked.pk]
++        )
++
++

@@ -163,7 +163,11 @@ def compute_drift(server: Server) -> dict:
     entry lists subnet rows tagged ``imported`` (in both), ``new`` (in Kea, not
     yet imported), or ``orphaned`` (imported, no longer in Kea).
     """
+    from .. import branching
     from ..models import KeaDhcpLink
+
+    if (branch := branching.active_branch()) is not None and not branching.prototype_mapping_table(branch):
+        return {"versions": [], "kea_unreachable": False, "mapping_unavailable": True}
 
     versions = []
     kea_unreachable = False

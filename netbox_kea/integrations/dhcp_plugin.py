@@ -98,8 +98,6 @@ def register_link_cleanup() -> None:
 
 
 def _delete_target_links(sender, instance, using: str, **kwargs) -> None:
-    if branching.active_branch() is not None:
-        return
     from django.contrib.contenttypes.models import ContentType
 
     content_type = ContentType.objects.db_manager(using).get_for_model(sender)
@@ -1031,7 +1029,15 @@ def _claim_config_networks(server, config):
     return claim(server, config.family, subnets, force=False), claim(server, config.family, pools, force=False)
 
 
-def import_server_config(
+def import_server_config(server, config, reservation_observation=None):
+    """Throwaway prototype: serialize real imports with mapping replay and cleanup."""
+    branching.refuse_in_branch("DHCP import")
+    with transaction.atomic():
+        branching.prototype_mapping_lock("default")
+        return _prototype_import_server_config(server, config, reservation_observation)
+
+
+def _prototype_import_server_config(
     server,
     config: ServerConfigIntent,
     reservation_observation: ReservationObservation | None = None,
