@@ -307,8 +307,8 @@ The middleware follows the contract, with these facts from netbox-branching 1.2.
   button beside netbox-branching's selector; its menu holds the full wording. The 409 page links
   to the Server list with `?_branch=`, the same target as the HTMX stale-selector refusal.
 - `process_exception` renders `BranchActive` from any view, not only from plugin-owned callbacks.
-- Guard 1 fills each URL pattern itself, because two plugin patterns can share a URL name (#246),
-  and checks that the URL resolves back to the same view. It sends GET, HEAD and OPTIONS, and
+- Guard 1 fills each URL pattern itself, including REST format-suffix variants that share URL
+  names, and checks that the URL resolves back to the same view. It sends GET, HEAD and OPTIONS, and
   POST, PUT, PATCH and DELETE, to every plugin URL. Its Kea replies come from `kea_recordings/`; a
   read may send only the commands that this read-only Kea answers. It found that the format-suffix
   URLs of the four REST Kea actions (`servers/<pk>/leases4.json` and the like) answer 500 on main,
