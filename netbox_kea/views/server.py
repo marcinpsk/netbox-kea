@@ -8,6 +8,7 @@ from django.contrib import messages
 from django.http.request import HttpRequest
 from django.urls import reverse
 from netbox.views import generic
+from utilities.exceptions import PermissionsViolation
 from utilities.views import ViewTab, register_model_view
 
 from .. import forms, server_configuration, tables
@@ -15,6 +16,7 @@ from ..constants import Family
 from ..filtersets import ServerFilterSet
 from ..kea import KeaClient, KeaCommand, KeaException, KeaResponse
 from ..models import Server
+from ..server_connection import connection_values, validate_connection_change
 from ..utilities import (
     format_duration,
 )
@@ -131,6 +133,18 @@ class ServerBulkEditView(generic.BulkEditView):
     filterset = ServerFilterSet
     table = tables.ServerTable
     form = forms.ServerBulkEditForm
+
+    def _update_objects(self, form, request):
+        """Check native updated candidates inside the bulk transaction and permission scope."""
+        before = {
+            server.pk: connection_values(server) for server in self.queryset.filter(pk__in=form.cleaned_data["pk"])
+        }
+        updated = super()._update_objects(form, request)
+        if self.queryset.filter(pk__in=[server.pk for server in updated]).count() != len(updated):
+            raise PermissionsViolation
+        for server in updated:
+            validate_connection_change(server, before[server.pk])
+        return updated
 
 
 class ServerBulkImportView(generic.BulkImportView):
