@@ -1673,8 +1673,7 @@ class UrlTreeGuardTest(TransactionTestCase):
         client, headers = self._client(user, route, None)
         with stub_kea(_recorded_kea()) as kea:
             on_main = client.generic(method, url, headers=headers)
-        # The format-suffix URLs of the REST Kea actions answer 500 on main (#245).
-        if method == "GET" and "format" not in route.parameters:
+        if method == "GET":
             self.assertEqual(on_main.status_code, _main_get_status(route), f"{url} on main: {kea.commands()}")
 
         client, headers = self._client(user, route, branch)
