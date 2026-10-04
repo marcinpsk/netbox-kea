@@ -6,10 +6,12 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from contextvars import ContextVar
+from copy import deepcopy
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from functools import cache, wraps
 
+from asgiref.sync import sync_to_async
 from django.apps import apps
 from django.db import connections, models, router, transaction
 from django.db.models.deletion import Collector
@@ -28,7 +30,7 @@ _METADATA_LOCK = (0x4B4541, 0x44484350)
 class ReplayOperation:
     """The explicit native action that owns a main replay transaction."""
 
-    branch: object
+    branch: models.Model
     action: str
     mappings: dict = dataclass_field(default_factory=dict)
     destructive_targets: set = dataclass_field(default_factory=set)
@@ -36,6 +38,16 @@ class ReplayOperation:
     object_states: dict = dataclass_field(default_factory=dict)
     target_associations: dict = dataclass_field(default_factory=dict)
     native_requests: set[object] = dataclass_field(default_factory=set)
+    planned_deletions: dict = dataclass_field(default_factory=dict)
+    endpoint_deletions: dict = dataclass_field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class EndpointDeletion:
+    """Fresh native deletion evidence with the request UUID captured before the next replay step."""
+
+    request_id: object
+    prechange_data: dict
 
 
 _replay_operation: ContextVar[ReplayOperation | None] = ContextVar("kea_mapping_replay_operation", default=None)
@@ -233,6 +245,15 @@ def prepare_replay(branch, collapsed, operation: str, request) -> None:
     if replay is not None:
         if request is not None:
             replay.native_requests.add(request)
+        replay.planned_deletions.update(
+            (
+                (change.model_class, change.key[1]),
+                change.prechange_data if operation == "merge" else change.postchange_data,
+            )
+            for change in collapsed.values()
+            if change.model_class in delete_effect_models()
+            and change.final_action == ("delete" if operation == "merge" else "create")
+        )
         replay.protected_targets.update(protected)
         replay.destructive_targets.update(destructive)
         state_changes = {
@@ -257,6 +278,69 @@ def prepare_replay(branch, collapsed, operation: str, request) -> None:
                 replay.mappings[change.key[1]] = (
                     change.prechange_data if operation == "merge" else change.postchange_data
                 )
+
+
+def order_named_relations(collapsed) -> None:
+    """Keep named endpoint identities available while native squash replays protected targets."""
+    replay = _replay_operation.get()
+    if replay is None:
+        return
+    for target_key, target_change in collapsed.items():
+        if (target_change.model_class, target_change.key[1]) not in replay.protected_targets:
+            continue
+        for field in target_change.model_class._meta.many_to_many:
+            if _relation_identity_field(field) != "name":
+                continue
+            for endpoint_key, endpoint_change in collapsed.items():
+                if endpoint_change.model_class is not field.remote_field.model:
+                    continue
+                if (
+                    target_change.final_action in {"update", "delete"}
+                    and endpoint_change.final_action == "delete"
+                    and endpoint_change.prechange_data.get("name")
+                    in (target_change.prechange_data.get(field.name) or [])
+                ):
+                    endpoint_change.depends_on.add(target_key)
+                    target_change.depended_by.add(endpoint_key)
+                elif (
+                    target_change.final_action in {"create", "update"}
+                    and endpoint_change.final_action == "create"
+                    and endpoint_change.postchange_data.get("name")
+                    in (target_change.postchange_data.get(field.name) or [])
+                ):
+                    target_change.depends_on.add(endpoint_key)
+                    endpoint_change.depended_by.add(target_key)
+
+
+def record_endpoint_deletion(receipt, using: str, created: bool) -> None:
+    """Capture only fresh selected endpoint deletions recorded by the native squash action."""
+    from netbox.context import current_request
+
+    replay = _replay_operation.get()
+    request = current_request.get()
+    if (
+        not created
+        or using != "default"
+        or not connections[using].in_atomic_block
+        or replay is None
+        or receipt.branch_id != replay.branch.pk
+        or request not in replay.native_requests
+    ):
+        return
+    change = receipt.change
+    key = (change.changed_object_type.model_class(), change.changed_object_id)
+    expected = replay.planned_deletions.get(key)
+    payload = change.prechange_data
+    if (
+        change.action != "delete"
+        or change.request_id != request.id
+        or expected is None
+        or not payload
+        or payload.get("created") != expected.get("created")
+        or _semantic_state(key[0], payload) != _semantic_state(key[0], expected)
+    ):
+        return
+    replay.endpoint_deletions[key] = EndpointDeletion(change.request_id, deepcopy(payload))
 
 
 def _replay_target_footprint(collapsed, operation: str):
@@ -392,7 +476,7 @@ def _validate_restorations(collapsed, protected, operation: str) -> None:
         if model is not KeaDhcpLink and (model, pk) not in protected:
             continue
         _validate_history_payload(model, payload)
-        _require_dependencies(model, payload, creates)
+        _require_dependencies(model, payload, creates, deleted)
         if model is KeaDhcpLink:
             _validate_mapping_restoration(pk, payload, creates, deleted)
         else:
@@ -406,15 +490,24 @@ def _mapping_target_model(content_type_id):
     return content_type.model_class() if content_type is not None else None
 
 
-def _require_dependencies(model, payload, restores):
+def _require_dependencies(model, payload, restores, deleted):
     for field in model._meta.concrete_fields:
         if not isinstance(field, models.ForeignKey) or payload[field.name] is None:
             continue
         related = field.remote_field.model
         identity = payload[field.name]
-        if (related, identity) not in restores and not related._base_manager.using("default").filter(
-            pk=identity
-        ).exists():
+        planned = {
+            pk if field.target_field.primary_key else data[field.target_field.name]
+            for (endpoint, pk), data in restores.items()
+            if endpoint is related
+        }
+        present = (
+            related._base_manager.using("default")
+            .filter(**{field.target_field.name: identity})
+            .exclude(pk__in=deleted.get(related, ()))
+            .exists()
+        )
+        if identity not in planned and not present:
             raise AbortRequest("A DHCP mapping or target dependency is missing. Nothing changed.")
     for field in model._meta.many_to_many:
         identities = set(payload[field.name] or [])
@@ -423,6 +516,7 @@ def _require_dependencies(model, payload, restores):
         present = set(
             related._base_manager.using("default")
             .filter(**{f"{lookup}__in": identities})
+            .exclude(pk__in=deleted.get(related, ()))
             .values_list(lookup, flat=True)
         )
         planned = (
@@ -554,8 +648,44 @@ def _validate_existing_state(current, expected) -> None:
     recorded_created = parse_datetime(expected["created"])
     if current.created != recorded_created:
         raise AbortRequest("A DHCP mapping or target primary key has been reused. Nothing changed.")
-    if _semantic_state(model, current.serialize_object()) != _semantic_state(model, expected):
+    current_state = _semantic_state(model, current.serialize_object())
+    if current_state != _observed_cleanup_state(model, expected, current_state):
         raise AbortRequest("Main DHCP mapping or target data has changed. Nothing changed.")
+
+
+def _observed_cleanup_state(model, expected, current_state: dict) -> dict:
+    """Project only observed relation losses proved by fresh selected native endpoint deletions."""
+    state = _semantic_state(model, expected)
+    replay = _replay_operation.get()
+    if replay is None or model not in target_models():
+        return state
+    for field in model._meta.many_to_many:
+        previous = set(state[field.name] or [])
+        current = set(current_state[field.name] or [])
+        identity_field = _relation_identity_field(field)
+        deleted = {
+            pk if identity_field == "pk" else fact.prechange_data[identity_field]
+            for (endpoint, pk), fact in replay.endpoint_deletions.items()
+            if endpoint is field.remote_field.model
+        }
+        if not current - previous and previous - current <= deleted:
+            state[field.name] = current_state[field.name]
+    for field in model._meta.concrete_fields:
+        if (
+            not isinstance(field, models.ForeignKey)
+            or not field.null
+            or field.remote_field.on_delete is not models.SET_NULL
+            or current_state[field.name] is not None
+        ):
+            continue
+        deleted = {
+            pk if field.target_field.primary_key else fact.prechange_data[field.target_field.name]
+            for (endpoint, pk), fact in replay.endpoint_deletions.items()
+            if endpoint is field.remote_field.model
+        }
+        if state[field.name] in deleted:
+            state[field.name] = None
+    return state
 
 
 def _validate_history_payload(model, payload) -> None:
@@ -622,6 +752,16 @@ def _guard_mapping_iterator(original):
     def guarded(self, *args, **kwargs):
         require_branch_mappings(using=self.db)
         yield from original(self, *args, **kwargs)
+
+    return guarded
+
+
+def _guard_mapping_async_iterator(original):
+    @wraps(original)
+    async def guarded(self, *args, **kwargs):
+        await sync_to_async(require_branch_mappings, thread_sensitive=True)(using=self.db)
+        async for row in original(self, *args, **kwargs):
+            yield row
 
     return guarded
 
@@ -755,6 +895,7 @@ def _boundary_queryset(queryset, model):
         for name in ("_fetch_all", "exists", "count", "aggregate"):
             methods[name] = _guard_mapping_read(getattr(queryset, name))
         methods["iterator"] = _guard_mapping_iterator(queryset.iterator)
+        methods["aiterator"] = _guard_mapping_async_iterator(queryset.aiterator)
     methods["delete"] = (_guard_target_delete if protected else _guard_parent_delete)(queryset.delete)
     adapted = type(f"{queryset.__name__}DhcpMappingBoundary", (queryset,), methods)
     _queryset_types[key] = adapted
