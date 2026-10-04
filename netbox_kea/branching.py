@@ -9,14 +9,16 @@ module in the plugin that imports ``netbox_branching``.
 from __future__ import annotations
 
 from collections.abc import Callable
+from contextlib import contextmanager
 from dataclasses import dataclass
+from functools import wraps
 from http import HTTPStatus
 from typing import Any
 
 from django.apps import apps
 from django.contrib import messages
 from django.core.exceptions import ObjectDoesNotExist
-from django.db import models
+from django.db import connections, models
 from django.db.models.signals import pre_delete, pre_save
 from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import render
@@ -67,6 +69,71 @@ def active_branch() -> Any:
     return branch_context.get()
 
 
+def supports_branching(model: type[models.Model]) -> bool:
+    """Return the native configured routing decision, including model exemptions."""
+    if not installed():
+        return False
+    from netbox_branching.utilities import supports_branching as native_supports_branching
+
+    return native_supports_branching(model)
+
+
+@contextmanager
+def branch_scope(branch: Any):
+    """Use the native branch context without exposing the optional plugin to callers."""
+    from netbox_branching.utilities import activate_branch
+
+    with activate_branch(branch):
+        yield
+
+
+def connection_aliases() -> set[str]:
+    """Include dynamic native branch aliases without opening a database connection."""
+    aliases = set(connections)
+    if installed():
+        from netbox_branching.utilities import _get_tracked_branch_aliases
+
+        aliases.update(_get_tracked_branch_aliases())
+    return aliases
+
+
+def has_native_delete_receipt(branch: Any, instance: models.Model) -> bool:
+    """Verify native applied deletion history in the current main request transaction."""
+    from django.contrib.contenttypes.models import ContentType
+    from netbox.context import current_request
+
+    request = current_request.get()
+    if request is None or not connections["default"].in_atomic_block:
+        return False
+    return (
+        branch.applied_changes.using("default")
+        .filter(
+            change__changed_object_type=ContentType.objects.get_for_model(instance),
+            change__changed_object_id=instance.pk,
+            change__action="delete",
+            change__request_id=request.id,
+        )
+        .exists()
+    )
+
+
+def branch_for_alias(alias: str | None) -> Any:
+    """Resolve an explicitly selected native branch connection without changing context."""
+    if alias is None or not installed():
+        return None
+    from netbox.plugins import get_plugin_config
+    from netbox_branching.database import BranchAwareRouter
+    from netbox_branching.models import Branch
+
+    prefix = f"{BranchAwareRouter.connection_prefix}{get_plugin_config(BRANCHING_APP_LABEL, 'schema_prefix')}"
+    if not alias.startswith(prefix):
+        return None
+    branch = Branch.objects.using("default").filter(schema_id=alias.removeprefix(prefix)).first()
+    if branch is None:
+        raise AbortRequest("The branch schema is unavailable. Create a fresh branch to use DHCP Import Mappings.")
+    return branch
+
+
 def refuse_in_branch(operation: str) -> None:
     """Raise BranchActive when a branch is active."""
     if (branch := active_branch()) is not None:
@@ -92,14 +159,16 @@ def bind() -> BranchBinding:
 
 
 def is_branchable(model: type[models.Model]) -> bool | None:
-    """Keep every netbox_kea model in main (False), and defer (None) for every other model.
+    """Branch DHCP Import Mappings, keep other plugin models in main, and defer for other apps.
 
     A constant, so it cannot raise: netbox-branching treats a raising resolver as no answer and then
     makes a change-logged model such as Server branchable. Guard 2 in test_branching.py computes the
     relations that a delete in a branch reaches, and fails when one is outside the design. netbox-branching
     also calls this with historical models.
     """
-    return False if model._meta.app_label == APP_LABEL else None
+    if model._meta.app_label != APP_LABEL:
+        return None
+    return model._meta.model_name == "keadhcplink"
 
 
 def register() -> None:
@@ -110,6 +179,62 @@ def register() -> None:
 
     register_branching_resolver(is_branchable)
     connect_branch_refusal()
+    from netbox_branching.signals import pre_merge, pre_revert
+
+    pre_merge.connect(_mapping_merge_preflight, dispatch_uid="netbox_kea.mapping_merge_preflight")
+    pre_revert.connect(_mapping_revert_preflight, dispatch_uid="netbox_kea.mapping_revert_preflight")
+    from netbox_branching.models import Branch
+
+    if not getattr(Branch, "_kea_mapping_actions", False):
+        Branch._kea_mapping_actions = True
+        for action in ("merge", "revert"):
+            setattr(Branch, action, _mapping_action(getattr(Branch, action), action))
+        from netbox_branching.merge_strategies.iterative import IterativeMergeStrategy
+        from netbox_branching.merge_strategies.squash import SquashMergeStrategy
+
+        for strategy in (SquashMergeStrategy, IterativeMergeStrategy):
+            for action in ("merge", "revert"):
+                setattr(strategy, action, _mapping_strategy(getattr(strategy, action), action))
+
+
+def _mapping_strategy(original: Callable[..., Any], action: str) -> Callable[..., Any]:
+    @wraps(original)
+    def wrapped(strategy: Any, branch: Any, changes: Any, request: Any, logger: Any, user: Any) -> Any:
+        from netbox_branching.merge_strategies.squash import SquashMergeStrategy
+
+        from .dhcp_mapping_lifecycle import metadata_scope, prepare_replay
+
+        with metadata_scope():
+            collapsed, _ = SquashMergeStrategy._collapse_changes(
+                sorted(changes, key=lambda change: change.time), logger
+            )
+            prepare_replay(branch, collapsed, action)
+            return original(strategy, branch, changes, request, logger, user)
+
+    return wrapped
+
+
+def _mapping_action(original: Callable[..., Any], action: str) -> Callable[..., Any]:
+    @wraps(original)
+    def wrapped(branch: Any, *args: Any, **kwargs: Any) -> Any:
+        from .dhcp_mapping_lifecycle import action_scope
+
+        with action_scope(branch, action):
+            return original(branch, *args, **kwargs)
+
+    return wrapped
+
+
+def _mapping_merge_preflight(sender: Any, branch: Any, **kwargs: Any) -> None:
+    from .dhcp_mapping_lifecycle import preflight_action
+
+    preflight_action(branch, "merge")
+
+
+def _mapping_revert_preflight(sender: Any, branch: Any, **kwargs: Any) -> None:
+    from .dhcp_mapping_lifecycle import preflight_action
+
+    preflight_action(branch, "revert")
 
 
 def _refuse_save_in_branch(sender: Any, instance: Any, **kwargs: Any) -> None:
@@ -151,9 +276,10 @@ def connect_refusal(model: type[models.Model]) -> None:
 
 
 def connect_branch_refusal() -> None:
-    """Refuse a save or a delete of every netbox_kea row in a branch: the resolver keeps each model in main."""
+    """Refuse branch changes to plugin rows that describe live Kea or IPAM ownership."""
     for model in apps.get_app_config(APP_LABEL).get_models():
-        connect_refusal(model)
+        if not is_branchable(model):
+            connect_refusal(model)
 
 
 def plugin_owned(view_func: Callable[..., Any]) -> bool:
@@ -179,8 +305,9 @@ def selection_unusable(request: HttpRequest) -> bool:
 
 def _branch_refused_text(branch: Any) -> str:
     return (
-        f"Branch {branch} is active. Kea is live and shared by every branch, and netbox-kea data exists "
-        "in main only, so netbox-kea refuses changes in a branch. Switch to main to make this change."
+        f"Branch {branch} is active. Kea servers, sync settings and IPAM ownership come from main. "
+        "DHCP Import Mappings follow their targets in a supported fresh branch. "
+        "Live Kea and import changes require main. Switch to main to make this change."
     )
 
 
@@ -247,7 +374,12 @@ class BranchRefusalMiddleware:
         if branch is None or isinstance(branch, HttpResponse) or match is None:
             return response
         if plugin_owned(match.func) or match.view_name == "graphql":
-            response[SOURCES_HEADER] = f"kea=live; plugin=main; branch={branch.schema_id}"
+            from .dhcp_mapping_lifecycle import mapping_unavailable_reason
+
+            mappings = "branch" if mapping_unavailable_reason() is None else "unavailable"
+            response[SOURCES_HEADER] = (
+                f"kea=live; plugin=main; dhcp-import-mappings={mappings}; branch={branch.schema_id}"
+            )
         return response
 
     def process_view(

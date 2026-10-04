@@ -2,10 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """Adapter to the optional NetBox DHCP plugin (``netbox_dhcp``, sys4).
 
-This is the **only** module that touches ``netbox_dhcp`` models, and it does so
-lazily inside functions — never at import time — so the rest of netbox-kea (and
-its CI, which does not install the plugin) imports cleanly whether or not the
-plugin is present.  Call :func:`is_available` before any other entry point.
+This module imports and compares DHCP data. The mapping lifecycle module coordinates
+its targets with native branching. Both modules resolve optional DHCP models lazily,
+so netbox-kea imports cleanly when the DHCP plugin is absent. Call
+:func:`is_available` before any other entry point.
 
 v1 scope (import + diff, read-only against Kea):
 
@@ -59,6 +59,7 @@ from django.db.models.signals import post_delete
 
 from .. import branching
 from ..constants import IPNetworkValue
+from ..dhcp_mapping_lifecycle import coordinated_import
 from ..dhcp_options import DHCPOption
 from ..kea import subnet_network
 from ..mappers.kea_to_dhcp import (
@@ -85,7 +86,7 @@ def is_available() -> bool:
 
 
 def register_link_cleanup() -> None:
-    """Remove stale Kea links when a supported DHCP target is deleted on main."""
+    """Remove mappings in the same database as a deleted supported DHCP target."""
     if not is_available():
         return
     for name in ("Subnet", "HostReservation"):
@@ -98,8 +99,6 @@ def register_link_cleanup() -> None:
 
 
 def _delete_target_links(sender, instance, using: str, **kwargs) -> None:
-    if branching.active_branch() is not None:
-        return
     from django.contrib.contenttypes.models import ContentType
 
     content_type = ContentType.objects.db_manager(using).get_for_model(sender)
@@ -654,10 +653,9 @@ def upsert_subnet(server, dhcp_server, intent: SubnetIntent, summary: ImportSumm
 
     Returns the ``netbox_dhcp.Subnet`` instance, or ``None`` on error.
     """
-    from django.contrib.contenttypes.models import ContentType
+    from ..dhcp_mapping_lifecycle import observe_mapping
 
     Subnet = _model("Subnet")
-    KeaDhcpLink = _link_model()
 
     existing = None
     if intent.kea_subnet_id is not None:
@@ -699,21 +697,8 @@ def upsert_subnet(server, dhcp_server, intent: SubnetIntent, summary: ImportSumm
                 ).items():
                     setattr(subnet_obj, name, value)
                 subnet_obj.save()
-                if intent.kea_subnet_id is not None:
-                    # Key on the authoritative Kea identity, not the sys4 object: a stale
-                    # link (its subnet deleted out from under it) must be *relinked* to the
-                    # new subnet, not collide with the keadhcplink_unique_subnet_identity
-                    # constraint as a fresh (object_type, object_id) create would.
-                    KeaDhcpLink.objects.update_or_create(
-                        server=server,
-                        family=intent.family,
-                        kea_subnet_id=intent.kea_subnet_id,
-                        defaults={
-                            "kea_identity": None,
-                            "object_type": ContentType.objects.get_for_model(Subnet),
-                            "object_id": subnet_obj.pk,
-                        },
-                    )
+            if intent.kea_subnet_id is not None:
+                observe_mapping(server, intent.family, subnet_obj, subnet_id=intent.kea_subnet_id)
     except Exception as exc:  # noqa: BLE001 — one bad subnet must not abort the import
         summary.errors += 1
         summary.warn(f"subnet {intent.cidr} (id={intent.kea_subnet_id}): {exc}")
@@ -792,18 +777,9 @@ def _link_reservation(server, reservation: Reservation, obj) -> None:
     Keyed on the Kea identity rather than the row, so a link whose row was deleted is
     relinked instead of colliding with ``keadhcplink_unique_sys4_object``.
     """
-    from django.contrib.contenttypes.models import ContentType
+    from ..dhcp_mapping_lifecycle import observe_mapping
 
-    KeaDhcpLink = _link_model()
-    KeaDhcpLink.objects.update_or_create(
-        server=server,
-        family=reservation.family,
-        kea_identity=_reservation_link_identity(reservation),
-        defaults={
-            "object_type": ContentType.objects.get_for_model(obj.__class__),
-            "object_id": obj.pk,
-        },
-    )
+    observe_mapping(server, reservation.family, obj, reservation_identity=_reservation_link_identity(reservation))
 
 
 def _unlinked(base):
@@ -1031,6 +1007,7 @@ def _claim_config_networks(server, config):
     return claim(server, config.family, subnets, force=False), claim(server, config.family, pools, force=False)
 
 
+@coordinated_import
 def import_server_config(
     server,
     config: ServerConfigIntent,
@@ -1041,6 +1018,7 @@ def import_server_config(
     Idempotent: re-running updates the same rows (subnets via ``KeaDhcpLink``,
     pools/reservations matched structurally) rather than duplicating them.
     """
+    branching.refuse_in_branch("A DHCP-plugin import")
     summary = ImportSummary()
     dhcp_server = upsert_dhcp_server(server)
     custom_defs = _custom_def_index(config)

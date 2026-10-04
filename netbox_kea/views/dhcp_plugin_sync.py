@@ -164,7 +164,10 @@ def compute_drift(server: Server) -> dict:
     entry lists subnet rows tagged ``imported`` (in both), ``new`` (in Kea, not
     yet imported), or ``orphaned`` (imported, no longer in Kea).
     """
+    from ..dhcp_mapping_lifecycle import require_branch_mappings
     from ..models import KeaDhcpLink
+
+    require_branch_mappings()
 
     versions = []
     kea_unreachable = False
@@ -239,9 +242,14 @@ class ServerDhcpPluginView(generic.ObjectView):
 
     def get_extra_context(self, request, instance):
         """Return drift context for the template (live, read-only Kea read)."""
+        from ..dhcp_mapping_lifecycle import mapping_unavailable_reason
+
+        available = dhcp_plugin.is_available()
+        unavailable = mapping_unavailable_reason() if available else None
         return {
-            "plugin_available": dhcp_plugin.is_available(),
-            "drift": compute_drift(instance) if dhcp_plugin.is_available() else None,
+            "plugin_available": available,
+            "mapping_unavailable": unavailable,
+            "drift": compute_drift(instance) if available and unavailable is None else None,
             "can_sync": _user_can_sync(request.user, instance),
         }
 

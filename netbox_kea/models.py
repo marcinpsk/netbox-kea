@@ -13,7 +13,7 @@ from django.db import connection, models
 from django.urls import reverse
 from netbox.constants import CENSOR_TOKEN, CENSOR_TOKEN_CHANGED
 from netbox.models import NetBoxModel
-from netbox.models.features import JobsMixin
+from netbox.models.features import ChangeLoggingMixin, JobsMixin
 
 from . import branching
 from .constants import Family
@@ -407,7 +407,7 @@ class SyncConfig(models.Model):
         return cls.objects.get(pk=1)
 
 
-class KeaDhcpLink(models.Model):
+class KeaDhcpLink(ChangeLoggingMixin):
     """Maps a Kea object identity to the netbox-plugin-dhcp (``netbox_dhcp``) record imported from it.
 
     Kea's ``subnet-id`` is unique only per ``(server, protocol)`` — overlaps across
@@ -465,7 +465,7 @@ class KeaDhcpLink(models.Model):
 
     class Meta:
         app_label = "netbox_kea"
-        verbose_name = "Kea DHCP-plugin link"
+        verbose_name = "DHCP Import Mapping"
         constraints = [
             models.UniqueConstraint(
                 fields=["object_type", "object_id"],

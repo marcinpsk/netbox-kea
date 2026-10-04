@@ -9,7 +9,7 @@ import re
 import pytest
 import yaml
 
-from netbox_kea.tests.snapshot_discipline import MUTATORS, PACKAGE_ROOT, SITES, scan_source, scan_tree
+from netbox_kea.tests.snapshot_discipline import MUTATORS, PACKAGE_ROOT, SITES, _scopes, scan_source, scan_tree
 
 
 def test_new_direct_save_requires_inventory_classification():
@@ -69,8 +69,8 @@ def test_recognized_mutators_start_the_direct_receiver_change(helper):
 
 
 def test_inventory_accounts_for_loaded_creates_and_bookkeeping():
-    assert sum(site.count for site in SITES if site.kind == "loaded") == 15
-    assert sum(site.count for site in SITES if site.kind != "loaded") == 10
+    assert sum(site.count for site in SITES if site.kind == "loaded") == 16
+    assert sum(site.count for site in SITES if site.kind != "loaded") == 11
     assert {site.kind for site in SITES} == {"loaded", "create", "plain", "framework"}
 
 
@@ -80,24 +80,28 @@ def test_production_tree_has_no_snapshot_violations():
 
 def _snapshot_sites():
     sites = []
+    loaded = {(site.path, site.function, site.receiver) for site in SITES if site.kind == "loaded"}
     for path in sorted(PACKAGE_ROOT.rglob("*.py")):
+        relative = path.relative_to(PACKAGE_ROOT).as_posix()
         if {"tests", "migrations"}.intersection(path.relative_to(PACKAGE_ROOT).parts):
             continue
-        sites.extend(
-            (path, node.lineno, ast.unparse(node.value.func.value))
-            for node in ast.walk(ast.parse(path.read_text()))
-            if isinstance(node, ast.Expr)
-            and isinstance(node.value, ast.Call)
-            and isinstance(node.value.func, ast.Attribute)
-            and (node.value.func.attr == "snapshot")
-        )
+        for function, scope in _scopes(ast.parse(path.read_text()).body):
+            sites.extend(
+                (path, node.lineno, ast.unparse(node.value.func.value))
+                for node in ast.walk(scope)
+                if isinstance(node, ast.Expr)
+                and isinstance(node.value, ast.Call)
+                and isinstance(node.value.func, ast.Attribute)
+                and node.value.func.attr == "snapshot"
+                and (relative, function, ast.unparse(node.value.func.value)) in loaded
+            )
     return sites
 
 
 @pytest.mark.parametrize("late", [False, True], ids=["removed", "moved-after-mutation"])
-def test_every_runtime_snapshot_is_load_bearing(late):
+def test_every_inventoried_direct_save_snapshot_is_load_bearing(late):
     sites = _snapshot_sites()
-    assert len(sites) == 15
+    assert len(sites) == 16
     for path, lineno, receiver in sites:
         tree = ast.parse(path.read_text())
         snapshot = next(node for node in ast.walk(tree) if isinstance(node, ast.Expr) and node.lineno == lineno)

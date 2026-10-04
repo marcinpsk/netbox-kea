@@ -7,6 +7,11 @@ SPDX-License-Identifier: Apache-2.0
 
 Status: ratified r3 on 2026-09-30 (design-blind, three adversarial rounds). Ticket #208, ADR 0006, ADR 0007.
 
+ADR 0008 later makes DHCP Import Mappings branchable. IPAM Ownership links retain this document's
+main-only contract. The original brief and review rounds below describe the model policy at the time
+of this decision. Current branch guards allow the mapping exception and still pin IPAM ownership
+refusals.
+
 ## Brief
 
 ADR 0006 adds the IPAM Ownership link: `(server, family, source, object)`, where the object is exactly
