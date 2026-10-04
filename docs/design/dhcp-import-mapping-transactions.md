@@ -337,8 +337,8 @@ receipts grant no permission. Facts share the action context and are discarded o
 
 The shared late save and late delete comparison permits only observed relation differences certified
 by those facts. An M2M field can lose original members with the matching remote model and serialized
-identity. Ordinary relations use PKs. Named relations use the captured endpoint name. Additions,
-unproved removals and renamed identity substitutions still refuse. A nullable foreign key can change
+identity. Supported cleanup relations use PKs. Tag changes in a protected target replay action refuse
+before mutation. Additions and unproved removals still refuse. A nullable foreign key can change
 only from its original endpoint to None when the installed native deletion policy supports that cleanup.
 A move to another endpoint is a conflict. All other semantic fields, row generation, mapping association
 and source checks remain exact. An unchanged persisted foreign key remains valid before cleanup saves
@@ -357,33 +357,47 @@ per-object request UUIDs, unrelated main edits, dry runs, rollback and retry. Te
 history and PostgreSQL state. A source rule cannot prove receipt provenance or transaction ordering.
 The shared runtime comparison and behavioral regressions provide the mechanical protection.
 
-Native tags serialize names. Without a name-based dependency, replay can assign a missing tag name
-before it creates or restores the original Tag row. Tag assignment then creates a different row, and
-the original row fails its unique name or slug validation. A framework control reproduced this failure
-with the target comparison disabled. Astra ratified the bounded revision r3 after a real graph prototype
-preserved the original tag, target and mapping PKs through merge and revert.
-
-The lifecycle module adds forward-oriented edges through the native dependency graph signal. A selected
-endpoint DELETE depends on a protected target UPDATE or DELETE when its prechange name occurs in that
-target's prechange named relation. A protected target CREATE or UPDATE depends on a selected endpoint
-CREATE when its postchange name occurs in the target's postchange named relation. Both directions update
-the graph's inverse dependency set. Revert reverses native replay order. The adapter does not reverse
-these edges or change unrelated graph nodes. Registration requires the optional branching plugin.
-
-Destination prevalidation excludes exact endpoints selected for destruction from existing dependency
-candidates. A planned creation remains available. This refuses incomplete branch history whose target
-destination still references a tag selected for deletion, before replay mutates main. It does not
-manufacture a missing target change record.
-
-Under these edges, a target detaches its named relation before endpoint deletion records its receipt.
-A callback that renames that deleted endpoint cannot remove a remaining protected target membership:
-the prototype observed an empty relation before and after each rename. This candidate was refuted.
-Reopen it only with a concrete target that still references that endpoint at this stage under the same
-graph policy. A newer main write after the target's final replay mutation may survive. Replay must
-preserve that write, and a later revert must refuse the conflicting state.
-
 Chronological inspection refuted an ordinary incomplete-history candidate. A diagnostic collapsed changes
 in the branch query's default newest-first order. Actual native replay sorts them chronologically and
-retains the final target cleanup record. That ordinary action succeeds correctly. The incomplete-history
-refusal control must instead identify its deliberately corrupted persisted payload. Neither the diagnostic
-failure nor that counterfactual input is evidence of an ordinary-operation history defect.
+retains the final target cleanup record. Neither the diagnostic failure nor deliberate payload corruption
+proves an ordinary-operation history defect. The operator subsequently selected conservative refusal of
+mixed Tag actions. Native-valid mixed histories therefore refuse by explicit policy.
+
+## Bounded Tag refusal, operator-selected scope
+
+The operator selected fail-closed Tag handling. Recovery refuses an action that combines native
+Tag changes with replay of protected imported DHCP targets. Operators must apply the Tag work
+separately, then create a fresh branch for DHCP changes. This conservative rule includes unrelated
+Tag changes in the same mixed branch. It replaces the former named dependency ordering.
+Tag-only actions and ordinary recovery with unchanged existing Tags remain supported.
+
+The implementation does not interpret historical Tag names, project replay history, add Tag
+metadata, or restore Tag timestamps. Existing Tag identities must remain available and match the
+branch copy before native relation selection. A detected conflict refuses the whole action and
+explains the operator repair. Persisted native histories remain unchanged.
+
+The branch's raw persisted Tag changes determine the mixed-action refusal. Changes collapsed to
+skip still count. The initial refusal occurs before native status changes. Squash and iterative
+apply the same policy. Mapping-only replay that does not write its target keeps the target
+generation check without imposing the mixed-Tag rule.
+
+For unchanged Tags, the verified physical branch copy provides the existing PK, name and full
+creation generation. Main must match these facts before replay and before native named relation
+selection or assignment. Missing, renamed, replaced or unavailable endpoints refuse with the same
+operator guidance. No missing Tag is created to complete recovery. Iterative relation checks
+recognize their selected native request separately from squash target-state checks. This preserves
+ordinary successive target updates without a target-progress mechanism.
+
+A separate restoration-generation guard runs before native timestamp reset. Native undo saves a
+new row, assigns its relations, then restores its original timestamps. The synchronous fresh
+AppliedChange for that CREATE supplies the actual row's birth generation and creator instance.
+Capture only the first fact for the selected restore key, exact native squash request, branch,
+main connection and transaction. Capture the scalar request UUID immediately. Later updates,
+other requests, missing facts and different creator instances provide no authorization.
+
+Before timestamp reset, the persisted row must still match that captured birth generation and
+the helper must receive the same creator instance. Its planned timestamp snapshot must match the
+original restored generation. The native helper then restores the timestamps. A same-PK replacement
+cannot inherit the deleted row's generation. Each mapping save also checks its destination's planned
+generation, including a target restored by the same action. Mapping-only recovery uses the copied
+target generation and preserves newer scalar data on that same row.
