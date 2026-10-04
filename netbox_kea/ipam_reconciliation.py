@@ -1526,11 +1526,17 @@ def _claim_network_records(
         if earlier is not None and (earlier.disagreement or earlier.prefix_length != row.prefix_length):
             row = replace(earlier, disagreement=True)
         reports[row.address] = row
-    return _claim_network_reports(server, family, source, reports, force=force)
+    return _claim_network_reports(server, family, source, reports, report=SyncReport(), force=force)
 
 
 def _claim_network_reports(
-    server: Server, family: Family, source: str, reports: Mapping[str, _NetworkReport], *, force: bool = False
+    server: Server,
+    family: Family,
+    source: str,
+    reports: Mapping[str, _NetworkReport],
+    *,
+    report: SyncReport,
+    force: bool = False,
 ) -> ClaimResult:
     """Use the same network ownership policy as complete reconciliation phases."""
     result = ClaimResult()
@@ -1544,7 +1550,7 @@ def _claim_network_reports(
         outcome = _claim_network(server, family, source, row, force=force)
         return _network_result(server, source, row, outcome)
 
-    for row, outcome in _each_row(reports.values(), SyncReport(), source, apply, lambda row: row.address):
+    for row, outcome in _each_row(reports.values(), report, source, apply, lambda row: row.address):
         if isinstance(outcome, PrefixClaim):
             result.prefixes[row.address] = outcome
         else:
@@ -1562,12 +1568,10 @@ def _run_delegated_prefix_phase(
             raise ValueError("The Reservation does not match the phase family")
         for prefix in reservation.delegated_prefixes:
             reports[str(prefix)] = _NetworkReport(str(prefix), prefix.prefixlen)
-    results = _claim_network_reports(server, family, phase.source, reports)
+    results = _claim_network_reports(server, family, phase.source, reports, report=report)
     report.prefixes.update(results.prefixes)
     for address, result in results.prefixes.items():
-        if result.outcome == "error":
-            report.fail_row(phase.source, address, _RowRefused("Delegated Prefix claim failed"))
-        else:
+        if result.outcome != "error":
             _count(report, address, result.outcome)
     if not phase.complete:
         report.incomplete.add(phase.source)

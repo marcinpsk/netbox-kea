@@ -238,6 +238,55 @@ class PrefixPoolJobTest(TestCase):
         self.assertEqual(sum("Further row failures" in message for message in logs.output), 1)
         self.assertFalse(IPRange.objects.exists())
 
+    def test_duplicate_delegated_prefixes_keep_diagnostics_and_limit_row_logs(self):
+        import ipaddress
+        from urllib.parse import parse_qs, urlsplit
+
+        from django.urls import reverse
+
+        from netbox_kea.ipam_reconciliation import DelegatedPrefixPhase, reconcile
+        from netbox_kea.reservations import GlobalReservationScope, IPv6Reservation, ReservationIdentity
+
+        vrf = VRF.objects.create(name="delegated-prefixes")
+        server = _make_db_server(dhcp4=False, sync_vrf=vrf)
+        networks = tuple(ipaddress.IPv6Network(f"2001:db8:{index:x}::/56") for index in range(1, 13))
+        duplicates = {}
+        for network in networks[:-1]:
+            duplicates[str(network)] = [Prefix.objects.create(prefix=str(network), vrf=vrf).pk for _ in range(2)]
+        reservation = IPv6Reservation(
+            scope=GlobalReservationScope(),
+            identity=ReservationIdentity("duid", "01:02:03"),
+            addresses=(),
+            delegated_prefixes=networks,
+        )
+        phase = DelegatedPrefixPhase((reservation,), next_confirmation_number(), True)
+
+        with self.assertLogs("netbox_kea.ipam_reconciliation", level="WARNING") as logs:
+            report = reconcile(server, 6, [phase])
+
+        self.assertEqual((report.prefix_errors, report.errors, report.created), (11, 0, 1))
+        self.assertEqual(report.incomplete, {"delegated-prefix"})
+        self.assertEqual(len(report.duplicates), 11)
+        for network, duplicate in zip(networks[:-1], report.duplicates, strict=True):
+            self.assertEqual(duplicate.kea_object, f"delegated-prefix {network}")
+            self.assertEqual(duplicate.pks, duplicates[str(network)])
+            url = urlsplit(duplicate.list_url)
+            self.assertEqual(url.path, reverse("ipam:prefix_list"))
+            self.assertEqual(parse_qs(url.query), {"prefix": [str(network)], "vrf_id": [str(vrf.pk)]})
+            self.assertEqual(report.prefixes[str(network)].outcome, "error")
+        self.assertEqual(report.prefixes[str(networks[-1])].outcome, "created")
+        self.assertEqual(
+            [
+                (str(prefix), source)
+                for prefix, source in IPAMOwnershipLink.objects.filter(server=server).values_list(
+                    "prefix__prefix", "source"
+                )
+            ],
+            [(str(networks[-1]), "delegated-prefix")],
+        )
+        self.assertEqual(sum("IPAM reconciliation of" in message for message in logs.output), 10)
+        self.assertEqual(sum("Further row failures" in message for message in logs.output), 1)
+
     def test_last_dropping_server_decides_for_shared_prefix_and_pool(self):
         for first_flag, last_flag in ((False, True), (True, False)):
             with self.subTest(first=first_flag, last=last_flag):
