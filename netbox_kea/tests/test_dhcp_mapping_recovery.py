@@ -117,6 +117,452 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
                 with self.subTest(family=family, queryset=queryset):
                     self._lifecycle("subnet", family, queryset)
 
+    def test_squash_deletes_subnet_before_its_protected_prefix(self):
+        from ipam.models import Prefix
+        from netbox_dhcp.models import DHCPServer, Subnet
+
+        from netbox_kea.models import IPAMOwnershipLink
+
+        for mapped in (False, True):
+            with self.subTest(mapped=mapped):
+                if mapped:
+                    _, _, _, target, mapping = self._imported("subnet", 4, "protected-prefix")
+                    IPAMOwnershipLink.objects.filter(prefix_id=target.prefix_id).delete()
+                else:
+                    prefix = Prefix.objects.create(prefix="198.18.2.0/24")
+                    parent = DHCPServer.objects.create(name="ordinary-native-parent")
+                    target = Subnet.objects.create(
+                        name="ordinary-native-subnet", subnet_id=17, prefix=prefix, dhcp_server=parent
+                    )
+                    mapping = None
+                prefix = target.prefix
+                branch = _provisioned_branch(self, f"native-protected-prefix-{mapped}")
+                branch.merge_strategy = "squash"
+                branch.save(provision=False)
+                self._delete(branch, target)
+                self._delete(branch, prefix)
+                self.assertTrue(Subnet.objects.filter(pk=target.pk).exists())
+                self.assertTrue(Prefix.objects.filter(pk=prefix.pk).exists())
+                branch.merge(user=self.user)
+                branch.refresh_from_db()
+                self.assertEqual(branch.status, "merged")
+                self.assertFalse(Subnet.objects.filter(pk=target.pk).exists())
+                self.assertFalse(Prefix.objects.filter(pk=prefix.pk).exists())
+                if mapping is not None:
+                    self.assertFalse(KeaDhcpLink.objects.filter(pk=mapping.pk).exists())
+                branch.revert(user=self.user)
+                self.assertTrue(Subnet.objects.filter(pk=target.pk, prefix_id=prefix.pk).exists())
+                self.assertTrue(Prefix.objects.filter(pk=prefix.pk).exists())
+                if mapping is not None:
+                    self.assertTrue(KeaDhcpLink.objects.filter(pk=mapping.pk, object_id=target.pk).exists())
+
+    def test_revert_preserves_previously_mapped_target_after_mapping_deletion(self):
+        for delete_server in (False, True):
+            with self.subTest(delete_server=delete_server):
+                suffix = f"removed-mapping-protection-{delete_server}"
+                server, _, _, target, link = self._imported("subnet", 4, suffix)
+                branch = _provisioned_branch(self, suffix)
+                branch.merge_strategy = "squash"
+                branch.save(provision=False)
+                with activate_branch(branch), event_tracking(_change_request(self.user)):
+                    changed = type(target).objects.get(pk=target.pk)
+                    changed.description = "branch description"
+                    changed.save()
+                branch.merge(user=self.user)
+                branch.refresh_from_db()
+                if delete_server:
+                    server.delete()
+                else:
+                    KeaDhcpLink.objects.filter(pk=link.pk).delete()
+                self.assertFalse(KeaDhcpLink.objects.filter(pk=link.pk).exists())
+                changed = type(target).objects.get(pk=target.pk)
+                changed.description = "newer main description"
+                changed.save()
+                before, applied = ObjectChange.objects.count(), branch.applied_changes.count()
+                with self.assertRaises(AbortRequest):
+                    branch.revert(user=self.user)
+                branch.refresh_from_db()
+                self.assertEqual(branch.status, "merged")
+                self.assertEqual(branch.applied_changes.count(), applied)
+                self.assertEqual(ObjectChange.objects.count(), before)
+                self.assertEqual(type(target).objects.get(pk=target.pk).description, "newer main description")
+                with activate_branch(branch):
+                    self.assertTrue(KeaDhcpLink.objects.filter(pk=link.pk, object_id=target.pk).exists())
+                self.assertIsNone(current_request.get())
+
+    def test_squash_preserves_unplanned_protected_subnet(self):
+        from django.db.models.deletion import ProtectedError
+        from ipam.models import Prefix
+        from netbox_dhcp.models import DHCPServer, Subnet
+
+        prefix = Prefix.objects.create(prefix="198.18.3.0/24")
+        branch = _provisioned_branch(self, "native-unplanned-protected-prefix")
+        branch.merge_strategy = "squash"
+        branch.save(provision=False)
+        self._delete(branch, prefix)
+        parent = DHCPServer.objects.create(name="unplanned-native-parent")
+        target = Subnet.objects.create(name="unplanned-native-subnet", subnet_id=18, prefix=prefix, dhcp_server=parent)
+        before, applied = ObjectChange.objects.count(), branch.applied_changes.count()
+        with self.assertRaises(ProtectedError):
+            branch.merge(user=self.user)
+        branch.refresh_from_db()
+        self.assertEqual(branch.status, "ready")
+        self.assertEqual(branch.applied_changes.count(), applied)
+        self.assertEqual(ObjectChange.objects.count(), before)
+        self.assertTrue(Prefix.objects.filter(pk=prefix.pk).exists())
+        self.assertTrue(Subnet.objects.filter(pk=target.pk, prefix_id=prefix.pk).exists())
+        self.assertIsNone(current_request.get())
+
+    def test_squash_moves_subnet_before_deleting_its_protected_prefix(self):
+        from ipam.models import Prefix
+        from netbox_dhcp.models import DHCPServer, Subnet
+
+        prefix = Prefix.objects.create(prefix="198.18.4.0/24")
+        replacement = Prefix.objects.create(prefix="198.18.5.0/24")
+        parent = DHCPServer.objects.create(name="native-moved-prefix-parent")
+        target = Subnet.objects.create(
+            name="native-moved-prefix-subnet", subnet_id=19, prefix=prefix, dhcp_server=parent
+        )
+        branch = _provisioned_branch(self, "native-moved-protected-prefix")
+        branch.merge_strategy = "squash"
+        branch.save(provision=False)
+        with activate_branch(branch), event_tracking(_change_request(self.user)):
+            changed = Subnet.objects.get(pk=target.pk)
+            changed.prefix = replacement
+            changed.save()
+        self._delete(branch, prefix)
+        self.assertTrue(Subnet.objects.filter(pk=target.pk, prefix_id=prefix.pk).exists())
+        branch.merge(user=self.user)
+        branch.refresh_from_db()
+        self.assertEqual(branch.status, "merged")
+        self.assertFalse(Prefix.objects.filter(pk=prefix.pk).exists())
+        self.assertTrue(Subnet.objects.filter(pk=target.pk, prefix_id=replacement.pk).exists())
+        branch.revert(user=self.user)
+        branch.refresh_from_db()
+        self.assertEqual(branch.status, "ready")
+        self.assertTrue(Subnet.objects.filter(pk=target.pk, prefix_id=prefix.pk).exists())
+        self.assertTrue(Prefix.objects.filter(pk=prefix.pk).exists())
+        self.assertIsNone(current_request.get())
+
+    def test_revert_moves_subnet_before_deleting_branch_created_prefix(self):
+        from ipam.models import Prefix
+        from netbox_dhcp.models import DHCPServer, Subnet
+
+        prefix = Prefix.objects.create(prefix="198.18.6.0/24")
+        parent = DHCPServer.objects.create(name="native-created-prefix-parent")
+        target = Subnet.objects.create(
+            name="native-created-prefix-subnet", subnet_id=20, prefix=prefix, dhcp_server=parent
+        )
+        branch = _provisioned_branch(self, "native-created-protected-prefix")
+        branch.merge_strategy = "squash"
+        branch.save(provision=False)
+        with activate_branch(branch), event_tracking(_change_request(self.user)):
+            replacement = Prefix.objects.create(prefix="198.18.7.0/24")
+            changed = Subnet.objects.get(pk=target.pk)
+            changed.prefix = replacement
+            changed.save()
+        self.assertFalse(Prefix.objects.filter(pk=replacement.pk).exists())
+        branch.merge(user=self.user)
+        branch.refresh_from_db()
+        self.assertEqual(branch.status, "merged")
+        self.assertTrue(Subnet.objects.filter(pk=target.pk, prefix_id=replacement.pk).exists())
+        branch.revert(user=self.user)
+        branch.refresh_from_db()
+        self.assertEqual(branch.status, "ready")
+        self.assertTrue(Subnet.objects.filter(pk=target.pk, prefix_id=prefix.pk).exists())
+        self.assertFalse(Prefix.objects.filter(pk=replacement.pk).exists())
+        self.assertIsNone(current_request.get())
+
+    def test_scalar_update_preserves_main_protected_prefix_reference(self):
+        from django.db.models.deletion import ProtectedError
+        from ipam.models import Prefix
+        from netbox_dhcp.models import DHCPServer, Subnet
+
+        prefix = Prefix.objects.create(prefix="198.18.8.0/24")
+        original = Prefix.objects.create(prefix="198.18.9.0/24")
+        parent = DHCPServer.objects.create(name="native-unchanged-prefix-parent")
+        target = Subnet.objects.create(
+            name="native-unchanged-prefix-subnet", subnet_id=21, prefix=original, dhcp_server=parent
+        )
+        branch = _provisioned_branch(self, "native-unchanged-protected-prefix")
+        branch.merge_strategy = "squash"
+        branch.save(provision=False)
+        with activate_branch(branch), event_tracking(_change_request(self.user)):
+            changed = Subnet.objects.get(pk=target.pk)
+            changed.description = "branch scalar update"
+            changed.save()
+        self._delete(branch, prefix)
+        target.prefix = prefix
+        target.save()
+        before, applied = ObjectChange.objects.count(), branch.applied_changes.count()
+        with self.assertRaises(ProtectedError):
+            branch.merge(user=self.user)
+        branch.refresh_from_db()
+        self.assertEqual(branch.status, "ready")
+        self.assertEqual(branch.applied_changes.count(), applied)
+        self.assertEqual(ObjectChange.objects.count(), before)
+        self.assertTrue(Subnet.objects.filter(pk=target.pk, prefix_id=prefix.pk).exists())
+        self.assertEqual(Subnet.objects.get(pk=target.pk).description, "")
+        self.assertTrue(Prefix.objects.filter(pk=prefix.pk).exists())
+        self.assertIsNone(current_request.get())
+
+    def test_reentrant_import_during_revert_preserves_newer_mapped_update(self):
+        server, _, _, target, link = self._imported("subnet", 4, "reentrant-revert-update")
+        target.valid_lifetime = 100
+        target.save()
+        branch = _provisioned_branch(self, "mapping-reentrant-revert-update")
+        branch.merge_strategy = "squash"
+        branch.save(provision=False)
+        with activate_branch(branch), event_tracking(_change_request(self.user)):
+            changed = type(target).objects.get(pk=target.pk)
+            changed.valid_lifetime = 200
+            changed.save()
+        branch.merge(user=self.user)
+        branch.refresh_from_db()
+        self.assertEqual(type(target).objects.get(pk=target.pk).valid_lifetime, 200)
+        changed_intent = parse_dhcp_config(
+            {"subnet4": [{"id": 7, "subnet": "198.18.0.0/24", "valid-lifetime": 600}]}, 4
+        )
+        before, applied = ObjectChange.objects.count(), branch.applied_changes.count()
+        observed = []
+
+        def importing(sender, operation, **kwargs):
+            if operation == "revert":
+                with event_tracking(_change_request(self.user)):
+                    summary = import_server_config(server, changed_intent)
+                self.assertEqual(summary.errors, 0, summary.warnings)
+                self.assertEqual(KeaDhcpLink.objects.get(server=server, family=4).pk, link.pk)
+                observed.append(type(target).objects.get(pk=target.pk).valid_lifetime)
+
+        squash_dependency_graph_built.connect(importing, weak=False)
+        try:
+            with self.assertRaisesMessage(AbortRequest, "has changed"):
+                branch.revert(user=self.user)
+        finally:
+            squash_dependency_graph_built.disconnect(importing)
+        self.assertEqual(observed, [600])
+        branch.refresh_from_db()
+        self.assertEqual(branch.status, "merged")
+        self.assertEqual(branch.applied_changes.count(), applied)
+        self.assertEqual(ObjectChange.objects.count(), before)
+        self.assertEqual(type(target).objects.get(pk=target.pk).valid_lifetime, 200)
+        self.assertTrue(KeaDhcpLink.objects.filter(pk=link.pk).exists())
+        self.assertIsNone(current_request.get())
+        branch.revert(user=self.user)
+        branch.refresh_from_db()
+        self.assertEqual(branch.status, "ready")
+        self.assertEqual(type(target).objects.get(pk=target.pk).valid_lifetime, 100)
+        self.assertTrue(KeaDhcpLink.objects.filter(pk=link.pk, object_id=target.pk).exists())
+        self.assertIsNone(current_request.get())
+
+    def test_reentrant_mapping_deletion_during_revert_refuses_before_target_update(self):
+        for delete_server in (False, True):
+            with self.subTest(delete_server=delete_server):
+                suffix = f"reentrant-revert-association-{delete_server}"
+                server, _, _, target, link = self._imported("subnet", 4, suffix)
+                target.valid_lifetime = 100
+                target.save()
+                branch = _provisioned_branch(self, suffix)
+                branch.merge_strategy = "squash"
+                branch.save(provision=False)
+                with activate_branch(branch), event_tracking(_change_request(self.user)):
+                    changed = type(target).objects.get(pk=target.pk)
+                    changed.valid_lifetime = 200
+                    changed.save()
+                branch.merge(user=self.user)
+                branch.refresh_from_db()
+                before, applied = ObjectChange.objects.count(), branch.applied_changes.count()
+                observed, refusals = [], []
+
+                def deleting(
+                    sender,
+                    operation,
+                    delete_server=delete_server,
+                    server=server,
+                    link=link,
+                    observed=observed,
+                    refusals=refusals,
+                    **kwargs,
+                ):
+                    if operation == "revert":
+                        observed.append("deletion requested")
+                        try:
+                            with event_tracking(_change_request(self.user)):
+                                if delete_server:
+                                    type(server).objects.filter(pk=server.pk).delete()
+                                else:
+                                    KeaDhcpLink.objects.filter(pk=link.pk).delete()
+                        except AbortRequest as error:
+                            refusals.append(str(error))
+                            raise
+
+                squash_dependency_graph_built.connect(deleting, weak=False)
+                try:
+                    with self.assertRaises(AbortRequest):
+                        branch.revert(user=self.user)
+                finally:
+                    squash_dependency_graph_built.disconnect(deleting)
+                self.assertEqual(observed, ["deletion requested"])
+                self.assertEqual(refusals, ["A main DHCP mapping has no reversible branch history. Nothing changed."])
+                branch.refresh_from_db()
+                self.assertEqual(branch.status, "merged")
+                self.assertEqual(branch.applied_changes.count(), applied)
+                self.assertEqual(ObjectChange.objects.count(), before)
+                self.assertEqual(type(target).objects.get(pk=target.pk).valid_lifetime, 200)
+                self.assertTrue(type(server).objects.filter(pk=server.pk).exists())
+                self.assertTrue(KeaDhcpLink.objects.filter(pk=link.pk, object_id=target.pk).exists())
+                self.assertIsNone(current_request.get())
+
+    def test_iterative_preserves_successive_mapped_target_updates(self):
+        _, _, _, target, link = self._imported("subnet", 4, "iterative-mapped-updates")
+        target.valid_lifetime = 100
+        target.save()
+        branch = _provisioned_branch(self, "mapping-iterative-updates")
+        branch.merge_strategy = "iterative"
+        branch.save(provision=False)
+        for lifetime in (200, 300):
+            with activate_branch(branch), event_tracking(_change_request(self.user)):
+                changed = type(target).objects.get(pk=target.pk)
+                changed.valid_lifetime = lifetime
+                changed.save()
+        self.assertEqual(type(target).objects.get(pk=target.pk).valid_lifetime, 100)
+        branch.merge(user=self.user)
+        branch.refresh_from_db()
+        self.assertEqual(branch.status, "merged")
+        self.assertEqual(type(target).objects.get(pk=target.pk).valid_lifetime, 300)
+        self.assertTrue(KeaDhcpLink.objects.filter(pk=link.pk, object_id=target.pk).exists())
+        branch.revert(user=self.user)
+        branch.refresh_from_db()
+        self.assertEqual(branch.status, "ready")
+        self.assertEqual(type(target).objects.get(pk=target.pk).valid_lifetime, 100)
+        self.assertTrue(KeaDhcpLink.objects.filter(pk=link.pk, object_id=target.pk).exists())
+        self.assertIsNone(current_request.get())
+
+    def test_reentrant_mapping_update_during_revert_preserves_newer_source(self):
+        server, _, _, target, link = self._imported("subnet", 4, "reentrant-mapping-update")
+        merged_source = _make_db_server(name="mapping-merged-source", ca_url="https://kea.example.invalid")
+        newer_source = _make_db_server(name="mapping-newer-source", ca_url="https://kea.example.invalid")
+        branch = _provisioned_branch(self, "mapping-reentrant-source-update")
+        branch.merge_strategy = "squash"
+        branch.save(provision=False)
+        with activate_branch(branch), event_tracking(_change_request(self.user)):
+            changed = KeaDhcpLink.objects.get(pk=link.pk)
+            changed.server = merged_source
+            changed.save()
+        branch.merge(user=self.user)
+        branch.refresh_from_db()
+        self.assertEqual(KeaDhcpLink.objects.get(pk=link.pk).server_id, merged_source.pk)
+        before, applied = ObjectChange.objects.count(), branch.applied_changes.count()
+        observed = []
+
+        def changing(sender, operation, **kwargs):
+            if operation == "revert":
+                with event_tracking(_change_request(self.user)):
+                    changed = KeaDhcpLink.objects.get(pk=link.pk)
+                    changed.server = newer_source
+                    changed.save()
+                observed.append(KeaDhcpLink.objects.get(pk=link.pk).server_id)
+
+        squash_dependency_graph_built.connect(changing, weak=False)
+        try:
+            with self.assertRaisesMessage(AbortRequest, "has changed"):
+                branch.revert(user=self.user)
+        finally:
+            squash_dependency_graph_built.disconnect(changing)
+        self.assertEqual(observed, [newer_source.pk])
+        branch.refresh_from_db()
+        self.assertEqual(branch.status, "merged")
+        self.assertEqual(branch.applied_changes.count(), applied)
+        self.assertEqual(ObjectChange.objects.count(), before)
+        self.assertEqual(KeaDhcpLink.objects.get(pk=link.pk).server_id, merged_source.pk)
+        self.assertEqual(KeaDhcpLink.objects.get(pk=link.pk).object_id, target.pk)
+        self.assertIsNone(current_request.get())
+        branch.revert(user=self.user)
+        self.assertEqual(KeaDhcpLink.objects.get(pk=link.pk).server_id, server.pk)
+        self.assertIsNone(current_request.get())
+
+    def test_mapping_observation_during_revert_preserves_native_update(self):
+        from netbox_kea.dhcp_mapping_lifecycle import observe_mapping
+
+        server, _, _, target, link = self._imported("subnet", 4, "mapping-revert-observation")
+        merged_source = _make_db_server(name="mapping-observed-source", ca_url="https://kea.example.invalid")
+        branch = _provisioned_branch(self, "mapping-revert-observation")
+        branch.merge_strategy = "squash"
+        branch.save(provision=False)
+        with activate_branch(branch), event_tracking(_change_request(self.user)):
+            changed = KeaDhcpLink.objects.get(pk=link.pk)
+            changed.server = merged_source
+            changed.save()
+        branch.merge(user=self.user)
+        branch.refresh_from_db()
+        observed = []
+
+        def observing(sender, operation, **kwargs):
+            if operation == "revert":
+                before = ObjectChange.objects.count()
+                previous = KeaDhcpLink.objects.get(pk=link.pk).last_synced
+                with event_tracking(_change_request(self.user)):
+                    mapping = observe_mapping(merged_source, 4, target, subnet_id=7)
+                self.assertEqual(mapping.pk, link.pk)
+                self.assertGreater(mapping.last_synced, previous)
+                self.assertEqual(ObjectChange.objects.count(), before)
+                observed.append(mapping.server_id)
+
+        squash_dependency_graph_built.connect(observing, weak=False)
+        try:
+            branch.revert(user=self.user)
+        finally:
+            squash_dependency_graph_built.disconnect(observing)
+        self.assertEqual(observed, [merged_source.pk])
+        self.assertEqual(KeaDhcpLink.objects.get(pk=link.pk).server_id, server.pk)
+        self.assertEqual(KeaDhcpLink.objects.get(pk=link.pk).object_id, target.pk)
+        self.assertIsNone(current_request.get())
+
+    def test_reentrant_mapping_source_update_refuses_target_only_revert(self):
+        server, _, _, target, link = self._imported("subnet", 4, "reentrant-target-source-update")
+        newer_source = _make_db_server(name="target-newer-source", ca_url="https://kea.example.invalid")
+        target.valid_lifetime = 100
+        target.save()
+        branch = _provisioned_branch(self, "mapping-reentrant-target-source-update")
+        branch.merge_strategy = "squash"
+        branch.save(provision=False)
+        with activate_branch(branch), event_tracking(_change_request(self.user)):
+            changed = type(target).objects.get(pk=target.pk)
+            changed.valid_lifetime = 200
+            changed.save()
+        branch.merge(user=self.user)
+        branch.refresh_from_db()
+        before, applied = ObjectChange.objects.count(), branch.applied_changes.count()
+        observed = []
+
+        def changing(sender, operation, **kwargs):
+            if operation == "revert":
+                with event_tracking(_change_request(self.user)):
+                    changed = KeaDhcpLink.objects.get(pk=link.pk)
+                    changed.server = newer_source
+                    changed.save()
+                observed.append(KeaDhcpLink.objects.get(pk=link.pk).server_id)
+                self.assertEqual(type(target).objects.get(pk=target.pk).valid_lifetime, 200)
+
+        squash_dependency_graph_built.connect(changing, weak=False)
+        try:
+            with self.assertRaisesMessage(AbortRequest, "has changed"):
+                branch.revert(user=self.user)
+        finally:
+            squash_dependency_graph_built.disconnect(changing)
+        self.assertEqual(observed, [newer_source.pk])
+        branch.refresh_from_db()
+        self.assertEqual(branch.status, "merged")
+        self.assertEqual(branch.applied_changes.count(), applied)
+        self.assertEqual(ObjectChange.objects.count(), before)
+        self.assertEqual(KeaDhcpLink.objects.get(pk=link.pk).server_id, server.pk)
+        self.assertEqual(type(target).objects.get(pk=target.pk).valid_lifetime, 200)
+        self.assertIsNone(current_request.get())
+        branch.revert(user=self.user)
+        self.assertEqual(type(target).objects.get(pk=target.pk).valid_lifetime, 100)
+        self.assertEqual(KeaDhcpLink.objects.get(pk=link.pk).server_id, server.pk)
+        self.assertIsNone(current_request.get())
+
     def test_squash_restores_global_reservations(self):
         for family in (4, 6):
             for queryset in (False, True):
