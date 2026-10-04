@@ -188,6 +188,7 @@ jobs:
           NETBOX_KEA_REQUIRE_BRANCHING: "1"
         run: |
           pytest ${{ github.workspace }}/netbox_kea/tests/test_branching.py \
+            ${{ github.workspace }}/netbox_kea/tests/test_dhcp_mapping_recovery.py \
             --override-ini="DJANGO_SETTINGS_MODULE=netbox_kea.tests.isolated_settings" \
             --override-ini="pythonpath=${{ github.workspace }}/netbox/netbox" \
             -n auto \

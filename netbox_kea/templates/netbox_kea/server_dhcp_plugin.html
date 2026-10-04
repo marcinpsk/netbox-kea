@@ -12,6 +12,11 @@
         <i class="mdi mdi-alert-outline" aria-hidden="true"></i>
         The NetBox DHCP plugin (<code>netbox_dhcp</code>) is not installed. This tab has no effect.
       </div>
+    {% elif mapping_unavailable %}
+      <div class="alert alert-warning" role="alert">
+        <i class="mdi mdi-alert-outline" aria-hidden="true"></i>
+        {{ mapping_unavailable }}
+      </div>
     {% else %}
 
       <div class="card mb-3">

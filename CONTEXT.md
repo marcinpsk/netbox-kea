@@ -30,6 +30,11 @@ _Avoid_: Network, subnet group
 A vendor-neutral, family-specific DHCP selection domain for Subnets on one client attachment or relay-selected link. Kea Shared Network, ISC DHCP shared-network, Microsoft Superscope, Cisco Network or Link, and Infoblox Shared Network are vendor implementations. A DHCP Link does not require an aggregate Prefix.
 _Avoid_: Aggregate Prefix, Shared Prefix
 
+**DHCP Import Mapping**:
+An association between a Kea source object and its imported NetBox DHCP object. The source identity includes
+the Server, address family, and either a Kea subnet ID or a Reservation Identity in Global scope.
+_Avoid_: DHCP Link, ownership link
+
 **Aggregate Prefix**:
 An optional IPAM aggregate that contains more-specific Prefixes. It does not define DHCP selection, allocation, or configuration inheritance.
 _Avoid_: DHCP Link, Shared Prefix

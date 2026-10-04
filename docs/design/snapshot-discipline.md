@@ -71,3 +71,7 @@ snapshots, the mutation helpers, new saves and changed save counts. The
 production tree and hook provide passing controls. Native focused tests, Ruff,
 format checks and the zero-new-error mypy gate precede final whole-suite validation
 and a scoped adversarial review.
+
+The mutation controls cover each inventoried direct loaded-receiver save. The DHCP mapping model adapter
+loads a persisted row and delegates the original save callable. This is outside direct-save AST inference.
+Real native update_or_create history tests prove that adapter snapshot preserves the old association.

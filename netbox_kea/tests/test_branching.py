@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
-"""With netbox-branching installed, netbox_kea rows stay in main (ADR 0007).
+"""Only DHCP Import Mappings follow branches; other plugin rows stay in main (ADRs 0007 and 0008).
 
 The CI branching job sets NETBOX_KEA_REQUIRE_BRANCHING=1, so this module fails instead of
 skipping when netbox-branching is not an installed app.
@@ -15,8 +15,10 @@ from collections.abc import Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
+from datetime import timedelta
 from ipaddress import ip_address
 from pathlib import Path
+from threading import Event
 from typing import Any
 from urllib.parse import urlencode
 
@@ -44,6 +46,7 @@ from django.contrib.auth import get_user_model  # noqa: E402
 from django.contrib.contenttypes.models import ContentType  # noqa: E402
 from django.core.cache import cache  # noqa: E402
 from django.core.management import call_command  # noqa: E402
+from django.core.signals import request_finished  # noqa: E402
 from django.db import connection, connections, models, router, transaction  # noqa: E402
 from django.db.migrations import RunPython, RunSQL, SeparateDatabaseAndState  # noqa: E402
 from django.db.migrations.loader import MigrationLoader  # noqa: E402
@@ -54,7 +57,9 @@ from django.db.models.signals import pre_delete, pre_save  # noqa: E402
 from django.test import Client, RequestFactory, SimpleTestCase, TransactionTestCase, override_settings  # noqa: E402
 from django.test.utils import CaptureQueriesContext, isolate_apps  # noqa: E402
 from django.urls import URLPattern, URLResolver, get_resolver, resolve, reverse  # noqa: E402
+from django.utils import timezone  # noqa: E402
 from django.utils.html import escape  # noqa: E402
+from extras.models import Tag  # noqa: E402
 from ipam.models import VRF, IPAddress, IPRange, Prefix  # noqa: E402
 from netaddr import IPNetwork  # noqa: E402
 from netbox.context_managers import event_tracking  # noqa: E402
@@ -84,8 +89,8 @@ EXPOSED_RELATIONS: frozenset[tuple[str, str]] = frozenset(
     (f"netbox_kea.IPAMOwnershipLink.{key}", "CASCADE") for key in ("ip_address", "prefix", "ip_range")
 )
 _DESIGN_DECISION = (
-    "This change needs a design decision (docs/design/ipam-ownership-branching.md): the resolver keeps every "
-    "netbox_kea model in main, so a delete in a branch that reaches one of these relations writes main's table."
+    "This change needs a design decision (docs/design/ipam-ownership-branching.md): the resolver keeps "
+    "main-only plugin models in main, so a delete in a branch that reaches one of these relations writes main's table."
 )
 
 # The on_delete handlers that do not write the referencing row. Every other one does (SET(...) and DB_* too).
@@ -176,17 +181,17 @@ def _guard_failures(rule_models: Sequence[type[models.Model]], pinned: frozenset
 
 
 class BranchabilityPinTest(SimpleTestCase):
-    """Guard 2: the rule, computed here only, gives the pinned relations, and netbox-branching routes none to a branch."""
+    """Guard 2: pin main-only relations and the one branchable plugin model."""
 
     def test_the_relations_that_a_delete_in_a_branch_reaches_are_the_pinned_set(self):
         failures = _guard_failures(_rule_models(), EXPOSED_RELATIONS)
 
         self.assertEqual(failures, [], "\n".join(failures))
 
-    def test_netbox_branching_keeps_every_plugin_model_in_main(self):
+    def test_netbox_branching_branches_only_dhcp_import_mappings(self):
         for model in _plugin_models():
             with self.subTest(model=model._meta.label):
-                self.assertIs(supports_branching(model), False)
+                self.assertIs(supports_branching(model), model is KeaDhcpLink)
 
     def test_the_rule_reads_every_plugin_model(self):
         self.assertEqual(
@@ -418,7 +423,7 @@ def _provisioned_branch(test: TransactionTestCase, name: str) -> Branch:
 
 
 class ProvisionedBranchTest(TransactionTestCase):
-    """A provisioned branch holds no netbox_kea table, so it reads main's rows."""
+    """A fresh branch copies DHCP Import Mappings and reads other plugin rows from main."""
 
     @classmethod
     def setUpClass(cls):
@@ -426,15 +431,15 @@ class ProvisionedBranchTest(TransactionTestCase):
         # A deployment runs migrate after the upgrade, which stores the resolver's answer.
         call_command("migrate", verbosity=0)
 
-    def test_stored_features_hold_no_branching_for_plugin_models(self):
+    def test_stored_features_enable_branching_only_for_dhcp_import_mappings(self):
         for model in _plugin_models():
             with self.subTest(model=model._meta.label):
                 features = ObjectType.objects.get_for_model(model).features
 
-                self.assertNotIn("branching", features)
+                self.assertEqual("branching" in features, model is KeaDhcpLink)
 
-    def test_a_provisioned_branch_holds_no_plugin_table(self):
-        branch = _provisioned_branch(self, "no plugin tables")
+    def test_a_provisioned_branch_copies_only_the_mapping_plugin_table(self):
+        branch = _provisioned_branch(self, "mapping plugin table")
         with connection.cursor() as cursor:
             cursor.execute(
                 "SELECT table_name FROM information_schema.tables WHERE table_schema = %s", [branch.schema_name]
@@ -442,7 +447,7 @@ class ProvisionedBranchTest(TransactionTestCase):
             tables = {row[0] for row in cursor.fetchall()}
 
         self.assertIn(VRF._meta.db_table, tables, "the branch copied no table, so the check below reads nothing")
-        self.assertEqual({table for table in tables if table.startswith(f"{APP_LABEL}_")}, set())
+        self.assertEqual({table for table in tables if table.startswith(f"{APP_LABEL}_")}, {KeaDhcpLink._meta.db_table})
 
     def test_a_server_edited_in_main_after_branch_creation_reads_mains_values_in_the_branch(self):
         server = _make_db_server(name="before-branch", ca_url="https://before.example.com")
@@ -702,7 +707,7 @@ class SourcesHeaderTest(_BranchReadTestCase):
 
     def setUp(self):
         super().setUp()
-        self.sources = f"kea=live; plugin=main; branch={self.branch.schema_id}"
+        self.sources = f"kea=live; plugin=main; dhcp-import-mappings=branch; branch={self.branch.schema_id}"
 
     def test_a_plugin_page_carries_the_sources_header(self):
         self.client.cookies[COOKIE_NAME] = self.branch.schema_id
@@ -745,8 +750,21 @@ class SourcesHeaderTest(_BranchReadTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertNotIn(branching.SOURCES_HEADER, response.headers)
 
+    def test_an_old_branch_read_names_unavailable_mappings(self):
+        with connection.cursor() as cursor:
+            cursor.execute('DROP TABLE "' + self.branch.schema_name + '"."' + KeaDhcpLink._meta.db_table + '"')
+        self.client.cookies[COOKIE_NAME] = self.branch.schema_id
 
-_BANNER_TEXT = "netbox-kea refuses changes"
+        response = self.client.get(reverse("plugins:netbox_kea:server_list"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.headers[branching.SOURCES_HEADER],
+            f"kea=live; plugin=main; dhcp-import-mappings=unavailable; branch={self.branch.schema_id}",
+        )
+
+
+_BANNER_TEXT = "netbox-kea refuses live and import changes"
 
 
 class BranchPageTest(_BranchReadTestCase):
@@ -759,6 +777,8 @@ class BranchPageTest(_BranchReadTestCase):
 
         self.assertContains(response, _BANNER_TEXT)
         self.assertContains(response, f"netbox-branching's routing for branch {self.branch.name}")
+        self.assertContains(response, "DHCP Import Mappings follow the selected branch")
+        self.assertNotContains(response, "DHCP plugin links come from main")
 
     def test_a_plugin_page_on_main_shows_no_banner(self):
         self.assertNotContains(self.client.get(reverse("plugins:netbox_kea:server_list")), _BANNER_TEXT)
@@ -854,7 +874,7 @@ def _save_with(instance: models.Model, **fields: object) -> None:
 
 
 class DhcpTargetBranchLifecycleTest(TransactionTestCase):
-    """DHCP target deletes keep main's links in a branch and remove them during merge."""
+    """DHCP target deletes remove branch mappings and preserve main until merge."""
 
     def setUp(self):
         if not apps.is_installed("netbox_dhcp"):
@@ -865,11 +885,14 @@ class DhcpTargetBranchLifecycleTest(TransactionTestCase):
         self.server = _make_db_server(name="dhcp-target-links")
         self.targets = linked_dhcp_targets(self.server)
         self.branch = _provisioned_branch(self, "dhcp target delete")
+        self.branch.merge_strategy = "squash"
+        self.branch.save(provision=False)
 
     def _delete_and_merge(self, *, queryset):
         link_pks = {link.pk for _, link in self.targets}
+        branch_link_pks = link_pks.copy()
         with activate_branch(self.branch), event_tracking(_change_request(self.user)):
-            for target, _ in self.targets:
+            for target, link in self.targets:
                 with self.subTest(model=target._meta.label, object_id=target.pk):
                     self.assertTrue(supports_branching(type(target)))
                     if queryset:
@@ -877,7 +900,8 @@ class DhcpTargetBranchLifecycleTest(TransactionTestCase):
                     else:
                         type(target).objects.get(pk=target.pk).delete()
                     self.assertFalse(type(target).objects.filter(pk=target.pk).exists())
-                    self.assertSetEqual(set(KeaDhcpLink.objects.values_list("pk", flat=True)), link_pks)
+                    branch_link_pks.remove(link.pk)
+                    self.assertSetEqual(set(KeaDhcpLink.objects.values_list("pk", flat=True)), branch_link_pks)
         for target, _ in self.targets:
             self.assertTrue(type(target).objects.filter(pk=target.pk).exists())
         self.assertSetEqual(set(KeaDhcpLink.objects.values_list("pk", flat=True)), link_pks)
@@ -890,15 +914,15 @@ class DhcpTargetBranchLifecycleTest(TransactionTestCase):
             self.assertFalse(type(target).objects.filter(pk=target.pk).exists())
             self.assertFalse(KeaDhcpLink.objects.filter(pk=link.pk).exists())
 
-    def test_target_instance_deletes_keep_links_until_merge(self):
+    def test_target_instance_delete_removes_only_the_branch_mapping(self):
         self._delete_and_merge(queryset=False)
 
-    def test_target_queryset_deletes_keep_links_until_merge(self):
+    def test_target_queryset_delete_removes_only_the_branch_mapping(self):
         self._delete_and_merge(queryset=True)
 
 
 class PluginRowWritesInBranchTest(TransactionTestCase):
-    """A save or a delete of a netbox_kea row in a branch raises BranchActive, and main does not change."""
+    """Server, settings and ownership writes remain main-only; mappings follow the branch."""
 
     def setUp(self):
         self.server = _make_db_server(name="rows", ca_url=_BEFORE)
@@ -919,25 +943,22 @@ class PluginRowWritesInBranchTest(TransactionTestCase):
             list(SyncConfig.objects.values_list("pk", "interval_minutes")),
         )
 
-    def test_the_receivers_cover_every_plugin_model(self):
+    def test_the_receivers_cover_every_main_only_plugin_model(self):
         labels = {model._meta.label for model in _plugin_models()}
 
         self.assertEqual(
             labels,
             {"netbox_kea.Server", "netbox_kea.SyncConfig", "netbox_kea.KeaDhcpLink", "netbox_kea.IPAMOwnershipLink"},
         )
-        self.assertEqual((_refusal_receivers(pre_save), _refusal_receivers(pre_delete)), (labels, labels))
+        main_only = {"netbox_kea.Server", "netbox_kea.SyncConfig", "netbox_kea.IPAMOwnershipLink"}
+        self.assertEqual((_refusal_receivers(pre_save), _refusal_receivers(pre_delete)), (main_only, main_only))
 
     def test_a_save_in_a_branch_is_refused(self):
         before = self._main()
         changes = {
             "server": lambda: _save_with(self.server, ca_url=_AFTER),
-            "link": lambda: _save_with(self.link, kea_subnet_id=8),
             "sync config": lambda: _save_with(self.config, interval_minutes=9),
             "new server": lambda: _make_db_server(name="new in branch"),
-            "new link": lambda: KeaDhcpLink.objects.create(
-                server=self.server, family=6, kea_subnet_id=7, object_type=self.link.object_type, object_id=2
-            ),
         }
         for label, change in changes.items():
             with self.subTest(label):
@@ -951,14 +972,24 @@ class PluginRowWritesInBranchTest(TransactionTestCase):
         before = self._main()
         deletes = {
             "server": lambda: Server.objects.get(pk=self.server.pk).delete(),
-            "link": lambda: KeaDhcpLink.objects.get(pk=self.link.pk).delete(),
             "server queryset": lambda: Server.objects.all().delete(),
-            "link queryset": lambda: KeaDhcpLink.objects.all().delete(),
             "sync config queryset": lambda: SyncConfig.objects.all().delete(),
         }
         for label, delete in deletes.items():
             with self.subTest(label), activate_branch(self.branch), self.assertRaises(branching.BranchActive):
                 delete()
+
+        self.assertEqual(self._main(), before)
+
+    def test_mapping_save_and_delete_change_only_branch_rows(self):
+        before = self._main()
+        with activate_branch(self.branch):
+            link = KeaDhcpLink.objects.get(pk=self.link.pk)
+            link.kea_subnet_id = 8
+            link.save()
+            self.assertEqual(KeaDhcpLink.objects.get(pk=link.pk).kea_subnet_id, 8)
+            KeaDhcpLink.objects.filter(pk=link.pk).delete()
+            self.assertFalse(KeaDhcpLink.objects.filter(pk=link.pk).exists())
 
         self.assertEqual(self._main(), before)
 
@@ -1742,3 +1773,92 @@ class UrlTreeGuardTest(TransactionTestCase):
         self.assertEqual(kea.commands(), [])
         self.assertEqual(writes, [])
         self.assertTrue(Server.objects.filter(pk=server.pk).exists())
+
+
+class TagWriterRecoveryTest(TransactionTestCase):
+    def setUp(self):
+        super().setUp()
+        if not apps.is_installed("netbox_dhcp"):
+            if _required:
+                self.fail("The branching CI job requires netbox_dhcp for tag writer recovery tests.")
+            self.skipTest("netbox_dhcp is not installed")
+
+    def test_tag_rename_waits_until_mapped_target_merge_commits(self):
+        user = get_user_model().objects.create_superuser("tag-writer-reader")
+        server = _make_db_server(name="tag-writer-source")
+        target, mapping = linked_dhcp_targets(server)[0]
+        tag = Tag.objects.create(name="mapping-tag-original", slug="mapping-tag-original")
+        target.tags.add(tag)
+        branch = _provisioned_branch(self, "tag writer recovery")
+        branch.merge_strategy = "squash"
+        branch.save(provision=False)
+        with activate_branch(branch), event_tracking(_change_request(user)):
+            type(target).objects.get(pk=target.pk).delete()
+        request_finished.send(sender=type(self))
+        selected, release, writer_ready, writer_done = Event(), Event(), Event(), Event()
+        writer_pid = []
+        replay_pid = []
+
+        def pause_delete(sender, instance, using, **kwargs):
+            if using == "default" and instance.pk == target.pk:
+                with connections[using].cursor() as cursor:
+                    cursor.execute("SELECT pg_backend_pid()")
+                    replay_pid.append(cursor.fetchone()[0])
+                selected.set()
+                self.assertTrue(release.wait(20), "Native deletion was not released")
+
+        def merge():
+            try:
+                Branch.objects.get(pk=branch.pk).merge(user=user)
+            finally:
+                connections.close_all()
+
+        def rename():
+            try:
+                changed = Tag.objects.get(pk=tag.pk)
+                with connections["default"].cursor() as cursor:
+                    cursor.execute("SELECT pg_backend_pid()")
+                    writer_pid.append(cursor.fetchone()[0])
+                changed.name = "mapping-tag-renamed"
+                writer_ready.set()
+                with event_tracking(_change_request(user)):
+                    changed.save()
+            finally:
+                writer_done.set()
+                connections.close_all()
+
+        pre_delete.connect(pause_delete, sender=type(target), weak=False)
+        blocked = False
+        try:
+            with ThreadPoolExecutor(2) as pool:
+                replay = pool.submit(merge)
+                try:
+                    self.assertTrue(selected.wait(20), "Native target deletion did not start")
+                    writer = pool.submit(rename)
+                    self.assertTrue(writer_ready.wait(20), "The ordinary tag writer did not start")
+                    self.assertNotEqual(writer_pid, replay_pid)
+                    deadline = timezone.now() + timedelta(seconds=20)
+                    while not writer_done.is_set() and timezone.now() < deadline:
+                        with connection.cursor() as cursor:
+                            cursor.execute(
+                                "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE pid = %s "
+                                "AND locktype = 'advisory' AND NOT granted)",
+                                writer_pid,
+                            )
+                            blocked = cursor.fetchone()[0]
+                        if blocked:
+                            break
+                        writer_done.wait(0.02)
+                finally:
+                    release.set()
+                replay.result(timeout=20)
+                writer.result(timeout=20)
+        finally:
+            release.set()
+            pre_delete.disconnect(pause_delete, sender=type(target))
+        self.assertEqual(Tag.objects.get(pk=tag.pk).name, "mapping-tag-renamed")
+        self.assertFalse(type(target).objects.filter(pk=target.pk).exists())
+        self.assertFalse(KeaDhcpLink.objects.filter(pk=mapping.pk).exists())
+        branch.refresh_from_db()
+        self.assertEqual(branch.status, "merged")
+        self.assertTrue(blocked, "The tag writer committed newer target semantics before native deletion")
