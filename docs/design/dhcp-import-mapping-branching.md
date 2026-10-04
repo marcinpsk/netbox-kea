@@ -55,6 +55,8 @@ Refuse the whole action when:
 - Configuration excludes the mapping or an affected target from branching.
 - The branch lacks a complete mapping table or an affected target table.
 - The selected replay strategy cannot restore the dependencies.
+- The branch combines Tag changes with replay of a mapped DHCP target.
+- A required existing Tag is missing, renamed or replaced on main.
 
 Undo of a branch-created Global Reservation is also refused if main import adopted and mapped it
 after merge. A branch cannot delete that newer association through an unrecorded target deletion.
@@ -63,6 +65,10 @@ Timestamp-only mapping observations do not conflict with an otherwise unchanged 
 Affected actions require the dependency-aware squash strategy. Refuse iterative replay before any
 mutation, explain the squash requirement and preserve the selected strategy. Strategy selection
 remains an explicit operator choice.
+
+Tag changes must be separate from mapped DHCP target replay. This conservative rule refuses even
+unrelated Tag changes in the same branch. Recovery uses existing unchanged Tags. It does not
+interpret rename history or create replacement Tags.
 
 Shared writer coordination starts before importer lookup, native replay selection, relationship
 selection and deletion collection. It includes ordinary target and mapping ORM writers and the
@@ -92,6 +98,8 @@ For a recovery refusal:
 5. If a model is exempt, remove the affected exemption and create a fresh branch.
 6. If main changed or an identity conflicts, preserve main and reconcile the intended change in a
    fresh branch. The feature provides no workflow for choosing a winning mapping.
+7. If the branch includes Tag changes, apply the Tag work separately on main or in a Tag-only
+   branch. Create a fresh branch for the DHCP changes. Preserve any newer main Tag state.
 
 Configuration exclusions cause scoped refusals. They do not disable unrelated plugin reads or
 reject startup. Absence of the optional DHCP or branching plugin preserves ordinary supported

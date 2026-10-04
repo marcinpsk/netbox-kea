@@ -179,17 +179,20 @@ def register() -> None:
 
     register_branching_resolver(is_branchable)
     connect_branch_refusal()
-    from netbox_branching.signals import pre_merge, pre_revert, squash_dependency_graph_built
+    from netbox_branching.signals import pre_merge, pre_revert
 
-    squash_dependency_graph_built.connect(_mapping_relation_order, dispatch_uid="netbox_kea.mapping_relation_order")
     pre_merge.connect(_mapping_merge_preflight, dispatch_uid="netbox_kea.mapping_merge_preflight")
     pre_revert.connect(_mapping_revert_preflight, dispatch_uid="netbox_kea.mapping_revert_preflight")
     from django.db.models.signals import post_save
     from netbox_branching.models import AppliedChange, Branch
+    from netbox_branching.models import changes as native_changes
 
     post_save.connect(_mapping_applied_change, sender=AppliedChange, dispatch_uid="netbox_kea.mapping_applied_change")
     if not getattr(Branch, "_kea_mapping_actions", False):
         Branch._kea_mapping_actions = True
+        native_changes._restore_changelog_timestamps = _mapping_timestamp_restoration(
+            native_changes._restore_changelog_timestamps
+        )
         for action in ("merge", "revert"):
             setattr(Branch, action, _mapping_action(getattr(Branch, action), action))
         from netbox_branching.merge_strategies.iterative import IterativeMergeStrategy
@@ -200,16 +203,22 @@ def register() -> None:
                 setattr(strategy, action, _mapping_strategy(getattr(strategy, action), action))
 
 
-def _mapping_relation_order(sender: Any, collapsed_changes: Any, **kwargs: Any) -> None:
-    from .dhcp_mapping_lifecycle import order_named_relations
-
-    order_named_relations(collapsed_changes)
-
-
 def _mapping_applied_change(sender: Any, instance: Any, using: str, created: bool, **kwargs: Any) -> None:
-    from .dhcp_mapping_lifecycle import record_endpoint_deletion
+    from .dhcp_mapping_lifecycle import record_endpoint_deletion, record_restoration_birth
 
     record_endpoint_deletion(instance, using, created)
+    record_restoration_birth(instance, using, created)
+
+
+def _mapping_timestamp_restoration(original: Callable[..., Any]) -> Callable[..., Any]:
+    @wraps(original)
+    def wrapped(instance: Any, snapshot: Any, using: str) -> Any:
+        from .dhcp_mapping_lifecycle import validate_timestamp_restoration
+
+        validate_timestamp_restoration(instance, snapshot, using)
+        return original(instance, snapshot, using)
+
+    return wrapped
 
 
 def _mapping_strategy(original: Callable[..., Any], action: str) -> Callable[..., Any]:
@@ -224,10 +233,28 @@ def _mapping_strategy(original: Callable[..., Any], action: str) -> Callable[...
                 sorted(changes, key=lambda change: change.time), logger
             )
             # Squash writes each collapsed target once. Iterative replay keeps its native per-change semantics.
-            prepare_replay(branch, collapsed, action, request if isinstance(strategy, SquashMergeStrategy) else None)
+            prepare_replay(
+                branch,
+                collapsed,
+                action,
+                request if isinstance(strategy, SquashMergeStrategy) else None,
+                named_request=request,
+            )
             return original(strategy, branch, changes, request, logger, user)
 
     return wrapped
+
+
+def collapse_changes(changes: Any) -> Any:
+    """Use native chronological collapse for the pre-action mapping footprint."""
+    import logging
+
+    from netbox_branching.merge_strategies.squash import SquashMergeStrategy
+
+    collapsed, _ = SquashMergeStrategy._collapse_changes(
+        sorted(changes, key=lambda change: change.time), logging.getLogger(__name__)
+    )
+    return collapsed
 
 
 def _mapping_action(original: Callable[..., Any], action: str) -> Callable[..., Any]:
