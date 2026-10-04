@@ -152,7 +152,8 @@ deletion, or a relation that a planned update moves away from the selected paren
 relation value for the selected operation. This preserves native child-before-parent deletion and
 update-before-parent deletion. An unchanged or unplanned protected relation still causes the native
 protection refusal. The actual replay collector remains unchanged.
-The native graph signal adds only a dependency the native GenericForeignKey ordering cannot represent.
+Native ordering owns foreign-key and generic target dependencies. The optional graph signal adds only
+name-based M2M dependencies for exact protected target identities, as described below.
 
 Preaction checks perform structural schema, routing and strategy refusal. Current main-state validation
 occurs under the changing transaction lock. Branch-copied mapping rows identify targets whose mapping
@@ -309,3 +310,80 @@ The review accepts the mechanism; the runtime gates below still require real beh
 Revision r4 is ratified for implementation. Product policy is unchanged. First implementable increment:
 the real import, branch-local delete, squash merge, revert and same-PK reimport lifecycle for both target
 kinds and families. First record the failing real regression, then implement the ratified mechanism.
+
+
+## Native deletion cleanup composition
+
+The late comparison must preserve native deletion effects on an imported target. Native deletion
+records the endpoint's ObjectChange before it removes reverse M2M memberships or clears supported
+nullable foreign keys. A later target UPDATE or DELETE can therefore observe a legitimate relation
+change made by an earlier replay object. Comparing that row only with its original relations would
+refuse an otherwise valid action.
+
+The coordinator and a fresh GPT-6.1 Sol designer with high reasoning drafted independent candidates
+from the same installed sources and acceptance conditions. Neither saw the other's candidate before
+completion. Both selected a bounded comparison in the lifecycle module. Their divergence was the
+receipt observation seam. The merged candidate observes newly created native AppliedChange rows,
+after the native recorder establishes the receipt. This avoids a dependency on ObjectChange receiver
+order. Astra with high reasoning ratified revision r2 in an actual read-only sandbox for implementation.
+Runtime verification remains a separate gate.
+
+Original target history remains immutable. Operation-local deletion facts identify only exact endpoints
+selected for destruction by collapsed history. A fact requires a newly created receipt for this branch
+inside the changing main transaction and the exact registered native squash request. Capture its request
+UUID at creation, because native squash changes the same request object's UUID between replay objects.
+Old or updated receipts, another request or branch, unselected endpoints and arbitrary target UPDATE
+receipts grant no permission. Facts share the action context and are discarded on every exit.
+
+The shared late save and late delete comparison permits only observed relation differences certified
+by those facts. An M2M field can lose original members with the matching remote model and serialized
+identity. Ordinary relations use PKs. Named relations use the captured endpoint name. Additions,
+unproved removals and renamed identity substitutions still refuse. A nullable foreign key can change
+only from its original endpoint to None when the installed native deletion policy supports that cleanup.
+A move to another endpoint is a conflict. All other semantic fields, row generation, mapping association
+and source checks remain exact. An unchanged persisted foreign key remains valid before cleanup saves
+its in-memory null value. The comparison does not eagerly apply every planned deletion.
+
+A proposed additional target-update progress mechanism was refuted by installed native ordering.
+Complete branch endpoint-deletion history records the target's foreign key removal. Native dependency
+ordering applies that removal before deleting the endpoint. The reverse cleanup query then finds no
+related target to save. Revert restores the endpoint before its reference, or detaches the target before
+undoing endpoint creation. Reopen this decision only with a concrete complete-history counterexample.
+No generic target UPDATE receipt can become permission to overwrite newer main state.
+
+Observable gates include native ClientClass deletion followed by target UPDATE and by target DELETE,
+nullable foreign-key cleanup, PK and named relation identities, multiple certified removals, distinct
+per-object request UUIDs, unrelated main edits, dry runs, rollback and retry. Tests exercise real native
+history and PostgreSQL state. A source rule cannot prove receipt provenance or transaction ordering.
+The shared runtime comparison and behavioral regressions provide the mechanical protection.
+
+Native tags serialize names. Without a name-based dependency, replay can assign a missing tag name
+before it creates or restores the original Tag row. Tag assignment then creates a different row, and
+the original row fails its unique name or slug validation. A framework control reproduced this failure
+with the target comparison disabled. Astra ratified the bounded revision r3 after a real graph prototype
+preserved the original tag, target and mapping PKs through merge and revert.
+
+The lifecycle module adds forward-oriented edges through the native dependency graph signal. A selected
+endpoint DELETE depends on a protected target UPDATE or DELETE when its prechange name occurs in that
+target's prechange named relation. A protected target CREATE or UPDATE depends on a selected endpoint
+CREATE when its postchange name occurs in the target's postchange named relation. Both directions update
+the graph's inverse dependency set. Revert reverses native replay order. The adapter does not reverse
+these edges or change unrelated graph nodes. Registration requires the optional branching plugin.
+
+Destination prevalidation excludes exact endpoints selected for destruction from existing dependency
+candidates. A planned creation remains available. This refuses incomplete branch history whose target
+destination still references a tag selected for deletion, before replay mutates main. It does not
+manufacture a missing target change record.
+
+Under these edges, a target detaches its named relation before endpoint deletion records its receipt.
+A callback that renames that deleted endpoint cannot remove a remaining protected target membership:
+the prototype observed an empty relation before and after each rename. This candidate was refuted.
+Reopen it only with a concrete target that still references that endpoint at this stage under the same
+graph policy. A newer main write after the target's final replay mutation may survive. Replay must
+preserve that write, and a later revert must refuse the conflicting state.
+
+Chronological inspection refuted an ordinary incomplete-history candidate. A diagnostic collapsed changes
+in the branch query's default newest-first order. Actual native replay sorts them chronologically and
+retains the final target cleanup record. That ordinary action succeeds correctly. The incomplete-history
+refusal control must instead identify its deliberately corrupted persisted payload. Neither the diagnostic
+failure nor that counterfactual input is evidence of an ordinary-operation history defect.
