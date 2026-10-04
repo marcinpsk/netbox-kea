@@ -208,7 +208,8 @@ def _mapping_strategy(original: Callable[..., Any], action: str) -> Callable[...
             collapsed, _ = SquashMergeStrategy._collapse_changes(
                 sorted(changes, key=lambda change: change.time), logger
             )
-            prepare_replay(branch, collapsed, action)
+            # Squash writes each collapsed target once. Iterative replay keeps its native per-change semantics.
+            prepare_replay(branch, collapsed, action, request if isinstance(strategy, SquashMergeStrategy) else None)
             return original(strategy, branch, changes, request, logger, user)
 
     return wrapped

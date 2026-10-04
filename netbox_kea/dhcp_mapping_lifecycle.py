@@ -13,7 +13,7 @@ from functools import cache, wraps
 from django.apps import apps
 from django.db import connections, models, router, transaction
 from django.db.models.deletion import Collector
-from django.db.models.signals import m2m_changed, pre_delete
+from django.db.models.signals import m2m_changed, pre_delete, pre_save
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from utilities.exceptions import AbortRequest
@@ -32,7 +32,10 @@ class ReplayOperation:
     action: str
     mappings: dict = dataclass_field(default_factory=dict)
     destructive_targets: set = dataclass_field(default_factory=set)
-    target_states: dict = dataclass_field(default_factory=dict)
+    protected_targets: set = dataclass_field(default_factory=set)
+    object_states: dict = dataclass_field(default_factory=dict)
+    target_associations: dict = dataclass_field(default_factory=dict)
+    native_requests: set[object] = dataclass_field(default_factory=set)
 
 
 _replay_operation: ContextVar[ReplayOperation | None] = ContextVar("kea_mapping_replay_operation", default=None)
@@ -199,7 +202,7 @@ def preflight_action(branch, operation: str) -> None:
         raise AbortRequest("DHCP Import Mapping recovery requires the squash merge strategy. Select squash and retry.")
 
 
-def prepare_replay(branch, collapsed, operation: str) -> None:
+def prepare_replay(branch, collapsed, operation: str, request) -> None:
     """Validate the whole affected main footprint before the first native replay mutation."""
     from .models import KeaDhcpLink
 
@@ -211,12 +214,12 @@ def prepare_replay(branch, collapsed, operation: str) -> None:
             _validate_history_payload(KeaDhcpLink, change.postchange_data)
     protected = _historical_targets(mappings.values())
     target_changes, affected, destructive = _replay_target_footprint(collapsed, operation)
-    current_targets, expected_mappings = _validate_target_associations(
+    current_targets, expected_mappings, copied_associations = _validate_target_associations(
         branch, mappings, target_changes, affected, destructive, operation
     )
     protected.update(current_targets)
     for change in collapsed.values():
-        if change.model_class is KeaDhcpLink or (change.model_class, change.key[1]) in protected:
+        if change.model_class is KeaDhcpLink or (change.model_class, change.key[1]) in protected | destructive:
             _validate_current_state(change, operation)
     source_ids = set()
     for change in mappings.values():
@@ -228,13 +231,27 @@ def prepare_replay(branch, collapsed, operation: str) -> None:
     _validate_restorations(collapsed, protected, operation)
     replay = _replay_operation.get()
     if replay is not None:
+        if request is not None:
+            replay.native_requests.add(request)
+        replay.protected_targets.update(protected)
         replay.destructive_targets.update(destructive)
-        replay.target_states.update(
-            (key, change.prechange_data if operation == "merge" else change.postchange_data)
-            for key, change in target_changes.items()
-            if key in destructive
+        state_changes = {
+            **{key: change for key, change in target_changes.items() if key in protected | destructive},
+            **{(KeaDhcpLink, pk): change for pk, change in mappings.items()},
+        }
+        replay.object_states.update(
+            (
+                key,
+                None
+                if change.final_action == ("create" if operation == "merge" else "delete")
+                else change.prechange_data
+                if operation == "merge"
+                else change.postchange_data,
+            )
+            for key, change in state_changes.items()
         )
         replay.mappings.update(expected_mappings)
+        replay.target_associations.update(copied_associations)
         for change in mappings.values():
             if change.final_action == ("delete" if operation == "merge" else "create"):
                 replay.mappings[change.key[1]] = (
@@ -242,12 +259,21 @@ def prepare_replay(branch, collapsed, operation: str) -> None:
                 )
 
 
-def _replay_target_footprint(collapsed, operation):
+def _replay_target_footprint(collapsed, operation: str):
     target_changes = {
         (change.model_class, change.key[1]): change
         for change in collapsed.values()
         if change.model_class in target_models() and change.final_action != "skip"
     }
+    deleted: dict[object, set] = {}
+    updates: dict[object, dict] = {}
+    for change in collapsed.values():
+        if change.final_action == ("delete" if operation == "merge" else "create"):
+            deleted.setdefault(change.model_class, set()).add(change.key[1])
+        elif change.final_action == "update":
+            updates.setdefault(change.model_class, {})[change.key[1]] = change.generate_object_change().get_merge_data(
+                reverse=operation == "revert"
+            )
     effects = set()
     for change in collapsed.values():
         if change.model_class in delete_effect_models() and change.final_action == (
@@ -255,7 +281,7 @@ def _replay_target_footprint(collapsed, operation):
         ):
             current = change.model_class._base_manager.using("default").filter(pk=change.key[1]).first()
             if current is not None:
-                effects.update(_delete_effect_targets(current))
+                effects.update(_delete_effect_targets(current, deleted, updates))
     affected = effects | set(target_changes)
     destructive = {
         key
@@ -272,12 +298,23 @@ def _validate_target_associations(branch, mappings, target_changes, affected, de
 
     protected = set()
     expected_mappings = {}
+    copied_associations = {}
     for model, pk in affected:
         with branching.branch_scope(branch):
             require_branch_mappings(model)
-        current = KeaDhcpLink.objects.using("default").filter(
-            object_type=ContentType.objects.get_for_model(model), object_id=pk
-        )
+        association = {"object_type": ContentType.objects.get_for_model(model), "object_id": pk}
+        copied = list(KeaDhcpLink.objects.using(branch.connection_name).filter(**association))
+        _require_servers({mapping.server_id for mapping in copied})
+        current = list(KeaDhcpLink.objects.using("default").filter(**association))
+        for mapping in copied:
+            protected.add((model, pk))
+            if mapping.pk not in mappings:
+                original = next((row for row in current if row.pk == mapping.pk), None)
+                if original is None:
+                    raise AbortRequest("A main DHCP mapping from the selected branch is missing. Nothing changed.")
+                payload = mapping.serialize_object()
+                _validate_existing_state(original, payload)
+                copied_associations.setdefault((model, pk), {})[mapping.pk] = payload
         for mapping in current:
             if (model, pk) not in target_changes:
                 raise AbortRequest("A main DHCP mapping target has no reversible branch history. Nothing changed.")
@@ -295,12 +332,33 @@ def _validate_target_associations(branch, mappings, target_changes, affected, de
                     "DHCP Import Mapping recovery requires the squash merge strategy. Select squash and retry."
                 )
             expected_mappings[mapping.pk] = payload
-    return protected, expected_mappings
+    return protected, expected_mappings, copied_associations
 
 
-def _delete_effect_targets(instance) -> set:
+def _delete_effect_targets(instance, deleted, updates) -> set:
     """Use the native collector to inspect cascades and relation changes without mutation."""
-    collector = Collector(using="default")
+
+    class FootprintCollector(Collector):
+        """Inspect relations after the replay's separately validated deletions and FK changes."""
+
+        def related_objects(self, related_model, related_fields, objs):
+            queryset = super().related_objects(related_model, related_fields, objs)
+            queryset = queryset.exclude(pk__in=deleted.get(related_model, ()))
+            moved = models.Q()
+            for pk, payload in updates.get(related_model, {}).items():
+                condition = models.Q(pk=pk)
+                for field in related_fields:
+                    selected = {getattr(obj, field.target_field.attname) for obj in objs}
+                    if field.name in payload:
+                        if field.target_field.to_python(payload[field.name]) in selected:
+                            break
+                    else:
+                        condition &= ~models.Q(**{f"{field.attname}__in": selected})
+                else:
+                    moved |= condition
+            return queryset.exclude(moved)
+
+    collector = FootprintCollector(using="default")
     collector.collect([instance])
     selected = {model: {obj.pk for obj in objects} for model, objects in collector.data.items()}
     affected = {(model, pk) for model in target_models() for pk in selected.get(model, ())}
@@ -794,6 +852,46 @@ def _late_delete_guard(sender, instance, using, **kwargs):
             _validate_native_delete(instance, using)
 
 
+def _late_save_guard(sender, instance, using, **kwargs):
+    """Recheck each squash mapping or target before native save, including raw deserializer saves."""
+    from django.contrib.contenttypes.models import ContentType
+    from netbox.context import current_request
+
+    from .models import KeaDhcpLink
+
+    replay = _replay_operation.get()
+    if replay is None or using != "default" or current_request.get() not in replay.native_requests:
+        return
+    with metadata_scope(using):
+        key = (sender, instance.pk)
+        for pk, payload in replay.target_associations.get(key, {}).items():
+            _require_servers({payload["server"]})
+            mapping = KeaDhcpLink.objects.using(using).filter(pk=pk).first()
+            if mapping is None:
+                raise AbortRequest("A main DHCP mapping from the selected branch is missing. Nothing changed.")
+            _validate_existing_state(mapping, payload)
+        if key not in replay.object_states:
+            if sender is KeaDhcpLink:
+                raise AbortRequest("A main DHCP mapping has no reversible branch history. Nothing changed.")
+            if (
+                key in replay.protected_targets
+                or KeaDhcpLink.objects.using(using)
+                .filter(object_type=ContentType.objects.get_for_model(instance), object_id=instance.pk)
+                .exists()
+            ):
+                raise AbortRequest("A main DHCP mapping target has no reversible branch history. Nothing changed.")
+            return
+        current = sender._base_manager.using(using).filter(pk=instance.pk).first()
+        expected = replay.object_states[key]
+        if expected is None:
+            if current is not None:
+                raise AbortRequest("A DHCP mapping or target primary key has been reused. Nothing changed.")
+        elif current is None:
+            raise AbortRequest("A DHCP mapping or target from reversible history is missing. Nothing changed.")
+        else:
+            _validate_existing_state(current, expected)
+
+
 def _validate_native_delete(instance, using):
     from django.contrib.contenttypes.models import ContentType
 
@@ -818,7 +916,7 @@ def _validate_native_delete(instance, using):
         current = type(instance)._base_manager.using(using).filter(pk=instance.pk).first()
         if current is None:
             raise AbortRequest("A DHCP target from reversible history is missing. Nothing changed.")
-        _validate_existing_state(current, replay.target_states[key])
+        _validate_existing_state(current, replay.object_states[key])
     if not branching.has_native_delete_receipt(replay.branch, instance):
         raise AbortRequest(
             "The native DHCP mapping deletion has no applied history in this transaction. Nothing changed."
@@ -851,6 +949,10 @@ def register() -> None:
         if model in writers:
             model.save = _guard_model_write(model.save, 2)
             model.save_base = _guard_model_write(model.save_base, 3)
+        if model in protected:
+            pre_save.connect(
+                _late_save_guard, sender=model, dispatch_uid=f"netbox_kea.mapping_save.{model._meta.label}"
+            )
         model.delete = (_guard_target_delete if model in protected else _guard_parent_delete)(model.delete)
         pre_delete.connect(
             _late_delete_guard, sender=model, dispatch_uid=f"netbox_kea.mapping_delete.{model._meta.label}"

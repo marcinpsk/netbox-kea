@@ -147,14 +147,22 @@ status transitions and native transaction lifetimes. They do not add an outer at
 action. Native strategy merge and revert entry points acquire coordination and validate the complete
 affected footprint inside the existing native atomic block, before skip-missing reads, dependency
 ordering or the first replay mutation. They then call the original strategy without replacing replay.
+The footprint collector excludes only exact rows that collapsed native history already schedules for
+deletion, or a relation that a planned update moves away from the selected parent. It uses the resulting
+relation value for the selected operation. This preserves native child-before-parent deletion and
+update-before-parent deletion. An unchanged or unplanned protected relation still causes the native
+protection refusal. The actual replay collector remains unchanged.
 The native graph signal adds only a dependency the native GenericForeignKey ordering cannot represent.
 
 Preaction checks perform structural schema, routing and strategy refusal. Current main-state validation
-occurs under the changing transaction lock. It covers original PK reuse, missing Server or target
-dependencies, source and target uniqueness, newer semantic target fields and M2M state, unmatched late
+occurs under the changing transaction lock. Branch-copied mapping rows identify targets whose mapping
+has no separate branch change record. Read this association evidence only from the verified branch
+schema. A missing main association or source Server causes refusal; branch copies do not authorize
+reconstruction of a mapping that main has removed. Validation also covers original PK reuse, missing
+Server or target dependencies, source and target uniqueness, newer semantic target fields and M2M state, unmatched late
 main mappings and undo of a branch-created target adopted on main. Affected iterative actions refuse
-before mutation and keep their selected strategy. Recognized mapping conflicts are validated before any
-unrelated native replay mutation. A native protection-rule refusal after an earlier replay mutation
+before mutation and keep their selected strategy. Ordinary iterative target updates retain native replay
+behavior. Recognized mapping conflicts are validated before any unrelated native replay mutation. A native protection-rule refusal after an earlier replay mutation
 proves database, status and AppliedChange rollback without an injected replay exception.
 
 Operation context identifies the action. Synchronous native ObjectChange and AppliedChange provenance
@@ -166,7 +174,14 @@ directly in branch changes. Restoration checks required dependencies and source 
 before the first replay mutation. A late deletion guard rechecks expected target semantics and generation,
 the recorded mapping generation and the native applied deletion for the current request inside main's
 atomic transaction. This second check covers a reentrant importer in the same transaction, which can
-acquire the advisory lock again.
+acquire the advisory lock again. Squash mapping and target CREATE and UPDATE mutations have a late
+pre-save fence for the same expected generation and semantic state. A target save also rechecks its
+unchanged copied mapping association and source Server. This association check applies only when the
+mapping has no separate branch change record, so it does not compete with legitimate native mapping
+replay. Timestamp-only observations remain nonsemantic. The fence identifies the actual native squash
+request. A nested importer uses its own native request and can write; replay then detects the conflicting
+state and refuses the whole action. The fence does not apply a collapsed expectation to each native
+iterative update. These guards preserve native scalar-save and subsequent M2M replay order.
 
 Each action isolates the native pre_delete suppression set. With an enclosing real request, finally
 restores that request's prior set. A direct action without an enclosing request discards stale prior
