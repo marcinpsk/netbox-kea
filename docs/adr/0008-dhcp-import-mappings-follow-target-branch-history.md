@@ -28,3 +28,7 @@ Affected actions require dependency-aware squash. Iterative replay cannot restor
 its mapping, so the action is refused before mutation. Native history remains the recovery authority;
 branch status alone does not authorize replay. Existing schemas and already-lost mappings require
 explicit operator action instead of automatic reconstruction.
+
+Tag changes and mapped DHCP target replay must occur in separate branches. Recovery refuses mixed
+actions and unavailable or conflicting existing Tags. Operators reconcile Tags before creating a
+fresh DHCP branch. This bounded policy avoids interpreting historical Tag names or rebuilding Tags.

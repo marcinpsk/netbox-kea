@@ -26,11 +26,10 @@ from django.contrib.contenttypes.models import ContentType
 from django.core.serializers.json import DjangoJSONEncoder
 from django.core.signals import request_finished
 from django.db import connection, connections, transaction
-from django.db.models.signals import m2m_changed, post_delete, pre_delete, pre_save
+from django.db.models.signals import m2m_changed, post_delete, post_save, pre_delete, pre_save
 from django.test import TransactionTestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
-from django.utils.dateparse import parse_datetime
 from ipam.models import VRF
 from netbox.context import current_request
 from netbox.context_managers import event_tracking
@@ -101,6 +100,8 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
         branch.revert(user=self.user)
         branch.refresh_from_db()
         restored = KeaDhcpLink.objects.get(pk=link.pk)
+        self.assertEqual(restored.created, link.created)
+        self.assertEqual(type(target).objects.get(pk=target.pk).created, target.created)
         self.assertEqual(
             (restored.object_id, restored.server_id, restored.family, restored.kea_subnet_id, restored.kea_identity),
             (target.pk, server.pk, family, link.kea_subnet_id, link.kea_identity),
@@ -808,6 +809,9 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
                     local.description = "completed cleanup"
                     local.save()
                 request_finished.send(sender=type(self))
+                if kind == "tags":
+                    self._assert_tag_replay_refused(branch)
+                    continue
                 history = {change.pk: deepcopy(change.prechange_data) for change in branch.get_changes()}
                 captured = []
 
@@ -839,11 +843,8 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
                 self.assertTrue(captured)
                 for original, deletion_ids, target_id in captured:
                     self.assertEqual(len(original[field]), 2)
-                    if kind == "classes":
-                        self.assertEqual(len(set(deletion_ids)), 2)
-                        self.assertNotIn(target_id, deletion_ids)
-                    else:
-                        self.assertFalse(deletion_ids)
+                    self.assertEqual(len(set(deletion_ids)), 2)
+                    self.assertNotIn(target_id, deletion_ids)
                 self.assertEqual({change.pk: change.prechange_data for change in branch.get_changes()}, history)
                 branch.revert(user=self.user)
                 restored = type(target).objects.get(pk=target.pk)
@@ -852,10 +853,10 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
                 )
                 self.assertEqual(restored.description, target.description)
 
-    def test_named_endpoint_creation_composes_with_mapped_target_update(self):
+    def test_named_endpoint_creation_refuses_mapped_target_update(self):
         from extras.models import Tag
 
-        _, _, _, target, link = self._imported("subnet", 6, "created-named-endpoint")
+        _, _, _, target, _link = self._imported("subnet", 6, "created-named-endpoint")
         branch = _provisioned_branch(self, "mapping-created-named-endpoint")
         branch.merge_strategy = "squash"
         branch.save(provision=False)
@@ -865,52 +866,777 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
             local.snapshot()
             local.tags.add(tag)
         request_finished.send(sender=type(self))
-        history = {change.pk: deepcopy(change.prechange_data) for change in branch.get_changes()}
-        branch.merge(user=self.user)
-        self.assertEqual(list(type(target).objects.get(pk=target.pk).tags.values_list("pk", flat=True)), [tag.pk])
-        self.assertEqual(Tag.objects.get(name=tag.name).pk, tag.pk)
-        self.assertEqual(KeaDhcpLink.objects.get(pk=link.pk).created, link.created)
-        self.assertEqual({change.pk: change.prechange_data for change in branch.get_changes()}, history)
-        branch.revert(user=self.user)
-        self.assertFalse(type(target).objects.get(pk=target.pk).tags.exists())
-        self.assertFalse(Tag.objects.filter(pk=tag.pk).exists())
-        self.assertTrue(KeaDhcpLink.objects.filter(pk=link.pk).exists())
+        self._assert_tag_replay_refused(branch)
 
-    def test_named_endpoint_deletion_composes_with_mapped_target_deletion(self):
-        target, link, endpoints, _field, branch = self._cleanup_target("tags", "named-target-delete")
-        endpoint_created = parse_datetime(endpoints[0].serialize_object()["created"])
-        self._delete(branch, endpoints[0])
-        self._delete(branch, target)
+    def _renamed_tag_target(self, kind, family, suffix, *, assigned, strategy):
+        from extras.models import Tag
+
+        _, _, _, target, link = self._imported(kind, family, suffix)
+        tag = Tag.objects.create(name=f"mapping-{suffix}-original", slug=f"mapping-{suffix}")
+        if assigned:
+            target.tags.add(tag)
+        branch = _provisioned_branch(self, f"mapping-{suffix}")
+        branch.merge_strategy = strategy
+        branch.save(provision=False)
+        with activate_branch(branch), event_tracking(_change_request(self.user)):
+            renamed = Tag.objects.get(pk=tag.pk)
+            renamed.snapshot()
+            renamed.name = f"mapping-{suffix}-renamed"
+            renamed.save()
+        request_finished.send(sender=type(self))
+        return target, link, tag, renamed, branch
+
+    def _assert_tag_replay_refused(self, branch):
+        from extras.models import Tag
+
+        from netbox_kea.dhcp_mapping_lifecycle import target_models
+
+        models = (*target_models(), Tag, KeaDhcpLink)
+
+        def main_state():
+            return {
+                model: [
+                    (obj.pk, obj.serialize_object(), obj.created)
+                    for obj in model.objects.using("default").order_by("pk")
+                ]
+                for model in models
+            }
+
+        state = main_state()
         history = {
             change.pk: (deepcopy(change.prechange_data), deepcopy(change.postchange_data))
             for change in branch.get_changes()
         }
-        branch.merge(user=self.user)
-        self.assertFalse(type(target).objects.filter(pk=target.pk).exists())
-        self.assertFalse(KeaDhcpLink.objects.filter(pk=link.pk).exists())
-        self.assertFalse(type(endpoints[0]).objects.filter(pk=endpoints[0].pk).exists())
-        self.assertTrue(type(endpoints[1]).objects.filter(pk=endpoints[1].pk).exists())
-        branch.revert(user=self.user)
-        restored = type(target).objects.get(pk=target.pk)
-        self.assertEqual(restored.created, target.created)
-        self.assertEqual(set(restored.tags.values_list("pk", flat=True)), {endpoint.pk for endpoint in endpoints[:2]})
-        restored_mapping = KeaDhcpLink.objects.get(pk=link.pk)
-        self.assertEqual(
-            (restored_mapping.object_id, restored_mapping.server_id, restored_mapping.created),
-            (target.pk, link.server_id, link.created),
-        )
-        restored_endpoint = type(endpoints[0]).objects.get(name=endpoints[0].name)
-        self.assertEqual((restored_endpoint.pk, restored_endpoint.created), (endpoints[0].pk, endpoint_created))
-        self.assertEqual(
-            {change.pk: (change.prechange_data, change.postchange_data) for change in branch.get_changes()}, history
-        )
+        original_status = branch.status
+        changes = ObjectChange.objects.count()
+        applied = branch.applied_changes.count()
+        mutations = []
 
-    def test_named_endpoint_creation_composes_with_mapped_target_creation(self):
+        def capture_mutation(sender, instance, using, **kwargs):
+            if using == "default":
+                mutations.append((sender, instance.pk))
+
+        def capture_status(execute, sql, params, many, context):
+            if sql.lstrip().startswith("UPDATE") and branch._meta.db_table in sql and '"status"' in sql:
+                mutations.append("branch status")
+            return execute(sql, params, many, context)
+
+        for model in models:
+            pre_save.connect(capture_mutation, sender=model, weak=False)
+            pre_delete.connect(capture_mutation, sender=model, weak=False)
+        try:
+            for commit in (True, False):
+                with (
+                    connection.execute_wrapper(capture_status),
+                    self.assertRaisesMessage(AbortRequest, "Apply Tag changes separately") as refusal,
+                ):
+                    branch.merge(user=self.user, commit=commit)
+                self.assertIn("fresh branch", str(refusal.exception))
+                branch.refresh_from_db()
+                self.assertEqual(branch.status, original_status)
+                self.assertEqual(branch.applied_changes.count(), applied)
+                self.assertEqual(ObjectChange.objects.count(), changes)
+                self.assertEqual(main_state(), state)
+                self.assertEqual(
+                    {change.pk: (change.prechange_data, change.postchange_data) for change in branch.get_changes()},
+                    history,
+                )
+                self.assertFalse(mutations, "Tag refusal occurred after a native mutation")
+                self.assertIsNone(current_request.get())
+        finally:
+            for model in models:
+                pre_save.disconnect(capture_mutation, sender=model)
+                pre_delete.disconnect(capture_mutation, sender=model)
+
+    def test_branch_tag_rename_then_assignment_refuses_mapped_target_replay(self):
+        from extras.models import Tag
+
+        for kind in ("subnet", "reservation"):
+            for family in (4, 6):
+                with self.subTest(kind=kind, family=family):
+                    suffix = f"rename-assign-{kind}-{family}"
+                    target, _link, original, _renamed, branch = self._renamed_tag_target(
+                        kind, family, suffix, assigned=False, strategy="squash"
+                    )
+                    with activate_branch(branch), event_tracking(_change_request(self.user)):
+                        local = type(target).objects.get(pk=target.pk)
+                        local.snapshot()
+                        local.tags.add(Tag.objects.get(pk=original.pk))
+                    request_finished.send(sender=type(self))
+                    self._assert_tag_replay_refused(branch)
+
+    def test_branch_tag_rename_then_scalar_update_refuses_mapped_target_replay(self):
+
+        for strategy in ("squash", "iterative"):
+            for kind, family in (("subnet", 4), ("reservation", 6)):
+                with self.subTest(strategy=strategy, kind=kind, family=family):
+                    suffix = f"rename-scalar-{strategy}-{kind}-{family}"
+                    target, _link, _original, _renamed, branch = self._renamed_tag_target(
+                        kind, family, suffix, assigned=True, strategy=strategy
+                    )
+                    with activate_branch(branch), event_tracking(_change_request(self.user)):
+                        local = type(target).objects.get(pk=target.pk)
+                        local.snapshot()
+                        local.description = "branch scalar after rename"
+                        local.save()
+                    request_finished.send(sender=type(self))
+                    self._assert_tag_replay_refused(branch)
+
+    def test_branch_tag_rename_without_target_change_preserves_native_identity(self):
+        from extras.models import Tag
+
+        target, link, original, renamed, branch = self._renamed_tag_target(
+            "subnet", 4, "rename-only", assigned=True, strategy="squash"
+        )
+        branch.merge(user=self.user)
+        self.assertEqual(
+            list(type(target).objects.get(pk=target.pk).tags.values_list("name", flat=True)), [renamed.name]
+        )
+        self.assertEqual(Tag.objects.get(pk=original.pk).created, original.created)
+        branch.revert(user=self.user)
+        self.assertEqual(
+            list(type(target).objects.get(pk=target.pk).tags.values_list("name", flat=True)), [original.name]
+        )
+        self.assertEqual(KeaDhcpLink.objects.get(pk=link.pk).created, link.created)
+
+    def test_tag_rename_between_target_updates_refuses_mapped_target_replay(self):
+        from extras.models import Tag
+
+        _, _, _, target, _link = self._imported("subnet", 4, "target-rename-target")
+        tag = Tag.objects.create(name="mapping-target-rename-original", slug="mapping-target-rename")
+        target.tags.add(tag)
+        branch = _provisioned_branch(self, "mapping-target-rename-target")
+        branch.merge_strategy = "squash"
+        branch.save(provision=False)
+        for description, name in (
+            ("first branch edit", None),
+            (None, "mapping-target-rename-final"),
+            ("last branch edit", None),
+        ):
+            with activate_branch(branch), event_tracking(_change_request(self.user)):
+                local = (
+                    type(target).objects.get(pk=target.pk) if description is not None else Tag.objects.get(pk=tag.pk)
+                )
+                local.snapshot()
+                if description is not None:
+                    local.description = description
+                else:
+                    local.name = name
+                local.save()
+            request_finished.send(sender=type(self))
+        self._assert_tag_replay_refused(branch)
+
+    def test_tag_renames_around_assignment_refuse_mapped_target_replay(self):
+        from extras.models import Tag
+
+        target, _link, original, _renamed, branch = self._renamed_tag_target(
+            "reservation", 6, "rename-assignment-rename", assigned=False, strategy="squash"
+        )
+        with activate_branch(branch), event_tracking(_change_request(self.user)):
+            local = type(target).objects.get(pk=target.pk)
+            local.snapshot()
+            local.tags.add(Tag.objects.get(pk=original.pk))
+        request_finished.send(sender=type(self))
+        with activate_branch(branch), event_tracking(_change_request(self.user)):
+            endpoint = Tag.objects.get(pk=original.pk)
+            endpoint.snapshot()
+            endpoint.name = "mapping-rename-assignment-final"
+            endpoint.save()
+        request_finished.send(sender=type(self))
+        self._assert_tag_replay_refused(branch)
+
+    def test_existing_tag_assignment_preserves_native_target_identity(self):
+        from extras.models import Tag
+
+        for kind, family in (("subnet", 4), ("subnet", 6), ("reservation", 4), ("reservation", 6)):
+            with self.subTest(kind=kind, family=family):
+                suffix = f"existing-tag-{kind}-{family}"
+                _, _, _, target, link = self._imported(kind, family, suffix)
+                tag = Tag.objects.create(name=f"mapping-{suffix}", slug=f"mapping-{suffix}")
+                branch = _provisioned_branch(self, f"mapping-{suffix}")
+                branch.merge_strategy = "squash"
+                branch.save(provision=False)
+                with activate_branch(branch), event_tracking(_change_request(self.user)):
+                    local = type(target).objects.get(pk=target.pk)
+                    local.snapshot()
+                    local.tags.add(tag)
+                request_finished.send(sender=type(self))
+                with event_tracking(_change_request(self.user)):
+                    tag.color = "112233"
+                    tag.save()
+                request_finished.send(sender=type(self))
+                branch.merge(user=self.user)
+                self.assertEqual(
+                    list(type(target).objects.get(pk=target.pk).tags.values_list("pk", flat=True)), [tag.pk]
+                )
+                branch.revert(user=self.user)
+                self.assertFalse(type(target).objects.get(pk=target.pk).tags.exists())
+                self.assertEqual(Tag.objects.get(pk=tag.pk).color, "112233")
+                self.assertEqual(Tag.objects.get(pk=tag.pk).created, tag.created)
+                self.assertEqual(type(target).objects.get(pk=target.pk).created, target.created)
+                self.assertEqual(KeaDhcpLink.objects.get(pk=link.pk).created, link.created)
+
+    def test_mapping_only_replay_allows_separate_tag_changes(self):
+        from extras.models import Tag
+
+        _, _, _, target, link = self._imported("reservation", 6, "mapping-only-tags")
+        tag = Tag.objects.create(name="mapping-only-tags-original", slug="mapping-only-tags")
+        branch = _provisioned_branch(self, "mapping-only-tags")
+        branch.merge_strategy = "squash"
+        branch.save(provision=False)
+        with activate_branch(branch), event_tracking(_change_request(self.user)):
+            local = Tag.objects.get(pk=tag.pk)
+            local.snapshot()
+            local.name = "mapping-only-tags-renamed"
+            local.save()
+            KeaDhcpLink.objects.filter(pk=link.pk).delete()
+        request_finished.send(sender=type(self))
+        branch.merge(user=self.user)
+        self.assertEqual(Tag.objects.get(pk=tag.pk).name, "mapping-only-tags-renamed")
+        self.assertFalse(KeaDhcpLink.objects.filter(pk=link.pk).exists())
+        branch.revert(user=self.user)
+        self.assertEqual(Tag.objects.get(pk=tag.pk).name, tag.name)
+        self.assertEqual(KeaDhcpLink.objects.get(pk=link.pk).created, link.created)
+        self.assertEqual(type(target).objects.get(pk=target.pk).created, target.created)
+
+    def test_unmapped_target_and_tag_changes_preserve_native_replay(self):
+        from extras.models import Tag
+
+        for strategy in ("squash", "iterative"):
+            with self.subTest(strategy=strategy):
+                _, _, _, target, link = self._imported("subnet", 4, f"unmapped-tag-{strategy}")
+                tag = Tag.objects.create(name=f"mapping-unmapped-{strategy}", slug=f"mapping-unmapped-{strategy}")
+                target.tags.add(tag)
+                with event_tracking(_change_request(self.user)):
+                    link.delete()
+                request_finished.send(sender=type(self))
+                branch = _provisioned_branch(self, f"mapping-unmapped-tag-{strategy}")
+                branch.merge_strategy = strategy
+                branch.save(provision=False)
+                with activate_branch(branch), event_tracking(_change_request(self.user)):
+                    local = Tag.objects.get(pk=tag.pk)
+                    local.snapshot()
+                    local.name = f"mapping-unmapped-renamed-{strategy}"
+                    local.save()
+                request_finished.send(sender=type(self))
+                with activate_branch(branch), event_tracking(_change_request(self.user)):
+                    local = type(target).objects.get(pk=target.pk)
+                    local.snapshot()
+                    local.description = "unmapped native edit"
+                    local.save()
+                request_finished.send(sender=type(self))
+                branch.merge(user=self.user)
+                self.assertEqual(type(target).objects.get(pk=target.pk).description, "unmapped native edit")
+                self.assertEqual(
+                    list(type(target).objects.get(pk=target.pk).tags.values_list("pk", flat=True)), [tag.pk]
+                )
+                branch.revert(user=self.user)
+                self.assertEqual(type(target).objects.get(pk=target.pk).description, target.description)
+                self.assertEqual(Tag.objects.get(pk=tag.pk).name, tag.name)
+                self.assertEqual(type(target).objects.get(pk=target.pk).created, target.created)
+                self.assertEqual(Tag.objects.get(pk=tag.pk).created, tag.created)
+                self.assertFalse(KeaDhcpLink.objects.filter(pk=link.pk).exists())
+                self.assertIsNone(current_request.get())
+
+    def test_unavailable_branch_tag_copy_refuses_mapped_replay(self):
+        from extras.models import Tag
+
+        for unavailable in ("table", "exemption"):
+            with self.subTest(unavailable=unavailable):
+                _, _, _, target, link = self._imported("subnet", 4, f"tag-copy-{unavailable}")
+                tag = Tag.objects.create(name=f"mapping-copy-{unavailable}", slug=f"mapping-copy-{unavailable}")
+                target.tags.add(tag)
+                branch = _provisioned_branch(self, f"mapping-tag-copy-{unavailable}")
+                branch.merge_strategy = "squash"
+                branch.save(provision=False)
+                with activate_branch(branch), event_tracking(_change_request(self.user)):
+                    local = type(target).objects.get(pk=target.pk)
+                    local.snapshot()
+                    local.description = "branch with unchanged Tag"
+                    local.save()
+                request_finished.send(sender=type(self))
+                config = deepcopy(settings.PLUGINS_CONFIG)
+                if unavailable == "table":
+                    with connection.cursor() as cursor:
+                        cursor.execute('DROP TABLE "' + branch.schema_name + '"."' + Tag._meta.db_table + '" CASCADE')
+                else:
+                    config["netbox_branching"]["exempt_models"] = [
+                        *config["netbox_branching"].get("exempt_models", []),
+                        "extras.tag",
+                    ]
+                before = ObjectChange.objects.count()
+                instruction = (
+                    "Remove the affected Tag branching exemption"
+                    if unavailable == "exemption"
+                    else "Apply Tag changes separately"
+                )
+                with (
+                    override_settings(PLUGINS_CONFIG=config),
+                    self.assertRaisesMessage(AbortRequest, instruction) as refusal,
+                ):
+                    branch.merge(user=self.user)
+                self.assertIn("fresh branch", str(refusal.exception))
+                branch.refresh_from_db()
+                self.assertEqual(branch.status, "ready")
+                self.assertFalse(branch.applied_changes.exists())
+                self.assertEqual(ObjectChange.objects.count(), before)
+                self.assertEqual(type(target).objects.get(pk=target.pk).description, target.description)
+                self.assertEqual(KeaDhcpLink.objects.get(pk=link.pk).created, link.created)
+                self.assertEqual(Tag.objects.get(pk=tag.pk).created, tag.created)
+                self.assertIsNone(current_request.get())
+
+    def test_distinct_tag_renames_with_a_reused_name_refuse_mapped_target_replay(self):
+        from extras.models import Tag
+
+        for strategy in ("squash", "iterative"):
+            with self.subTest(strategy=strategy):
+                _, _, _, target, _link = self._imported("reservation", 4, f"reused-tag-name-{strategy}")
+                first = Tag.objects.create(
+                    name=f"mapping-tag-name-{strategy}-first", slug=f"mapping-name-{strategy}-first"
+                )
+                assigned = Tag.objects.create(
+                    name=f"mapping-tag-name-{strategy}-assigned", slug=f"mapping-name-{strategy}-assigned"
+                )
+                target.tags.add(assigned)
+                branch = _provisioned_branch(self, f"mapping-reused-tag-name-{strategy}")
+                branch.merge_strategy = strategy
+                branch.save(provision=False)
+                for tag, name in ((first, f"mapping-tag-name-{strategy}-vacated"), (assigned, first.name)):
+                    with activate_branch(branch), event_tracking(_change_request(self.user)):
+                        local = Tag.objects.get(pk=tag.pk)
+                        local.snapshot()
+                        local.name = name
+                        local.save()
+                    request_finished.send(sender=type(self))
+                with activate_branch(branch), event_tracking(_change_request(self.user)):
+                    local = type(target).objects.get(pk=target.pk)
+                    local.snapshot()
+                    local.description = "branch reused-name metadata"
+                    local.save()
+                request_finished.send(sender=type(self))
+                self._assert_tag_replay_refused(branch)
+
+    def test_tag_changes_before_assignment_refuse_and_later_changes_remain_main(self):
+        from extras.models import Tag
+
+        for timing in ("before-assignment", "after-assignment"):
+            with self.subTest(timing=timing):
+                _, _, _, target, link = self._imported("subnet", 6, f"tag-assignment-{timing}")
+                tag = Tag.objects.create(name=f"mapping-assignment-{timing}", slug=f"mapping-assignment-{timing}")
+                branch = _provisioned_branch(self, f"mapping-assignment-{timing}")
+                branch.merge_strategy = "squash"
+                branch.save(provision=False)
+                with activate_branch(branch), event_tracking(_change_request(self.user)):
+                    local = type(target).objects.get(pk=target.pk)
+                    local.snapshot()
+                    local.description = "branch assignment"
+                    local.save()
+                    local.tags.add(Tag.objects.get(pk=tag.pk))
+                request_finished.send(sender=type(self))
+                observed = []
+
+                def rename_main(sender, instance, using, *, tag=tag, observed=observed, timing=timing, **kwargs):
+                    if using != "default" or kwargs.get("action") not in (None, "post_add") or observed:
+                        return
+                    with event_tracking(_change_request(self.user)):
+                        endpoint = Tag.objects.get(pk=tag.pk)
+                        endpoint.name = f"mapping-later-{timing}"
+                        endpoint.save()
+                    observed.append(endpoint.name)
+
+                signal = post_save if timing == "before-assignment" else m2m_changed
+                sender = type(target) if timing == "before-assignment" else type(target)._meta.get_field("tags").through
+                signal.connect(rename_main, sender=sender, weak=False)
+                before = ObjectChange.objects.count()
+                try:
+                    if timing == "before-assignment":
+                        with self.assertRaisesMessage(AbortRequest, "changed"):
+                            branch.merge(user=self.user)
+                    else:
+                        branch.merge(user=self.user)
+                finally:
+                    signal.disconnect(rename_main, sender=sender)
+                self.assertEqual(observed, [f"mapping-later-{timing}"])
+                branch.refresh_from_db()
+                current = type(target).objects.get(pk=target.pk)
+                if timing == "before-assignment":
+                    self.assertEqual(branch.status, "ready")
+                    self.assertEqual(ObjectChange.objects.count(), before)
+                    self.assertFalse(branch.applied_changes.exists())
+                    self.assertFalse(current.tags.exists())
+                    self.assertEqual(current.description, target.description)
+                    self.assertEqual(Tag.objects.get(pk=tag.pk).name, tag.name)
+                else:
+                    self.assertEqual(branch.status, "merged")
+                    self.assertEqual(list(current.tags.values_list("pk", "name")), [(tag.pk, observed[0])])
+                    self.assertEqual(current.description, "branch assignment")
+                    applied = branch.applied_changes.count()
+                    with self.assertRaisesMessage(AbortRequest, "changed"):
+                        branch.revert(user=self.user)
+                    self.assertEqual(branch.applied_changes.count(), applied)
+                    self.assertEqual(Tag.objects.get(pk=tag.pk).name, observed[0])
+                self.assertEqual(current.created, target.created)
+                self.assertEqual(KeaDhcpLink.objects.get(pk=link.pk).created, link.created)
+                self.assertIsNone(current_request.get())
+
+    def test_unrelated_metadata_and_skipped_tag_changes_refuse_mapped_replay(self):
+        from extras.models import Tag
+
+        for strategy in ("squash", "iterative"):
+            for change_kind in ("rename", "metadata", "skipped"):
+                with self.subTest(strategy=strategy, change_kind=change_kind):
+                    suffix = f"mixed-tags-{strategy}-{change_kind}"
+                    _, _, _, target, _link = self._imported("reservation", 6, suffix)
+                    tag = Tag.objects.create(name=f"mapping-{suffix}", slug=f"mapping-{suffix}")
+                    branch = _provisioned_branch(self, f"mapping-{suffix}")
+                    branch.merge_strategy = strategy
+                    branch.save(provision=False)
+                    with activate_branch(branch), event_tracking(_change_request(self.user)):
+                        if change_kind == "skipped":
+                            transient = Tag.objects.create(
+                                name=f"mapping-{suffix}-temporary", slug=f"mapping-{suffix}-temporary"
+                            )
+                            transient.delete()
+                        else:
+                            local_tag = Tag.objects.get(pk=tag.pk)
+                            local_tag.snapshot()
+                            if change_kind == "rename":
+                                local_tag.name = f"mapping-{suffix}-renamed"
+                            else:
+                                local_tag.color = "abcdef"
+                            local_tag.save()
+                        local = type(target).objects.get(pk=target.pk)
+                        local.snapshot()
+                        local.description = "mapped branch edit"
+                        local.save()
+                    request_finished.send(sender=type(self))
+                    self._assert_tag_replay_refused(branch)
+
+    def _mapping_only_branch(self, kind, family, suffix):
+        _, _, _, target, link = self._imported(kind, family, suffix)
+        unrelated = VRF.objects.create(name=f"mapping-{suffix}-unrelated")
+        branch = _provisioned_branch(self, f"mapping-{suffix}")
+        branch.merge_strategy = "squash"
+        branch.save(provision=False)
+        self._delete(branch, link, queryset=True)
+        self._delete(branch, unrelated, queryset=True)
+        branch.merge(user=self.user)
+        branch.refresh_from_db()
+        self.assertFalse(KeaDhcpLink.objects.filter(pk=link.pk).exists())
+        self.assertFalse(VRF.objects.filter(pk=unrelated.pk).exists())
+        self.assertEqual(type(target).objects.get(pk=target.pk).created, target.created)
+        with activate_branch(branch):
+            self.assertEqual(type(target).objects.get(pk=target.pk).created, target.created)
+        return target, link, unrelated, branch
+
+    def _replace_unmapped_target(self, target):
+        with event_tracking(_change_request(self.user)):
+            type(target).objects.filter(pk=target.pk).delete()
+            values = {
+                field.attname: getattr(target, field.attname)
+                for field in target._meta.concrete_fields
+                if not field.primary_key and field.name not in {"created", "last_updated"}
+            }
+            replacement = type(target).objects.create(pk=target.pk, **values)
+        self.assertNotEqual(replacement.created, target.created)
+        return replacement
+
+    def test_mapping_only_revert_refuses_replacement_target_generation(self):
+        for phase in ("before", "after"):
+            for kind, family in (("subnet", 4), ("subnet", 6), ("reservation", 4), ("reservation", 6)):
+                with self.subTest(phase=phase, kind=kind, family=family):
+                    target, link, unrelated, branch = self._mapping_only_branch(
+                        kind, family, f"mapping-generation-{phase}-{kind}-{family}"
+                    )
+                    observed = []
+                    if phase == "before":
+                        replacement = self._replace_unmapped_target(target)
+                        request_finished.send(sender=type(self))
+
+                    def replace_during_replay(sender, operation, *, target=target, observed=observed, **kwargs):
+                        if operation == "revert":
+                            observed.append(self._replace_unmapped_target(target).created)
+
+                    before, applied = ObjectChange.objects.count(), branch.applied_changes.count()
+                    if phase == "after":
+                        squash_dependency_graph_built.connect(replace_during_replay, weak=False)
+                    try:
+                        with self.assertRaisesMessage(AbortRequest, "reused"):
+                            branch.revert(user=self.user)
+                    finally:
+                        squash_dependency_graph_built.disconnect(replace_during_replay)
+                    branch.refresh_from_db()
+                    self.assertEqual(branch.status, "merged")
+                    self.assertEqual(branch.applied_changes.count(), applied)
+                    self.assertEqual(ObjectChange.objects.count(), before)
+                    expected_created = replacement.created if phase == "before" else target.created
+                    self.assertEqual(type(target).objects.get(pk=target.pk).created, expected_created)
+                    if phase == "after":
+                        self.assertEqual(len(observed), 1)
+                        self.assertNotEqual(observed[0], target.created)
+                    self.assertFalse(KeaDhcpLink.objects.filter(pk=link.pk).exists())
+                    self.assertFalse(VRF.objects.filter(pk=unrelated.pk).exists())
+                    self.assertIsNone(current_request.get())
+
+    def test_mapping_only_revert_preserves_original_generation_and_new_scalar_data(self):
+        for kind, family in (("subnet", 4), ("subnet", 6), ("reservation", 4), ("reservation", 6)):
+            with self.subTest(kind=kind, family=family):
+                target, link, unrelated, branch = self._mapping_only_branch(
+                    kind, family, f"mapping-unchanged-generation-{kind}-{family}"
+                )
+                with event_tracking(_change_request(self.user)):
+                    current = type(target).objects.get(pk=target.pk)
+                    current.snapshot()
+                    current.description = "retained main metadata"
+                    current.save()
+                request_finished.send(sender=type(self))
+                branch.revert(user=self.user)
+                restored = KeaDhcpLink.objects.get(pk=link.pk)
+                self.assertEqual(
+                    (restored.object_id, restored.server_id, restored.family, restored.created),
+                    (target.pk, link.server_id, family, link.created),
+                )
+                current = type(target).objects.get(pk=target.pk)
+                self.assertEqual(current.created, target.created)
+                self.assertEqual(current.description, "retained main metadata")
+                self.assertTrue(VRF.objects.filter(pk=unrelated.pk).exists())
+                self.assertIsNone(current_request.get())
+
+    def test_revert_refuses_replacement_during_native_target_restoration(self):
+        _, _, _, target, mapping = self._imported("subnet", 4, "restore-replacement")
+        branch = _provisioned_branch(self, "mapping-restore-replacement")
+        branch.merge_strategy = "squash"
+        branch.save(provision=False)
+        self._delete(branch, target)
+        branch.merge(user=self.user)
+        observations = []
+
+        def replace_restored(sender, instance, using, created, **kwargs):
+            if using != "default" or not created or observations:
+                return
+            self.assertFalse(KeaDhcpLink.objects.filter(pk=mapping.pk).exists())
+            observations.append(instance.created)
+            replacement = self._replace_unmapped_target(instance)
+            observations.append(replacement.created)
+
+        post_save.connect(replace_restored, sender=type(target), weak=False)
+        changes = ObjectChange.objects.count()
+        applied = branch.applied_changes.count()
+        try:
+            with self.assertRaises(AbortRequest):
+                branch.revert(user=self.user)
+        finally:
+            post_save.disconnect(replace_restored, sender=type(target))
+        self.assertTrue(observations)
+        if len(observations) == 2:
+            self.assertNotEqual(*observations)
+        branch.refresh_from_db()
+        self.assertEqual(branch.status, "merged")
+        self.assertEqual(branch.applied_changes.count(), applied)
+        self.assertEqual(ObjectChange.objects.count(), changes)
+        self.assertFalse(type(target).objects.filter(pk=target.pk).exists())
+        self.assertFalse(KeaDhcpLink.objects.filter(pk=mapping.pk).exists())
+        self.assertIsNone(current_request.get())
+
+    def test_revert_refuses_a_different_creator_in_the_native_request(self):
+        _, _, _, target, mapping = self._imported("subnet", 6, "restore-other-creator")
+        branch = _provisioned_branch(self, "mapping-restore-other-creator")
+        branch.merge_strategy = "squash"
+        branch.save(provision=False)
+        self._delete(branch, target)
+        branch.merge(user=self.user)
+        observations = []
+
+        def create_before_native_save(sender, instance, using, **kwargs):
+            if using != "default" or observations:
+                return
+            self.assertIsNotNone(current_request.get())
+            self.assertFalse(type(target).objects.filter(pk=target.pk).exists())
+            observations.append(current_request.get().id)
+            values = {
+                field.attname: getattr(instance, field.attname)
+                for field in instance._meta.concrete_fields
+                if not field.primary_key and field.name not in {"created", "last_updated"}
+            }
+            replacement = type(target).objects.create(pk=target.pk, **values)
+            self.assertIsNot(replacement, instance)
+            observations.append(replacement.created)
+
+        pre_save.connect(create_before_native_save, sender=type(target), weak=False)
+        before, applied = ObjectChange.objects.count(), branch.applied_changes.count()
+        try:
+            with self.assertRaises(AbortRequest):
+                branch.revert(user=self.user)
+        finally:
+            pre_save.disconnect(create_before_native_save, sender=type(target))
+        self.assertEqual(len(observations), 2)
+        branch.refresh_from_db()
+        self.assertEqual(branch.status, "merged")
+        self.assertEqual(branch.applied_changes.count(), applied)
+        self.assertEqual(ObjectChange.objects.count(), before)
+        self.assertFalse(type(target).objects.filter(pk=target.pk).exists())
+        self.assertFalse(KeaDhcpLink.objects.filter(pk=mapping.pk).exists())
+        self.assertIsNone(current_request.get())
+
+    def test_mapping_restore_refuses_target_replacement_after_timestamp_reset(self):
+        for kind, family in (("subnet", 4), ("subnet", 6), ("reservation", 4), ("reservation", 6)):
+            with self.subTest(kind=kind, family=family):
+                _, _, _, target, mapping = self._imported(kind, family, f"after-reset-{kind}-{family}")
+                branch = _provisioned_branch(self, f"mapping-after-reset-{kind}-{family}")
+                branch.merge_strategy = "squash"
+                branch.save(provision=False)
+                self._delete(branch, target)
+                branch.merge(user=self.user)
+                observations = []
+
+                def replace_before_mapping_save(
+                    sender, instance, using, *, target=target, observed=observations, **kwargs
+                ):
+                    if using != "default" or observed:
+                        return
+                    restored = type(target).objects.get(pk=target.pk)
+                    self.assertEqual(restored.created, target.created)
+                    observed.append(self._replace_unmapped_target(restored).created)
+
+                pre_save.connect(replace_before_mapping_save, sender=KeaDhcpLink, weak=False)
+                before, applied = ObjectChange.objects.count(), branch.applied_changes.count()
+                try:
+                    with self.assertRaisesMessage(AbortRequest, "reused"):
+                        branch.revert(user=self.user)
+                finally:
+                    pre_save.disconnect(replace_before_mapping_save, sender=KeaDhcpLink)
+                self.assertEqual(len(observations), 1)
+                self.assertNotEqual(observations[0], target.created)
+                branch.refresh_from_db()
+                self.assertEqual(branch.status, "merged")
+                self.assertEqual(branch.applied_changes.count(), applied)
+                self.assertEqual(ObjectChange.objects.count(), before)
+                self.assertFalse(type(target).objects.filter(pk=target.pk).exists())
+                self.assertFalse(KeaDhcpLink.objects.filter(pk=mapping.pk).exists())
+                self.assertIsNone(current_request.get())
+
+    def test_mapping_create_merge_refuses_target_replacement_inside_native_save(self):
+        for phase in ("before", "after"):
+            with self.subTest(phase=phase):
+                _, _, _, target, original = self._imported("subnet", 4, f"mapping-create-{phase}")
+                values = {
+                    field.attname: getattr(original, field.attname)
+                    for field in original._meta.concrete_fields
+                    if not field.primary_key and field.name not in {"created", "last_updated", "last_synced"}
+                }
+                with event_tracking(_change_request(self.user)):
+                    original.delete()
+                request_finished.send(sender=type(self))
+                branch = _provisioned_branch(self, f"mapping-create-{phase}")
+                branch.merge_strategy = "squash"
+                branch.save(provision=False)
+                with activate_branch(branch), event_tracking(_change_request(self.user)):
+                    mapping = KeaDhcpLink.objects.create(**values)
+                request_finished.send(sender=type(self))
+                observations = []
+
+                def replace_during_mapping_save(
+                    sender, instance, using, *, target=target, phase=phase, observed=observations, **kwargs
+                ):
+                    if using != "default" or observed:
+                        return
+                    self.assertEqual(KeaDhcpLink.objects.filter(pk=instance.pk).exists(), phase == "after")
+                    current = type(target).objects.get(pk=target.pk)
+                    observed.append(current.created)
+                    observed.append(self._replace_unmapped_target(current).created)
+
+                signal = pre_save if phase == "before" else post_save
+                signal.connect(replace_during_mapping_save, sender=KeaDhcpLink, weak=False)
+                before = ObjectChange.objects.count()
+                try:
+                    with self.assertRaisesMessage(AbortRequest, "reused" if phase == "before" else "history"):
+                        branch.merge(user=self.user)
+                finally:
+                    signal.disconnect(replace_during_mapping_save, sender=KeaDhcpLink)
+                self.assertEqual(len(observations), 2 if phase == "before" else 1)
+                self.assertEqual(observations[0], target.created)
+                if phase == "before":
+                    self.assertNotEqual(observations[1], target.created)
+                branch.refresh_from_db()
+                self.assertEqual(branch.status, "ready")
+                self.assertFalse(branch.applied_changes.exists())
+                self.assertEqual(ObjectChange.objects.count(), before)
+                self.assertEqual(type(target).objects.get(pk=target.pk).created, target.created)
+                self.assertFalse(KeaDhcpLink.objects.filter(pk=mapping.pk).exists())
+                self.assertIsNone(current_request.get())
+
+    def test_mapping_create_merge_preserves_original_target_generation(self):
+        _, _, _, target, original = self._imported("reservation", 6, "mapping-create-unchanged")
+        values = {
+            field.attname: getattr(original, field.attname)
+            for field in original._meta.concrete_fields
+            if not field.primary_key and field.name not in {"created", "last_updated", "last_synced"}
+        }
+        with event_tracking(_change_request(self.user)):
+            original.delete()
+        request_finished.send(sender=type(self))
+        branch = _provisioned_branch(self, "mapping-create-unchanged")
+        branch.merge_strategy = "squash"
+        branch.save(provision=False)
+        with activate_branch(branch), event_tracking(_change_request(self.user)):
+            mapping = KeaDhcpLink.objects.create(**values)
+        request_finished.send(sender=type(self))
+        branch.merge(user=self.user)
+        self.assertEqual(KeaDhcpLink.objects.get(pk=mapping.pk).object_id, target.pk)
+        self.assertEqual(type(target).objects.get(pk=target.pk).created, target.created)
+        branch.revert(user=self.user)
+        self.assertFalse(KeaDhcpLink.objects.filter(pk=mapping.pk).exists())
+        self.assertEqual(type(target).objects.get(pk=target.pk).created, target.created)
+        self.assertIsNone(current_request.get())
+
+    def test_restoration_without_a_native_birth_receipt_refuses_and_retries_cleanly(self):
+        from netbox_branching.models import AppliedChange
+
+        from netbox_kea.dhcp_mapping_lifecycle import _replay_operation
+
+        _, _, _, target, mapping = self._imported("reservation", 4, "missing-native-birth")
+        branch = _provisioned_branch(self, "mapping-missing-native-birth")
+        branch.merge_strategy = "squash"
+        branch.save(provision=False)
+        self._delete(branch, target)
+        branch.merge(user=self.user)
+        before, applied = ObjectChange.objects.count(), branch.applied_changes.count()
+        post_save.disconnect(sender=AppliedChange, dispatch_uid="netbox_kea.mapping_applied_change")
+        try:
+            with self.assertRaisesMessage(AbortRequest, "creator history"):
+                branch.revert(user=self.user)
+        finally:
+            post_save.connect(
+                branching._mapping_applied_change,
+                sender=AppliedChange,
+                dispatch_uid="netbox_kea.mapping_applied_change",
+            )
+        branch.refresh_from_db()
+        self.assertEqual(branch.status, "merged")
+        self.assertEqual(branch.applied_changes.count(), applied)
+        self.assertEqual(ObjectChange.objects.count(), before)
+        self.assertFalse(type(target).objects.filter(pk=target.pk).exists())
+        self.assertFalse(KeaDhcpLink.objects.filter(pk=mapping.pk).exists())
+        self.assertIsNone(current_request.get())
+        self.assertIsNone(_replay_operation.get())
+        branch.revert(user=self.user)
+        self.assertEqual(type(target).objects.get(pk=target.pk).created, target.created)
+        self.assertEqual(KeaDhcpLink.objects.get(pk=mapping.pk).created, mapping.created)
+        self.assertIsNone(current_request.get())
+        self.assertIsNone(_replay_operation.get())
+
+    def test_named_endpoint_deletion_refuses_mapped_target_deletion(self):
+        target, _link, endpoints, _field, branch = self._cleanup_target("tags", "named-target-delete")
+        self._delete(branch, endpoints[0])
+        self._delete(branch, target)
+        self._assert_tag_replay_refused(branch)
+
+    def test_named_endpoint_creation_refuses_mapped_target_creation(self):
         from dcim.models import MACAddress
         from extras.models import Tag
         from netbox_dhcp.models import HostReservation
 
-        server, _, _, original, original_mapping = self._imported("reservation", 4, "named-target-create")
+        server, _, _, original, _original_mapping = self._imported("reservation", 4, "named-target-create")
         mac = MACAddress.objects.create(mac_address="02:00:00:00:00:08")
         branch = _provisioned_branch(self, "mapping-named-target-create")
         branch.merge_strategy = "squash"
@@ -922,7 +1648,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
             endpoint = Tag.objects.create(name="mapping-created-target-tag", slug="mapping-created-target-tag")
             target.snapshot()
             target.tags.add(endpoint)
-            link = KeaDhcpLink.objects.create(
+            _link = KeaDhcpLink.objects.create(
                 server=server,
                 family=4,
                 kea_identity="hw-address:02:00:00:00:00:08",
@@ -930,33 +1656,10 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
                 object_id=target.pk,
             )
         request_finished.send(sender=type(self))
-        history = {
-            change.pk: (deepcopy(change.prechange_data), deepcopy(change.postchange_data))
-            for change in branch.get_changes()
-        }
-        endpoint_created = parse_datetime(endpoint.serialize_object()["created"])
-        branch.merge(user=self.user)
-        restored = HostReservation.objects.get(pk=target.pk)
-        self.assertEqual(restored.created, target.created)
-        self.assertEqual(list(restored.tags.values_list("pk", flat=True)), [endpoint.pk])
-        restored_endpoint = Tag.objects.get(name=endpoint.name)
-        self.assertEqual((restored_endpoint.pk, restored_endpoint.created), (endpoint.pk, endpoint_created))
-        self.assertEqual(
-            (KeaDhcpLink.objects.get(pk=link.pk).object_id, KeaDhcpLink.objects.get(pk=link.pk).created),
-            (target.pk, link.created),
-        )
-        self.assertEqual(
-            {change.pk: (change.prechange_data, change.postchange_data) for change in branch.get_changes()}, history
-        )
-        branch.revert(user=self.user)
-        self.assertFalse(HostReservation.objects.filter(pk=target.pk).exists())
-        self.assertFalse(KeaDhcpLink.objects.filter(pk=link.pk).exists())
-        self.assertFalse(Tag.objects.filter(pk=endpoint.pk).exists())
-        self.assertTrue(HostReservation.objects.filter(pk=original.pk).exists())
-        self.assertTrue(KeaDhcpLink.objects.filter(pk=original_mapping.pk, object_id=original.pk).exists())
+        self._assert_tag_replay_refused(branch)
 
-    def test_named_endpoint_cleanup_records_complete_target_history(self):
-        target, link, endpoints, _field, branch = self._cleanup_target("tags", "native-named-history")
+    def test_named_endpoint_cleanup_refuses_even_complete_target_history(self):
+        target, _link, endpoints, _field, branch = self._cleanup_target("tags", "native-named-history")
         self._delete(branch, endpoints[0])
         latest = (
             branch.get_changes()
@@ -964,25 +1667,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
             .latest("time")
         )
         self.assertEqual(latest.postchange_data["tags"], [endpoints[1].name])
-        history = {
-            change.pk: (deepcopy(change.prechange_data), deepcopy(change.postchange_data))
-            for change in branch.get_changes()
-        }
-        branch.merge(user=self.user)
-        self.assertEqual(
-            list(type(target).objects.get(pk=target.pk).tags.values_list("pk", flat=True)), [endpoints[1].pk]
-        )
-        self.assertFalse(type(endpoints[0]).objects.filter(pk=endpoints[0].pk).exists())
-        branch.revert(user=self.user)
-        self.assertEqual(
-            set(type(target).objects.get(pk=target.pk).tags.values_list("pk", flat=True)),
-            {endpoint.pk for endpoint in endpoints[:2]},
-        )
-        self.assertTrue(type(endpoints[0]).objects.filter(pk=endpoints[0].pk).exists())
-        self.assertEqual(KeaDhcpLink.objects.get(pk=link.pk).created, link.created)
-        self.assertEqual(
-            {change.pk: (change.prechange_data, change.postchange_data) for change in branch.get_changes()}, history
-        )
+        self._assert_tag_replay_refused(branch)
 
     def test_named_endpoint_deletion_refuses_incomplete_target_relation_history(self):
         target, link, endpoints, _field, branch = self._cleanup_target("tags", "incomplete-named-history")
@@ -1007,7 +1692,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
             pre_save.connect(capture_mutation, sender=model, weak=False)
             pre_delete.connect(capture_mutation, sender=model, weak=False)
         try:
-            with self.assertRaisesMessage(AbortRequest, "relation dependency is missing"):
+            with self.assertRaisesMessage(AbortRequest, "Tag"):
                 branch.merge(user=self.user)
         finally:
             for model in (type(target), type(endpoints[0]), KeaDhcpLink):
@@ -1128,17 +1813,17 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
                 self.assertTrue(type(endpoints[0]).objects.filter(pk=endpoints[0].pk).exists())
                 self.assertIsNone(current_request.get())
 
-    def test_native_named_cleanup_preserves_later_main_changes_and_refuses_revert(self):
+    def test_named_relation_assignment_preserves_later_main_changes_and_refuses_revert(self):
         for effect in ("rename", "source", "scalar"):
             with self.subTest(effect=effect):
                 target, link, endpoints, _field, branch = self._cleanup_target("tags", f"named-cleanup-later-{effect}")
                 replacement_server = _make_db_server(name=f"mapping-later-source-{effect}")
-                self._delete(branch, endpoints[0])
                 with activate_branch(branch), event_tracking(_change_request(self.user)):
                     local = type(target).objects.get(pk=target.pk)
                     local.snapshot()
                     local.description = "completed cleanup"
                     local.save()
+                    local.tags.remove(type(endpoints[0]).objects.get(pk=endpoints[0].pk))
                 request_finished.send(sender=type(self))
                 observed = []
 
@@ -1155,7 +1840,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
                     observed=observed,
                     **kwargs,
                 ):
-                    if using != "default" or instance.pk != endpoints[0].pk:
+                    if using != "default" or instance.pk != target.pk or kwargs.get("action") != "post_remove":
                         return
                     current = type(target).objects.get(pk=target.pk)
                     self.assertEqual(current.description, "completed cleanup")
@@ -1180,11 +1865,12 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
                         )
                     )
 
-                post_delete.connect(change_main, sender=type(endpoints[0]), weak=False)
+                through = type(target)._meta.get_field("tags").through
+                m2m_changed.connect(change_main, sender=through, weak=False)
                 try:
                     branch.merge(user=self.user)
                 finally:
-                    post_delete.disconnect(change_main, sender=type(endpoints[0]))
+                    m2m_changed.disconnect(change_main, sender=through)
                 self.assertEqual(len(observed), 1)
                 expected = (
                     ["mapping-cleanup-later-main-name" if effect == "rename" else endpoints[1].name],
@@ -1209,7 +1895,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
                     ),
                     expected,
                 )
-                self.assertFalse(type(endpoints[0]).objects.filter(pk=endpoints[0].pk).exists())
+                self.assertTrue(type(endpoints[0]).objects.filter(pk=endpoints[0].pk).exists())
                 self.assertIsNone(current_request.get())
 
     def test_native_cleanup_evidence_is_scoped_to_dry_run_error_and_retry(self):

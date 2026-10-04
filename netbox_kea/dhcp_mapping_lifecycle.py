@@ -9,13 +9,14 @@ from contextvars import ContextVar
 from copy import deepcopy
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
+from datetime import datetime
 from functools import cache, wraps
 
 from asgiref.sync import sync_to_async
 from django.apps import apps
 from django.db import connections, models, router, transaction
 from django.db.models.deletion import Collector
-from django.db.models.signals import m2m_changed, pre_delete, pre_save
+from django.db.models.signals import m2m_changed, post_save, pre_delete, pre_save
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from utilities.exceptions import AbortRequest
@@ -24,6 +25,9 @@ from . import branching
 
 MAPPING_IDENTITY_FIELDS = ("server", "family", "kea_subnet_id", "kea_identity", "object_type", "object_id")
 _METADATA_LOCK = (0x4B4541, 0x44484350)
+_TAG_INSTRUCTION = (
+    "Apply Tag changes separately on main or in a Tag-only branch. Create a fresh branch for DHCP changes."
+)
 
 
 @dataclass(frozen=True)
@@ -37,9 +41,14 @@ class ReplayOperation:
     protected_targets: set = dataclass_field(default_factory=set)
     object_states: dict = dataclass_field(default_factory=dict)
     target_associations: dict = dataclass_field(default_factory=dict)
+    mapping_target_generations: dict = dataclass_field(default_factory=dict)
     native_requests: set[object] = dataclass_field(default_factory=set)
+    named_requests: set[object] = dataclass_field(default_factory=set)
+    named_endpoints: dict = dataclass_field(default_factory=dict)
     planned_deletions: dict = dataclass_field(default_factory=dict)
     endpoint_deletions: dict = dataclass_field(default_factory=dict)
+    restorations: dict = dataclass_field(default_factory=dict)
+    restoration_births: dict = dataclass_field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -48,6 +57,15 @@ class EndpointDeletion:
 
     request_id: object
     prechange_data: dict
+
+
+@dataclass(frozen=True)
+class RestorationBirth:
+    """The actual native creator and immutable generation captured by its first fresh receipt."""
+
+    creator: models.Model
+    created: datetime
+    request_id: object
 
 
 _replay_operation: ContextVar[ReplayOperation | None] = ContextVar("kea_mapping_replay_operation", default=None)
@@ -144,14 +162,120 @@ def metadata_writer_models() -> set:
     """Include endpoints whose names form serialized target relation state."""
     from .models import KeaDhcpLink
 
-    targets = target_models()
-    named_relations = {
+    return {*target_models(), KeaDhcpLink, *named_endpoint_models()}
+
+
+@cache
+def named_endpoint_models() -> set:
+    """Derive the existing endpoints whose names form serialized target relations."""
+    return {
         field.remote_field.model
-        for target in targets
+        for target in target_models()
         for field in target._meta.many_to_many
         if _relation_identity_field(field) == "name"
     }
-    return {*targets, KeaDhcpLink, *named_relations}
+
+
+def _has_tag_changes(branch) -> bool:
+    selected = models.Q(pk__in=[])
+    for model in named_endpoint_models():
+        selected |= models.Q(
+            changed_object_type__app_label=model._meta.app_label, changed_object_type__model=model._meta.model_name
+        )
+    return branch.get_changes().filter(selected).exists()
+
+
+def _refuse_mixed_tags(branch, collapsed, operation: str) -> None:
+    if not _has_tag_changes(branch):
+        return
+    from django.contrib.contenttypes.models import ContentType
+
+    from .models import KeaDhcpLink
+
+    _, affected, _ = _replay_target_footprint(collapsed, operation)
+    recorded = {
+        (_mapping_target_model(payload.get("object_type")), payload.get("object_id"))
+        for change in collapsed.values()
+        if change.model_class is KeaDhcpLink
+        for payload in (change.prechange_data, change.postchange_data)
+        if isinstance(payload, dict)
+    }
+    for model, pk in affected:
+        require_branch_mappings(model, using=branch.connection_name)
+        association = {"object_type": ContentType.objects.get_for_model(model), "object_id": pk}
+        if (
+            (model, pk) in recorded
+            or KeaDhcpLink.objects.using("default").filter(**association).exists()
+            or KeaDhcpLink.objects.using(branch.connection_name).filter(**association).exists()
+        ):
+            raise AbortRequest(
+                f"DHCP mapping recovery cannot combine Tag changes with mapped target replay. {_TAG_INSTRUCTION}"
+            )
+
+
+def _branch_columns(branch, model) -> set:
+    with connections["default"].cursor() as cursor:
+        cursor.execute(
+            "SELECT a.attname FROM pg_catalog.pg_attribute a "
+            "JOIN pg_catalog.pg_class c ON c.oid = a.attrelid "
+            "JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "
+            "WHERE n.nspname = %s AND c.relname = %s AND a.attnum > 0 AND NOT a.attisdropped",
+            [branch.schema_name, model._meta.db_table],
+        )
+        return {row[0] for row in cursor.fetchall()}
+
+
+def _copied_named_endpoints(branch, target_changes, protected) -> dict:
+    endpoints = {}
+    for key, change in target_changes.items():
+        if key not in protected:
+            continue
+        captured = []
+        for field in change.model_class._meta.many_to_many:
+            if _relation_identity_field(field) != "name":
+                continue
+            names = {
+                name
+                for payload in (change.prechange_data, change.postchange_data)
+                for name in (payload or {}).get(field.name, []) or []
+            }
+            if not names:
+                continue
+            model = field.remote_field.model
+            if not branching.supports_branching(model):
+                raise AbortRequest(
+                    "Tags must support branching for DHCP mapping recovery. "
+                    "Remove the affected Tag branching exemption. Create a fresh branch for DHCP changes."
+                )
+            if not {concrete.column for concrete in model._meta.concrete_fields}.issubset(
+                _branch_columns(branch, model)
+            ):
+                raise AbortRequest(f"The branch Tag copy is unavailable. {_TAG_INSTRUCTION}")
+            copied = list(model._base_manager.using(branch.connection_name).filter(name__in=names))
+            if len(copied) != len(names) or len({obj.name for obj in copied}) != len(names):
+                raise AbortRequest(f"The branch Tag identities are missing or ambiguous. {_TAG_INSTRUCTION}")
+            for obj in copied:
+                if obj.created is None or timezone.is_naive(obj.created):
+                    raise AbortRequest(f"The branch Tag generation is unavailable. {_TAG_INSTRUCTION}")
+                captured.append((model, obj.pk, obj.name, obj.created))
+        endpoints[key] = captured
+        _validate_named_identities(captured)
+    return endpoints
+
+
+def _validate_named_identities(endpoints) -> None:
+    for model, pk, name, generation in endpoints:
+        current = model._base_manager.using("default").filter(pk=pk).first()
+        if current is None or current.name != name or current.created != generation:
+            raise AbortRequest(f"Main Tag data has changed or its identity is missing. {_TAG_INSTRUCTION}")
+
+
+def _validate_named_write(instance, using: str) -> None:
+    from netbox.context import current_request
+
+    replay = _replay_operation.get()
+    if replay is not None and using == "default" and current_request.get() in replay.named_requests:
+        _validate_named_identities(replay.named_endpoints.get((type(instance), instance.pk), ()))
 
 
 def _relation_identity_field(field) -> str:
@@ -171,21 +295,12 @@ def require_branch_mappings(target=None, *, using=None) -> None:
             "DHCP Import Mappings and their targets must support branching. "
             "Remove the affected branching exemption and create a fresh branch."
         )
-    with connections["default"].cursor() as cursor:
-        for model in models:
-            cursor.execute(
-                "SELECT a.attname FROM pg_catalog.pg_attribute a "
-                "JOIN pg_catalog.pg_class c ON c.oid = a.attrelid "
-                "JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "
-                "WHERE n.nspname = %s AND c.relname = %s AND a.attnum > 0 AND NOT a.attisdropped",
-                [branch.schema_name, model._meta.db_table],
+    for model in models:
+        if not {field.column for field in model._meta.concrete_fields}.issubset(_branch_columns(branch, model)):
+            raise MappingUnavailable(
+                "DHCP Import Mappings or their targets are unavailable in this older branch. "
+                "Create a fresh branch to read mappings or delete imported DHCP targets."
             )
-            columns = {row[0] for row in cursor.fetchall()}
-            if not {field.column for field in model._meta.concrete_fields}.issubset(columns):
-                raise MappingUnavailable(
-                    "DHCP Import Mappings or their targets are unavailable in this older branch. "
-                    "Create a fresh branch to read mappings or delete imported DHCP targets."
-                )
 
 
 def mapping_unavailable_reason() -> str | None:
@@ -200,6 +315,9 @@ def mapping_unavailable_reason() -> str | None:
 def preflight_action(branch, operation: str) -> None:
     """Reject an affected unsupported strategy before the native action changes status."""
     changes = branch.get_changes()
+    if _has_tag_changes(branch):
+        with metadata_scope():
+            _refuse_mixed_tags(branch, branching.collapse_changes(changes), operation)
     mappings = changes.filter(changed_object_type__app_label="netbox_kea", changed_object_type__model="keadhcplink")
     destructive_targets = changes.filter(
         changed_object_type__app_label="netbox_dhcp",
@@ -214,10 +332,11 @@ def preflight_action(branch, operation: str) -> None:
         raise AbortRequest("DHCP Import Mapping recovery requires the squash merge strategy. Select squash and retry.")
 
 
-def prepare_replay(branch, collapsed, operation: str, request) -> None:
+def prepare_replay(branch, collapsed, operation: str, request, *, named_request=None) -> None:
     """Validate the whole affected main footprint before the first native replay mutation."""
     from .models import KeaDhcpLink
 
+    _refuse_mixed_tags(branch, collapsed, operation)
     mappings = {change.key[1]: change for change in collapsed.values() if change.model_class is KeaDhcpLink}
     for change in mappings.values():
         if change.final_action in {"delete", "update"}:
@@ -230,6 +349,7 @@ def prepare_replay(branch, collapsed, operation: str, request) -> None:
         branch, mappings, target_changes, affected, destructive, operation
     )
     protected.update(current_targets)
+    named_endpoints = _copied_named_endpoints(branch, target_changes, protected)
     for change in collapsed.values():
         if change.model_class is KeaDhcpLink or (change.model_class, change.key[1]) in protected | destructive:
             _validate_current_state(change, operation)
@@ -240,11 +360,14 @@ def prepare_replay(branch, collapsed, operation: str, request) -> None:
             payload = change.postchange_data if operation == "merge" else change.prechange_data
             source_ids.add(payload["server"])
     _require_servers(source_ids)
-    _validate_restorations(collapsed, protected, operation)
+    target_generations = _validate_restorations(branch, collapsed, protected, operation)
     replay = _replay_operation.get()
     if replay is not None:
         if request is not None:
             replay.native_requests.add(request)
+        if named_request is not None:
+            replay.named_requests.add(named_request)
+        replay.named_endpoints.update(named_endpoints)
         replay.planned_deletions.update(
             (
                 (change.model_class, change.key[1]),
@@ -252,6 +375,7 @@ def prepare_replay(branch, collapsed, operation: str, request) -> None:
             )
             for change in collapsed.values()
             if change.model_class in delete_effect_models()
+            and change.model_class not in named_endpoint_models()
             and change.final_action == ("delete" if operation == "merge" else "create")
         )
         replay.protected_targets.update(protected)
@@ -273,43 +397,19 @@ def prepare_replay(branch, collapsed, operation: str, request) -> None:
         )
         replay.mappings.update(expected_mappings)
         replay.target_associations.update(copied_associations)
+        replay.mapping_target_generations.update(target_generations)
+        if operation == "revert" and request is not None:
+            replay.restorations.update(
+                ((change.model_class, change.key[1]), parse_datetime(change.prechange_data["created"]))
+                for change in collapsed.values()
+                if change.final_action == "delete"
+                and (change.model_class is KeaDhcpLink or (change.model_class, change.key[1]) in protected)
+            )
         for change in mappings.values():
             if change.final_action == ("delete" if operation == "merge" else "create"):
                 replay.mappings[change.key[1]] = (
                     change.prechange_data if operation == "merge" else change.postchange_data
                 )
-
-
-def order_named_relations(collapsed) -> None:
-    """Keep named endpoint identities available while native squash replays protected targets."""
-    replay = _replay_operation.get()
-    if replay is None:
-        return
-    for target_key, target_change in collapsed.items():
-        if (target_change.model_class, target_change.key[1]) not in replay.protected_targets:
-            continue
-        for field in target_change.model_class._meta.many_to_many:
-            if _relation_identity_field(field) != "name":
-                continue
-            for endpoint_key, endpoint_change in collapsed.items():
-                if endpoint_change.model_class is not field.remote_field.model:
-                    continue
-                if (
-                    target_change.final_action in {"update", "delete"}
-                    and endpoint_change.final_action == "delete"
-                    and endpoint_change.prechange_data.get("name")
-                    in (target_change.prechange_data.get(field.name) or [])
-                ):
-                    endpoint_change.depends_on.add(target_key)
-                    target_change.depended_by.add(endpoint_key)
-                elif (
-                    target_change.final_action in {"create", "update"}
-                    and endpoint_change.final_action == "create"
-                    and endpoint_change.postchange_data.get("name")
-                    in (target_change.postchange_data.get(field.name) or [])
-                ):
-                    target_change.depends_on.add(endpoint_key)
-                    endpoint_change.depended_by.add(target_key)
 
 
 def record_endpoint_deletion(receipt, using: str, created: bool) -> None:
@@ -329,6 +429,8 @@ def record_endpoint_deletion(receipt, using: str, created: bool) -> None:
         return
     change = receipt.change
     key = (change.changed_object_type.model_class(), change.changed_object_id)
+    if key[0] in named_endpoint_models():
+        return
     expected = replay.planned_deletions.get(key)
     payload = change.prechange_data
     if (
@@ -341,6 +443,62 @@ def record_endpoint_deletion(receipt, using: str, created: bool) -> None:
     ):
         return
     replay.endpoint_deletions[key] = EndpointDeletion(change.request_id, deepcopy(payload))
+
+
+def record_restoration_birth(receipt, using: str, created: bool) -> None:
+    """Bind restoration to the first fresh native CREATE without resolving a replacement through its GFK."""
+    from netbox.context import current_request
+
+    replay = _replay_operation.get()
+    request = current_request.get()
+    if (
+        not created
+        or using != "default"
+        or not connections[using].in_atomic_block
+        or replay is None
+        or receipt.branch_id != replay.branch.pk
+        or request not in replay.native_requests
+    ):
+        return
+    change = receipt._state.fields_cache.get("change")
+    if change is None or change.action != "create" or change.request_id != request.id:
+        return
+    creator = change._state.fields_cache.get("changed_object")
+    if creator is None:
+        return
+    key = (type(creator), creator.pk)
+    if key not in replay.restorations or key in replay.restoration_births:
+        return
+    _validate_history_payload(type(creator), change.postchange_data)
+    generation = parse_datetime(change.postchange_data["created"])
+    if generation != creator.created:
+        raise AbortRequest("The native DHCP restoration generation is incomplete. Nothing changed.")
+    replay.restoration_births[key] = RestorationBirth(creator, generation, change.request_id)
+
+
+def validate_timestamp_restoration(instance, snapshot, using: str) -> None:
+    """Check the actual native birth before the framework resets its original timestamps."""
+    from netbox.context import current_request
+
+    replay = _replay_operation.get()
+    if replay is None or using != "default" or current_request.get() not in replay.native_requests:
+        return
+    key = (type(instance), instance.pk)
+    if key not in replay.restorations:
+        return
+    birth = replay.restoration_births.get(key)
+    if (
+        not connections[using].in_atomic_block
+        or birth is None
+        or birth.creator is not instance
+        or snapshot is None
+        or snapshot[0] != replay.restorations[key]
+    ):
+        raise AbortRequest("The native DHCP restoration has no matching creator history. Nothing changed.")
+    current = type(instance)._base_manager.using(using).filter(pk=instance.pk).first()
+    if current is None or current.created != birth.created:
+        raise AbortRequest("A DHCP mapping or target primary key has been reused during restoration. Nothing changed.")
+    _validate_native_mapping_destination(instance, using)
 
 
 def _replay_target_footprint(collapsed, operation: str):
@@ -456,12 +614,13 @@ def _delete_effect_targets(instance, deleted, updates) -> set:
     return affected
 
 
-def _validate_restorations(collapsed, protected, operation: str) -> None:
+def _validate_restorations(branch, collapsed, protected, operation: str) -> dict:
     from .models import KeaDhcpLink
 
     restores = {}
     creates = {}
     deleted: dict[object, set] = {}
+    target_generations = {}
     for change in collapsed.values():
         if change.final_action == "skip":
             continue
@@ -479,8 +638,55 @@ def _validate_restorations(collapsed, protected, operation: str) -> None:
         _require_dependencies(model, payload, creates, deleted)
         if model is KeaDhcpLink:
             _validate_mapping_restoration(pk, payload, creates, deleted)
+            target_key = (_mapping_target_model(payload["object_type"]), payload["object_id"])
+            if target_key in restores:
+                _validate_history_payload(target_key[0], restores[target_key])
+                target_generations[pk] = (target_key, parse_datetime(restores[target_key]["created"]))
+            else:
+                target, target_pk = target_key
+                require_branch_mappings(target, using=branch.connection_name)
+                copied = target._base_manager.using(branch.connection_name).filter(pk=target_pk).first()
+                if copied is None or copied.created is None or timezone.is_naive(copied.created):
+                    raise AbortRequest(
+                        "The DHCP mapping target generation is unavailable in this branch. Nothing changed."
+                    )
+                _validate_mapping_target_generation(target_key, copied.created)
+                target_generations[pk] = (target_key, copied.created)
         else:
             _validate_target_uniqueness(model, pk, payload, deleted)
+    return target_generations
+
+
+def _validate_mapping_target_generation(target_key, generation) -> None:
+    """Preserve the planned target generation when its mapping is restored."""
+    target, pk = target_key
+    current = target._base_manager.using("default").filter(pk=pk).first()
+    if current is None:
+        raise AbortRequest("A DHCP mapping target dependency is missing. Nothing changed.")
+    if current.created != generation:
+        raise AbortRequest("A DHCP mapping target primary key has been reused. Nothing changed.")
+
+
+def _validate_native_mapping_destination(instance, using: str) -> None:
+    from netbox.context import current_request
+
+    from .models import KeaDhcpLink
+
+    replay = _replay_operation.get()
+    if (
+        replay is None
+        or using != "default"
+        or current_request.get() not in replay.native_requests
+        or not isinstance(instance, KeaDhcpLink)
+        or instance.pk not in replay.mapping_target_generations
+    ):
+        return
+    if not connections[using].in_atomic_block:
+        raise AbortRequest("The native DHCP mapping save has no transaction. Nothing changed.")
+    target_key, generation = replay.mapping_target_generations[instance.pk]
+    if (_mapping_target_model(instance.object_type_id), instance.object_id) != target_key:
+        raise AbortRequest("The DHCP mapping target identity has changed. Nothing changed.")
+    _validate_mapping_target_generation(target_key, generation)
 
 
 def _mapping_target_model(content_type_id):
@@ -660,14 +866,11 @@ def _observed_cleanup_state(model, expected, current_state: dict) -> dict:
     if replay is None or model not in target_models():
         return state
     for field in model._meta.many_to_many:
+        if _relation_identity_field(field) != "pk":
+            continue
         previous = set(state[field.name] or [])
         current = set(current_state[field.name] or [])
-        identity_field = _relation_identity_field(field)
-        deleted = {
-            pk if identity_field == "pk" else fact.prechange_data[identity_field]
-            for (endpoint, pk), fact in replay.endpoint_deletions.items()
-            if endpoint is field.remote_field.model
-        }
+        deleted = {pk for endpoint, pk in replay.endpoint_deletions if endpoint is field.remote_field.model}
         if not current - previous and previous - current <= deleted:
             state[field.name] = current_state[field.name]
     for field in model._meta.concrete_fields:
@@ -908,6 +1111,8 @@ def _guard_relation_write(original):
     def guarded(self, *args, **kwargs):
         using = self._db or router.db_for_write(getattr(self, "through", self.model), instance=self.instance)
         with metadata_scope(using):
+            if self.model in named_endpoint_models():
+                _validate_named_write(self.instance, using)
             return original(self, *args, **kwargs)
 
     return guarded
@@ -982,12 +1187,13 @@ def _late_relation_guard(sender, instance, action, using, model, **kwargs):
         return
     if instance._meta.label_lower == "extras.tag" or isinstance(instance, target_models()) or model in target_models():
         with metadata_scope(using):
-            pass
+            _validate_named_write(instance, using)
 
 
 def _late_delete_guard(sender, instance, using, **kwargs):
     with metadata_scope(using):
         if sender in target_models() or sender._meta.label_lower == "netbox_kea.keadhcplink":
+            _validate_named_write(instance, using)
             require_branch_mappings(sender, using=using)
             _require_delete_sources(instance, using)
             _validate_native_delete(instance, using)
@@ -1001,10 +1207,14 @@ def _late_save_guard(sender, instance, using, **kwargs):
     from .models import KeaDhcpLink
 
     replay = _replay_operation.get()
+    if replay is not None:
+        with metadata_scope(using):
+            _validate_named_write(instance, using)
     if replay is None or using != "default" or current_request.get() not in replay.native_requests:
         return
     with metadata_scope(using):
         key = (sender, instance.pk)
+        _validate_native_mapping_destination(instance, using)
         for pk, payload in replay.target_associations.get(key, {}).items():
             _require_servers({payload["server"]})
             mapping = KeaDhcpLink.objects.using(using).filter(pk=pk).first()
@@ -1031,6 +1241,11 @@ def _late_save_guard(sender, instance, using, **kwargs):
             raise AbortRequest("A DHCP mapping or target from reversible history is missing. Nothing changed.")
         else:
             _validate_existing_state(current, expected)
+
+
+def _late_mapping_save_guard(sender, instance, using, **kwargs):
+    """Check the planned destination after raw or ordinary native mapping saves."""
+    _validate_native_mapping_destination(instance, using)
 
 
 def _validate_native_delete(instance, using):
@@ -1080,6 +1295,7 @@ def register() -> None:
     protected = (*targets, KeaDhcpLink)
     roots = delete_effect_models()
     writers = metadata_writer_models()
+    post_save.connect(_late_mapping_save_guard, sender=KeaDhcpLink, dispatch_uid="netbox_kea.mapping_saved_destination")
     for model in roots:
         if model.__dict__.get("_kea_mapping_boundaries", False):
             continue

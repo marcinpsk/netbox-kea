@@ -156,8 +156,11 @@ whole action if main has conflicting changes, history is incomplete, a source Se
 an identity has been reused, or restoration would violate a source or target constraint. A busy
 transaction refuses with a retry message. Resolve the reported conflict before retrying; newer main
 state is preserved. Older branches keep independent read pages, but their DHCP Plugin tab requires
-a fresh branch. A mapping or target branching exemption also requires a fresh branch after the
-exemption is removed. Existing branch schemas and missing history are not retrofitted.
+a fresh branch. A mapping, target or required Tag branching exemption also requires a fresh branch after
+the exemption is removed. Existing branch schemas and missing history are not retrofitted.
+Apply Tag changes separately on main or in a Tag-only branch, then create a fresh branch for DHCP
+changes. Recovery refuses mixed Tag changes and mapped DHCP target replay, including unrelated Tag
+changes in the same branch. A required missing, renamed or replaced Tag also causes a refusal.
 
 Mappings lost under the previous policy require explicit operator repair. Preserve the existing
 target, verify its Server, family and source identity from trusted records, and repair the association
