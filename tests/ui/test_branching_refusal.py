@@ -33,7 +33,11 @@ if TYPE_CHECKING:
 
 _REQUIRE_BRANCHING = "NETBOX_KEA_REQUIRE_BRANCHING"
 _BRANCH_WAIT_SECONDS = 300
-_REFUSED = "is active. Kea is live and shared by every branch"
+_REFUSED = (
+    "is active. Kea servers, sync settings and IPAM ownership come from main. "
+    "DHCP Import Mappings follow their targets in a supported fresh branch. "
+    "Live Kea and import changes require main. Switch to main to make this change."
+)
 _UNUSABLE = "The selected branch is not usable"
 # NetBox renders the navbar twice (desktop and mobile), and only one copy is visible.
 _BANNER_SELECTOR = ".kea-branch-banner"
