@@ -116,7 +116,8 @@ makes it fail instead.
   baselines"). Bump the constant, `NETBOX_RELEASE` in the workflow `env`, and the baselines in one
   change.
 - **Branching job**: the unit-test NetBox release with netbox-branching 1.2.1 and netbox-plugin-dhcp 0.2.0.
-  It runs `test_branching.py` with `NETBOX_KEA_REQUIRE_BRANCHING=1`, so the module fails
+  It runs `test_branching.py` and `test_dhcp_mapping_recovery.py` with
+  `NETBOX_KEA_REQUIRE_BRANCHING=1`, so these modules fail
   instead of skipping when netbox-branching is absent. `netbox_kea/branching.py` is the only
   module that imports `netbox_branching` (ADR 0007, `docs/design/netbox-branching.md`).
   Every migration sets `fake_on_branch`; guard 4 in `test_branching.py` checks the value.
@@ -124,11 +125,15 @@ makes it fail instead.
   callback in a branch, or with an unusable branch selection. Below the middleware, `KeaClient.command()`
   refuses a `write` member of `KeaCommand` with `BranchActive` (`Server.get_client()` binds the client
   to the active branch, and `clone()` keeps the binding), `pre_save` and `pre_delete` receivers in
-  `branching.py` refuse a save or a delete of every netbox_kea row, and `KeaIpamSyncJob` fails before
+  `branching.py` refuse a save or a delete of every netbox_kea row except `KeaDhcpLink`, and `KeaIpamSyncJob` fails before
   any read. Guard 1 in `test_branching.py`
   sends GET, HEAD, OPTIONS, POST, PUT, PATCH and DELETE to every netbox_kea URL in a provisioned
   branch, API action routes included; a new route with a parameter the guard cannot build fails
   by name, so teach `_route_arguments` the object.
+  DHCP Import Mappings follow their imported Subnet or Global Reservation through native
+  squash merge and revert. `dhcp_mapping_lifecycle.py` owns their history and writer boundaries.
+  Before changing mapping writes, target deletion or branch replay, read ADR 0008 and
+  `docs/design/dhcp-import-mapping-transactions.md` for the recovery contract and lock order.
 - **Compatibility matrix**: runs the integration suite (`test_setup.sh`) against
   NetBox v4.3 (floor), v4.7 (ceiling), and the dev snapshot (allowed to fail).
 - **Branching browser job**: the integration steps on the netbox-branching variant of the
