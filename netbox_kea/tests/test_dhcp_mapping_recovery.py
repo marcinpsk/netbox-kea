@@ -5,8 +5,10 @@
 import os
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from copy import deepcopy
 from datetime import timedelta
+from io import StringIO
 from threading import Event, get_ident
 
 import pytest
@@ -23,6 +25,7 @@ from core.models import Job, ObjectChange
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
+from django.core.management import call_command
 from django.core.serializers.json import DjangoJSONEncoder
 from django.core.signals import request_finished
 from django.db import connection, connections, transaction
@@ -55,6 +58,31 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
         if not apps.is_installed("netbox_dhcp"):
             self.skipTest("netbox_dhcp is not installed")
         self.user = get_user_model().objects.create_superuser("mapping-recovery-admin")
+
+    def test_guarded_contenttype_cleanup_deletes_an_obsolete_model(self):
+        stale = ContentType.objects.create(app_label="netbox_kea", model="obsolete_dhcp_mapping")
+        current = ContentType.objects.get_for_model(KeaDhcpLink)
+
+        call_command("remove_stale_contenttypes", interactive=False, stdout=StringIO())
+
+        self.assertFalse(ContentType.objects.filter(pk=stale.pk).exists())
+        self.assertTrue(ContentType.objects.filter(pk=current.pk).exists())
+
+    def test_guarded_target_deletion_accepts_a_model_attribute(self):
+        for kind in ("subnet", "reservation"):
+            for family in (4, 6):
+                for in_branch in (False, True):
+                    with self.subTest(kind=kind, family=family, in_branch=in_branch):
+                        suffix = f"model-attribute-{kind}-{family}-{in_branch}"
+                        _, _, _, target, link = self._imported(kind, family, suffix)
+                        branch = _provisioned_branch(self, suffix) if in_branch else None
+                        with activate_branch(branch) if branch else nullcontext():
+                            with event_tracking(_change_request(self.user)):
+                                local = type(target).objects.get(pk=target.pk)
+                                local.model = "target metadata"
+                                local.delete()
+                            self.assertFalse(type(target).objects.filter(pk=target.pk).exists())
+                            self.assertFalse(KeaDhcpLink.objects.filter(pk=link.pk).exists())
 
     def _imported(self, kind, family, suffix):
         server = _make_db_server(name=f"mapping-{suffix}", ca_url="https://kea.example.invalid")
