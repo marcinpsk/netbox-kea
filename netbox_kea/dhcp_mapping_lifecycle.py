@@ -837,9 +837,11 @@ def _require_delete_sources(subject, using: str) -> None:
 
     from .models import KeaDhcpLink
 
-    model = getattr(subject, "model", type(subject))
+    model = subject.model if isinstance(subject, models.QuerySet) else type(subject)
     selected = (
-        subject.using(using) if hasattr(subject, "model") else model._base_manager.using(using).filter(pk=subject.pk)
+        subject.using(using)
+        if isinstance(subject, models.QuerySet)
+        else model._base_manager.using(using).filter(pk=subject.pk)
     )
     if model is KeaDhcpLink:
         mappings = selected
@@ -1019,10 +1021,10 @@ def _guard_target_delete(original):
     def guarded(self, *args, **kwargs):
         using = (
             self._db or router.db_for_write(self.model, **self._hints)
-            if hasattr(self, "model")
+            if isinstance(self, models.QuerySet)
             else (kwargs.get("using") or (args[0] if args else None) or router.db_for_write(type(self), instance=self))
         )
-        require_branch_mappings(getattr(self, "model", type(self)), using=using)
+        require_branch_mappings(self.model if isinstance(self, models.QuerySet) else type(self), using=using)
         with metadata_scope(using):
             _require_delete_sources(self, using)
             return original(self, *args, **kwargs)
@@ -1115,7 +1117,7 @@ def _guard_parent_delete(original):
     def guarded(self, *args, **kwargs):
         using = (
             self._db or router.db_for_write(self.model, **self._hints)
-            if hasattr(self, "model")
+            if isinstance(self, models.QuerySet)
             else (kwargs.get("using") or (args[0] if args else None) or router.db_for_write(type(self), instance=self))
         )
         with metadata_scope(using):

@@ -7,6 +7,7 @@ All Kea HTTP calls are mocked; these tests require no running services.
 
 import importlib
 import tempfile
+from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import urlparse
@@ -52,6 +53,17 @@ def _make_server(**kwargs) -> Server:
     }
     defaults.update(kwargs)
     return Server(**defaults)
+
+
+class TestContentTypeCleanup(TestCase):
+    def test_remove_stale_contenttypes_deletes_an_obsolete_model(self):
+        stale = ContentType.objects.create(app_label="netbox_kea", model="obsolete_dhcp_mapping")
+        current = ContentType.objects.get_for_model(Server)
+
+        call_command("remove_stale_contenttypes", interactive=False, stdout=StringIO())
+
+        self.assertFalse(ContentType.objects.filter(pk=stale.pk).exists())
+        self.assertTrue(ContentType.objects.filter(pk=current.pk).exists())
 
 
 class TestServerStr(SimpleTestCase):
