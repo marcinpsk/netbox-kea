@@ -179,12 +179,15 @@ def register() -> None:
 
     register_branching_resolver(is_branchable)
     connect_branch_refusal()
-    from netbox_branching.signals import pre_merge, pre_revert
+    from netbox_branching.signals import pre_merge, pre_revert, squash_dependency_graph_built
 
+    squash_dependency_graph_built.connect(_mapping_relation_order, dispatch_uid="netbox_kea.mapping_relation_order")
     pre_merge.connect(_mapping_merge_preflight, dispatch_uid="netbox_kea.mapping_merge_preflight")
     pre_revert.connect(_mapping_revert_preflight, dispatch_uid="netbox_kea.mapping_revert_preflight")
-    from netbox_branching.models import Branch
+    from django.db.models.signals import post_save
+    from netbox_branching.models import AppliedChange, Branch
 
+    post_save.connect(_mapping_applied_change, sender=AppliedChange, dispatch_uid="netbox_kea.mapping_applied_change")
     if not getattr(Branch, "_kea_mapping_actions", False):
         Branch._kea_mapping_actions = True
         for action in ("merge", "revert"):
@@ -195,6 +198,18 @@ def register() -> None:
         for strategy in (SquashMergeStrategy, IterativeMergeStrategy):
             for action in ("merge", "revert"):
                 setattr(strategy, action, _mapping_strategy(getattr(strategy, action), action))
+
+
+def _mapping_relation_order(sender: Any, collapsed_changes: Any, **kwargs: Any) -> None:
+    from .dhcp_mapping_lifecycle import order_named_relations
+
+    order_named_relations(collapsed_changes)
+
+
+def _mapping_applied_change(sender: Any, instance: Any, using: str, created: bool, **kwargs: Any) -> None:
+    from .dhcp_mapping_lifecycle import record_endpoint_deletion
+
+    record_endpoint_deletion(instance, using, created)
 
 
 def _mapping_strategy(original: Callable[..., Any], action: str) -> Callable[..., Any]:
