@@ -672,13 +672,14 @@ def test_database_jobs_use_the_shared_ci_configuration_writer():
         assert f"*{anchor}" in dhcp_plugin_job, anchor
         assert f"*{anchor}" in branching_job, anchor
 
-    assert workflow.count(writer) == 3
+    assert workflow.count(writer) == 4
     assert f"{writer} --output netbox/configuration.py --plugin netbox_kea\n" in unit_test_job
     assert f"{writer} --output netbox/configuration.py --plugin netbox_kea --plugin netbox_dhcp\n" in dhcp_plugin_job
     assert (
         f"{writer} --output netbox/configuration.py --plugin netbox_kea --plugin netbox_dhcp --branching\n"
         in branching_job
     )
+    assert f"{writer} --output netbox/configuration.py --plugin netbox_kea --branching\n" in branching_job
     assert "cat > netbox/configuration.py" not in workflow
 
     uv_commands = _workflow_uv_commands(workflow)
@@ -754,12 +755,19 @@ def test_branching_job_cannot_pass_with_the_branching_tests_skipped():
     job = yaml.safe_load(workflow)["jobs"]["branching-test"]
     runs = [step for step in job["steps"] if "run" in step]
     install = next(step["run"] for step in runs if "uv pip install" in step["run"])
-    test_step = next(step for step in runs if "pytest" in step["run"])
+    test_steps = [step for step in runs if "pytest" in step["run"]]
+    test_step = next(step for step in test_steps if "/netbox_kea/tests/test_dhcp_mapping_recovery.py " in step["run"])
+    optional_step = next(step for step in test_steps if "::OptionalMappingReplayTest" in step["run"])
 
     assert re.fullmatch(r"\d+\.\d+\.\d+", str(yaml.safe_load(workflow)["env"]["NETBOX_BRANCHING_VERSION"]))
     assert '"netboxlabs-netbox-branching==${NETBOX_BRANCHING_VERSION}"' in install
     assert '"netbox-plugin-dhcp==0.2.0"' in install
-    assert test_step["env"]["NETBOX_KEA_REQUIRE_BRANCHING"] == "1"
+    assert len(test_steps) == 2
+    assert all(step["env"]["NETBOX_KEA_REQUIRE_BRANCHING"] == "1" for step in test_steps)
+    assert test_step["env"]["TEST_DB_NAME"] != optional_step["env"]["TEST_DB_NAME"]
+    assert "::TestOptionalMetadataCoordination" in optional_step["run"]
+    assert "--plugin netbox_kea --branching" in optional_step["run"]
+    assert "--plugin netbox_dhcp" not in optional_step["run"]
     assert "/netbox_kea/tests/test_branching.py " in test_step["run"]
     assert job["permissions"] == {"contents": "read"}
     source = (REPOSITORY_ROOT / "netbox_kea/tests/test_branching.py").read_text()
