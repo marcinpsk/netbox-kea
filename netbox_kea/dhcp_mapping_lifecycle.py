@@ -1338,7 +1338,11 @@ def register() -> None:
     """Adapt supported model boundaries while preserving each native manager and queryset API."""
     from .models import KeaDhcpLink
 
+    if not branching.installed():
+        return
     targets = target_models()
+    if not targets:
+        return
     protected = (*targets, KeaDhcpLink)
     roots = delete_effect_models()
     writers = metadata_writer_models()

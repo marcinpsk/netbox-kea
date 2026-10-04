@@ -14,8 +14,11 @@ import ipaddress
 import unittest
 
 from django.apps import apps
-from django.db import transaction
-from django.test import TestCase, override_settings, tag
+from django.contrib.auth import get_user_model
+from django.contrib.contenttypes.models import ContentType
+from django.db import connection, transaction
+from django.test import TestCase, TransactionTestCase, override_settings, tag
+from django.urls import reverse
 from django.utils import timezone
 
 from netbox_kea.ipam_reconciliation import ReservationObservation
@@ -111,6 +114,47 @@ def _reservation_snapshot(conf: dict, version: Family, hosts: list[dict] | None 
         # Bound the page to the fixture so a larger fixture cannot silently truncate.
         cutoff = next_confirmation_number()
         return ReservationObservation(client.reservation_page(version, catalogue, limit=max(len(hosts), 1)), cutoff)
+
+
+class TestOptionalMetadataCoordination(TransactionTestCase):
+    def test_ordinary_tag_edit_and_contenttype_delete_do_not_acquire_the_mapping_lock(self):
+        from extras.models import Tag
+
+        from netbox_kea import branching
+        from netbox_kea.dhcp_mapping_lifecycle import _METADATA_LOCK
+
+        if branching.installed() and apps.is_installed("netbox_dhcp"):
+            self.skipTest("This profile verifies ordinary behavior without both optional plugins")
+        self.client.force_login(get_user_model().objects.create_superuser("unbranched-metadata-admin"))
+        tag = Tag.objects.create(name="ordinary tag", slug="ordinary-tag")
+        stale = ContentType.objects.create(app_label="netbox_kea", model="obsolete_unbranched_mapping")
+        stale_pk = stale.pk
+        holder = connection.Database.connect(**connection.get_connection_params())
+        try:
+            with holder.cursor() as cursor:
+                cursor.execute("SELECT pg_advisory_lock(%s, %s)", _METADATA_LOCK)
+            with transaction.atomic():
+                with connection.cursor() as cursor:
+                    cursor.execute("SELECT pg_try_advisory_xact_lock(%s, %s)", _METADATA_LOCK)
+                    self.assertFalse(cursor.fetchone()[0], "The independent writer did not hold the mapping lock")
+                response = self.client.post(
+                    reverse("extras:tag_edit", args=[tag.pk]),
+                    {
+                        "name": tag.name,
+                        "slug": tag.slug,
+                        "color": "112233",
+                        "weight": 0,
+                        "description": "ordinary edit",
+                    },
+                    follow=True,
+                )
+                self.assertEqual(response.status_code, 200)
+                tag.refresh_from_db()
+                self.assertEqual(tag.description, "ordinary edit")
+                stale.delete()
+            self.assertFalse(ContentType.objects.filter(pk=stale_pk).exists())
+        finally:
+            holder.close()
 
 
 @tag("dhcp_plugin")
