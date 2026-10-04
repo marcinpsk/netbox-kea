@@ -132,6 +132,18 @@ class DhcpPluginAdapterTest(TestCase):
 
     # ── basic import ────────────────────────────────────────────────────────
 
+    def test_target_deletion_accepts_a_model_attribute(self):
+        from netbox_kea.models import KeaDhcpLink
+
+        for target, link in linked_dhcp_targets(self.server):
+            with self.subTest(model=target._meta.label):
+                target.model = "target metadata"
+
+                target.delete()
+
+                self.assertFalse(type(target).objects.filter(pk=link.object_id).exists())
+                self.assertFalse(KeaDhcpLink.objects.filter(pk=link.pk).exists())
+
     def test_dhcp_target_deletion_removes_only_its_matching_link(self):
         from netbox_kea.models import KeaDhcpLink
 

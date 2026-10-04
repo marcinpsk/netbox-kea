@@ -415,11 +415,30 @@ class MigrationFakeOnBranchTest(SimpleTestCase):
 def _provisioned_branch(test: TransactionTestCase, name: str) -> Branch:
     branch = Branch(name=name)
     branch.save(provision=False)
+    test.addCleanup(connections[_branch_alias(branch)].close)
     test.addCleanup(branch.deprovision)
     branch.provision(user=None)
     branch.refresh_from_db()
     test.assertEqual(branch.status, BranchStatusChoices.READY)
     return branch
+
+
+class BranchConnectionCleanupTest(TransactionTestCase):
+    def test_provisioned_branch_cleanup_closes_its_dynamic_connection(self):
+        owner = TransactionTestCase()
+        self.addCleanup(owner.doCleanups)
+        branch = _provisioned_branch(owner, "connection cleanup")
+        alias = _branch_alias(branch)
+        with activate_branch(branch):
+            VRF.objects.exists()
+        self.assertIsNotNone(connections[alias].connection)
+
+        self.assertTrue(owner.doCleanups())
+
+        self.assertIsNone(connections[alias].connection)
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT 1 FROM information_schema.schemata WHERE schema_name = %s", [branch.schema_name])
+            self.assertIsNone(cursor.fetchone())
 
 
 class ProvisionedBranchTest(TransactionTestCase):
