@@ -441,6 +441,42 @@ class BranchConnectionCleanupTest(TransactionTestCase):
             self.assertIsNone(cursor.fetchone())
 
 
+class OptionalMappingReplayTest(TransactionTestCase):
+    def test_native_merge_and_revert_do_not_acquire_the_mapping_lock_without_dhcp(self):
+        from netbox_kea.dhcp_mapping_lifecycle import _METADATA_LOCK
+
+        if apps.is_installed("netbox_dhcp"):
+            self.skipTest("This profile verifies native replay without DHCP targets")
+        user = get_user_model().objects.create_superuser("ordinary-native-replay-admin")
+        for strategy in ("squash", "iterative"):
+            with self.subTest(strategy=strategy):
+                vrf = VRF.objects.create(name=f"ordinary native {strategy}", description="original")
+                branch = _provisioned_branch(self, f"ordinary native {strategy}")
+                branch.merge_strategy = strategy
+                branch.save(provision=False)
+                with activate_branch(branch), event_tracking(_change_request(user)):
+                    local = VRF.objects.get(pk=vrf.pk)
+                    local.snapshot()
+                    local.description = "branch edit"
+                    local.save()
+                holder = connection.Database.connect(**connection.get_connection_params())
+                try:
+                    with holder.cursor() as cursor:
+                        cursor.execute("SELECT pg_advisory_lock(%s, %s)", _METADATA_LOCK)
+                    with transaction.atomic():
+                        with connection.cursor() as cursor:
+                            cursor.execute("SELECT pg_try_advisory_xact_lock(%s, %s)", _METADATA_LOCK)
+                            self.assertFalse(cursor.fetchone()[0])
+                        branch.merge(user=user)
+                        vrf.refresh_from_db()
+                        self.assertEqual(vrf.description, "branch edit")
+                        branch.revert(user=user)
+                        vrf.refresh_from_db()
+                        self.assertEqual(vrf.description, "original")
+                finally:
+                    holder.close()
+
+
 class ProvisionedBranchTest(TransactionTestCase):
     """A fresh branch copies DHCP Import Mappings and reads other plugin rows from main."""
 

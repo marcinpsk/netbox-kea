@@ -179,6 +179,10 @@ def register() -> None:
 
     register_branching_resolver(is_branchable)
     connect_branch_refusal()
+    from .dhcp_mapping_lifecycle import target_models
+
+    if not target_models():
+        return
     from netbox_branching.signals import pre_merge, pre_revert
 
     pre_merge.connect(_mapping_merge_preflight, dispatch_uid="netbox_kea.mapping_merge_preflight")
