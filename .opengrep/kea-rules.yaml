@@ -7,6 +7,20 @@
 #
 # Rule-test fixtures live in .opengrep/tests/; run them with scripts/opengrep-test.sh.
 rules:
+  - id: kea-queryset-model-attribute-discriminator
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Use isinstance with QuerySet to distinguish a queryset from a model instance.
+      A model instance can also have a model attribute.
+    paths:
+      exclude:
+        - "**/tests/**"
+        - "**/migrations/**"
+    pattern-either:
+      - pattern: hasattr($OBJECT, "model")
+      - pattern: getattr($OBJECT, "model", type($OBJECT))
+
   - id: kea-config-phase-without-reply-validation
     languages: [python]
     severity: ERROR
