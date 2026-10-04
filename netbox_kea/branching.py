@@ -239,6 +239,7 @@ def _mapping_strategy(original: Callable[..., Any], action: str) -> Callable[...
                 action,
                 request if isinstance(strategy, SquashMergeStrategy) else None,
                 named_request=request,
+                named_changes=None if isinstance(strategy, SquashMergeStrategy) else changes,
             )
             return original(strategy, branch, changes, request, logger, user)
 

@@ -185,14 +185,14 @@ def _has_tag_changes(branch) -> bool:
     return branch.get_changes().filter(selected).exists()
 
 
-def _refuse_mixed_tags(branch, collapsed, operation: str) -> None:
+def _refuse_mixed_tags(branch, collapsed, operation: str, raw_changes=None) -> None:
     if not _has_tag_changes(branch):
         return
-    from django.contrib.contenttypes.models import ContentType
-
     from .models import KeaDhcpLink
 
     _, affected, _ = _replay_target_footprint(collapsed, operation)
+    if raw_changes is not None:
+        affected.update(_target_endpoint_history(collapsed, raw_changes))
     recorded = {
         (_mapping_target_model(payload.get("object_type")), payload.get("object_id"))
         for change in collapsed.values()
@@ -200,6 +200,18 @@ def _refuse_mixed_tags(branch, collapsed, operation: str) -> None:
         for payload in (change.prechange_data, change.postchange_data)
         if isinstance(payload, dict)
     }
+    if _mapped_target_keys(branch, affected, recorded):
+        raise AbortRequest(
+            f"DHCP mapping recovery cannot combine Tag changes with mapped target replay. {_TAG_INSTRUCTION}"
+        )
+
+
+def _mapped_target_keys(branch, affected, recorded=()) -> set:
+    from django.contrib.contenttypes.models import ContentType
+
+    from .models import KeaDhcpLink
+
+    protected = set()
     for model, pk in affected:
         require_branch_mappings(model, using=branch.connection_name)
         association = {"object_type": ContentType.objects.get_for_model(model), "object_id": pk}
@@ -208,9 +220,33 @@ def _refuse_mixed_tags(branch, collapsed, operation: str) -> None:
             or KeaDhcpLink.objects.using("default").filter(**association).exists()
             or KeaDhcpLink.objects.using(branch.connection_name).filter(**association).exists()
         ):
-            raise AbortRequest(
-                f"DHCP mapping recovery cannot combine Tag changes with mapped target replay. {_TAG_INSTRUCTION}"
+            protected.add((model, pk))
+    return protected
+
+
+def _target_endpoint_history(collapsed, raw_changes=None) -> dict:
+    """Keep every selected iterative endpoint payload while squash uses its actual collapsed writes."""
+    selected = (
+        ((change.model_class, change.key[1]), change.final_action, change.prechange_data, change.postchange_data)
+        for change in collapsed.values()
+        if change.model_class in target_models() and change.final_action != "skip"
+    )
+    if raw_changes is not None:
+        selected = (
+            (
+                (change.changed_object_type.model_class(), change.changed_object_id),
+                change.action,
+                change.prechange_data,
+                change.postchange_data,
             )
+            for change in raw_changes
+            if change.changed_object_type.model_class() in target_models()
+        )
+    history: dict[tuple, list] = {}
+    for key, action, before, after in selected:
+        payloads = [after] if action == "create" else [before] if action == "delete" else [before, after]
+        history.setdefault(key, []).extend(payloads)
+    return history
 
 
 def _branch_columns(branch, model) -> set:
@@ -225,20 +261,22 @@ def _branch_columns(branch, model) -> set:
         return {row[0] for row in cursor.fetchall()}
 
 
-def _copied_named_endpoints(branch, target_changes, protected) -> dict:
+def _copied_named_endpoints(branch, target_history, protected) -> dict:
     endpoints = {}
-    for key, change in target_changes.items():
+    for key, payloads in target_history.items():
         if key not in protected:
             continue
         captured = []
-        for field in change.model_class._meta.many_to_many:
+        for field in key[0]._meta.many_to_many:
             if _relation_identity_field(field) != "name":
                 continue
-            names = {
-                name
-                for payload in (change.prechange_data, change.postchange_data)
-                for name in (payload or {}).get(field.name, []) or []
-            }
+            names = set()
+            for payload in payloads:
+                values = payload.get(field.name) if isinstance(payload, dict) else None
+                if not isinstance(values, list) or any(not isinstance(name, str) for name in values):
+                    raise AbortRequest(f"Tag relation history is incomplete. {_TAG_INSTRUCTION}")
+                _validate_history_payload(key[0], payload)
+                names.update(values)
             if not names:
                 continue
             model = field.remote_field.model
@@ -317,7 +355,12 @@ def preflight_action(branch, operation: str) -> None:
     changes = branch.get_changes()
     if _has_tag_changes(branch):
         with metadata_scope():
-            _refuse_mixed_tags(branch, branching.collapse_changes(changes), operation)
+            _refuse_mixed_tags(
+                branch,
+                branching.collapse_changes(changes),
+                operation,
+                changes if branch.merge_strategy != "squash" else None,
+            )
     mappings = changes.filter(changed_object_type__app_label="netbox_kea", changed_object_type__model="keadhcplink")
     destructive_targets = changes.filter(
         changed_object_type__app_label="netbox_dhcp",
@@ -332,11 +375,11 @@ def preflight_action(branch, operation: str) -> None:
         raise AbortRequest("DHCP Import Mapping recovery requires the squash merge strategy. Select squash and retry.")
 
 
-def prepare_replay(branch, collapsed, operation: str, request, *, named_request=None) -> None:
+def prepare_replay(branch, collapsed, operation: str, request, *, named_request=None, named_changes=None) -> None:
     """Validate the whole affected main footprint before the first native replay mutation."""
     from .models import KeaDhcpLink
 
-    _refuse_mixed_tags(branch, collapsed, operation)
+    _refuse_mixed_tags(branch, collapsed, operation, named_changes)
     mappings = {change.key[1]: change for change in collapsed.values() if change.model_class is KeaDhcpLink}
     for change in mappings.values():
         if change.final_action in {"delete", "update"}:
@@ -349,7 +392,9 @@ def prepare_replay(branch, collapsed, operation: str, request, *, named_request=
         branch, mappings, target_changes, affected, destructive, operation
     )
     protected.update(current_targets)
-    named_endpoints = _copied_named_endpoints(branch, target_changes, protected)
+    target_history = _target_endpoint_history(collapsed, named_changes)
+    named_protected = protected | (_mapped_target_keys(branch, target_history) if named_changes is not None else set())
+    named_endpoints = _copied_named_endpoints(branch, target_history, named_protected)
     for change in collapsed.values():
         if change.model_class is KeaDhcpLink or (change.model_class, change.key[1]) in protected | destructive:
             _validate_current_state(change, operation)
