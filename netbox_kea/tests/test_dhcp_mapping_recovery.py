@@ -441,6 +441,237 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
         self.assertTrue(KeaDhcpLink.objects.filter(pk=link.pk, object_id=target.pk).exists())
         self.assertIsNone(current_request.get())
 
+    def _tag_round_trip(self, suffix, strategy="iterative"):
+        from extras.models import Tag
+
+        _, _, _, target, mapping = self._imported("subnet", 4, suffix)
+        first, intermediate, unrelated = (
+            Tag.objects.create(name=f"mapping-{suffix}-{name}", slug=f"mapping-{suffix}-{name}")
+            for name in ("a", "b", "unrelated")
+        )
+        target.tags.add(first)
+        branch = _provisioned_branch(self, f"mapping-{suffix}")
+        branch.merge_strategy = strategy
+        branch.save(provision=False)
+        for endpoint in (intermediate, first):
+            with activate_branch(branch), event_tracking(_change_request(self.user)):
+                local = type(target).objects.get(pk=target.pk)
+                local.snapshot()
+                local.tags.set([Tag.objects.get(pk=endpoint.pk)])
+            request_finished.send(sender=type(self))
+        history = branch.get_changes().filter(
+            changed_object_type=ContentType.objects.get_for_model(target), changed_object_id=target.pk
+        )
+        self.assertEqual(history.count(), 2)
+        self.assertEqual(len(set(history.values_list("request_id", flat=True))), 2)
+        collapsed = branching.collapse_changes(branch.get_changes())
+        change = next(change for change in collapsed.values() if change.model_class is type(target))
+        self.assertEqual(change.final_action, "update")
+        self.assertEqual(change.prechange_data["tags"], [first.name])
+        self.assertEqual(change.postchange_data["tags"], [first.name])
+        return target, mapping, first, intermediate, unrelated, branch
+
+    def test_iterative_refuses_a_missing_intermediate_tag_before_merge_or_revert(self):
+        from extras.models import Tag
+
+        for action in ("merge", "revert"):
+            with self.subTest(action=action):
+                target, mapping, first, intermediate, _unrelated, branch = self._tag_round_trip(
+                    f"intermediate-{action}"
+                )
+                if action == "revert":
+                    branch.merge(user=self.user)
+                with event_tracking(_change_request(self.user)):
+                    Tag.objects.get(pk=intermediate.pk).delete()
+                request_finished.send(sender=type(self))
+                before, applied = ObjectChange.objects.count(), branch.applied_changes.count()
+                original_status = "ready" if action == "merge" else "merged"
+                history = {
+                    change.pk: (deepcopy(change.prechange_data), deepcopy(change.postchange_data))
+                    for change in branch.get_changes()
+                }
+                mutations = []
+
+                def capture_native_write(sender, instance, using, *, mutations=mutations, **kwargs):
+                    if using == "default":
+                        mutations.append((sender, instance.pk))
+
+                for model in (type(target), Tag, KeaDhcpLink):
+                    pre_save.connect(capture_native_write, sender=model, weak=False)
+                try:
+                    with self.assertRaisesMessage(AbortRequest, "Tag") as refusal:
+                        getattr(branch, action)(user=self.user)
+                finally:
+                    for model in (type(target), Tag, KeaDhcpLink):
+                        pre_save.disconnect(capture_native_write, sender=model)
+                self.assertIn("Apply Tag changes separately", str(refusal.exception))
+                self.assertIn("fresh branch", str(refusal.exception))
+                self.assertFalse(mutations)
+                branch.refresh_from_db()
+                self.assertEqual(branch.status, original_status)
+                self.assertEqual(branch.applied_changes.count(), applied)
+                self.assertEqual(ObjectChange.objects.count(), before)
+                self.assertEqual(
+                    {change.pk: (change.prechange_data, change.postchange_data) for change in branch.get_changes()},
+                    history,
+                )
+                self.assertFalse(Tag.objects.filter(name=intermediate.name).exists())
+                self.assertEqual(
+                    list(type(target).objects.get(pk=target.pk).tags.values_list("pk", flat=True)), [first.pk]
+                )
+                self.assertEqual(Tag.objects.get(pk=first.pk).created, first.created)
+                self.assertEqual(type(target).objects.get(pk=target.pk).created, target.created)
+                self.assertEqual(KeaDhcpLink.objects.get(pk=mapping.pk).created, mapping.created)
+                self.assertIsNone(current_request.get())
+
+    def test_iterative_preserves_intermediate_tag_identity_and_native_undo(self):
+        from extras.models import Tag
+
+        target, mapping, first, intermediate, _unrelated, branch = self._tag_round_trip("intermediate-unchanged")
+        observed = []
+
+        def observe_native_save(sender, instance, using, **kwargs):
+            if using == "default":
+                observed.append(list(instance.tags.values_list("pk", flat=True)))
+
+        pre_save.connect(observe_native_save, sender=type(target), weak=False)
+        try:
+            branch.merge(user=self.user)
+            self.assertIn([intermediate.pk], observed)
+            observed.clear()
+            branch.revert(user=self.user)
+            self.assertIn([intermediate.pk], observed)
+        finally:
+            pre_save.disconnect(observe_native_save, sender=type(target))
+        self.assertEqual(list(type(target).objects.get(pk=target.pk).tags.values_list("pk", flat=True)), [first.pk])
+        self.assertEqual(Tag.objects.get(pk=intermediate.pk).created, intermediate.created)
+        self.assertEqual(Tag.objects.get(pk=first.pk).created, first.created)
+        self.assertEqual(type(target).objects.get(pk=target.pk).created, target.created)
+        self.assertEqual(KeaDhcpLink.objects.get(pk=mapping.pk).created, mapping.created)
+        self.assertIsNone(current_request.get())
+
+    def test_mixed_tags_refuse_mapped_target_round_trip_replay(self):
+        from extras.models import Tag
+
+        for strategy in ("iterative", "squash"):
+            with self.subTest(strategy=strategy):
+                _target, _mapping, _first, _intermediate, unrelated, branch = self._tag_round_trip(
+                    f"mixed-round-trip-{strategy}", strategy
+                )
+                with activate_branch(branch), event_tracking(_change_request(self.user)):
+                    local = Tag.objects.get(pk=unrelated.pk)
+                    local.snapshot()
+                    local.color = "112233"
+                    local.save()
+                request_finished.send(sender=type(self))
+                self._assert_tag_replay_refused(branch)
+
+    def test_mixed_tags_cover_iterative_created_then_deleted_targets_and_squash_skips(self):
+        from extras.models import Tag
+
+        from netbox_kea.dhcp_mapping_lifecycle import observe_mapping
+
+        for strategy in ("iterative", "squash"):
+            with self.subTest(strategy=strategy):
+                suffix = f"created-skip-{strategy}"
+                server, _, _, target, mapping = self._imported("subnet", 4, suffix)
+                tag = Tag.objects.create(name=f"mapping-{suffix}-tag", slug=f"mapping-{suffix}-tag")
+                branch = _provisioned_branch(self, f"mapping-{suffix}")
+                branch.merge_strategy = strategy
+                branch.save(provision=False)
+                with activate_branch(branch), event_tracking(_change_request(self.user)):
+                    local = type(target).objects.get(pk=target.pk)
+                    local.pk = None
+                    local.name = f"mapping-{suffix}-temporary"
+                    local.subnet_id = max(type(target).objects.values_list("subnet_id", flat=True), default=0) + 1
+                    local.save()
+                    local.tags.add(Tag.objects.get(pk=tag.pk))
+                    created_pk = local.pk
+                    values = {
+                        field.attname: getattr(local, field.attname)
+                        for field in local._meta.concrete_fields
+                        if not field.primary_key and field.name not in {"created", "last_updated"}
+                    }
+                request_finished.send(sender=type(self))
+                self._delete(branch, local)
+                with activate_branch(branch), event_tracking(_change_request(self.user)):
+                    endpoint = Tag.objects.get(pk=tag.pk)
+                    endpoint.snapshot()
+                    endpoint.color = "112233"
+                    endpoint.save()
+                request_finished.send(sender=type(self))
+                collapsed = branching.collapse_changes(branch.get_changes())
+                change = next(change for change in collapsed.values() if change.model_class is type(target))
+                self.assertEqual(change.final_action, "skip")
+                # Main now owns this PK through an explicit source mapping. Squash does not replay its skipped history.
+                with event_tracking(_change_request(self.user)):
+                    current = type(target).objects.create(pk=created_pk, **values)
+                    current.tags.add(tag)
+                    mapping = observe_mapping(server, 4, current, subnet_id=current.subnet_id)
+                request_finished.send(sender=type(self))
+                if strategy == "iterative":
+                    self._assert_tag_replay_refused(branch)
+                    continue
+                writes = []
+
+                def record_target_save(sender, instance, using, *, writes=writes, **kwargs):
+                    if using == "default":
+                        writes.append(instance.pk)
+
+                pre_save.connect(record_target_save, sender=type(target), weak=False)
+                try:
+                    branch.merge(user=self.user)
+                    self.assertEqual(Tag.objects.get(pk=tag.pk).color, "112233")
+                    branch.revert(user=self.user)
+                finally:
+                    pre_save.disconnect(record_target_save, sender=type(target))
+                self.assertFalse(writes)
+                self.assertEqual(Tag.objects.get(pk=tag.pk).color, tag.color)
+                self.assertEqual(type(target).objects.get(pk=current.pk).created, current.created)
+                self.assertEqual(KeaDhcpLink.objects.get(pk=mapping.pk).object_id, current.pk)
+                self.assertIsNone(current_request.get())
+
+    def test_iterative_refuses_incomplete_intermediate_tag_history(self):
+        for corruption in ("missing", "malformed"):
+            with self.subTest(corruption=corruption):
+                target, _mapping, _first, _intermediate, _unrelated, branch = self._tag_round_trip(
+                    f"raw-history-{corruption}"
+                )
+                change = (
+                    branch.get_changes()
+                    .filter(changed_object_type=ContentType.objects.get_for_model(target), changed_object_id=target.pk)
+                    .earliest("time")
+                )
+                # Keep real chronological history except this deliberate incomplete endpoint payload.
+                payload = deepcopy(change.postchange_data)
+                if corruption == "missing":
+                    payload.pop("tags")
+                else:
+                    payload["tags"] = [{"name": "invalid history"}]
+                change.postchange_data = payload
+                change.save(update_fields=["postchange_data"])
+                before = ObjectChange.objects.count()
+                writes = []
+
+                def record_target_save(sender, instance, using, *, writes=writes, **kwargs):
+                    if using == "default":
+                        writes.append(instance.pk)
+
+                pre_save.connect(record_target_save, sender=type(target), weak=False)
+                try:
+                    with self.assertRaisesMessage(AbortRequest, "Tag"):
+                        branch.merge(user=self.user)
+                finally:
+                    pre_save.disconnect(record_target_save, sender=type(target))
+                self.assertFalse(writes)
+                branch.refresh_from_db()
+                self.assertEqual(branch.status, "ready")
+                self.assertFalse(branch.applied_changes.exists())
+                self.assertEqual(ObjectChange.objects.count(), before)
+                change.refresh_from_db()
+                self.assertEqual(change.postchange_data, payload)
+                self.assertIsNone(current_request.get())
+
     def test_reentrant_mapping_update_during_revert_preserves_newer_source(self):
         server, _, _, target, link = self._imported("subnet", 4, "reentrant-mapping-update")
         merged_source = _make_db_server(name="mapping-merged-source", ca_url="https://kea.example.invalid")

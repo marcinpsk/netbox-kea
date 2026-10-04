@@ -386,7 +386,10 @@ creation generation. Main must match these facts before replay and before native
 selection or assignment. Missing, renamed, replaced or unavailable endpoints refuse with the same
 operator guidance. No missing Tag is created to complete recovery. Iterative relation checks
 recognize their selected native request separately from squash target-state checks. This preserves
-ordinary successive target updates without a target-progress mechanism.
+ordinary successive target updates without a target-progress mechanism. Iterative replay checks
+every selected target payload, including intermediate Tag assignments and targets whose full
+history collapses to skip. Squash checks only its actual collapsed target writes. Incomplete
+Tag relation history refuses instead of allowing native replay to create a missing Tag.
 
 A separate restoration-generation guard runs before native timestamp reset. Native undo saves a
 new row, assigns its relations, then restores its original timestamps. The synchronous fresh
