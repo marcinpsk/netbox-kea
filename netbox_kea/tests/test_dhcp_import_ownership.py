@@ -61,6 +61,75 @@ class ImportOwnershipTest(TestCase):
         self.assertIsNotNone(self.server.ipam_first_complete_at)
         self.assertIn("import", self.server.ipam_initial_observations)
 
+    def test_global_option_diagnostics_do_not_block_network_import_completion(self):
+        from netbox_kea import server_configuration
+
+        prefix = Prefix.objects.create(prefix="2001:db8:1::/64", description="[kea-sync: subnet]")
+        ip_range = IPRange.objects.create(
+            start_address=IPNetwork("2001:db8:1::10/64"),
+            end_address=IPNetwork("2001:db8:1::20/64"),
+            description="[kea-sync: pool]",
+        )
+        for field, invalid in (("option-data", [{"data": "no identity"}]), ("option-def", [None])):
+            with self.subTest(field=field):
+                server = _make_db_server(
+                    name=f"import-{field}", dhcp4=False, dhcp6=True, sync_enabled=False, sync_dhcp_plugin_enabled=True
+                )
+                config = {
+                    "subnet6": [
+                        {"id": 1, "subnet": "2001:db8:1::/64", "pools": [{"pool": "2001:db8:1::10-2001:db8:1::20"}]}
+                    ],
+                    field: invalid,
+                }
+                observed = server_configuration.observed_snapshot(server, 6, config)
+                self.assertFalse(observed.complete)
+                self.assertTrue(observed.diagnostics)
+                self.assertEqual(observed.subnet_diagnostics, ())
+                with stub_kea(_sync_responses({6: config}, {6: []})):
+                    results = run_dhcp_plugin_import(server)
+                summary = results[0][1]
+                self.assertEqual(summary.errors, 0)
+                server.refresh_from_db()
+                self.assertIn("import", server.ipam_initial_observations)
+                self.assertIsNotNone(server.ipam_first_complete_at)
+                self.assertTrue(summary.ownership.complete)
+                self.assertTrue({"subnet", "pool"} <= summary.ownership.completed_sources)
+                self.assertEqual(
+                    set(IPAMOwnershipLink.objects.filter(server=server, adopted=True).values_list("source", flat=True)),
+                    {"subnet", "pool"},
+                )
+                self.assertEqual(Prefix.objects.get(pk=prefix.pk).status, "active")
+                self.assertEqual(IPRange.objects.get(pk=ip_range.pk).status, "active")
+
+    def test_subnet_option_diagnostics_keep_network_import_incomplete(self):
+        from netbox_kea import server_configuration
+
+        self.server.sync_enabled = False
+        self.server.sync_dhcp_plugin_enabled = True
+        self.server.save()
+        config = {
+            "subnet6": [
+                {
+                    "id": 1,
+                    "subnet": "2001:db8:1::/64",
+                    "pools": [{"pool": "2001:db8:1::10-2001:db8:1::20"}],
+                    "option-data": [{"data": "no identity"}],
+                }
+            ]
+        }
+        observed = server_configuration.observed_snapshot(self.server, 6, config)
+        self.assertTrue(observed.subnet_diagnostics)
+        with stub_kea(_sync_responses({6: config}, {6: []})):
+            results = run_dhcp_plugin_import(self.server)
+        summary = results[0][1]
+        self.assertEqual(summary.errors, 0)
+        self.assertTrue({"subnet", "pool"} <= summary.ownership.incomplete)
+        self.assertTrue(Prefix.objects.filter(prefix="2001:db8:1::/64").exists())
+        self.assertTrue(IPRange.objects.filter(start_address__net_host="2001:db8:1::10").exists())
+        self.server.refresh_from_db()
+        self.assertIsNone(self.server.ipam_first_complete_at)
+        self.assertEqual(self.server.ipam_initial_observations, {})
+
     def test_stale_server_edit_preserves_import_receipt_and_initial_completion(self):
         from netbox_kea.models import Server
 

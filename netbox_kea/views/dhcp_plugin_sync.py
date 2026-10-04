@@ -81,7 +81,8 @@ def _fetch_config_intent(server: Server, version: Family):
         if conf is None:
             return None
         intent = parse_dhcp_config(conf, version)
-        intent.configuration_complete = server_configuration.observed_snapshot(server, version, conf).complete
+        observed = server_configuration.observed_snapshot(server, version, conf)
+        intent.configuration_complete = not observed.subnet_diagnostics
     except (KeaException, requests.RequestException, ValueError, RuntimeError):
         logger.warning("DHCP-plugin sync: config-get failed for %s (v%s)", server.name, version, exc_info=True)
         return None
