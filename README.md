@@ -108,11 +108,25 @@ NetBox plugin for the [Kea DHCP](https://www.isc.org/kea/) server. Manage your D
   `message`, `source_position` and `kinds`. The response contains no Kea extension values, such as
   `user-context`, and no display labels. A search covers its own query scope only, so `complete`
   never means that the daemon has no other leases.
-- Lease CSV exports have the columns of the lease table, with `Family`, `Kind` (`address` or
-  `delegated-prefix`) and `Prefix Length`. *Export All Leases* and *All Data* refuse an incomplete
-  observation (a malformed record, or more leases than the export limit) and show the reason.
-  *Current View (limited coverage)* exports the readable leases of the search as
-  `leases_limited_coverage.csv`. An infinite valid lifetime exports as `infinite`.
+- A DHCPv6 *IP Address* search reads the address and the delegated prefix at that address. It is
+  complete only when Kea confirms both. A *Subnet* search for a CIDR that Kea does not configure is
+  refused, because Kea can keep leases under a Subnet ID that is no longer configured: search by
+  *Subnet ID* instead. When `lease_query_max_unpaged_leases` is set, a Subnet read that returns more
+  leases than the limit is refused too, because Kea's statistics do not count every lease state.
+- *Export All Leases* and *All Data* are complete exports. They refuse an incomplete observation (a
+  malformed record, or more leases than the export limit) and show the reason. Their columns are:
+  - DHCPv4: `family`, `kind`, `address`, `prefix_length`, `subnet_id`, `state`, `current`, `hostname`,
+    `valid_lifetime`, `last_transaction`, `infinite`, `expires_at`, `hw_address`, `client_id`.
+  - DHCPv6: `family`, `kind`, `address`, `prefix_length`, `subnet_id`, `state`, `current`, `hostname`,
+    `valid_lifetime`, `last_transaction`, `infinite`, `expires_at`, `duid`, `iaid`, `hw_address`,
+    `preferred_lifetime`.
+
+  `kind` is `address` or `delegated-prefix`. `state` is the Kea state name (`assigned`, `declined`,
+  `expired-reclaimed`, `released`, `registered`) and `current` is `true` or `false`. Lifetimes are
+  in seconds. `last_transaction` and `expires_at` are ISO 8601 times in UTC; `expires_at` is empty
+  when `infinite` is `true`. An empty cell is a value that the lease does not have.
+- *Current View (limited coverage)* exports the readable leases of the search, in the columns that
+  the table shows, as `leases_limited_coverage.csv`. It is not a complete export.
 
 ---
 
