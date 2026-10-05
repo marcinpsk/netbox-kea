@@ -218,7 +218,7 @@ class Server(JobsMixin, NetBoxModel):
 
     def save(self, force_insert=False, force_update=False, using=None, update_fields=None) -> None:
         """Keep workflow-owned receipts out of an ordinary existing Server edit."""
-        if not self._state.adding and not force_insert and update_fields is None:
+        if (not self._state.adding or force_update) and not force_insert and update_fields is None:
             deferred = self.get_deferred_fields()
             update_fields = {
                 field.name

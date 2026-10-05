@@ -70,6 +70,28 @@ class UpgradeAdoptionTest(TestCase):
         server.refresh_from_db()
         self.assertEqual(server.ipam_first_complete_at, completed)
 
+    def test_forced_update_of_a_new_instance_preserves_receipts(self):
+        server = _server("owner")
+        _run_job(server, [])
+        server.refresh_from_db()
+        receipts = server.ipam_initial_observations
+        completed = server.ipam_first_complete_at
+        self.assertTrue(receipts)
+        self.assertIsNotNone(completed)
+        receipt_fields = {"ipam_initial_observations", "ipam_first_complete_at"}
+        values = {
+            field.attname: getattr(server, field.attname)
+            for field in Server._meta.concrete_fields
+            if field.name not in receipt_fields
+        }
+        replacement = Server(**{**values, "name": "edited-owner"})
+        self.assertTrue(replacement._state.adding)
+        replacement.save(force_update=True)
+        server.refresh_from_db()
+        self.assertEqual(server.name, "edited-owner")
+        self.assertEqual(server.ipam_initial_observations, receipts)
+        self.assertEqual(server.ipam_first_complete_at, completed)
+
     def test_rest_edit_preserves_completion_written_during_connectivity_check(self):
         server = _server("owner")
         user = get_user_model().objects.create(username="concurrent-operator", is_superuser=True)
