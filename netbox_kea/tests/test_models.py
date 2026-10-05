@@ -6,6 +6,7 @@ All Kea HTTP calls are mocked; these tests require no running services.
 """
 
 import importlib
+import os
 import tempfile
 from io import StringIO
 from pathlib import Path
@@ -32,7 +33,7 @@ import netbox_kea
 from netbox_kea.kea import KeaClient, KeaCommand
 from netbox_kea.models import KeaDhcpLink, Server, SyncConfig
 from netbox_kea.reservations import MAX_IDENTITY_LENGTH
-from netbox_kea.tests.kea_stub import stub_kea
+from netbox_kea.tests.kea_stub import record_transport, stub_kea
 from netbox_kea.tests.utils import _make_db_server, plugins_config
 
 _SEED = importlib.import_module("netbox_kea.migrations.0018_seed_syncconfig")
@@ -120,24 +121,34 @@ class TestServerGetClient(SimpleTestCase):
         client = server.get_client()
         self.assertIsNotNone(client._session.auth)
 
+    def _sent_tls(self, server: Server) -> dict:
+        """Send version-get with an environment CA bundle; return the TLS settings that reached the transport."""
+        client = server.get_client(version=4)
+        transport = record_transport(client, [_VERSION_OK])
+        with patch.dict(os.environ, {"REQUESTS_CA_BUNDLE": "/env/bundle.pem"}):
+            client.command(KeaCommand.VERSION_GET, 4)
+        return transport.sent[-1]
+
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     def test_get_client_ssl_verify_false(self):
-        server = _make_server(ssl_verify=False)
-        client = server.get_client()
-        self.assertFalse(client._session.verify)
+        sent = self._sent_tls(_make_server(ca_url="https://kea:8000", ssl_verify=False))
+        self.assertIs(sent["verify"], False)
 
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     def test_get_client_ca_file_path(self):
-        server = _make_server(ca_file_path="/certs/ca.pem", ssl_verify=True)
-        client = server.get_client()
-        # ca_file_path takes precedence over ssl_verify in the verify= argument
-        self.assertEqual(client._session.verify, "/certs/ca.pem")
+        sent = self._sent_tls(_make_server(ca_url="https://kea:8000", ca_file_path="/certs/ca.pem", ssl_verify=True))
+        self.assertEqual(sent["verify"], "/certs/ca.pem")
+
+    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+    def test_get_client_ssl_verify_uses_the_environment_bundle(self):
+        sent = self._sent_tls(_make_server(ca_url="https://kea:8000", ssl_verify=True))
+        self.assertEqual(sent["verify"], "/env/bundle.pem")
 
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     def test_get_client_cert_key_pair(self):
-        server = _make_server(client_cert_path="/cert.pem", client_key_path="/key.pem")
-        client = server.get_client()
-        self.assertEqual(client._session.cert, ("/cert.pem", "/key.pem"))
+        server = _make_server(ca_url="https://kea:8000", client_cert_path="/cert.pem", client_key_path="/key.pem")
+        sent = self._sent_tls(server)
+        self.assertEqual(sent["cert"], ("/cert.pem", "/key.pem"))
 
     @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     def test_get_client_uses_configured_timeout(self):
