@@ -148,8 +148,8 @@ def _lease_parameter_error(params, version: int) -> str | None:
             parsed_subnet_id = int(subnet_id)
         except ValueError:
             return "subnet_id must be an integer."
-        if parsed_subnet_id < 1:
-            return "subnet_id must be positive."
+        if not constants.MIN_SUBNET_ID <= parsed_subnet_id <= constants.MAX_SUBNET_ID:
+            return f"subnet_id must be from {constants.MIN_SUBNET_ID} to {constants.MAX_SUBNET_ID}."
     return None
 
 
