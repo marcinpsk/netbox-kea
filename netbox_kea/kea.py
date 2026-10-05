@@ -1874,7 +1874,7 @@ class KeaClient:
             raise ValueError("subnet_id must be a positive integer.") from exc
         if subnet_id < 1:
             raise ValueError("subnet_id must be a positive integer.")
-        if state is not None and (isinstance(state, bool) or state not in (0, 1)):
+        if state is not None and (isinstance(state, bool) or state not in constants.LEASE_QUERY_STATE_CODES):
             raise LeaseQueryNotMeasurable(state)
         if self.max_unpaged_leases is None:
             if state is None:
@@ -1892,7 +1892,7 @@ class KeaClient:
             command = LEASE_GET_ALL[version]
             arguments = {"subnets": [subnet_id]}
         else:
-            observed_leases = counts.active if state == 0 else counts.declined
+            observed_leases = counts.active if state == constants.LEASE_STATE_CODES["assigned"] else counts.declined
             command = LEASE_GET_BY_STATE[version]
             arguments = {"subnet-id": subnet_id, "state": state}
         if observed_leases > self.max_unpaged_leases:
