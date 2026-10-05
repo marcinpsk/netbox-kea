@@ -47,6 +47,26 @@ _Avoid_: Range
 A DHCP parameter assignment identified by an option space and a code or name. It includes encoded data and Kea delivery flags. Its declaration scope determines which clients receive it. The same value semantics apply wherever Kea assigns the option.
 _Avoid_: Option, option-data, Subnet option, reservation option
 
+**Lease**:
+A Kea record of a DHCP address allocation or an IPv6 delegated-prefix allocation. It describes the allocation's
+state and client information within one Server and address family.
+_Avoid_: Reservation, static lease
+
+**Lease Identity**:
+Within one Server and address family, the allocation kind and canonical allocation address identify one Lease
+in Kea. Client binding, Subnet and delegated prefix length describe the observed allocation.
+_Avoid_: Lease IP, lease key
+
+**Current Lease**:
+A Lease in the assigned state, or an address Lease in the registered state, whose valid lifetime has not ended.
+An infinite valid lifetime does not end.
+_Avoid_: Active IP address, database lease
+
+**Lease Snapshot**:
+A time-bounded observation of Leases for one Server, address family and requested scope. An Incomplete Lease
+Snapshot preserves valid Leases with diagnostics and cannot establish the absence of a Lease.
+_Avoid_: Lease response, lease collection
+
 **Reservation**:
 A Kea host-specific DHCP configuration for exactly one Reservation Identity. It can reserve no address, one IPv4 address, or multiple IPv6 addresses and delegated prefixes.
 _Avoid_: Host record, static lease
