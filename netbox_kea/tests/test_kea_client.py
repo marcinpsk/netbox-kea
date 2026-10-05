@@ -22,6 +22,7 @@ from netbox_kea.kea import (
     KeaCommand,
     KeaException,
     KeaResponse,
+    KeaTLSFileError,
     LeaseCollection,
     LeasePage,
     LeaseQueryGuardError,
@@ -156,6 +157,36 @@ class TestKeaClientTLSSettings(TestCase):
         )
         sent = self._sent(client.clone())
         self.assertEqual(sent, {"verify": "/etc/ssl/ca.pem", "cert": ("/cert.pem", "/key.pem")})
+
+
+class TestKeaClientTLSFileError(TestCase):
+    """A TLS file that requests cannot find is a request error of the client."""
+
+    def _error(self, client: KeaClient) -> KeaTLSFileError:
+        with self.assertRaises(KeaTLSFileError) as caught:
+            client.command(KeaCommand.VERSION_GET, None)
+        return caught.exception
+
+    def test_a_missing_ca_file_is_a_request_error(self):
+        error = self._error(kea_client(url="https://127.0.0.1:9/", verify="/nonexistent/ca.pem"))
+        self.assertIsInstance(error, requests.RequestException)
+        self.assertIs(type(error.__cause__), OSError)
+        self.assertIn("/nonexistent/ca.pem", str(error.__cause__))
+
+    def test_a_missing_client_certificate_is_a_request_error(self):
+        client = kea_client(
+            url="https://127.0.0.1:9/", verify=False, client_cert="/nonexistent/client.pem", client_key="/key.pem"
+        )
+        error = self._error(client)
+        self.assertIsInstance(error, requests.RequestException)
+        self.assertIs(type(error.__cause__), OSError)
+        self.assertIn("/nonexistent/client.pem", str(error.__cause__))
+
+    def test_a_request_error_passes_unchanged(self):
+        refused = requests.ConnectionError("connection refused")
+        with stub_kea({"version-get": refused}), self.assertRaises(requests.ConnectionError) as caught:
+            kea_client(url="https://kea:8000").command(KeaCommand.VERSION_GET, None)
+        self.assertIs(caught.exception, refused)
 
 
 class TestKeaClientCommand(TestCase):

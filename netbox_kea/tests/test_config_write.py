@@ -261,7 +261,7 @@ class RejectionReasonTests(TestCase):
         )
 
     def test_a_missing_tls_file_on_the_change_is_an_invalid_client_configuration(self):
-        # requests raises a plain OSError for a missing TLS file before it sends the request.
+        # requests raises a plain OSError for a missing TLS file; the client reports it as KeaTLSFileError.
         missing = OSError("Could not find the TLS certificate file, invalid path: /nonexistent/client.pem")
         with stub_kea(_add("net-a", missing)) as kea:
             rejection = self._rejection(lambda: config_write.add_shared_network(self.server, 4, "net-a"))

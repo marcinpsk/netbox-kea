@@ -606,7 +606,7 @@ class TestKeaIpamSyncJobRun(TestCase):
         self.assertIn("lease6-get-page", kea.commands())
 
     def _run_with_snapshot_oserror(self, command: str) -> MagicMock:
-        # A missing TLS CA file is a plain OSError, not a requests error.
+        # requests raises a plain OSError for a missing TLS CA file; the client reports it as KeaTLSFileError.
         self._make_db_server()
         unavailable = OSError("TLS CA certificate file is unavailable")
         with _patch_kea(leases4=[_LEASE4], leases6=[_LEASE6], reservations=[_RESV4], responses={command: unavailable}):

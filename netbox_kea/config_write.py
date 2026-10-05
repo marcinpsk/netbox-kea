@@ -27,6 +27,7 @@ from .kea import (
     CandidateTargetMissing,
     KeaClient,
     KeaException,
+    KeaTLSFileError,
     MalformedConfiguration,
     PoolAction,
     SharedNetworkEdit,
@@ -791,11 +792,11 @@ def _before_change(step: Callable[[], T], unusable: str) -> T:
     except KeaException as exc:
         logger.warning("A step before a Configuration Change failed: %s", exc)
         raise ConfigChangeRejected("not-sent", (f"Kea replied: {exc.reply_text}",)) from exc
+    except KeaTLSFileError as exc:
+        raise _missing_tls_file(exc) from exc
     except (requests.RequestException, ValueError, RuntimeError) as exc:
         logger.warning("A step before a Configuration Change failed", exc_info=True)
         raise ConfigChangeRejected("not-sent", (unusable,)) from exc
-    except OSError as exc:
-        raise _missing_tls_file(exc) from exc
 
 
 def _mutate(
@@ -820,14 +821,14 @@ def _mutate(
         if unchanged:
             raise ConfigChangeRejected("kea-rejected", (diagnostic,)) from exc
         return "unknown", (diagnostic, "The read after the failure shows the change.")
+    except KeaTLSFileError as exc:
+        raise _missing_tls_file(exc) from exc
     except requests.RequestException as exc:
         if _never_sent(exc):
             logger.warning("A Configuration Change could not connect to Kea", exc_info=True)
             raise ConfigChangeRejected("not-sent", ("Kea could not be reached.",)) from exc
         logger.warning("The reply to a Configuration Change was lost or unreadable", exc_info=True)
         return "unknown", ("Kea's reply to the change was lost or unreadable.",)
-    except OSError as exc:
-        raise _missing_tls_file(exc) from exc
     except (ValueError, RuntimeError):
         logger.warning("The reply to a Configuration Change was malformed", exc_info=True)
         return "unknown", ("Kea's reply to the change was lost or unreadable.",)
@@ -854,7 +855,7 @@ def _never_sent(exc: requests.RequestException) -> bool:
     return False
 
 
-def _missing_tls_file(exc: OSError) -> ConfigChangeRejected:
+def _missing_tls_file(exc: KeaTLSFileError) -> ConfigChangeRejected:
     """Return the rejection for a TLS file that requests could not find before it sent anything."""
     logger.warning("A TLS file of the Server is missing", exc_info=exc)
     return ConfigChangeRejected(
