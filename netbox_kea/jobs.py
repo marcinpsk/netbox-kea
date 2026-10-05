@@ -385,7 +385,7 @@ class KeaIpamSyncJob(JobRunner):
                     f" conflicts={len(report.conflicts)}"
                     f" disagreements={len(report.disagreements)}"
                     f" skipped={len(report.skipped_reservations)}"
-                    f" unowned={report.unowned} waiting={report.waiting}"
+                    f" waiting={report.waiting}"
                 )
                 # No row pks here: the list URL applies the viewer's own IPAM permissions.
                 for dup in report.duplicates:
@@ -410,7 +410,6 @@ class KeaIpamSyncJob(JobRunner):
                         "conflicts_truncated": max(0, len(report.conflicts) - _CONFLICT_SAMPLE_SIZE),
                         "disagreements": len(report.disagreements),
                         "skipped": len(report.skipped_reservations),
-                        "unowned": report.unowned,
                         "waiting": report.waiting,
                     }
                 )

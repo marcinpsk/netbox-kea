@@ -352,7 +352,7 @@ Keep it inactive and without access grants. If an existing account with that nam
 permissions, the job fails before synchronization and leaves the account unchanged.
 
 Each server's summary reports `created`, `updated`, `errors`, `prefix_errors`, `conflicts`, `disagreements`,
-`skipped`, `unowned` and `waiting`:
+`skipped` and `waiting`. The job total also reports `unowned`:
 
 - **skipped**: reservations the sync deliberately did not write: global reservations and
   reservations that reserve no address. They are not errors and do not fail the job.
@@ -371,8 +371,8 @@ Each server's summary reports `created`, `updated`, `errors`, `prefix_errors`, `
   for example from two reservations in overlapping subnets. A lease and a reservation
   disagree only on the prefix length, and an empty hostname makes no claim. The address
   keeps its values until the reports agree, or until one of them goes.
-- **unowned**: marker objects with no ownership link, including objects left by a deleted server. The job total
-  counts these objects once. The per-server value is zero because these objects have no owning server.
+- **unowned**: marker objects with no ownership link, including objects left by a deleted server. Only the job total
+  reports this count, because these objects have no owning server. It counts each object once.
 - **waiting**: adopted objects whose cleanup this server held during the run while a potential owner had not
   completed its initial observations. The job total counts objects still waiting after all servers finish.
   Counts include each object once across sources and address families.

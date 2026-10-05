@@ -238,7 +238,7 @@ class UpgradeAdoptionTest(TestCase):
         self.assertIsNotNone(server.ipam_first_complete_at)
         self.assertTrue(IPAddress.objects.filter(pk=stale.pk).exists())
         self.assertFalse(IPAMOwnershipLink.objects.filter(ip_address=stale).exists())
-        self.assertEqual(summary["unowned"], 0)
+        self.assertNotIn("unowned", summary)
 
     def test_global_adoption_keeps_primary_key_and_blank_description_refuses_claim(self):
         server = _server("first")

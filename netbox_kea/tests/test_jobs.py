@@ -210,7 +210,7 @@ class TestKeaIpamSyncJobRun(TestCase):
         unowned = NbIP.objects.create(address="198.18.0.90/32", status="dhcp", description="[kea-sync: lease]")
         with _patch_kea():
             job = self._run()
-        self.assertEqual(job.data["summary"][0]["unowned"], 0)
+        self.assertNotIn("unowned", job.data["summary"][0])
         self.assertEqual(job.data["summary"][0]["waiting"], 0)
         self.assertTrue(NbIP.objects.filter(pk=unowned.pk).exists())
 
@@ -234,7 +234,10 @@ class TestKeaIpamSyncJobRun(TestCase):
         scans = [query["sql"] for query in queries if '"netbox_kea_ipamownershiplink"."id" IS NULL' in query["sql"]]
         self.assertEqual(len(scans), 3, "The three IPAM tables must be scanned only once per job")
         self.assertEqual([entry["waiting"] for entry in job.data["summary"]], [1, 0])
-        self.assertEqual([entry["unowned"] for entry in job.data["summary"]], [0, 0])
+        self.assertEqual([entry for entry in job.data["summary"] if "unowned" in entry], [])
+        per_server = [message for message in logs.output if ": created=" in message]
+        self.assertEqual(len(per_server), 2)
+        self.assertEqual([message for message in per_server if "unowned=" in message], [])
         totals = [message for message in logs.output if "Kea IPAM sync complete" in message]
         self.assertEqual(len(totals), 1)
         self.assertIn("unowned=1", totals[0])
