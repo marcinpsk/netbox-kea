@@ -13,6 +13,11 @@ def bad_session(url, body):
     return session.post(url, json=body, timeout=5)
 
 
+def bad_lowercase_session(url, body):
+    # ruleid: kea-http-call-outside-client
+    return requests.session().post(url, json=body, timeout=5)
+
+
 def bad_post(url, body):
     # ruleid: kea-http-call-outside-client
     return requests.post(url, json=body, timeout=5)

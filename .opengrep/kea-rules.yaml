@@ -443,6 +443,7 @@ rules:
         - "netbox_kea/tests/**"
     pattern-either:
       - pattern: requests.Session(...)
+      - pattern: requests.session(...)
       - pattern: requests.get(...)
       - pattern: requests.post(...)
       - pattern: requests.put(...)
