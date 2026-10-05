@@ -57,6 +57,13 @@ repos:
         pass_filenames: false
         files: (^netbox_kea/.*\.py$|^netbox_kea/tests/kea_wire_discipline_baseline\.txt$|^netbox_kea/tests/kea_recordings/dhcp[46]\.json$|^\.pre-commit-config\.yaml$)
 
+      - id: snapshot-discipline
+        name: snapshot-discipline (loaded updates preserve prechange data)
+        entry: python3 netbox_kea/tests/snapshot_discipline.py
+        language: system
+        pass_filenames: false
+        files: (^netbox_kea/.*\.py$|^\.pre-commit-config\.yaml$)
+
   # Type-check netbox_kea and fail only on errors absent from mypy-baseline.txt.
   # Runs on pre-push (not every commit) because a cold mypy cache takes ~20s. CI runs
   # the same script in the lint job, so both gates share one definition.

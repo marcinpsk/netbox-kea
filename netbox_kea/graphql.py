@@ -37,8 +37,10 @@ if TYPE_CHECKING:
         "sync_reservations_enabled",
         "sync_prefixes_enabled",
         "sync_ip_ranges_enabled",
+        "sync_deprecate_prefixes_and_ranges",
         "sync_dhcp_plugin_enabled",
         "sync_vrf",
+        "ipam_first_complete_at",
         "persist_config",
     ),
 )

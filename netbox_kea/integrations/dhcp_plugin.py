@@ -11,7 +11,7 @@ v1 scope (import + diff, read-only against Kea):
 
 * Imports the **data tier** of a Kea ``config-get`` into ``netbox_dhcp`` rows —
   ``DHCPServer``, ``Subnet``, ``Pool``, ``HostReservation`` — reusing netbox-kea's
-  existing IPAM helpers so the DHCP-plugin rows **share** the same
+  IPAM ownership claims so the DHCP-plugin rows **share** the same
   ``ipam.Prefix``/``IPRange``/``IPAddress`` and ``dcim.MACAddress`` objects the
   IPAM sync maintains.
 * **Host reservations** come from the shared typed Reservation Snapshot. The
@@ -48,6 +48,10 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..ipam_reconciliation import ClaimResult, ReservationObservation, SyncReport
 
 from django.apps import apps
 from django.db import transaction
@@ -64,10 +68,8 @@ from ..mappers.kea_to_dhcp import (
 from ..pools import parse_pool
 from ..reservations import (
     TRAVERSAL_DIAGNOSTIC_CODES,
-    GlobalReservationScope,
     InSubnetReservationScope,
     Reservation,
-    ReservationSnapshot,
 )
 
 logger = logging.getLogger(__name__)
@@ -80,10 +82,17 @@ def is_available() -> bool:
     return apps.is_installed(PLUGIN_APP_LABEL)
 
 
+def _ownership_report() -> SyncReport:
+    from ..ipam_reconciliation import SyncReport
+
+    return SyncReport()
+
+
 @dataclass
 class ImportSummary:
     """Counters and warnings accumulated over one server-config import."""
 
+    ownership: SyncReport = field(default_factory=_ownership_report)
     subnets_created: int = 0
     subnets_updated: int = 0
     pools_created: int = 0
@@ -99,6 +108,7 @@ class ImportSummary:
     client_classes_updated: int = 0
     shared_networks_deferred: int = 0
     foreign_addresses_skipped: int = 0
+    owner_disagreements: int = 0
     # Reserved addresses with no NetBox IP to attach. A Global Reservation has no
     # Subnet to size an address from, so the import never creates one for it.
     addresses_unattached: int = 0
@@ -134,121 +144,57 @@ def _link_model():
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def _ensure_prefix(network: IPNetworkValue, vrf, description: str | None = None):
-    """Get/create the shared ``ipam.Prefix`` for *network* via the IPAM sync helper.
-
-    Refreshes the instance from the DB so ``.prefix`` is a ``netaddr.IPNetwork`` and
-    not the raw string assigned on create — ``netbox_dhcp`` validators (e.g.
-    ``Pool.clean``/``Subnet.clean``) do geometric containment checks that require it.
-    """
-    from ..sync import KEA_SUBNET_PREFIX_DESCRIPTION, sync_subnet_to_netbox_prefix
-
-    prefix_obj, _created, _updated = sync_subnet_to_netbox_prefix(
-        network, vrf=vrf, description=description or KEA_SUBNET_PREFIX_DESCRIPTION
-    )
-    prefix_obj.refresh_from_db()
-    return prefix_obj
-
-
-def _ensure_ip_range(pool_str: str, subnet: IPNetworkValue, vrf):
-    """Get/create the shared ``ipam.IPRange`` for a Kea pool in *subnet*, or ``None`` if unusable.
-
-    Refreshed from the DB so ``.range``/address fields are netaddr objects for
-    ``netbox_dhcp``'s containment validators.
-    """
-    from ..sync import _POOL_TOO_LARGE, sync_pool_to_netbox_ip_range
-
-    try:
-        pool = parse_pool(pool_str, subnet)
-    except ValueError:
-        logger.debug("Skipping unusable pool %r in subnet %s", pool_str, subnet, exc_info=True)
-        return None
-    result = sync_pool_to_netbox_ip_range(pool, subnet, vrf=vrf)
-    if result is _POOL_TOO_LARGE:
-        return None
-    range_obj, _created, _updated = result
-    range_obj.refresh_from_db()
-    return range_obj
-
-
-def _ensure_reservation_addresses(reservation: Reservation, summary: ImportSummary):
-    """Ensure the reservation's IPAM rows exist (status=reserved) and return them.
-
-    Reuses :func:`sync_reservation_to_netbox` so the DHCP-plugin reservation shares
-    the very same ``ipam.IPAddress`` rows the reservation-sync owns (decision: one
-    row per address).  ``cleanup=False`` keeps the import from deleting unrelated IPs.
-
-    This import is unattended, so it never forces: a manually curated NetBox IP keeps
-    its own fields and is still linked to the imported reservation.  Only the explicit
-    per-row Sync claims such an address.
-
-    Returns ``(ipv4_ip, ipv6_ips, mac_obj)``.
-    """
-    from ..sync import get_netbox_ip, is_kea_managed_ip, sync_reservation_to_netbox
-
-    conflicts: list[str] = []
-    sync_reservation_to_netbox(reservation, cleanup=False, conflicts=conflicts)
-    # sync_reservation_to_netbox returns Not Applicable for a Global Scope, so its own
-    # foreign-address guard never ran and this loop applies it.
-    is_global = isinstance(reservation.scope, GlobalReservationScope)
-
+def _reservation_addresses(reservation: Reservation, claims: ClaimResult, summary: ImportSummary):
+    """Attach the address objects returned by the whole-snapshot ownership claim."""
     ipv4_ip = None
     ipv6_ips = []
-    unattached: list[str] = []
+    unattached = []
     for address in reservation.addresses:
-        addr = str(address)
-        ip_obj = get_netbox_ip(addr)
-        if ip_obj is None:
-            unattached.append(addr)
-            continue
-        if is_global and not is_kea_managed_ip(ip_obj):
-            conflicts.append(addr)
-        if ":" in addr:
-            ipv6_ips.append(ip_obj)
+        result = claims.addresses[str(address)]
+        if result.outcome == "error":
+            raise RuntimeError("The reserved address could not be claimed")
+        if result.outcome == "conflict":
+            summary.foreign_addresses_skipped += 1
+            summary.warn(
+                f"reservation {reservation.identity.value}: manually curated NetBox IP {address} left unchanged"
+            )
+        elif result.outcome == "disagreement":
+            summary.warn(f"reservation {reservation.identity.value}: owner disagreement for {address}; IPAM unchanged")
+        if result.ip is None:
+            unattached.append(str(address))
+        elif address.version == 4:
+            ipv4_ip = result.ip
         else:
-            ipv4_ip = ip_obj
-    if conflicts:
-        summary.foreign_addresses_skipped += len(conflicts)
-        summary.warn(
-            f"reservation {reservation.identity.value}: manually curated NetBox IP(s) "
-            f"{', '.join(conflicts)} left unchanged"
-        )
+            ipv6_ips.append(result.ip)
     if unattached:
         summary.addresses_unattached += len(unattached)
         summary.warn(
             f"reservation {reservation.identity.value}: reserved address(es) "
             f"{', '.join(unattached)} have no NetBox IP and were not attached"
         )
-
-    identity = reservation.identity
-    is_hardware = identity.identifier_type == "hw-address"
-    mac_obj = _resolve_mac(identity.value, reservation.hostname) if is_hardware else None
+    hardware = reservation.identity.hardware_address
+    mac_obj = None
+    if hardware:
+        for address in reservation.addresses:
+            mac_obj = claims.addresses[str(address)].resolved_macs.get((hardware, reservation.hostname))
+            if mac_obj is not None:
+                break
+        if mac_obj is None:
+            mac_obj = _resolve_mac(hardware, reservation.hostname)
     return ipv4_ip, ipv6_ips, mac_obj
-
-
-def _ensure_delegated_prefixes(reservation: Reservation, vrf) -> list:
-    """Return the shared ``ipam.Prefix`` rows for the Reservation's delegated prefixes.
-
-    A delegated prefix carries its own length, so a Global Reservation keeps its
-    prefixes even though it has no Subnet to size an address from.
-    """
-    from ..sync import KEA_DELEGATED_PREFIX_DESCRIPTION
-
-    return [_ensure_prefix(prefix, vrf, KEA_DELEGATED_PREFIX_DESCRIPTION) for prefix in reservation.delegated_prefixes]
 
 
 def _resolve_mac(hw_address: str | None, hostname: str = ""):
     """Return the ``dcim.MACAddress`` row for *hw_address*, creating it when absent.
 
-    ``sync_reservation_to_netbox`` also creates this row, but it returns Not Applicable
-    first for a Global or addressless Reservation. Only reading here would then leave
-    the imported reservation with no identifier, so it could never match itself again.
+    Address claims return their resolved MAC rows. Global, addressless and curated
+    Reservations can have no such result, so they resolve the DHCP identifier here.
     """
     if not hw_address:
         return None
-    from ..sync import _sync_mac_address
+    from ..sync import sync_mac_address
 
-    return _sync_mac_address(hw_address, hostname)
+    return sync_mac_address(hw_address, hostname)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -368,9 +314,11 @@ def upsert_options(parent_obj, options, family: int, dhcp_server, custom_defs, s
                     assigned_object_type=ct, assigned_object_id=parent_obj.pk, definition=definition
                 ).first()
                 created = existing is None
-                obj = existing or Option(
-                    definition=definition, assigned_object_type=ct, assigned_object_id=parent_obj.pk
-                )
+                if existing is None:
+                    obj = Option(definition=definition, assigned_object_type=ct, assigned_object_id=parent_obj.pk)
+                else:
+                    obj = existing
+                    obj.snapshot()
                 obj.data = opt.data or ""
                 obj.csv_format = opt.csv_format
                 obj.send_option = _send_option(opt)
@@ -518,7 +466,7 @@ def _apply_global_settings(dhcp_server, settings: dict, summary: ImportSummary, 
     if not settings:
         return
     model_fields = {f.name for f in dhcp_server._meta.get_fields()}
-    changed: list[str] = []
+    changed: dict = {}
     for kea_key, attr, transform in _SERVER_FIELDS:
         if attr not in model_fields or kea_key not in settings:
             continue
@@ -529,13 +477,14 @@ def _apply_global_settings(dhcp_server, settings: dict, summary: ImportSummary, 
         if primary:
             # This family owns the global config — mirror changed values on re-import.
             if current != value:
-                setattr(dhcp_server, attr, value)
-                changed.append(attr)
+                changed[attr] = value
         elif _is_unset(current):
             # Secondary protocol only fills gaps the primary family did not set.
-            setattr(dhcp_server, attr, value)
-            changed.append(attr)
+            changed[attr] = value
     if changed:
+        dhcp_server.snapshot()
+        for attr, value in changed.items():
+            setattr(dhcp_server, attr, value)
         try:
             with transaction.atomic():
                 dhcp_server.save()
@@ -543,11 +492,11 @@ def _apply_global_settings(dhcp_server, settings: dict, summary: ImportSummary, 
             summary.errors += 1
             summary.warn(f"DHCPServer settings: {exc}")
             # Children diff against this instance, so it must hold the persisted values.
-            dhcp_server.refresh_from_db(fields=changed)
+            dhcp_server.refresh_from_db(fields=list(changed))
 
 
-def _apply_inherited_settings(obj, parent, settings: dict, field_map, summary: ImportSummary) -> bool:
-    """Mirror *obj*'s tuning fields to Kea, storing only genuine overrides.
+def _inherited_settings_fields(obj, parent, settings: dict, field_map, summary: ImportSummary) -> dict:
+    """Plan *obj*'s tuning fields from Kea, storing only genuine overrides.
 
     ``config-get`` returns every value fully inherited, so a field is stored on the
     child only when it is present and **differs** from the stored *parent*
@@ -555,10 +504,10 @@ def _apply_inherited_settings(obj, parent, settings: dict, field_map, summary: I
     reports — is **cleared**, so a removed Kea override does not linger as stale data
     on re-import.  The ``model_fields`` guard skips fields *obj* does not have, so one
     field map serves models with different mixins (e.g. ``Subnet`` vs ``ClientClass``).
-    Returns ``True`` if any field on *obj* changed.
+    Return the desired fields without changing *obj*.
     """
     model_fields = {f.name for f in obj._meta.get_fields()}
-    changed = False
+    fields = {}
     for kea_key, attr, transform in field_map:
         if attr not in model_fields:
             continue
@@ -572,10 +521,8 @@ def _apply_inherited_settings(obj, parent, settings: dict, field_map, summary: I
             # (e.g. "" for a non-null CharField like hostname_char_set) otherwise.
             db_field = obj._meta.get_field(attr)
             desired = None if db_field.null else db_field.get_default()
-        if getattr(obj, attr, None) != desired:
-            setattr(obj, attr, desired)
-            changed = True
-    return changed
+        fields[attr] = desired
+    return fields
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -604,6 +551,19 @@ def _client_class_name(server, kea_name: str) -> str:
     return f"{server.name}: {kea_name}"[:255]
 
 
+def _client_class_changes(obj, dhcp_server, intent: ClientClassIntent, summary: ImportSummary) -> dict:
+    """Plan the changed identity, expressions and inherited fields of one Client Class."""
+    fields = {
+        "dhcp_server_id": dhcp_server.pk,
+        "test": intent.test or "",
+        "template_test": intent.template_test or "",
+    }
+    if intent.only_in_additional_list is not None:
+        fields["only_in_additional_list"] = intent.only_in_additional_list
+    fields.update(_inherited_settings_fields(obj, dhcp_server, intent.settings, _COMMON_FIELDS, summary))
+    return {name: value for name, value in fields.items() if getattr(obj, name) != value}
+
+
 def upsert_client_class(server, dhcp_server, intent: ClientClassIntent, custom_defs, summary: ImportSummary):
     """Get/create the DHCP-plugin ``ClientClass`` for *intent* (match by namespaced name)."""
     ClientClass = _model("ClientClass")
@@ -612,27 +572,20 @@ def upsert_client_class(server, dhcp_server, intent: ClientClassIntent, custom_d
     created = obj is None
     if obj is None:
         obj = ClientClass(name=cc_name, dhcp_server=dhcp_server)
+        changes = _client_class_changes(obj, dhcp_server, intent, summary)
+    else:
+        changes = _client_class_changes(obj, dhcp_server, intent, summary)
+        if not changes:
+            upsert_options(obj, intent.options, intent.family, dhcp_server, custom_defs, summary)
+            return obj
+        obj.snapshot()
 
-    changed = created
-    if obj.dhcp_server_id != dhcp_server.pk:
-        obj.dhcp_server = dhcp_server
-        changed = True
-    if obj.test != (intent.test or ""):
-        obj.test = intent.test or ""
-        changed = True
-    if obj.template_test != (intent.template_test or ""):
-        obj.template_test = intent.template_test or ""
-        changed = True
-    if intent.only_in_additional_list is not None and obj.only_in_additional_list != intent.only_in_additional_list:
-        obj.only_in_additional_list = intent.only_in_additional_list
-        changed = True
-    if _apply_inherited_settings(obj, dhcp_server, intent.settings, _COMMON_FIELDS, summary):
-        changed = True
+    for name, value in changes.items():
+        setattr(obj, name, value)
 
     try:
-        if changed:
-            with transaction.atomic():
-                obj.save()
+        with transaction.atomic():
+            obj.save()
     except Exception as exc:  # noqa: BLE001 — one bad class must not abort the import
         summary.errors += 1
         summary.warn(f"client-class {intent.name}: {exc}")
@@ -640,7 +593,7 @@ def upsert_client_class(server, dhcp_server, intent: ClientClassIntent, custom_d
 
     if created:
         summary.client_classes_created += 1
-    elif changed:
+    else:
         summary.client_classes_updated += 1
 
     upsert_options(obj, intent.options, intent.family, dhcp_server, custom_defs, summary)
@@ -672,7 +625,7 @@ def _reservation_name(scope_name: str, reservation: Reservation) -> str:
     return f"{scope_name} {identity.identifier_type}:{identity.value}"[:255]
 
 
-def upsert_subnet(server, dhcp_server, intent: SubnetIntent, summary: ImportSummary):
+def upsert_subnet(server, dhcp_server, intent: SubnetIntent, summary: ImportSummary, claims: ClaimResult):
     """Get/create the DHCP-plugin ``Subnet`` for *intent*, tracked via ``KeaDhcpLink``.
 
     Returns the ``netbox_dhcp.Subnet`` instance, or ``None`` on error.
@@ -691,18 +644,22 @@ def upsert_subnet(server, dhcp_server, intent: SubnetIntent, summary: ImportSumm
         with transaction.atomic():
             # Inside the try so one bad CIDR is counted as a per-subnet error, not fatal.
             network = subnet_network(intent.cidr, intent.family)
-            prefix_obj = _ensure_prefix(network, server.sync_vrf)
+            result = claims.prefixes[str(network)]
+            if result.prefix is None:
+                raise RuntimeError("The Subnet Prefix could not be claimed")
+            prefix_obj = result.prefix
+            if result.outcome in {"conflict", "disagreement"}:
+                summary.warn(f"subnet {network}: IPAM ownership {result.outcome}, Prefix left unchanged")
             if existing is not None:
-                if existing.prefix_id != prefix_obj.pk:
-                    existing.prefix = prefix_obj
-                    changed = True
-                if existing.dhcp_server_id != dhcp_server.pk or existing.shared_network_id is not None:
-                    existing.dhcp_server = dhcp_server
-                    existing.shared_network = None
-                    changed = True
-                if _apply_inherited_settings(existing, dhcp_server, intent.settings, _SUBNET_FIELDS, summary):
-                    changed = True
+                fields = {"prefix_id": prefix_obj.pk, "dhcp_server_id": dhcp_server.pk, "shared_network_id": None}
+                fields.update(
+                    _inherited_settings_fields(existing, dhcp_server, intent.settings, _SUBNET_FIELDS, summary)
+                )
+                changed = any(getattr(existing, name) != value for name, value in fields.items())
                 if changed:
+                    existing.snapshot()
+                    for name, value in fields.items():
+                        setattr(existing, name, value)
                     existing.save()
                 subnet_obj = existing
             else:
@@ -713,7 +670,10 @@ def upsert_subnet(server, dhcp_server, intent: SubnetIntent, summary: ImportSumm
                     dhcp_server=dhcp_server,
                     shared_network=None,
                 )
-                _apply_inherited_settings(subnet_obj, dhcp_server, intent.settings, _SUBNET_FIELDS, summary)
+                for name, value in _inherited_settings_fields(
+                    subnet_obj, dhcp_server, intent.settings, _SUBNET_FIELDS, summary
+                ).items():
+                    setattr(subnet_obj, name, value)
                 subnet_obj.save()
                 if intent.kea_subnet_id is not None:
                     # Key on the authoritative Kea identity, not the sys4 object: a stale
@@ -745,7 +705,7 @@ def upsert_subnet(server, dhcp_server, intent: SubnetIntent, summary: ImportSumm
     return subnet_obj
 
 
-def upsert_pools(subnet_obj, intent: SubnetIntent, server, summary: ImportSummary, dhcp_server, custom_defs):
+def upsert_pools(subnet_obj, intent: SubnetIntent, summary: ImportSummary, dhcp_server, custom_defs, claims):
     """Get/create DHCP-plugin ``Pool`` rows (and their options) for each Kea pool in *intent*."""
     Pool = _model("Pool")
     # upsert_subnet already parsed this CIDR, so this cannot raise.
@@ -753,7 +713,16 @@ def upsert_pools(subnet_obj, intent: SubnetIntent, server, summary: ImportSummar
     for pool_intent in intent.pools:
         try:
             with transaction.atomic():
-                range_obj = _ensure_ip_range(pool_intent.pool, network, server.sync_vrf)
+                try:
+                    pool = parse_pool(pool_intent.pool, network)
+                except ValueError:
+                    pool = None
+                result = claims.ranges.get(f"{pool.start} - {pool.end}") if pool is not None else None
+                if result is not None and result.outcome == "error":
+                    raise RuntimeError("The allocation Pool could not be claimed")
+                range_obj = result.ip_range if result else None
+                if result is not None and result.outcome in {"conflict", "disagreement"}:
+                    summary.warn(f"pool {pool_intent.pool}: IPAM ownership {result.outcome}, IP Range left unchanged")
                 if range_obj is not None:
                     pool_obj, created = Pool.objects.get_or_create(
                         subnet=subnet_obj,
@@ -841,7 +810,7 @@ def _find_reservation(base, reservation: Reservation, mac_obj):
     return None
 
 
-def _upsert_reservation(reservation, subnet_obj, server, dhcp_server, custom_defs, summary):
+def _upsert_reservation(reservation, subnet_obj, server, dhcp_server, custom_defs, summary, claims):
     """Upsert one typed Reservation while preserving its Global or In-Subnet Scope.
 
     An In-Subnet Reservation matches by identifier inside its Subnet, which already
@@ -850,7 +819,7 @@ def _upsert_reservation(reservation, subnet_obj, server, dhcp_server, custom_def
     instead.  Without it one identifier shares a single row between DHCPv4 and DHCPv6,
     merging ``ipv4_address`` and ``ipv6_addresses``.
 
-    Reuses the IPAM/MAC sync helpers so the plugin reservation shares the same
+    Consumes IPAM claim results so the plugin reservation shares the same
     ``ipam.IPAddress``/``dcim.MACAddress`` rows the lease/reservation sync owns.
     """
     HostReservation = _model("HostReservation")
@@ -866,10 +835,9 @@ def _upsert_reservation(reservation, subnet_obj, server, dhcp_server, custom_def
     try:
         with transaction.atomic():
             # Inside the try so a resolver failure is counted per-reservation, not fatal.
-            ipv4_ip, ipv6_ips, mac_obj = _ensure_reservation_addresses(reservation, summary)
+            ipv4_ip, ipv6_ips, mac_obj = _reservation_addresses(reservation, claims, summary)
             if reservation.identity.identifier_type == "hw-address" and mac_obj is None:
                 raise RuntimeError("The reservation hardware address could not be resolved.")
-            delegated_prefixes = _ensure_delegated_prefixes(reservation, server.sync_vrf)
             linked = None if subnet_obj is not None else _linked_reservation(server, reservation)
             if linked is not None:
                 obj = linked
@@ -886,20 +854,24 @@ def _upsert_reservation(reservation, subnet_obj, server, dhcp_server, custom_def
                     dhcp_server=None if subnet_obj is not None else dhcp_server,
                     name=_reservation_name(scope_name, reservation),
                 )
-            elif linked is None and subnet_obj is None:
-                # Newly adopted: take the family-qualified name so the other family is free
-                # to create its own row under the unique-name constraint.
-                obj.name = _reservation_name(scope_name, reservation)
+            else:
+                obj.snapshot()
+                if linked is None and subnet_obj is None:
+                    # Newly adopted: take the family-qualified name so the other family is free
+                    # to create its own row under the unique-name constraint.
+                    obj.name = _reservation_name(scope_name, reservation)
             obj.hostname = reservation.hostname or None
             _apply_reservation_identifier(obj, reservation, mac_obj)
-            # One row holds one family. _ensure_reservation_addresses returns the other
+            # One row holds one family. _reservation_addresses returns the other
             # family empty, which also splits a row an earlier import merged.
             obj.ipv4_address = ipv4_ip
             obj.save()
-            # set() unconditionally so re-importing a reservation that dropped its IPv6
-            # addresses or prefixes clears the stale M2M relations (empty list = clear).
+            # An empty address list clears the previous IPv6 relations.
             obj.ipv6_addresses.set(ipv6_ips)
-            obj.ipv6_prefixes.set(delegated_prefixes)
+            # Drop obsolete references before the delegated phase evaluates stale links.
+            obj.ipv6_prefixes.remove(
+                *obj.ipv6_prefixes.exclude(prefix__in=[str(prefix) for prefix in reservation.delegated_prefixes])
+            )
             if subnet_obj is None:
                 _link_reservation(server, reservation, obj)
         if created:
@@ -910,21 +882,40 @@ def _upsert_reservation(reservation, subnet_obj, server, dhcp_server, custom_def
         summary.errors += 1
         logger.exception("Could not import reservation %s in %s", reservation.identity.value, scope)
         summary.warn(f"reservation {reservation.identity.value} in {scope} could not be imported. See server logs.")
-        return
+        return None
     upsert_options(obj, reservation.options, reservation.family, dhcp_server, custom_defs, summary)
+    return obj
+
+
+def _record_address_claims(report: SyncReport, claims: ClaimResult) -> bool:
+    """Keep ownership outcomes separate from the DHCP rows that consume them."""
+    report.conflicts.update(claims.conflicts)
+    complete = True
+    for address, result in claims.addresses.items():
+        if result.outcome == "error":
+            complete = False
+        elif result.outcome == "conflict":
+            report.conflicts.add(address)
+        elif result.outcome == "disagreement":
+            report.disagreements.add(address)
+    return complete
 
 
 def import_reservation_snapshot(
     server,
     dhcp_server,
-    snapshot: ReservationSnapshot | None,
+    observation: ReservationObservation | None,
     custom_defs,
     summary: ImportSummary,
 ) -> None:
     """Import valid typed records and report quarantined Snapshot records."""
-    if snapshot is None:
+    from ..ipam_reconciliation import DelegatedPrefixPhase, claim, reconcile
+
+    if observation is None:
         summary.reservations_unread = True
+        summary.ownership.incomplete.add("reservation")
         return
+    snapshot = observation.snapshot
     if snapshot.traversal_truncated:
         summary.reservations_unread = True
     summary.reservations_quarantined += sum(
@@ -932,21 +923,58 @@ def import_reservation_snapshot(
     )
     for diagnostic in snapshot.diagnostics:
         summary.warn(f"reservation {diagnostic.source_position}: {diagnostic.message}")
+    claims = claim(server, snapshot.family, snapshot.records, force=False)
+    summary.owner_disagreements += sum(result.outcome == "disagreement" for result in claims.addresses.values())
+    imported = []
+    complete = snapshot.complete and not snapshot.diagnostics
+    complete = _record_address_claims(summary.ownership, claims) and complete
     for reservation in snapshot.records:
         if isinstance(reservation.scope, InSubnetReservationScope):
             subnet_id = reservation.scope.subnet.subnet_id
             subnet_obj = _linked_subnet(server, reservation.family, subnet_id)
             if subnet_obj is None:
+                complete = False
                 summary.reservations_skipped += 1
                 summary.warn(f"reservation for unknown subnet-id {subnet_id} skipped")
                 continue
-        elif isinstance(reservation.scope, GlobalReservationScope):
-            subnet_obj = None
         else:
-            summary.reservations_skipped += 1
-            summary.warn("reservation has an unsupported scope and was skipped")
-            continue
-        _upsert_reservation(reservation, subnet_obj, server, dhcp_server, custom_defs, summary)
+            subnet_obj = None
+        obj = _upsert_reservation(reservation, subnet_obj, server, dhcp_server, custom_defs, summary, claims)
+        if obj is None:
+            complete = False
+        else:
+            imported.append((reservation, obj))
+    try:
+        with transaction.atomic():
+            phase = DelegatedPrefixPhase([reservation for reservation, _ in imported], observation.cutoff, complete)
+            report = reconcile(server, snapshot.family, [phase])
+            for reservation, obj in imported:
+                if any(report.prefixes[str(prefix)].outcome == "error" for prefix in reservation.delegated_prefixes):
+                    summary.warn(
+                        f"reservation {reservation.identity.value}: delegated Prefix claim failed; "
+                        "existing reported Prefix attachments were retained"
+                    )
+                    continue
+                prefixes = []
+                for prefix in reservation.delegated_prefixes:
+                    result = report.prefixes[str(prefix)]
+                    if result.prefix is not None:
+                        prefixes.append(result.prefix)
+                obj.ipv6_prefixes.set(prefixes)
+        summary.ownership.merge(report)
+        if complete:
+            summary.ownership.completed_sources.add("reservation")
+        else:
+            summary.ownership.incomplete.add("reservation")
+        summary.errors += report.errors + report.prefix_errors
+        summary.owner_disagreements += len(report.disagreements)
+        for address in sorted(report.conflicts):
+            summary.warn(f"delegated prefix {address}: IPAM ownership conflict, Prefix left unchanged")
+    except Exception:
+        summary.errors += 1
+        summary.ownership.incomplete.add("delegated-prefix")
+        logger.exception("Could not attach delegated Prefixes after DHCP import")
+        summary.warn("Delegated Prefixes could not be attached. See server logs.")
 
 
 def _apply_reservation_identifier(obj, reservation: Reservation, mac_obj) -> None:
@@ -959,10 +987,30 @@ def _apply_reservation_identifier(obj, reservation: Reservation, mac_obj) -> Non
     obj.flex_id = identity.value if identity.identifier_type == "flex-id" else None
 
 
+def _claim_config_networks(server, config):
+    """Group every Subnet and Pool in the configuration before claiming either source."""
+    from ..ipam_reconciliation import PoolClaim, SubnetClaim, claim
+
+    subnets = []
+    pools = []
+    for intent in config.subnets:
+        try:
+            network = subnet_network(intent.cidr, intent.family)
+        except ValueError:
+            continue
+        subnets.append(SubnetClaim(network))
+        for pool in intent.pools:
+            try:
+                pools.append(PoolClaim(parse_pool(pool.pool, network), network))
+            except ValueError:  # noqa: PERF203 - preserve valid sibling Pools
+                continue
+    return claim(server, config.family, subnets, force=False), claim(server, config.family, pools, force=False)
+
+
 def import_server_config(
     server,
     config: ServerConfigIntent,
-    reservation_snapshot: ReservationSnapshot | None = None,
+    reservation_observation: ReservationObservation | None = None,
 ) -> ImportSummary:
     """Import one parsed ``(server, family)`` Kea config into the DHCP plugin.
 
@@ -981,13 +1029,37 @@ def import_server_config(
     for cc_intent in config.client_classes:
         upsert_client_class(server, dhcp_server, cc_intent, custom_defs, summary)
 
+    prefix_claims, pool_claims = _claim_config_networks(server, config)
+    summary.owner_disagreements += sum(
+        result.outcome == "disagreement" for result in (*prefix_claims.prefixes.values(), *pool_claims.ranges.values())
+    )
     for subnet_intent in config.subnets:
-        subnet_obj = upsert_subnet(server, dhcp_server, subnet_intent, summary)
+        subnet_obj = upsert_subnet(server, dhcp_server, subnet_intent, summary, prefix_claims)
         if subnet_obj is None:
             continue
         upsert_options(subnet_obj, subnet_intent.options, config.family, dhcp_server, custom_defs, summary)
-        upsert_pools(subnet_obj, subnet_intent, server, summary, dhcp_server, custom_defs)
-    import_reservation_snapshot(server, dhcp_server, reservation_snapshot, custom_defs, summary)
+        upsert_pools(subnet_obj, subnet_intent, summary, dhcp_server, custom_defs, pool_claims)
+    for source, outcomes in (("subnet", prefix_claims.prefixes), ("pool", pool_claims.ranges)):
+        if any(result.outcome == "error" for result in outcomes.values()):
+            summary.ownership.incomplete.add(source)
+        else:
+            summary.ownership.completed_sources.add(source)
+        summary.ownership.conflicts.update(
+            address for address, result in outcomes.items() if result.outcome == "conflict"
+        )
+        summary.ownership.disagreements.update(
+            address for address, result in outcomes.items() if result.outcome == "disagreement"
+        )
+    import_reservation_snapshot(server, dhcp_server, reservation_observation, custom_defs, summary)
+    if not config.configuration_complete:
+        summary.ownership.incomplete.update({"subnet", "pool"})
+    if (
+        summary.errors
+        or summary.reservations_skipped
+        or summary.reservations_quarantined
+        or summary.reservations_unread
+    ):
+        summary.ownership.incomplete.add("reservation")
     return summary
 
 

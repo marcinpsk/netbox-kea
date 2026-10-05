@@ -1,0 +1,23 @@
+{# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com> #}
+{# SPDX-License-Identifier: Apache-2.0 #}
+{% if record %}
+  {% include "netbox_kea/inc/reservation_sync_badge.html" %}
+{% endif %}
+{% for address, result in claim_result.addresses.items %}
+  <span class="d-inline-block me-2">
+    {% if result.synchronized %}
+      {% include "netbox_kea/inc/sync_badge.html" with nb_ip=result.ip %}
+    {% else %}
+      <span>{{ address }}</span>
+      {% if result.outcome == "disagreement" %}
+        <span class="badge text-bg-warning">Owner disagreement</span>
+      {% elif result.outcome == "conflict" %}
+        <span class="badge text-bg-warning">Conflict</span>
+      {% elif result.outcome == "not-applicable" %}
+        <span class="badge text-bg-secondary">Not applicable</span>
+      {% else %}
+        <span class="badge text-bg-danger">Sync error</span>
+      {% endif %}
+    {% endif %}
+  </span>
+{% endfor %}

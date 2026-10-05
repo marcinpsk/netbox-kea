@@ -31,18 +31,18 @@ rules:
     languages: [python]
     severity: ERROR
     message: >-
-      Read raw sync hostnames through _record_hostname() so malformed values
-      cannot enter the complete keep-set or become cleanup keys.
+      Read raw lease hostnames through _record_hostname() so malformed values
+      cannot enter ownership facts or a complete keep-set.
     metadata:
       category: correctness
       confidence: HIGH
     patterns:
       - pattern-either:
           - pattern-inside: |
-              def sync_lease_to_netbox(...):
+              def _lease_report(...):
                   ...
           - pattern-inside: |
-              def _record_hostname_and_addresses(...):
+              def _claim_reports(...):
                   ...
       - pattern-either:
           - pattern: $RECORD.get("hostname", ...)
@@ -252,7 +252,7 @@ rules:
       NetBox does not enforce Prefix, IPRange, or IPAddress keys in the database.
       ENFORCE_GLOBAL_UNIQUE is checked only in clean(), so duplicate rows can exist.
       get_or_create() and update_or_create() then raise MultipleObjectsReturned on every run.
-      Query with filter(...) and handle more than one match explicitly, as sync._single_match does.
+      Query with filter(...) and handle more than one match explicitly through IPAM reconciliation.
     metadata:
       category: correctness
       confidence: HIGH
@@ -408,3 +408,121 @@ rules:
           - pattern: subprocess.check_call(...)
           - pattern: subprocess.check_output(...)
       - pattern-not: subprocess.$FUNCTION(..., timeout=$SECONDS, ...)
+
+  - id: kea-sync-except-request-exception-not-oserror
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Catch OSError, not requests.RequestException, at a Kea call in the IPAM sync job. A missing
+      TLS file raises a plain OSError that is not a RequestException; it escapes the phase and
+      stops the sync of the whole Server. RequestException is an OSError subclass, so OSError covers both.
+    metadata:
+      category: correctness
+      confidence: HIGH
+    paths:
+      include:
+        - "netbox_kea/ipam_reconciliation.py"
+        - "netbox_kea/jobs.py"
+        - "netbox_kea/sync.py"
+        - "kea-sync-except-request-exception-not-oserror.py"
+    pattern-either:
+      - pattern: |
+          try:
+              ...
+          except requests.RequestException:
+              ...
+      - pattern: |
+          try:
+              ...
+          except requests.RequestException as $E:
+              ...
+      - pattern: |
+          try:
+              ...
+          except (..., requests.RequestException, ...):
+              ...
+      - pattern: |
+          try:
+              ...
+          except (..., requests.RequestException, ...) as $E:
+              ...
+
+  - id: kea-mac-sync-write-without-savepoint
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Run MAC lookup and save in transaction.atomic() before catching their errors.
+      A failed MAC write must not abort the caller's IPAM claim.
+    metadata:
+      category: correctness
+      confidence: HIGH
+    paths:
+      include:
+        - "netbox_kea/sync.py"
+        - "kea-mac-sync-write-without-savepoint.py"
+    patterns:
+      - pattern-inside: |
+          def sync_mac_address(...):
+              ...
+      - pattern-either:
+          - pattern: dcim.models.MACAddress.objects.get_or_create(...)
+          - pattern: $MAC.save(...)
+      - pattern-not-inside: |
+          with django.db.transaction.atomic(...):
+              ...
+
+  - id: netbox-ipam-mutation-outside-reconciliation
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Delete IPAddress, Prefix and IPRange rows and change their status only in
+      netbox_kea/ipam_reconciliation.py. Reconciliation checks ownership and the
+      upgrade barrier before it changes or removes an IPAM row.
+    metadata:
+      category: correctness
+      confidence: HIGH
+    paths:
+      exclude:
+        - "netbox_kea/ipam_reconciliation.py"
+        - "**/tests/**"
+        - "**/migrations/**"
+    patterns:
+      - pattern-either:
+          - pattern: $OBJ.delete(...)
+          - pattern: $OBJ.update(..., status=$STATUS, ...)
+          - pattern: $OBJ.status = $STATUS
+      - pattern-either:
+          # Direct manager and queryset chains, including imported model aliases.
+          - patterns:
+              - pattern: $OBJ.$MEMBER
+              - metavariable-pattern:
+                  metavariable: $OBJ
+                  pattern-either:
+                    - pattern: <... ipam.models.IPAddress.objects ...>
+                    - pattern: <... ipam.models.Prefix.objects ...>
+                    - pattern: <... ipam.models.IPRange.objects ...>
+          # A local variable bound to an IPAM query or object lookup.
+          - patterns:
+              - pattern-inside: |
+                  $OBJ = $QUERY
+                  ...
+              - metavariable-pattern:
+                  metavariable: $QUERY
+                  pattern-either:
+                    - pattern: <... ipam.models.IPAddress.objects ...>
+                    - pattern: <... ipam.models.Prefix.objects ...>
+                    - pattern: <... ipam.models.IPRange.objects ...>
+                    - pattern: ipam.models.IPAddress(...)
+                    - pattern: ipam.models.Prefix(...)
+                    - pattern: ipam.models.IPRange(...)
+          # Typed helper parameters, even when the import is under TYPE_CHECKING.
+          - patterns:
+              - pattern-inside: |
+                  def $FUNCTION(..., $OBJ: $TYPE, ...):
+                      ...
+              - metavariable-pattern:
+                  metavariable: $TYPE
+                  pattern-either:
+                    - pattern: ipam.models.IPAddress
+                    - pattern: ipam.models.Prefix
+                    - pattern: ipam.models.IPRange

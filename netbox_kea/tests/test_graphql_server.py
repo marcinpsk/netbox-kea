@@ -19,11 +19,11 @@ from ipam.models import VRF
 from netbox_kea.graphql import ServerType
 from netbox_kea.models import Server
 
-from .utils import _make_db_server
+from .utils import _make_db_server, plugins_config
 
 User = get_user_model()
 
-_PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30}}
+_PLUGINS_CONFIG = plugins_config()
 
 #: Never publish a credential over GraphQL. custom_field_data is NetBox's own JSON
 #: store, which CustomFieldsMixin exposes as ``custom_fields``.
@@ -40,6 +40,7 @@ SYNC_BOOLEANS = (
     "sync_reservations_enabled",
     "sync_prefixes_enabled",
     "sync_ip_ranges_enabled",
+    "sync_deprecate_prefixes_and_ranges",
     "sync_dhcp_plugin_enabled",
 )
 
@@ -83,6 +84,7 @@ class TestServerGraphQLQuery(TestCase):
             sync_reservations_enabled=True,
             sync_prefixes_enabled=False,
             sync_ip_ranges_enabled=True,
+            sync_deprecate_prefixes_and_ranges=True,
             sync_dhcp_plugin_enabled=True,
             persist_config=False,
             sync_vrf=self.vrf,

@@ -18,6 +18,7 @@ from utilities.views import register_model_view
 
 from .. import forms
 from ..constants import Family
+from ..ipam_reconciliation import ReservationPhase, reconcile
 from ..kea import KeaException
 from ..models import Server
 from ..reservation_transfer import (
@@ -26,8 +27,7 @@ from ..reservation_transfer import (
     parse_reservation_document,
     resolve_import_proposal,
 )
-from ..reservations import TRAVERSAL_DIAGNOSTIC_CODES
-from ..subnet_catalogue import MutationScope
+from ..subnet_catalogue import CatalogueUnavailable, MutationScope, for_synchronization
 from ..utilities import (
     kea_error_hint,
     parse_lease_csv,
@@ -39,14 +39,9 @@ logger = logging.getLogger(__name__)
 
 
 class _BaseSyncView(ConditionalLoginRequiredMixin, View):
-    """POST-only HTMX endpoint that syncs a Kea lease/reservation to a NetBox IPAddress.
+    """Claim a live lease and return its per-address synchronization result."""
 
-    Returns a small HTML badge fragment.
-    Subclasses set ``_status`` to ``"active"`` (leases) or ``"reserved"``
-    (reservations) and call the appropriate sync helper.
-    """
-
-    _status: str = "active"
+    dhcp_version: Family
 
     def post(self, request: HttpRequest, pk: int) -> HttpResponse:
         if not (request.user.has_perm("ipam.add_ipaddress") and request.user.has_perm("ipam.change_ipaddress")):
@@ -67,15 +62,20 @@ class _BaseSyncView(ConditionalLoginRequiredMixin, View):
         if data is None:
             return HttpResponse("Could not fetch live data from Kea.", status=400)
         try:
-            nb_ip, _created, _changed = self._sync(data)
-        except (ValueError, IntegrityError, ValidationError, OperationalError, ProgrammingError):
+            from ..ipam_reconciliation import claim
+
+            result = claim(server, self.dhcp_version, [data], force=True)
+            outcome = next(iter(result.addresses.values()))
+            if outcome.outcome == "error":
+                return HttpResponse("Sync error: see server logs for details.", status=500)
+        except (RuntimeError, ValueError, IntegrityError, ValidationError, OperationalError, ProgrammingError):
             logger.exception("Sync error for ip=%s", ip_str)
             return HttpResponse("Sync error: see server logs for details.", status=500)
 
         return render(
             request,
-            "netbox_kea/inc/sync_badge.html",
-            {"nb_ip": nb_ip},
+            "netbox_kea/inc/claim_results.html",
+            {"claim_result": result},
         )
 
     def _fetch_live_data(self, server: "Server", ip_str: str) -> "dict | None":
@@ -85,12 +85,11 @@ class _BaseSyncView(ConditionalLoginRequiredMixin, View):
         """
         return None
 
-    def _sync(self, data: dict):
-        raise NotImplementedError
-
 
 class ServerLease4SyncView(_BaseSyncView):
-    """Sync a single DHCPv4 lease to a NetBox IPAddress (status=active)."""
+    """Claim a DHCPv4 lease in the Server's sync VRF."""
+
+    dhcp_version: Family = 4
 
     def _fetch_live_data(self, server: "Server", ip_str: str) -> "dict | None":
         try:
@@ -102,15 +101,11 @@ class ServerLease4SyncView(_BaseSyncView):
         else:
             return lease or None
 
-    def _sync(self, data: dict):
-        from ..sync import sync_lease_to_netbox
-
-        # Per-row Sync button = explicit user intent → override foreign-IP guard.
-        return sync_lease_to_netbox(data, force=True)
-
 
 class ServerLease6SyncView(_BaseSyncView):
-    """Sync a single DHCPv6 lease to a NetBox IPAddress (status=active)."""
+    """Claim a DHCPv6 lease in the Server's sync VRF."""
+
+    dhcp_version: Family = 6
 
     def _fetch_live_data(self, server: "Server", ip_str: str) -> "dict | None":
         try:
@@ -121,12 +116,6 @@ class ServerLease6SyncView(_BaseSyncView):
             return None
         else:
             return lease or None
-
-    def _sync(self, data: dict):
-        from ..sync import sync_lease_to_netbox
-
-        # Per-row Sync button = explicit user intent → override foreign-IP guard.
-        return sync_lease_to_netbox(data, force=True)
 
 
 class _BaseReservationSyncView(ConditionalLoginRequiredMixin, View):
@@ -145,9 +134,13 @@ class _BaseReservationSyncView(ConditionalLoginRequiredMixin, View):
                 _client,
                 _catalogue,
             ):
-                from ..sync import sync_reservation_to_netbox
+                from ..ipam_reconciliation import claim
+                from ..sync import reservation_synchronization_state
 
-                result = sync_reservation_to_netbox(reservation, cleanup=False, force=True)
+                result = claim(server, self.dhcp_version, [reservation], force=True)
+                state = reservation_synchronization_state(
+                    reservation, synchronized_addresses=result.synchronized_addresses
+                )
         except KeaException as exc:
             logger.exception("Kea error synchronizing a DHCPv%s Reservation", self.dhcp_version)
             return HttpResponse(f"Reservation synchronization failed: {kea_error_hint(exc)}", status=500)
@@ -156,13 +149,14 @@ class _BaseReservationSyncView(ConditionalLoginRequiredMixin, View):
             return HttpResponse("Reservation synchronization failed. See server logs.", status=500)
         return render(
             request,
-            "netbox_kea/inc/reservation_sync_badge.html",
+            "netbox_kea/inc/claim_results.html",
             {
+                "claim_result": result,
                 "record": {
-                    "sync_state": result.state,
+                    "sync_state": state,
                     "netbox_ip_url": result.primary.get_absolute_url() if result.primary else "",
                     "sync_url": None,
-                }
+                },
             },
         )
 
@@ -189,86 +183,32 @@ class _BaseBulkReservationSyncView(ConditionalLoginRequiredMixin, View):
             return HttpResponseForbidden("You do not have permission to sync to NetBox IPAM.")
 
         server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
-        from ..sync import cleanup_stale_ips_batch, sync_reservation_to_netbox
-
+        catalogue = None
         try:
-            from ..subnet_catalogue import for_synchronization
-
-            client = server.get_client(version=self.dhcp_version)
             catalogue = for_synchronization(server, self.dhcp_version)
-            snapshot = client.reservation_snapshot(self.dhcp_version, catalogue)
-        except KeaException as exc:
-            logger.exception("Kea error fetching reservations from %s (DHCPv%s)", server.name, self.dhcp_version)
-            messages.error(request, kea_error_hint(exc))
-            return HttpResponseRedirect(
-                reverse(f"plugins:netbox_kea:server_reservations{self.dhcp_version}", args=[pk])
-            )
-        except (requests.RequestException, RuntimeError, ValueError, TypeError):
-            logger.exception("Failed to fetch reservations from %s (DHCPv%s)", server.name, self.dhcp_version)
-            messages.error(request, "Failed to fetch reservations: see server logs for details.")
-            return HttpResponseRedirect(
-                reverse(f"plugins:netbox_kea:server_reservations{self.dhcp_version}", args=[pk])
-            )
+        except CatalogueUnavailable:
+            logger.exception("Could not read the Subnet Catalogue for server %s", server.pk)
 
-        created = updated = errors = skipped = 0
-        synced_records = []
-        # Skipped Reservations still own their addresses: a Global Reservation that
-        # shares a hostname with an In-Subnet one must not lose its IP to cleanup.
-        protected_records = []
-        # Foreign (manually-curated) NetBox IPs skipped to avoid overwriting them.
-        conflicts: list[str] = []
-        for reservation in snapshot.records:
-            if reservation.scope.kind == "global" or not reservation.addresses:
-                skipped += 1
-                protected_records.append(reservation)
-                continue
-            try:
-                sync_result = sync_reservation_to_netbox(reservation, cleanup=False, conflicts=conflicts)
-                synced_records.append(reservation)
-                created += sync_result.created
-                updated += sync_result.changed
-            except (ValueError, ValidationError, DatabaseError):
-                logger.exception(
-                    "Failed to sync Reservation %s in DHCPv%s Subnet %s",
-                    reservation.identity.identifier_type,
-                    reservation.family,
-                    reservation.scope.subnet.subnet_id,
-                )
-                errors += 1
-        conflicts_skipped = len(conflicts)
-
-        # Run stale-IP cleanup once per hostname with the full keep-set
-        # to prevent false positives when multiple records share a hostname.
-        # Skip cleanup when errors occurred — the keep-set is incomplete.
-        stale_cleaned = 0
-        if snapshot.complete and not errors:
-            stale_cleaned = cleanup_stale_ips_batch(synced_records, protected_records)
-
-        stale_msg = f", {stale_cleaned} stale cleaned" if stale_cleaned else ""
-        conflict_msg = f", {conflicts_skipped} conflicts skipped" if conflicts_skipped else ""
-        quarantined_count = sum(
-            diagnostic.code not in TRAVERSAL_DIAGNOSTIC_CODES for diagnostic in snapshot.diagnostics
+        report = reconcile(server, self.dhcp_version, [ReservationPhase(catalogue)])
+        summary = (
+            f"Bulk sync: {report.created} created, {report.updated} updated, "
+            f"{len(report.conflicts)} conflicts skipped, {report.cleaned} stale links cleaned, "
+            f"{report.errors} errors."
         )
-        skip_msg = f", {skipped} not applicable" if skipped else ""
-        quarantined_msg = f", {quarantined_count} quarantined" if quarantined_count else ""
-        traversal_msg = ", Reservation list was read only in part" if snapshot.traversal_truncated else ""
-        if errors or quarantined_count or snapshot.traversal_truncated:
-            messages.warning(
-                request,
-                f"Bulk sync: {created} created, {updated} updated, {errors} errors"
-                f"{skip_msg}{quarantined_msg}{traversal_msg}{conflict_msg}{stale_msg}.",
-            )
-        elif conflicts_skipped:
-            messages.warning(
-                request,
-                f"Bulk sync complete: {created} created, {updated} updated, "
-                f"{conflicts_skipped} conflicts skipped{skip_msg}{stale_msg}.",
-            )
+        if report.skipped_reservations:
+            summary += f" {len(report.skipped_reservations)} not applicable."
+        if report.quarantined_reservations:
+            summary += f" {report.quarantined_reservations} quarantined."
+        if report.reservation_traversal_truncated:
+            summary += " Reservation list was read only in part."
+        if report.disagreements:
+            summary += f" {len(report.disagreements)} owner disagreements."
+        if not report.complete:
+            summary += " Reservation phase incomplete; cleanup skipped."
+        if not report.complete or report.conflicts or report.disagreements:
+            messages.warning(request, summary)
         else:
-            messages.success(
-                request,
-                f"Bulk sync complete: {created} created, {updated} updated{skip_msg}{stale_msg}.",
-            )
+            messages.success(request, summary)
         redirect_url = reverse(
             f"plugins:netbox_kea:server_reservations{self.dhcp_version}",
             args=[pk],

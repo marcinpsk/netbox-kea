@@ -1262,14 +1262,17 @@ def test_ci_pins_the_netbox_release_the_query_counts_describe():
 
 
 def test_query_count_assertion_sites_still_exist():
-    """Fail when NetBox moves the helper the conftest guard patches.
-
-    A renamed import would make the guard patch nothing, so every release but the
-    recorded one would start failing on counts again with no sign of why.
-    """
+    """Fail when the recorded NetBox release moves its query-count helper."""
     import importlib
 
-    from netbox_kea.tests.conftest import QUERY_COUNT_ASSERTION_SITES
+    from netbox_kea.tests.conftest import (
+        QUERY_COUNT_ASSERTION_SITES,
+        QUERY_COUNT_NETBOX_VERSION,
+        running_netbox_version,
+    )
+
+    if running_netbox_version() != QUERY_COUNT_NETBOX_VERSION:
+        pytest.skip(f"Query-count assertion sites are bound to NetBox {QUERY_COUNT_NETBOX_VERSION}.")
 
     for module_name in QUERY_COUNT_ASSERTION_SITES:
         module = importlib.import_module(module_name)
@@ -2112,20 +2115,21 @@ async def test_cycle():
     assert _unguarded_finally_cleanups(source) == ["cleanup"]
 
 
-def test_the_browser_suite_mirrors_the_kea_sync_description_prefix():
-    """The browser cleanup deletes by this prefix, so a drift would widen what it removes.
+def test_the_browser_suite_mirrors_the_kea_sync_marker_prefix():
+    """The browser cleanup finds its row by this prefix, so a drift would change what it removes.
 
     ``tests/ui`` cannot import the package, so the literal is duplicated there. This is
-    the check that keeps the copy honest.
+    the check that keeps the copy honest: it is the text that every block starts with.
     """
-    from netbox_kea.sync import _KEA_DESC_PREFIX
+    from netbox_kea.ipam_marker import MARKER_KINDS, render_marker
 
+    expected = os.path.commonprefix([render_marker(kind) for kind in MARKER_KINDS])
     source = (_BROWSER_SUITE / "test_workflows.py").read_text()
-    match = re.search(r'^_KEA_SYNC_DESCRIPTION_PREFIX = "([^"]*)"$', source, re.MULTILINE)
-    assert match, "The browser suite no longer defines _KEA_SYNC_DESCRIPTION_PREFIX."
-    assert match.group(1) == _KEA_DESC_PREFIX, (
-        f"The browser suite mirrors {match.group(1)!r} but netbox_kea/sync.py writes "
-        f"{_KEA_DESC_PREFIX!r}. Its NetBox cleanup would match the wrong rows."
+    match = re.search(r'^_KEA_SYNC_MARKER_PREFIX = "([^"]*)"$', source, re.MULTILINE)
+    assert match, "The browser suite no longer defines _KEA_SYNC_MARKER_PREFIX."
+    assert match.group(1) == expected, (
+        f"The browser suite mirrors {match.group(1)!r} but netbox_kea/ipam_marker.py writes blocks that start "
+        f"with {expected!r}. Its NetBox cleanup would match the wrong rows."
     )
 
 
@@ -2312,8 +2316,11 @@ def test_netbox_ip_cleanup_deletes_the_captured_row_without_searching():
     assert session.delete_calls == [("https://netbox.example.invalid/api/ipam/ip-addresses/17/", {"timeout": 5})]
 
 
-def test_netbox_ip_precleanup_uses_the_complete_test_identity():
-    """Prior-run cleanup may discover an ID only through every test-owned field."""
+@pytest.mark.parametrize(
+    "description", ["[kea-sync: reservation]", "[kea-sync: lease + reservation] rack 4"], ids=["reserved", "active"]
+)
+def test_netbox_ip_precleanup_uses_the_complete_test_identity(description: str):
+    """Prior-run cleanup may discover an ID only through every test-owned field; any marker kind and note match."""
     session = _FakeNetBoxSession(
         {
             "count": 1,
@@ -2322,7 +2329,7 @@ def test_netbox_ip_precleanup_uses_the_complete_test_identity():
                     "id": 23,
                     "address": "198.18.0.10/24",
                     "dns_name": "e2e-state-test",
-                    "description": "Synced from Kea DHCP reservation",
+                    "description": description,
                 }
             ],
         }
@@ -2344,7 +2351,7 @@ def test_netbox_ip_precleanup_uses_the_complete_test_identity():
                 "params": {
                     "address": "198.18.0.10",
                     "dns_name": "e2e-state-test",
-                    "description": "Synced from Kea DHCP reservation",
+                    "description__isw": "[kea-sync: ",
                 },
                 "timeout": 5,
             },
@@ -2353,7 +2360,12 @@ def test_netbox_ip_precleanup_uses_the_complete_test_identity():
     assert session.delete_calls == [("https://netbox.example.invalid/api/ipam/ip-addresses/23/", {"timeout": 5})]
 
 
-def test_netbox_ip_precleanup_rejects_a_row_outside_the_test_identity():
+@pytest.mark.parametrize(
+    ("dns_name", "description"),
+    [("operator-owned", "[kea-sync: reservation]"), ("e2e-state-test", "[KEA-SYNC: reservation]")],
+    ids=["hostname", "case-insensitive match"],
+)
+def test_netbox_ip_precleanup_rejects_a_row_outside_the_test_identity(dns_name: str, description: str):
     """An unexpectedly broad API result must stop cleanup before any delete."""
     session = _FakeNetBoxSession(
         {
@@ -2362,8 +2374,8 @@ def test_netbox_ip_precleanup_rejects_a_row_outside_the_test_identity():
                 {
                     "id": 29,
                     "address": "198.18.0.10/24",
-                    "dns_name": "operator-owned",
-                    "description": "Synced from Kea DHCP reservation",
+                    "dns_name": dns_name,
+                    "description": description,
                 }
             ],
         }

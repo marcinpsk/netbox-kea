@@ -12,13 +12,14 @@ from __future__ import annotations
 
 import ipaddress
 import unittest
-from unittest.mock import patch
 
 from django.apps import apps
-from django.test import SimpleTestCase, TestCase, override_settings, tag
+from django.test import TestCase, override_settings, tag
 from django.utils import timezone
 
+from netbox_kea.ipam_reconciliation import ReservationObservation
 from netbox_kea.mappers.kea_to_dhcp import parse_dhcp_config
+from netbox_kea.models import next_confirmation_number
 from netbox_kea.reservations import (
     RESERVATION_INVALID_IDENTIFIER,
     RESERVATION_PAGE_FETCH_FAILED,
@@ -29,10 +30,10 @@ from netbox_kea.reservations import (
 from netbox_kea.subnet_catalogue import IdentityOnlyCatalogueSnapshot, SubnetIdentity, VerifiedSubnet
 
 from .kea_stub import _res_page, kea_client, stub_kea
-from .utils import _make_db_server
+from .utils import _make_db_server, plugins_config
 
 DHCP_PLUGIN = "netbox_dhcp"
-_PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30}}
+_PLUGINS_CONFIG = plugins_config()
 
 
 def _conf_v4():
@@ -63,7 +64,7 @@ def _conf_v6():
     }
 
 
-def _reservation_snapshot(conf: dict, version: Family, hosts: list[dict] | None = None) -> ReservationSnapshot:
+def _reservation_snapshot(conf: dict, version: Family, hosts: list[dict] | None = None) -> ReservationObservation:
     """Build the real typed Snapshot used by the optional adapter."""
     subnet_key = f"subnet{version}"
     entries = list(conf.get(subnet_key, []))
@@ -107,7 +108,8 @@ def _reservation_snapshot(conf: dict, version: Family, hosts: list[dict] | None 
     client = kea_client(url="http://kea.example.invalid", send_service=False)
     with stub_kea({"reservation-get-page": _res_page(hosts)}):
         # Bound the page to the fixture so a larger fixture cannot silently truncate.
-        return client.reservation_page(version, catalogue, limit=max(len(hosts), 1))
+        cutoff = next_confirmation_number()
+        return ReservationObservation(client.reservation_page(version, catalogue, limit=max(len(hosts), 1)), cutoff)
 
 
 @tag("dhcp_plugin")
@@ -128,6 +130,20 @@ class DhcpPluginAdapterTest(TestCase):
         self.adapter = dhcp_plugin
 
     # ── basic import ────────────────────────────────────────────────────────
+
+    def test_import_links_each_shared_ipam_object_to_its_source(self):
+        from netbox_kea.models import IPAMOwnershipLink
+
+        conf = _conf_v4()
+        summary = self.adapter.import_server_config(
+            self.server, parse_dhcp_config(conf, 4), _reservation_snapshot(conf, 4)
+        )
+
+        self.assertEqual(summary.errors, 0, summary.warnings)
+        self.assertCountEqual(
+            IPAMOwnershipLink.objects.filter(server=self.server, family=4).values_list("source", flat=True),
+            ["subnet", "pool", "reservation"],
+        )
 
     def test_v4_import_creates_subnet_pool_reservation_sharing_ipam(self):
         from dcim.models import MACAddress
@@ -350,7 +366,7 @@ class DhcpPluginAdapterTest(TestCase):
         Subnet = apps.get_model(DHCP_PLUGIN, "Subnet")
         conf = {
             "subnet4": [
-                {"id": 1, "subnet": "not-a-cidr"},  # _ensure_prefix raises → caught per-subnet
+                {"id": 1, "subnet": "not-a-cidr"},  # CIDR validation fails within this Subnet import
                 {"id": 2, "subnet": "10.51.0.0/24"},
             ]
         }
@@ -360,38 +376,22 @@ class DhcpPluginAdapterTest(TestCase):
         self.assertTrue(Subnet.objects.filter(prefix__prefix="10.51.0.0/24").exists())
         self.assertEqual(summary.subnets_created, 1)
 
-    def test_reservation_resolver_failure_is_per_reservation(self):
-        """A resolver error on one reservation does not stop the others in the subnet."""
+    def test_reservation_database_failure_does_not_stop_healthy_sibling(self):
         HostReservation = apps.get_model(DHCP_PLUGIN, "HostReservation")
-        conf = {
-            "subnet4": [
-                {
-                    "id": 3,
-                    "subnet": "10.53.0.0/24",
-                    "reservations": [
-                        {"hw-address": "aa:bb:cc:dd:ee:a1", "ip-address": "10.53.0.10", "hostname": "r1"},
-                        {"hw-address": "aa:bb:cc:dd:ee:a2", "ip-address": "10.53.0.11", "hostname": "r2"},
-                    ],
-                }
-            ]
-        }
-        real = self.adapter._ensure_reservation_addresses
-        calls = {"n": 0}
+        common_duid = ":".join(["aa"] * 83)
+        conf = {"subnet6": [{"id": 3, "subnet": "2001:db8:3::/64"}]}
+        hosts = [
+            {"subnet-id": 3, "duid": common_duid + ":01", "hostname": "first.example"},
+            {"subnet-id": 3, "duid": common_duid + ":02", "hostname": "collision.example"},
+            {"subnet-id": 3, "duid": "01:02:03", "hostname": "healthy.example"},
+        ]
+        summary = self.adapter.import_server_config(
+            self.server, parse_dhcp_config(conf, 6), _reservation_snapshot(conf, 6, hosts)
+        )
 
-        def flaky(res, *args, **kwargs):
-            calls["n"] += 1
-            if calls["n"] == 1:
-                raise RuntimeError("resolver boom")
-            return real(res, *args, **kwargs)
-
-        with patch.object(self.adapter, "_ensure_reservation_addresses", side_effect=flaky):
-            summary = self.adapter.import_server_config(
-                self.server, parse_dhcp_config(conf, 4), _reservation_snapshot(conf, 4)
-            )
-
-        self.assertGreaterEqual(summary.errors, 1)
-        self.assertEqual(summary.reservations_created, 1)
-        self.assertTrue(HostReservation.objects.filter(hostname="r2").exists())
+        self.assertEqual(summary.errors, 1, summary.warnings)
+        self.assertEqual(summary.reservations_created, 2)
+        self.assertTrue(HostReservation.objects.filter(hostname="healthy.example").exists())
 
     # ── idempotency edge cases ────────────────────────────────────────────────
 
@@ -1059,7 +1059,7 @@ class DhcpPluginReservationSnapshotImportTest(TestCase):
 
     def test_reservation_whose_mac_row_cannot_be_written_rolls_back_its_ip(self):
         """A MAC write failure must not commit the reservation's earlier IP write."""
-        from django.db.utils import OperationalError
+        from dcim.models import MACAddress
         from ipam.models import IPAddress
 
         HostReservation = apps.get_model(DHCP_PLUGIN, "HostReservation")
@@ -1068,9 +1068,10 @@ class DhcpPluginReservationSnapshotImportTest(TestCase):
         intent = parse_dhcp_config(conf, 4)
         snapshot = _reservation_snapshot(conf, 4, hosts)
 
-        with patch("dcim.models.MACAddress.objects.get_or_create", side_effect=OperationalError("no MAC row")):
-            first = self.adapter.import_server_config(self.server, intent, snapshot)
-            second = self.adapter.import_server_config(self.server, intent, snapshot)
+        MACAddress.objects.create(mac_address="aa:bb:cc:dd:ee:43")
+        MACAddress.objects.create(mac_address="aa:bb:cc:dd:ee:43")
+        first = self.adapter.import_server_config(self.server, intent, snapshot)
+        second = self.adapter.import_server_config(self.server, intent, snapshot)
 
         self.assertEqual(HostReservation.objects.count(), 0)
         self.assertFalse(IPAddress.objects.filter(address__net_host="10.43.0.50").exists())
@@ -1170,7 +1171,10 @@ class DhcpPluginReservationSnapshotImportTest(TestCase):
         self.assertEqual(summary.errors, 0, summary.warnings)
         res = HostReservation.objects.get(hostname="g6-pd")
         self.assertIsNone(res.subnet)
-        self.assertEqual([str(prefix.prefix) for prefix in res.ipv6_prefixes.all()], ["2001:db8:d00d::/56"])
+        self.assertEqual(
+            [(str(prefix.prefix), prefix.description) for prefix in res.ipv6_prefixes.all()],
+            [("2001:db8:d00d::/56", "[kea-sync: delegated prefix]")],
+        )
 
     def test_reimport_clears_dropped_delegated_prefixes(self):
         """Kea no longer delegates the prefix, so the imported record must not keep it."""
@@ -1191,7 +1195,7 @@ class DhcpPluginReservationSnapshotImportTest(TestCase):
 
     def test_skipped_reservation_leaves_no_delegated_prefix_behind(self):
         """The record never imports, so its prefixes must not appear in IPAM either."""
-        from django.db.utils import OperationalError
+        from dcim.models import MACAddress
         from ipam.models import Prefix
 
         conf = {"subnet6": [{"id": 5, "subnet": "2001:db8:5::/64"}]}
@@ -1204,10 +1208,11 @@ class DhcpPluginReservationSnapshotImportTest(TestCase):
             }
         ]
 
-        with patch("dcim.models.MACAddress.objects.get_or_create", side_effect=OperationalError("no MAC row")):
-            summary = self.adapter.import_server_config(
-                self.server, parse_dhcp_config(conf, 6), _reservation_snapshot(conf, 6, hosts)
-            )
+        MACAddress.objects.create(mac_address="aa:bb:cc:dd:ee:50")
+        MACAddress.objects.create(mac_address="aa:bb:cc:dd:ee:50")
+        summary = self.adapter.import_server_config(
+            self.server, parse_dhcp_config(conf, 6), _reservation_snapshot(conf, 6, hosts)
+        )
 
         self.assertEqual(summary.reservations_created, 0)
         self.assertFalse(Prefix.objects.filter(prefix="2001:db8:dead::/56").exists())
@@ -1268,45 +1273,55 @@ class DhcpPluginStaleCleanupGuardTest(TestCase):
     def setUp(self):
         self.server = _make_db_server(name=f"kea-clean-{timezone.now().timestamp()}")
 
-    def test_cleanup_skips_sys4_referenced_ip(self):
+    def test_reconciliation_never_removes_or_deprecates_a_referenced_ip(self):
         from ipam.models import IPAddress
 
+        from netbox_kea import subnet_catalogue
         from netbox_kea.integrations import dhcp_plugin
-        from netbox_kea.sync import _cleanup_stale_ips
+        from netbox_kea.ipam_reconciliation import LeasePhase, ReservationPhase, reconcile
+        from netbox_kea.models import IPAMOwnershipLink
 
-        # Two Kea-synced IPs share one hostname; one will be referenced by a reservation.
+        from .kea_stub import _catalogue_responses_for_subnets
+        from .test_ipam_reconciliation import _run_job
+        from .test_jobs import _lease_page
+
+        _run_job(self.server, [])
         conf = {
             "subnet4": [
                 {
                     "id": 1,
                     "subnet": "10.77.0.0/24",
-                    "reservations": [
-                        {"hw-address": "aa:bb:cc:dd:ee:77", "ip-address": "10.77.0.50", "hostname": "mover"}
-                    ],
+                    "reservations": [{"hw-address": "aa:bb:cc:dd:ee:77", "ip-address": "10.77.0.50", "hostname": "pc"}],
                 }
             ]
         }
         dhcp_plugin.import_server_config(self.server, parse_dhcp_config(conf, 4), _reservation_snapshot(conf, 4))
         referenced = IPAddress.objects.get(address="10.77.0.50/24")
+        lease_phase = LeasePhase(max_leases=None, subnet_prefix_lengths={1: 24})
+        lease = {"ip-address": "10.77.0.50", "hostname": "pc", "subnet-id": 1}
+        empty_kea = {
+            **_catalogue_responses_for_subnets(4, [{"id": 1, "subnet": "10.77.0.0/24"}]),
+            "lease4-get-page": _lease_page([]),
+            "reservation-get-page": _res_page([]),
+        }
+        for mode in ("remove", "deprecate"):
+            with self.subTest(mode), override_settings(PLUGINS_CONFIG=plugins_config(stale_ip_cleanup=mode)):
+                with stub_kea({"lease4-get-page": _lease_page([lease])}):
+                    reconcile(self.server, 4, [lease_phase])
+                self.assertTrue(IPAMOwnershipLink.objects.filter(ip_address=referenced).exists())
 
-        # An unreferenced, same-hostname Kea-synced IP (the kind cleanup is meant to remove).
-        unreferenced = IPAddress.objects.create(
-            address="10.77.0.51/24",
-            status="dhcp",
-            dns_name="mover",
-            description="Synced from Kea DHCP lease",
-        )
+                # Both phases run, so the cleanup decides the last link of the Server.
+                with stub_kea(empty_kea):
+                    reservation_phase = ReservationPhase(subnet_catalogue.for_synchronization(self.server, 4))
+                    report = reconcile(self.server, 4, [lease_phase, reservation_phase])
 
-        # Device "moved" to a third IP → cleanup runs for hostname "mover".
-        cleaned = _cleanup_stale_ips("10.77.0.99", "mover", mode="remove")
-
-        self.assertEqual(cleaned, 1)  # only the unreferenced one
-        self.assertFalse(IPAddress.objects.filter(pk=unreferenced.pk).exists())
-        self.assertTrue(IPAddress.objects.filter(pk=referenced.pk).exists())
-        self.assertIn(referenced.pk, dhcp_plugin.sys4_referenced_ip_ids())
+                self.assertEqual((report.removed, report.deprecated), (0, 0))
+                self.assertIn(IPAddress.objects.get(pk=referenced.pk).status, {"reserved", "dhcp"})
+                self.assertFalse(IPAMOwnershipLink.objects.filter(ip_address=referenced).exists())
 
 
-class ImportSummaryCompletenessTest(SimpleTestCase):
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class ImportSummaryCompletenessTest(TestCase):
     """Reservation import counts must distinguish traversal and record failures.
 
     Needs no ``netbox_dhcp`` model: a Snapshot with no records never
@@ -1337,7 +1352,8 @@ class ImportSummaryCompletenessTest(SimpleTestCase):
         from netbox_kea.integrations.dhcp_plugin import ImportSummary, import_reservation_snapshot
 
         summary = ImportSummary()
-        import_reservation_snapshot(None, None, snapshot, None, summary)
+        observation = ReservationObservation(snapshot, next_confirmation_number()) if snapshot is not None else None
+        import_reservation_snapshot(_make_db_server(), None, observation, None, summary)
         return summary
 
     def test_absent_snapshot_reports_the_counts_as_unread(self):
@@ -1389,7 +1405,7 @@ class SkippedReservationCompletenessTest(TestCase):
         # No KeaDhcpLink exists for subnet-id 7, so the record cannot be imported.
         import_reservation_snapshot(self.server, None, snapshot, None, summary)
 
-        self.assertTrue(snapshot.complete)
+        self.assertTrue(snapshot.snapshot.complete)
         self.assertEqual(summary.reservations_created, 0)
         self.assertFalse(summary.reservations_unread)
         self.assertEqual(summary.reservations_skipped, 1)

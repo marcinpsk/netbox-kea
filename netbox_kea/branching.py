@@ -15,13 +15,16 @@ from typing import Any
 
 from django.apps import apps
 from django.contrib import messages
+from django.core.exceptions import ObjectDoesNotExist
 from django.db import models
 from django.db.models.signals import pre_delete, pre_save
 from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import render
 from django.urls import reverse
+from django.utils.html import escape
 from django_htmx.http import HttpResponseClientRedirect, HttpResponseClientRefresh
 from rest_framework.permissions import SAFE_METHODS
+from utilities.exceptions import AbortRequest
 
 APP_LABEL = "netbox_kea"
 BRANCHING_APP_LABEL = "netbox_branching"
@@ -29,15 +32,25 @@ SOURCES_HEADER = "X-NetBox-Kea-Sources"
 # The REST "code" of each refusal.
 BRANCH_WRITE_REFUSED = "branch_write_refused"
 BRANCH_SELECTION_UNUSABLE = "branch_selection_unusable"
+# The model whose delete in a branch means a delete of an object that a Kea Server owns (ADR 0006).
+OWNERSHIP_LINK_LABEL = f"{APP_LABEL}.IPAMOwnershipLink"
 
 
-class BranchActive(Exception):
-    """A plugin change was refused because a branch is active. Not a KeaException, so no Kea handler catches it."""
+class BranchActive(AbortRequest):
+    """A plugin change was refused because a branch is active. Not a KeaException, so no Kea handler catches it.
+
+    An AbortRequest, so a NetBox view rolls back, clears its queued events and shows ``message``. NetBox marks
+    ``message`` safe, so it holds the escaped text.
+    """
 
     def __init__(self, operation: str, branch: Any) -> None:
-        super().__init__(f"{operation} is refused while branch {branch} is active")
+        self.text = f"{operation} is refused. {_refused_text(branch)}"
+        super().__init__(escape(self.text))
         self.operation = operation
         self.branch = branch
+
+    def __str__(self) -> str:
+        return self.text
 
 
 def installed() -> bool:
@@ -83,8 +96,8 @@ def is_branchable(model: type[models.Model]) -> bool | None:
 
     A constant, so it cannot raise: netbox-branching treats a raising resolver as no answer and then
     makes a change-logged model such as Server branchable. Guard 2 in test_branching.py computes the
-    foreign-key rule and fails when a plugin model would need a branch copy. netbox-branching also
-    calls this with historical models.
+    relations that a delete in a branch reaches, and fails when one is outside the design. netbox-branching
+    also calls this with historical models.
     """
     return False if model._meta.app_label == APP_LABEL else None
 
@@ -107,15 +120,40 @@ def _refuse_delete_in_branch(sender: Any, instance: Any, **kwargs: Any) -> None:
     refuse_in_branch(f"A delete of {sender._meta.label} {instance.pk}")
 
 
-def connect_branch_refusal() -> None:
-    """Refuse a save or a delete of every netbox_kea row in a branch: the resolver keeps each model in main.
+def _refuse_owned_delete_in_branch(sender: Any, instance: Any, **kwargs: Any) -> None:
+    if (branch := active_branch()) is None:
+        return
+    try:
+        owned = instance.owned_object
+    except ObjectDoesNotExist:
+        raise BranchActive(f"A delete of {sender._meta.label} {instance.pk}", branch) from None
+    raise BranchActive(
+        f"A delete of {owned._meta.verbose_name} {owned}, which Kea Server {instance.server} owns,", branch
+    )
+
+
+def refusal_uid(model: type[models.Model]) -> str:
+    """Return the dispatch_uid of the branch refusal receivers of *model*."""
+    return f"{APP_LABEL}.refuse_in_branch.{model._meta.label}"
+
+
+def connect_refusal(model: type[models.Model]) -> None:
+    """Refuse a save or a delete of a *model* row in a branch.
 
     A pre_delete receiver disables Django's fast delete, so a queryset delete() reaches it too.
     """
+    uid = refusal_uid(model)
+    owned = model._meta.label == OWNERSHIP_LINK_LABEL
+    pre_save.connect(_refuse_save_in_branch, sender=model, dispatch_uid=uid)
+    pre_delete.connect(
+        _refuse_owned_delete_in_branch if owned else _refuse_delete_in_branch, sender=model, dispatch_uid=uid
+    )
+
+
+def connect_branch_refusal() -> None:
+    """Refuse a save or a delete of every netbox_kea row in a branch: the resolver keeps each model in main."""
     for model in apps.get_app_config(APP_LABEL).get_models():
-        uid = f"{APP_LABEL}.refuse_in_branch.{model._meta.label}"
-        pre_save.connect(_refuse_save_in_branch, sender=model, dispatch_uid=uid)
-        pre_delete.connect(_refuse_delete_in_branch, sender=model, dispatch_uid=uid)
+        connect_refusal(model)
 
 
 def plugin_owned(view_func: Callable[..., Any]) -> bool:
@@ -141,7 +179,7 @@ def selection_unusable(request: HttpRequest) -> bool:
 
 def _branch_refused_text(branch: Any) -> str:
     return (
-        f"Branch {branch.name} is active. Kea is live and shared by every branch, and netbox-kea data exists "
+        f"Branch {branch} is active. Kea is live and shared by every branch, and netbox-kea data exists "
         "in main only, so netbox-kea refuses changes in a branch. Switch to main to make this change."
     )
 
@@ -150,6 +188,11 @@ _UNUSABLE_TEXT = (
     "The selected branch is not usable: it is unknown, merged, archived or not ready. "
     "netbox-kea refused the change, and nothing changed."
 )
+
+
+def _refused_text(branch: Any) -> str:
+    # netbox-branching 1.2.1 activates its own 400 response as the branch for an unready API branch header.
+    return _UNUSABLE_TEXT if isinstance(branch, HttpResponse) else _branch_refused_text(branch)
 
 
 def _refusal(request: HttpRequest, text: str, code: str, htmx: Callable[[], HttpResponse]) -> HttpResponse:

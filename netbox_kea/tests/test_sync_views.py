@@ -16,9 +16,8 @@ Lease endpoints accept POST with:
 Returns an HTMX HTML fragment (<td> content) with a link to the new/updated
 NetBox IPAddress, or an error message if something went wrong.
 
-These tests drive the **real** ``KeaClient`` and the **real** sync functions
-(``sync_lease_to_netbox`` / ``sync_reservation_to_netbox``) — they assert the
-NetBox ``IPAddress`` rows those create. Only the HTTP boundary to Kea is stubbed
+These tests drive the real ``KeaClient`` and IPAM synchronization operations.
+They assert the NetBox ``IPAddress`` rows and ownership links. Only the HTTP boundary to Kea is stubbed
 via ``kea_stub.stub_kea``:
 
 * single lease sync       → ``lease{v}-get`` (echoes the posted IP back)
@@ -29,6 +28,7 @@ via ``kea_stub.stub_kea``:
 from __future__ import annotations
 
 import requests
+from django.contrib import messages as django_messages
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.db.models.signals import pre_save
@@ -36,7 +36,7 @@ from django.test import TestCase, override_settings
 from django.urls import reverse
 from ipam.models import IPAddress as NbIP
 
-from netbox_kea.models import Server
+from netbox_kea.models import IPAMOwnershipLink, Server, next_confirmation_number
 from netbox_kea.views.reservations import _RESERVATION_PAGE_SIZE
 
 from .kea_stub import _catalogue_responses, _res_page, _reservation_mutation_commands, queued, stub_kea
@@ -106,16 +106,148 @@ class _SyncViewBase(TestCase):
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestMalformedLeaseSyncView(_SyncViewBase):
+    def test_nonstring_hostname_returns_a_generic_error_without_claiming(self):
+        for family, address, network in ((4, "198.18.0.10", "198.18.0.0/24"), (6, "2001:db8::10", "2001:db8::/64")):
+            for hostname in (42, True, [], {"private diagnostic": "hostname"}):
+                with (
+                    self.subTest(family=family, hostname=hostname),
+                    stub_kea(
+                        {
+                            **_catalogue_responses(family, 1, network),
+                            f"lease{family}-get": _lease_get(hostname),
+                        }
+                    ),
+                ):
+                    response = self.client.post(
+                        reverse(f"plugins:netbox_kea:server_lease{family}_sync", args=[self.server.pk]),
+                        {"ip_address": address},
+                    )
+                    self.assertEqual(response.status_code, 500)
+                    self.assertEqual(response.content, b"Sync error: see server logs for details.")
+                    self.assertFalse(NbIP.objects.exists())
+                    self.assertFalse(IPAMOwnershipLink.objects.exists())
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestLease4SyncView(_SyncViewBase):
     """POST to server_lease4_sync creates/updates a NetBox IPAddress."""
+
+    def test_failed_mac_update_keeps_the_lease_claim_and_rolls_back_only_the_mac(self):
+        from dcim.models import MACAddress
+        from django.db import connection
+
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "ALTER TABLE dcim_macaddress ADD CONSTRAINT reject_sync_hostname "
+                "CHECK (description <> 'dhcp_hostname: rejected.example.invalid')"
+            )
+        for index, existing in enumerate((False, True)):
+            hardware = f"02:00:00:00:00:{index + 1:02x}"
+            address = f"198.18.0.{10 + index}"
+            original = "Operator description"
+            if existing:
+                MACAddress.objects.create(mac_address=hardware, description=original)
+            with (
+                self.subTest(existing=existing),
+                stub_kea(
+                    {
+                        **_catalogue_responses(4, 1, "198.18.0.0/24"),
+                        "lease4-get": _lease_get("rejected.example.invalid", **{"hw-address": hardware}),
+                    }
+                ),
+            ):
+                response = self.client.post(self._url(), {"ip_address": address})
+                self.assertContains(response, f"{address}/24")
+                ip = NbIP.objects.get(address__net_host=address)
+                self.assertEqual((ip.status, ip.dns_name), ("dhcp", "rejected.example.invalid"))
+                self.assertEqual(IPAMOwnershipLink.objects.get(ip_address=ip).server_id, self.server.pk)
+                if existing:
+                    self.assertEqual(MACAddress.objects.get(mac_address=hardware).description, original)
+                else:
+                    self.assertFalse(MACAddress.objects.filter(mac_address=hardware).exists())
+            with stub_kea(
+                {
+                    **_catalogue_responses(4, 1, "198.18.0.0/24"),
+                    "lease4-get": _lease_get("accepted.example.invalid", **{"hw-address": hardware}),
+                }
+            ):
+                response = self.client.post(self._url(), {"ip_address": address})
+            self.assertContains(response, f"{address}/24")
+            self.assertEqual(
+                MACAddress.objects.get(mac_address=hardware).description, "dhcp_hostname: accepted.example.invalid"
+            )
+
+    def test_malformed_lease_subnet_id_returns_a_generic_error_without_claiming(self):
+        from netbox_kea.models import IPAMOwnershipLink
+
+        for index, subnet_id in enumerate(([], {}, True, False, 1.0, "1", None, 0, -1, 4_294_967_295)):
+            address = f"198.18.0.{20 + index}"
+            with (
+                self.subTest(subnet_id=subnet_id),
+                stub_kea(
+                    {
+                        **_catalogue_responses(4, 1, "198.18.0.0/24"),
+                        "lease4-get": _lease_get("host.example.com", **{"subnet-id": subnet_id}),
+                    }
+                ),
+            ):
+                response = self.client.post(self._url(), {"ip_address": address})
+                self.assertContains(response, "Sync error: see server logs", status_code=500)
+                self.assertFalse(NbIP.objects.filter(address__net_host=address).exists())
+                self.assertFalse(IPAMOwnershipLink.objects.filter(ip_address__address__net_host=address).exists())
+
+    def test_highest_valid_kea_subnet_id_can_be_claimed(self):
+        from netbox_kea.models import IPAMOwnershipLink
+
+        with stub_kea(
+            {
+                **_catalogue_responses(4, 4_294_967_294, "198.18.0.0/24"),
+                "lease4-get": _lease_get("host.example.com", **{"subnet-id": 4_294_967_294}),
+            }
+        ):
+            response = self.client.post(self._url(), {"ip_address": "198.18.0.10"})
+        self.assertContains(response, "198.18.0.10/24")
+        self.assertEqual(IPAMOwnershipLink.objects.get(server=self.server).facts["prefix_length"], 24)
+
+    def test_unavailable_catalogue_returns_a_generic_error_without_claiming(self):
+        from netbox_kea.models import IPAMOwnershipLink
+
+        with stub_kea(
+            {
+                "lease4-get": _lease_get("host.example.com"),
+                "subnet4-list": {"result": 1, "text": "private diagnostic"},
+                "config-get": {"result": 1, "text": "private diagnostic"},
+            }
+        ):
+            response = self.client.post(self._url(), {"ip_address": "198.18.0.10"})
+        self.assertContains(response, "Sync error: see server logs", status_code=500)
+        self.assertNotContains(response, "private diagnostic", status_code=500)
+        self.assertFalse(NbIP.objects.exists())
+        self.assertFalse(IPAMOwnershipLink.objects.exists())
+
+    def test_duplicate_ipam_rows_report_a_sync_error_without_changing_either(self):
+        from netbox_kea.models import IPAMOwnershipLink
+
+        NbIP.objects.create(address="198.18.0.10/24", description="[kea-sync: lease]")
+        NbIP.objects.create(address="198.18.0.10/32", description="[kea-sync: lease]")
+        before = list(NbIP.objects.order_by("pk").values())
+        response = self.client.post(
+            reverse("plugins:netbox_kea:server_lease4_sync", args=[self.server.pk]),
+            {"ip_address": "198.18.0.10"},
+        )
+        self.assertContains(response, "Sync error: see server logs", status_code=500)
+        self.assertEqual(list(NbIP.objects.order_by("pk").values()), before)
+        self.assertFalse(IPAMOwnershipLink.objects.exists())
 
     def setUp(self):
         super().setUp()
         self._start_stub(
             {
+                **_catalogue_responses(4, 1, "192.168.0.0/16"),
                 "lease4-get": _lease_get(
                     "mock-host.local", **{"hw-address": "aa:bb:cc:00:00:01", "valid-lft": 86400, "cltt": 1700000000}
-                )
+                ),
             }
         )
 
@@ -191,7 +323,12 @@ class TestLease6SyncView(_SyncViewBase):
     def setUp(self):
         super().setUp()
         self._start_stub(
-            {"lease6-get": _lease_get("mock-v6.local", duid="01:02:03:04", **{"valid-lft": 86400, "cltt": 1700000000})}
+            {
+                **_catalogue_responses(6, 1, "2001:db8::/64"),
+                "lease6-get": _lease_get(
+                    "mock-v6.local", duid="01:02:03:04", **{"valid-lft": 86400, "cltt": 1700000000}
+                ),
+            }
         )
 
     def _url(self):
@@ -204,7 +341,7 @@ class TestLease6SyncView(_SyncViewBase):
         )
         self.assertEqual(response.status_code, 200)
 
-    def test_creates_netbox_ip_with_slash128_for_ipv6(self):
+    def test_creates_netbox_ip_with_kea_subnet_mask_for_ipv6(self):
 
         self.client.post(
             self._url(),
@@ -212,7 +349,7 @@ class TestLease6SyncView(_SyncViewBase):
         )
         ip = NbIP.objects.filter(address__net_host="2001:db8::2").first()
         self.assertIsNotNone(ip)
-        self.assertTrue(str(ip.address).endswith("/128"))
+        self.assertTrue(str(ip.address).endswith("/64"))
 
     def test_created_ip_has_dhcp_status(self):
 
@@ -360,6 +497,36 @@ class TestReservation6SyncView(_SyncViewBase):
         self.assertIsNotNone(ip)
         self.assertEqual(ip.status, "reserved")
 
+    def test_multi_address_sync_reports_and_links_each_address_in_server_vrf(self):
+        from ipam.models import VRF
+
+        from netbox_kea.models import IPAMOwnershipLink
+
+        vrf = VRF.objects.create(name="reservation-vrf")
+        self.server.sync_vrf = vrf
+        self.server.save()
+        with stub_kea(
+            {
+                **_catalogue_responses(6, 1, "2001:db8:1::/64"),
+                "reservation-get": _reservation_get(
+                    "multi.example.com",
+                    "2001:db8:1::50",
+                    version=6,
+                    duid="01:02:03:04",
+                    **{"ip-addresses": ["2001:db8:1::50", "2001:db8:1::51"]},
+                ),
+            }
+        ):
+            response = self.client.post(self._url())
+        self.assertContains(response, "Synchronized 2/2")
+        for address in ("2001:db8:1::50", "2001:db8:1::51"):
+            self.assertContains(response, address)
+            ip = NbIP.objects.get(vrf=vrf, address__net_host=address)
+            self.assertContains(response, ip.get_absolute_url())
+            link = IPAMOwnershipLink.objects.get(ip_address=ip)
+            self.assertEqual((link.server_id, link.family, link.source), (self.server.pk, 6, "reservation"))
+        self.assertEqual(NbIP.objects.count(), 2)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TestReservationBulkSyncView
@@ -372,6 +539,31 @@ class TestReservation4BulkSyncView(_SyncViewBase):
 
     def _url(self):
         return reverse("plugins:netbox_kea:server_reservation4_bulk_sync", args=[self.server.pk])
+
+    def test_complete_sync_removes_only_its_stale_reservation_link(self):
+        ip = NbIP.objects.create(
+            address="198.18.0.10/24", status="active", description="[kea-sync: lease + reservation]"
+        )
+        other_server = _make_server(name="other-owner")
+        links = [
+            IPAMOwnershipLink.objects.create(
+                server=owner,
+                family=4,
+                source=source,
+                ip_address=ip,
+                confirmation=next_confirmation_number(),
+                facts={"hostname": "", "prefix_length": 24},
+            )
+            for owner, source in [(self.server, "lease"), (self.server, "reservation"), (other_server, "reservation")]
+        ]
+        with stub_kea({**_catalogue_responses(4, 1, "198.18.0.0/24"), "reservation-get-page": _res_page([])}):
+            response = self.client.post(self._url())
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(set(IPAMOwnershipLink.objects.values_list("pk", flat=True)), {links[0].pk, links[2].pk})
+        ip.refresh_from_db()
+        self.assertEqual(ip.status, "active")
+        summary = " ".join(str(message) for message in django_messages.get_messages(response.wsgi_request))
+        self.assertIn("0 created, 0 updated, 0 conflicts skipped, 1 stale links cleaned", summary)
 
     def test_redirects_after_success(self):
         hosts = [
@@ -432,15 +624,14 @@ class TestReservation4BulkSyncView(_SyncViewBase):
             address="10.0.13.2/32",
             status="reserved",
             dns_name="shared-bulk",
-            description="Synced from Kea DHCP reservation",
+            description="[kea-sync: reservation]",
         )
-        # No Kea record holds this address, so cleanup must remove it. Without it the
-        # two assertions below also pass when cleanup never runs.
+        # A marker without an ownership link does not authorize cleanup.
         NbIP.objects.create(
             address="10.0.13.99/32",
             status="reserved",
             dns_name="shared-bulk",
-            description="Synced from Kea DHCP reservation",
+            description="[kea-sync: reservation]",
         )
         hosts = [
             {
@@ -459,9 +650,9 @@ class TestReservation4BulkSyncView(_SyncViewBase):
             NbIP.objects.filter(address__net_host="10.0.13.2").exists(),
             "the skipped Global Reservation lost its address to stale-IP cleanup",
         )
-        self.assertFalse(
+        self.assertTrue(
             NbIP.objects.filter(address__net_host="10.0.13.99").exists(),
-            "stale-IP cleanup did not run, so the assertions above prove nothing",
+            "an unowned marker address must stay",
         )
 
     def test_malformed_snapshot_fails_closed_with_a_message(self):
@@ -476,7 +667,7 @@ class TestReservation4BulkSyncView(_SyncViewBase):
             response,
             reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk]),
         )
-        self.assertContains(response, "Failed to fetch reservations")
+        self.assertContains(response, "Reservation phase incomplete; cleanup skipped")
         self.assertEqual(NbIP.objects.count(), 0)
 
     def test_distinguishes_quarantined_records_from_truncated_traversal(self):
@@ -547,9 +738,10 @@ class TestSyncViewPermissionChecks(_SyncViewBase):
         # self.user is superuser — should succeed as before
         url = reverse("plugins:netbox_kea:server_lease4_sync", args=[self.server.pk])
         stub = {
+            **_catalogue_responses(4, 1, "192.168.99.0/24"),
             "lease4-get": _lease_get(
                 "mock-host.local", **{"hw-address": "aa:bb:cc:00:00:01", "valid-lft": 86400, "cltt": 1700000000}
-            )
+            ),
         }
         with stub_kea(stub):
             response = self.client.post(url, {"ip_address": "192.168.99.3"})
@@ -694,17 +886,25 @@ class TestReservationCheckNetboxIPView(_SyncViewBase):
         self.assertEqual(response.content.decode().strip(), "")
 
     def test_info_alert_for_kea_managed_ip(self):
-        NbIP.objects.create(address="10.0.40.1/24", status="reserved", description="Synced from Kea DHCP reservation")
+        NbIP.objects.create(address="10.0.40.1/24", status="reserved", description="[kea-sync: reservation]")
         response = self.client.get(self._url(), {"ip": "10.0.40.1"})
         body = response.content.decode()
         self.assertIn("alert-info", body)
         self.assertIn("Already in NetBox IPAM", body)
 
-    def test_info_alert_for_blank_description_ip(self):
-        NbIP.objects.create(address="10.0.40.2/24", status="active", description="")
-        response = self.client.get(self._url(), {"ip": "10.0.40.2"})
-        body = response.content.decode()
-        self.assertIn("alert-info", body)
+    def test_warning_for_blank_description_ip_leaves_row_and_links_unchanged(self):
+        ip = NbIP.objects.create(address="198.18.0.2/24", status="active", description="")
+        before_row = NbIP.objects.values().get(pk=ip.pk)
+        before_links = list(IPAMOwnershipLink.objects.filter(ip_address=ip).order_by("pk").values())
+        response = self.client.get(self._url(), {"ip": "198.18.0.2"})
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "alert-warning")
+        self.assertContains(response, "This IP exists in NetBox and was <strong>not</strong> created by Kea sync")
+        self.assertContains(response, "Syncing will overwrite this entry.")
+        self.assertNotContains(response, "alert-info")
+        self.assertNotContains(response, "Already in NetBox IPAM")
+        self.assertEqual(NbIP.objects.values().get(pk=ip.pk), before_row)
+        self.assertEqual(list(IPAMOwnershipLink.objects.filter(ip_address=ip).order_by("pk").values()), before_links)
 
     def test_warning_alert_for_foreign_ip(self):
         NbIP.objects.create(address="10.0.40.3/24", status="active", description="Router loopback")

@@ -34,15 +34,17 @@ if not branching.installed():
         raise RuntimeError(f"{_REQUIRE_BRANCHING}=1, but netbox_branching is not an installed app")
     pytest.skip("netbox-branching is not an installed app", allow_module_level=True)
 
+from core.events import OBJECT_DELETED  # noqa: E402
 from core.exceptions import JobFailed  # noqa: E402
 from core.models import Job, ObjectType  # noqa: E402
+from dcim.models import Device, DeviceRole, DeviceType, Interface, Manufacturer, Site  # noqa: E402
 from django.apps import apps  # noqa: E402
 from django.conf import settings  # noqa: E402
 from django.contrib.auth import get_user_model  # noqa: E402
 from django.contrib.contenttypes.models import ContentType  # noqa: E402
 from django.core.cache import cache  # noqa: E402
 from django.core.management import call_command  # noqa: E402
-from django.db import connection, connections, models, router  # noqa: E402
+from django.db import connection, connections, models, router, transaction  # noqa: E402
 from django.db.migrations import RunPython, RunSQL, SeparateDatabaseAndState  # noqa: E402
 from django.db.migrations.loader import MigrationLoader  # noqa: E402
 from django.db.migrations.operations.base import Operation  # noqa: E402
@@ -50,9 +52,11 @@ from django.db.migrations.operations.models import ModelOperation  # noqa: E402
 from django.db.models import ProtectedError  # noqa: E402
 from django.db.models.signals import pre_delete, pre_save  # noqa: E402
 from django.test import Client, RequestFactory, SimpleTestCase, TransactionTestCase, override_settings  # noqa: E402
-from django.test.utils import CaptureQueriesContext  # noqa: E402
+from django.test.utils import CaptureQueriesContext, isolate_apps  # noqa: E402
 from django.urls import URLPattern, URLResolver, get_resolver, resolve, reverse  # noqa: E402
-from ipam.models import VRF, IPAddress  # noqa: E402
+from django.utils.html import escape  # noqa: E402
+from ipam.models import VRF, IPAddress, IPRange, Prefix  # noqa: E402
+from netaddr import IPNetwork  # noqa: E402
 from netbox.context_managers import event_tracking  # noqa: E402
 from netbox_branching import utilities as branching_utilities  # noqa: E402
 from netbox_branching.choices import BranchStatusChoices  # noqa: E402
@@ -60,16 +64,28 @@ from netbox_branching.constants import BRANCH_HEADER, COOKIE_NAME, QUERY_PARAM  
 from netbox_branching.models import Branch  # noqa: E402
 from netbox_branching.utilities import activate_branch, supports_branching  # noqa: E402
 from rest_framework.permissions import SAFE_METHODS  # noqa: E402
+from utilities.exceptions import AbortRequest  # noqa: E402
 
 from netbox_kea import server_configuration  # noqa: E402
 from netbox_kea.jobs import KeaIpamSyncJob  # noqa: E402
 from netbox_kea.kea import KeaCommand, KeaException  # noqa: E402
-from netbox_kea.models import KeaDhcpLink, Server, SyncConfig  # noqa: E402
+from netbox_kea.models import IPAMOwnershipLink, KeaDhcpLink, Server, SyncConfig, next_confirmation_number  # noqa: E402
 from netbox_kea.tests.kea_stub import _leases_per_subnet, _res_get, _res_page, _subnet_stats, stub_kea  # noqa: E402
-from netbox_kea.tests.utils import _WRITE_VERBS, _make_db_server, _refusal_receivers  # noqa: E402
+from netbox_kea.tests.utils import (  # noqa: E402
+    _WRITE_VERBS,
+    DISPATCHED_EVENTS,
+    _make_db_server,
+    _refusal_receivers,
+)
 
-# Changing this set needs a design decision (docs/design/netbox-branching.md).
-BRANCHABLE_MODELS: frozenset[str] = frozenset()
+# Changing this set needs a design decision (docs/design/ipam-ownership-branching.md).
+EXPOSED_RELATIONS: frozenset[tuple[str, str]] = frozenset(
+    (f"netbox_kea.IPAMOwnershipLink.{key}", "CASCADE") for key in ("ip_address", "prefix", "ip_range")
+)
+_DESIGN_DECISION = (
+    "This change needs a design decision (docs/design/ipam-ownership-branching.md): the resolver keeps every "
+    "netbox_kea model in main, so a delete in a branch that reaches one of these relations writes main's table."
+)
 
 # The on_delete handlers that do not write the referencing row. Every other one does (SET(...) and DB_* too).
 _NON_WRITING_ON_DELETE = (models.PROTECT, models.RESTRICT, models.DO_NOTHING)
@@ -79,54 +95,92 @@ def _plugin_models() -> list[type[models.Model]]:
     return list(apps.get_app_config(APP_LABEL).get_models())
 
 
-def _writing_foreign_keys(model: type[models.Model]) -> list[models.ForeignKey]:
+def _rule_models() -> list[type[models.Model]]:
+    """Return the models that guard 2 reads: every plugin model, the auto-created through models of an M2M too."""
+    return list(apps.get_app_config(APP_LABEL).get_models(include_auto_created=True))
+
+
+def _on_delete_name(field: models.ForeignObject) -> str:
+    handler = field.remote_field.on_delete
+    return getattr(handler, "__name__", repr(handler))
+
+
+def _relation_key(field: models.ForeignObject) -> tuple[str, str]:
+    return f"{field.model._meta.label}.{field.name}", _on_delete_name(field)
+
+
+def _writing_relations(model: type[models.Model]) -> list[models.ForeignObject]:
+    """Return each forward many-to-one or one-to-one relation of *model* whose on_delete writes its row."""
     return [
         field
-        for field in model._meta.concrete_fields
-        if isinstance(field, models.ForeignKey) and field.remote_field.on_delete not in _NON_WRITING_ON_DELETE
+        for field in model._meta.get_fields()
+        if isinstance(field, models.ForeignObject)
+        and not field.auto_created
+        and field.remote_field.on_delete not in _NON_WRITING_ON_DELETE
     ]
 
 
-def _models_that_need_a_branch_copy() -> dict[str, list[str]]:
-    """Return each plugin model that a delete in a branch writes, with the foreign key path that reaches it.
+def _exposed_relations(rule_models: Sequence[type[models.Model]]) -> dict[tuple[str, str], list[str]]:
+    """Return each relation that a delete in a branch reaches, with the relation path that reaches it.
 
-    A writing foreign key to a branchable model outside the plugin starts a path. A writing foreign
-    key to a plugin model on a path extends it, so the rule is transitive.
+    A writing relation to a branchable model outside the plugin is exposed. A writing relation to a plugin
+    model that holds an exposed relation is exposed too, so the rule is transitive.
     """
-    paths: dict[str, list[str]] = {}
-    for model in _plugin_models():
-        for field in _writing_foreign_keys(model):
-            target = field.related_model
-            if target._meta.app_label != APP_LABEL and supports_branching(target):
-                paths.setdefault(model._meta.label, [f"{model._meta.label}.{field.name} -> {target._meta.label}"])
+    exposed: dict[tuple[str, str], list[str]] = {}
+    reached: dict[str, list[str]] = {}
     grown = True
     while grown:
         grown = False
-        for model in _plugin_models():
-            if model._meta.label in paths:
-                continue
-            for field in _writing_foreign_keys(model):
-                if (target_path := paths.get(field.related_model._meta.label)) is not None:
-                    paths[model._meta.label] = [f"{model._meta.label}.{field.name}", *target_path]
-                    grown = True
-                    break
-    return paths
+        for model in rule_models:
+            for field in _writing_relations(model):
+                key, target = _relation_key(field), field.related_model._meta
+                if key in exposed:
+                    continue
+                if target.app_label != APP_LABEL and supports_branching(field.related_model):
+                    path = [f"{key[0]} ({key[1]}) -> {target.label}"]
+                elif target.label in reached:
+                    path = [f"{key[0]} ({key[1]})", *reached[target.label]]
+                else:
+                    continue
+                exposed[key] = path
+                reached.setdefault(model._meta.label, path)
+                grown = True
+    return exposed
+
+
+def _guard_failures(rule_models: Sequence[type[models.Model]], pinned: frozenset[tuple[str, str]]) -> list[str]:
+    """Return why the relations that a delete in a branch reaches do not match the design, or nothing."""
+    exposed = _exposed_relations(rule_models)
+    failures = []
+    if set(exposed) != pinned:
+        failures.append(
+            "The relations that a delete in a branch reaches changed: "
+            + "; ".join(" -> ".join(path) for path in exposed.values())
+            + f". Pinned: {sorted(pinned)}."
+        )
+    receivers = _refusal_receivers(pre_delete)
+    by_key = {_relation_key(field): field for model in rule_models for field in _writing_relations(model)}
+    for key in exposed:
+        field = by_key[key]
+        model = field.model._meta
+        if not (isinstance(field, models.ForeignKey) and field.concrete):
+            failures.append(f"{key[0]} is not a concrete ForeignKey, so no pre_delete receiver refuses it.")
+        if field.remote_field.on_delete is not models.CASCADE:
+            failures.append(f"{key[0]} is {key[1]}, not CASCADE: it writes main's row with no pre_delete signal.")
+        if model.auto_created:
+            failures.append(f"{key[0]} is on the auto-created model {model.label}, which sends no pre_delete signal.")
+        if model.label not in receivers:
+            failures.append(f"{key[0]} is on {model.label}, which has no branch refusal receiver.")
+    return [f"{failure} {_DESIGN_DECISION}" for failure in failures]
 
 
 class BranchabilityPinTest(SimpleTestCase):
-    """Guard 2: the rule, computed here only, gives the pinned set, and netbox-branching routes none to a branch."""
+    """Guard 2: the rule, computed here only, gives the pinned relations, and netbox-branching routes none to a branch."""
 
-    def test_the_models_that_need_a_branch_copy_are_the_pinned_set(self):
-        paths = _models_that_need_a_branch_copy()
+    def test_the_relations_that_a_delete_in_a_branch_reaches_are_the_pinned_set(self):
+        failures = _guard_failures(_rule_models(), EXPOSED_RELATIONS)
 
-        self.assertEqual(
-            set(paths),
-            BRANCHABLE_MODELS,
-            "The netbox_kea models that a delete in a branch writes changed: "
-            + "; ".join(" -> ".join(path) for path in paths.values())
-            + ". This change needs a design decision (docs/design/netbox-branching.md): the resolver keeps "
-            "every netbox_kea model in main, so open branches lack the table, and the write reaches main.",
-        )
+        self.assertEqual(failures, [], "\n".join(failures))
 
     def test_netbox_branching_keeps_every_plugin_model_in_main(self):
         for model in _plugin_models():
@@ -135,9 +189,74 @@ class BranchabilityPinTest(SimpleTestCase):
 
     def test_the_rule_reads_every_plugin_model(self):
         self.assertEqual(
-            {model._meta.label for model in _plugin_models()},
-            {"netbox_kea.Server", "netbox_kea.SyncConfig", "netbox_kea.KeaDhcpLink"},
+            {model._meta.label for model in _rule_models()},
+            {"netbox_kea.Server", "netbox_kea.SyncConfig", "netbox_kea.KeaDhcpLink", "netbox_kea.IPAMOwnershipLink"},
         )
+
+
+def _ownership_keys() -> dict[str, models.ForeignKey]:
+    return {
+        name: models.ForeignKey(target, on_delete=models.CASCADE, null=True, related_name="+")
+        for name, target in (("ip_address", IPAddress), ("prefix", Prefix), ("ip_range", IPRange))
+    }
+
+
+class BranchabilityGuardProbeTest(SimpleTestCase):
+    """Guard 2 fails for each shape that the design refuses, shown with probe models in an isolated registry."""
+
+    def _probe(self, name: str, **fields: models.Field) -> list[type[models.Model]]:
+        """Define a probe model with *fields* and the refusal receivers, and return it with its through models."""
+        with isolate_apps() as registry:
+            meta = type("Meta", (), {"app_label": APP_LABEL})
+            probe = type(name, (models.Model,), {"__module__": __name__, "Meta": meta, **fields})
+        branching.connect_refusal(probe)
+        for signal in (pre_save, pre_delete):
+            self.addCleanup(signal.disconnect, sender=probe, dispatch_uid=branching.refusal_uid(probe))
+        assert registry is not None, "isolate_apps() as a context manager returns its registry"
+        return list(registry.all_models[APP_LABEL].values())
+
+    def _keys(self, probe: str, *names: str) -> frozenset[tuple[str, str]]:
+        return frozenset((f"{APP_LABEL}.{probe}.{name}", "CASCADE") for name in names)
+
+    def test_a_probe_shaped_like_the_link_passes(self):
+        rule_models = self._probe("LinkShapedProbe", **_ownership_keys())
+
+        self.assertEqual(
+            _guard_failures(rule_models, self._keys("LinkShapedProbe", "ip_address", "prefix", "ip_range")), []
+        )
+
+    def test_an_added_set_null_key_to_a_branchable_model_fails(self):
+        rule_models = self._probe(
+            "SetNullProbe", **_ownership_keys(), vrf=models.ForeignKey(VRF, on_delete=models.SET_NULL, null=True)
+        )
+        pinned = self._keys("SetNullProbe", "ip_address", "prefix", "ip_range")
+
+        changed = _guard_failures(rule_models, pinned)
+        pinned_too = _guard_failures(rule_models, pinned | {(f"{APP_LABEL}.SetNullProbe.vrf", "SET_NULL")})
+
+        self.assertIn("SetNullProbe.vrf (SET_NULL) -> ipam.VRF", "\n".join(changed))
+        self.assertEqual(len(pinned_too), 1, pinned_too)
+        self.assertIn("SetNullProbe.vrf is SET_NULL, not CASCADE", pinned_too[0])
+        self.assertIn("docs/design/ipam-ownership-branching.md", pinned_too[0])
+
+    def test_an_auto_created_many_to_many_through_model_fails(self):
+        rule_models = self._probe("ManyToManyProbe", prefixes=models.ManyToManyField(Prefix, related_name="+"))
+        through = next(model for model in rule_models if model._meta.auto_created)
+        pinned = frozenset({(f"{through._meta.label}.prefix", "CASCADE")})
+
+        failures = "\n".join(_guard_failures(rule_models, pinned))
+
+        self.assertIn(f"on the auto-created model {through._meta.label}", failures)
+
+    def test_a_disconnected_refusal_receiver_on_the_link_fails(self):
+        link = apps.get_model(APP_LABEL, "IPAMOwnershipLink")
+        pre_delete.disconnect(sender=link, dispatch_uid=branching.refusal_uid(link))
+        self.addCleanup(branching.connect_refusal, link)
+
+        failures = _guard_failures(_rule_models(), EXPOSED_RELATIONS)
+
+        self.assertEqual(len(failures), 3, failures)
+        self.assertTrue(all("which has no branch refusal receiver" in failure for failure in failures), failures)
 
 
 class ResolverTest(SimpleTestCase):
@@ -183,6 +302,13 @@ class ResolverTest(SimpleTestCase):
 
     def test_branch_active_is_not_a_kea_error(self):
         self.assertFalse(issubclass(branching.BranchActive, KeaException))
+
+    def test_branch_active_is_an_abort_request_whose_message_escapes_the_branch_name(self):
+        refused = branching.BranchActive("A test change", Branch(name="<b>probe</b>"))
+
+        self.assertIsInstance(refused, AbortRequest)
+        self.assertIn("A test change is refused. Branch &lt;b&gt;probe&lt;/b&gt; is active.", refused.message)
+        self.assertIn("A test change is refused. Branch <b>probe</b> is active.", str(refused))
 
 
 class SuiteConfigurationTest(SimpleTestCase):
@@ -751,7 +877,10 @@ class PluginRowWritesInBranchTest(TransactionTestCase):
     def test_the_receivers_cover_every_plugin_model(self):
         labels = {model._meta.label for model in _plugin_models()}
 
-        self.assertEqual(labels, {"netbox_kea.Server", "netbox_kea.SyncConfig", "netbox_kea.KeaDhcpLink"})
+        self.assertEqual(
+            labels,
+            {"netbox_kea.Server", "netbox_kea.SyncConfig", "netbox_kea.KeaDhcpLink", "netbox_kea.IPAMOwnershipLink"},
+        )
         self.assertEqual((_refusal_receivers(pre_save), _refusal_receivers(pre_delete)), (labels, labels))
 
     def test_a_save_in_a_branch_is_refused(self):
@@ -801,6 +930,29 @@ class PluginRowWritesInBranchTest(TransactionTestCase):
 
         self.assertTrue(Job.objects.filter(pk=job.pk).exists(), "the refused delete removed the Server's job")
 
+    def test_deletes_are_refused_when_main_created_the_owned_object_after_provisioning(self):
+        objects = (
+            IPAddress.objects.create(address="198.18.0.10/24"),
+            Prefix.objects.create(prefix="198.18.0.0/24"),
+            IPRange.objects.create(
+                start_address=IPNetwork("198.18.0.100/24"), end_address=IPNetwork("198.18.0.199/24")
+            ),
+        )
+        links = [_link(self.server, obj) for obj in objects]
+        before = _ipam_state()
+        for obj, link in zip(objects, links, strict=True):
+            with self.subTest(model=obj._meta.label), activate_branch(self.branch):
+                self.assertFalse(type(obj).objects.filter(pk=obj.pk).exists())
+                with self.assertRaises(branching.BranchActive) as refused:
+                    IPAMOwnershipLink.objects.filter(pk=link.pk).delete()
+                self.assertIs(refused.exception.branch, self.branch)
+                self.assertIn(f"A delete of {link._meta.label} {link.pk}", str(refused.exception))
+
+        with activate_branch(self.branch), self.assertRaises(branching.BranchActive):
+            Server.objects.filter(pk=self.server.pk).delete()
+
+        self.assertEqual(_ipam_state(), before)
+
     def test_on_main_a_save_and_a_delete_are_not_refused(self):
         self.server.ca_url = _AFTER
         self.server.save()
@@ -808,6 +960,311 @@ class PluginRowWritesInBranchTest(TransactionTestCase):
 
         self.assertEqual(Server.objects.get(pk=self.server.pk).ca_url, _AFTER)
         self.assertFalse(KeaDhcpLink.objects.filter(pk=self.link.pk).exists())
+
+
+_OWNED_KEY = {IPAddress: "ip_address", Prefix: "prefix", IPRange: "ip_range"}
+_OWNED_SOURCE = {IPAddress: "lease", Prefix: "subnet", IPRange: "pool"}
+_EVENTS_RECORDER = "netbox_kea.tests.utils.record_dispatched_events"
+
+
+def _link(server: Server, obj: models.Model) -> IPAMOwnershipLink:
+    """Link *obj* to *server* in main, as the IPAM sync would."""
+    return IPAMOwnershipLink.objects.create(
+        server=server,
+        family=4,
+        source=_OWNED_SOURCE[type(obj)],
+        confirmation=next_confirmation_number(),
+        **{_OWNED_KEY[type(obj)]: obj},
+    )
+
+
+def _ipam_state() -> tuple:
+    """Return the IPAM rows, the device rows and the ownership links that the active connection reads."""
+    return (
+        list(IPAddress.objects.order_by("pk").values_list("pk", "address", "description")),
+        list(Prefix.objects.order_by("pk").values_list("pk", "prefix", "description")),
+        list(IPRange.objects.order_by("pk").values_list("pk", "start_address", "end_address", "description")),
+        list(Device.objects.order_by("pk").values_list("pk", "name")),
+        list(Interface.objects.order_by("pk").values_list("pk", "name")),
+        list(IPAMOwnershipLink.objects.order_by("pk").values_list("pk", *_OWNED_KEY.values(), "confirmation")),
+    )
+
+
+def _device_with_interface(name: str) -> Interface:
+    site = Site.objects.create(name=name, slug=name)
+    manufacturer = Manufacturer.objects.create(name=name, slug=name)
+    device_type = DeviceType.objects.create(manufacturer=manufacturer, model=name, slug=name)
+    role = DeviceRole.objects.create(name=name, slug=name)
+    device = Device.objects.create(name=name, site=site, device_type=device_type, role=role)
+    return Interface.objects.create(device=device, name="eth0", type="1000base-t")
+
+
+class _OwnedObjectsTestCase(TransactionTestCase):
+    """Main holds an unowned IP address, and an IP address on a device interface, a Prefix and an IP Range that a
+    Kea Server owns. Then a provisioned branch."""
+
+    branch_name = "ownership"
+
+    def setUp(self):
+        self.user = get_user_model().objects.create_superuser("owner-admin")
+        self.client = Client(raise_request_exception=False)
+        self.client.force_login(self.user)
+        self.server = _make_db_server(name="owner", dhcp6=False)
+        self.interface = _device_with_interface("owner-device")
+        self.unowned = IPAddress.objects.create(address="192.0.2.5/24")
+        self.owned = {
+            "ipaddress": IPAddress.objects.create(address="192.0.2.10/24", assigned_object=self.interface),
+            "prefix": Prefix.objects.create(prefix="192.0.2.0/24"),
+            "iprange": IPRange.objects.create(
+                start_address=IPNetwork("192.0.2.100/24"), end_address=IPNetwork("192.0.2.199/24")
+            ),
+        }
+        for obj in self.owned.values():
+            _link(self.server, obj)
+        self.branch = _provisioned_branch(self, self.branch_name)
+        self.main_before = _ipam_state()
+        with activate_branch(self.branch):
+            self.branch_before = _ipam_state()
+        DISPATCHED_EVENTS.clear()
+
+    def _in_branch(self) -> None:
+        self.client.cookies[COOKIE_NAME] = self.branch.schema_id
+
+    def _refusal(self, obj: models.Model) -> str:
+        return escape(
+            f"A delete of {obj._meta.verbose_name} {obj}, which Kea Server {self.server} owns, is refused. "
+            f"Branch {self.branch} is active."
+        )
+
+    def _assert_main_unchanged(self) -> None:
+        self.assertEqual(_ipam_state(), self.main_before, "main changed")
+
+    def _assert_nothing_changed(self) -> None:
+        self._assert_main_unchanged()
+        with activate_branch(self.branch):
+            self.assertEqual(_ipam_state(), self.branch_before, "the branch changed")
+
+    def _bulk_delete(self, model: type[models.Model], *objects: models.Model):
+        return self.client.post(
+            reverse(f"ipam:{model._meta.model_name}_bulk_delete"),
+            {"pk": [obj.pk for obj in objects], "_confirm": True, "confirm": True},
+            follow=True,
+        )
+
+
+@override_settings(EVENTS_PIPELINE=[_EVENTS_RECORDER])
+class OwnedObjectDeleteInBranchTest(_OwnedObjectsTestCase):
+    """A delete in a branch that reaches an ownership link is refused, and main and the branch do not change."""
+
+    def test_the_fixtures_link_each_owned_object_in_main(self):
+        self.assertEqual(IPAMOwnershipLink.objects.count(), 3)
+        self.assertIn(IPAMOwnershipLink._meta.label, _refusal_receivers(pre_delete))
+
+    def test_a_ui_delete_of_an_owned_object_is_refused(self):
+        self._in_branch()
+        for name, obj in self.owned.items():
+            with self.subTest(name):
+                response = self.client.post(
+                    reverse(f"ipam:{name}_delete", args=[obj.pk]), {"confirm": True}, follow=True
+                )
+
+                self.assertEqual(response.redirect_chain, [(obj.get_absolute_url(), 302)])
+                self.assertContains(response, self._refusal(obj))
+        self._assert_nothing_changed()
+        self.assertEqual(DISPATCHED_EVENTS, [])
+
+    def test_a_ui_bulk_delete_of_an_owned_object_is_refused(self):
+        self._in_branch()
+        for obj in self.owned.values():
+            with self.subTest(type(obj).__name__):
+                response = self._bulk_delete(type(obj), obj)
+
+                self.assertContains(response, self._refusal(obj))
+        self._assert_nothing_changed()
+        self.assertEqual(DISPATCHED_EVENTS, [])
+
+    def test_a_rest_delete_of_an_owned_object_is_refused(self):
+        for name, obj in self.owned.items():
+            with self.subTest(name):
+                response = self.client.delete(
+                    reverse(f"ipam-api:{name}-detail", args=[obj.pk]), headers={BRANCH_HEADER: self.branch.schema_id}
+                )
+
+                self.assertEqual(response.status_code, 400, response.content[:500])
+                self.assertIn(self._refusal(obj), response.json()["detail"])
+        self._assert_nothing_changed()
+
+    def test_a_queryset_delete_of_an_owned_object_is_refused(self):
+        for name, obj in self.owned.items():
+            with self.subTest(name), activate_branch(self.branch), self.assertRaises(AbortRequest) as refused:
+                type(obj).objects.filter(pk=obj.pk).delete()
+
+            self.assertIsInstance(refused.exception, branching.BranchActive)
+            self.assertIs(refused.exception.branch, self.branch)
+        self._assert_nothing_changed()
+
+    def test_a_device_delete_that_reaches_an_owned_ip_address_is_refused(self):
+        device = self.interface.device
+        with activate_branch(self.branch), self.assertRaises(branching.BranchActive):
+            Device.objects.get(pk=device.pk).delete()
+        self._in_branch()
+
+        response = self.client.post(reverse("dcim:device_delete", args=[device.pk]), {"confirm": True}, follow=True)
+
+        self.assertContains(response, self._refusal(self.owned["ipaddress"]))
+        self._assert_nothing_changed()
+        self.assertEqual(DISPATCHED_EVENTS, [])
+
+    def test_a_mixed_ui_bulk_delete_is_refused_and_dispatches_no_event(self):
+        owned = self.owned["ipaddress"]
+        self._in_branch()
+        order = list(IPAddress.objects.filter(pk__in=[owned.pk, self.unowned.pk]).values_list("pk", flat=True))
+        self.assertEqual(order, [self.unowned.pk, owned.pk], "the bulk delete must reach the unowned row first")
+
+        response = self._bulk_delete(IPAddress, self.unowned, owned)
+
+        self.assertContains(response, self._refusal(owned))
+        self._assert_nothing_changed()
+        self.assertEqual(DISPATCHED_EVENTS, [])
+        # The recorder sees a delete that the branch allows, so the empty list above means something.
+        self._bulk_delete(IPAddress, self.unowned)
+        self.assertEqual(
+            [(event["object_id"], event["event_type"]) for event in DISPATCHED_EVENTS],
+            [(self.unowned.pk, OBJECT_DELETED)],
+        )
+        self._assert_main_unchanged()
+
+    def test_a_rest_bulk_delete_leaves_main_unchanged_whatever_the_status(self):
+        # netbox-branching's REST bulk delete rolls back the wrong connection (R2-5): only main is asserted.
+        body = json.dumps([{"id": self.unowned.pk}, {"id": self.owned["ipaddress"].pk}])
+        for enclosing in (False, True):
+            with self.subTest(enclosing_default_atomic=enclosing):
+                with ExitStack() as stack:
+                    if enclosing:
+                        stack.enter_context(transaction.atomic())
+                    self.client.delete(
+                        reverse("ipam-api:ipaddress-list"),
+                        data=body,
+                        content_type="application/json",
+                        headers={BRANCH_HEADER: self.branch.schema_id},
+                    )
+
+                self._assert_main_unchanged()
+
+
+class BranchNameEscapeTest(_OwnedObjectsTestCase):
+    """NetBox marks an AbortRequest message safe, so the refusal escapes the free-text branch name."""
+
+    branch_name = "<b>probe</b>"
+
+    def _assert_the_name_is_text(self, response) -> None:
+        self.assertContains(response, "Branch &lt;b&gt;probe&lt;/b&gt; is active.")
+        self.assertNotContains(response, "<b>probe</b>")
+
+    def test_a_refused_ui_delete_shows_the_branch_name_as_text(self):
+        obj = self.owned["ipaddress"]
+        self._in_branch()
+
+        response = self.client.post(reverse("ipam:ipaddress_delete", args=[obj.pk]), {"confirm": True}, follow=True)
+
+        self.assertEqual(response.redirect_chain, [(obj.get_absolute_url(), 302)])
+        self._assert_the_name_is_text(response)
+        self._assert_nothing_changed()
+
+    def test_a_refused_ui_bulk_delete_shows_the_branch_name_as_text(self):
+        self._in_branch()
+
+        response = self._bulk_delete(IPAddress, self.owned["ipaddress"])
+
+        self._assert_the_name_is_text(response)
+        self._assert_nothing_changed()
+
+
+def _change_request(user) -> Any:
+    """Return a request that records ObjectChanges, as a UI change would, so netbox-branching can replay them."""
+    request: Any = RequestFactory().get("/")
+    request.user, request.id = user, uuid.uuid4()
+    return request
+
+
+class OwnershipBranchLifecycleTest(_OwnedObjectsTestCase):
+    """Links stay in main through sync, discard, merge and revert, and CASCADE removes them only on main."""
+
+    def _status(self) -> str:
+        self.branch.refresh_from_db()
+        return self.branch.status
+
+    def _links_of(self, obj: models.Model) -> list[int]:
+        return list(IPAMOwnershipLink.objects.filter(**{_OWNED_KEY[type(obj)]: obj.pk}).values_list("pk", flat=True))
+
+    def test_the_link_table_is_in_main_only(self):
+        table = IPAMOwnershipLink._meta.db_table
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT current_schema()")
+            (main_schema,) = cursor.fetchone()
+            cursor.execute("SELECT table_schema FROM information_schema.tables WHERE table_name = %s", [table])
+            schemas = [row[0] for row in cursor.fetchall()]
+
+        self.assertEqual(schemas, [main_schema])
+        self.assertNotEqual(main_schema, self.branch.schema_name)
+
+    def test_a_sync_after_main_deleted_an_owned_object_deletes_it_in_the_branch(self):
+        obj = self.owned["ipaddress"]
+        with event_tracking(_change_request(self.user)):
+            IPAddress.objects.get(pk=obj.pk).delete()
+        self.assertEqual(self._links_of(obj), [], "main's CASCADE left the link")
+
+        self.branch.sync(user=self.user)
+
+        self.assertEqual(self._status(), BranchStatusChoices.READY)
+        with activate_branch(self.branch):
+            self.assertFalse(IPAddress.objects.filter(pk=obj.pk).exists())
+
+    def test_a_discard_leaves_mains_objects_and_links_unchanged(self):
+        with activate_branch(self.branch), event_tracking(_change_request(self.user)):
+            _save_with(IPAddress.objects.get(pk=self.owned["ipaddress"].pk), description="edited in the branch")
+            IPAddress.objects.get(pk=self.unowned.pk).delete()
+
+        self.branch.delete()
+
+        self.assertFalse(Branch.objects.filter(pk=self.branch.pk).exists())
+        self._assert_main_unchanged()
+
+    def test_an_unowned_delete_that_is_merged_and_reverted_returns_the_object(self):
+        with activate_branch(self.branch), event_tracking(_change_request(self.user)):
+            IPAddress.objects.get(pk=self.unowned.pk).delete()
+
+        self.branch.merge(user=self.user)
+        merged = IPAddress.objects.filter(pk=self.unowned.pk).exists()
+        self.branch.revert(user=self.user)
+
+        self.assertFalse(merged, "the merge did not delete the object in main")
+        self.assertEqual(self._status(), BranchStatusChoices.READY)
+        self._assert_main_unchanged()
+
+    def test_a_merge_deletes_an_object_that_main_linked_after_the_branch_deleted_it(self):
+        with activate_branch(self.branch), event_tracking(_change_request(self.user)):
+            IPAddress.objects.get(pk=self.unowned.pk).delete()
+        link = _link(self.server, self.unowned)
+
+        self.branch.merge(user=self.user)
+
+        self.assertEqual(self._status(), BranchStatusChoices.MERGED)
+        self.assertFalse(IPAddress.objects.filter(pk=self.unowned.pk).exists())
+        self.assertFalse(IPAMOwnershipLink.objects.filter(pk=link.pk).exists())
+
+    def test_a_revert_deletes_an_object_that_main_linked_after_the_merge(self):
+        with activate_branch(self.branch), event_tracking(_change_request(self.user)):
+            created = IPAddress.objects.create(address="192.0.2.50/24")
+        self.branch.merge(user=self.user)
+        self.assertTrue(IPAddress.objects.filter(pk=created.pk).exists(), "the merge did not create the object")
+        link = _link(self.server, IPAddress.objects.get(pk=created.pk))
+
+        self.branch.revert(user=self.user)
+
+        self.assertEqual(self._status(), BranchStatusChoices.READY)
+        self.assertFalse(IPAddress.objects.filter(pk=created.pk).exists())
+        self.assertFalse(IPAMOwnershipLink.objects.filter(pk=link.pk).exists())
 
 
 class SyncJobInBranchTest(TransactionTestCase):
@@ -831,6 +1288,29 @@ class SyncJobInBranchTest(TransactionTestCase):
         self.assertEqual(kea.commands(), [])
         self.assertEqual([query["sql"] for query in (*on_main.captured_queries, *on_branch.captured_queries)], [])
         self.assertIn(branch.name, job.error)
+
+    def test_the_real_runner_refuses_a_branch_without_actor_or_sync_side_effects(self):
+        from core.models import ObjectChange
+
+        _make_db_server(name="job")
+        branch = _provisioned_branch(self, "job-runner")
+        job = Job.objects.create(name=KeaIpamSyncJob.name, job_id=uuid.uuid4())
+        changes_before = ObjectChange.objects.count()
+
+        with activate_branch(branch), stub_kea({}) as kea, CaptureQueriesContext(connections["default"]) as queries:
+            KeaIpamSyncJob.handle(job)
+
+        job.refresh_from_db()
+        self.assertEqual(job.status, "failed")
+        self.assertIn(branch.name, job.error)
+        self.assertEqual(kea.commands(), [])
+        self.assertFalse(get_user_model().objects.filter(username__iexact="netbox-kea-sync").exists())
+        self.assertEqual(ObjectChange.objects.count(), changes_before)
+        self.assertFalse(IPAddress.objects.exists())
+        self.assertFalse(Prefix.objects.exists())
+        self.assertFalse(IPRange.objects.exists())
+        sync_tables = ("netbox_kea_server", "netbox_kea_syncconfig", "ipam_ipaddress", "ipam_prefix", "ipam_iprange")
+        self.assertFalse(any(table in query["sql"] for table in sync_tables for query in queries.captured_queries))
 
 
 # Guard 3 in a provisioned branch: the Kea transport.

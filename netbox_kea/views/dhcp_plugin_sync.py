@@ -20,8 +20,10 @@ from django.views import View
 from netbox.views import generic
 from utilities.views import register_model_view
 
+from .. import server_configuration
 from ..constants import Family
 from ..integrations import dhcp_plugin
+from ..ipam_reconciliation import complete_import_observation
 from ..kea import KeaCommand, KeaException
 from ..mappers.kea_to_dhcp import parse_dhcp_config
 from ..models import Server
@@ -76,20 +78,29 @@ def _fetch_config_intent(server: Server, version: Family):
         client = server.get_client(version=version)
         resp = client.command(KeaCommand.CONFIG_GET, version)
         conf = _extract_dhcp_conf(resp, version)
-        return parse_dhcp_config(conf, version) if conf is not None else None
+        if conf is None:
+            return None
+        intent = parse_dhcp_config(conf, version)
+        observed = server_configuration.observed_snapshot(server, version, conf)
+        intent.configuration_complete = not observed.subnet_diagnostics
     except (KeaException, requests.RequestException, ValueError, RuntimeError):
         logger.warning("DHCP-plugin sync: config-get failed for %s (v%s)", server.name, version, exc_info=True)
         return None
+    else:
+        return intent
 
 
 def _fetch_reservation_snapshot(server: Server, version: Family):
     """Return a typed Reservation Snapshot, possibly incomplete, or ``None`` after a read failure."""
+    from ..ipam_reconciliation import ReservationObservation
+    from ..models import next_confirmation_number
     from ..subnet_catalogue import for_synchronization
 
+    cutoff = next_confirmation_number()
     try:
         client = server.get_client(version=version)
         catalogue = for_synchronization(server, version)
-        return client.reservation_snapshot(version, catalogue)
+        return ReservationObservation(client.reservation_snapshot(version, catalogue), cutoff)
     except (KeaException, requests.RequestException, RuntimeError, ValueError):
         logger.warning(
             "DHCP-plugin sync: Reservation Snapshot failed for %s (v%s)", server.name, version, exc_info=True
@@ -118,6 +129,8 @@ def _summary_problems(summary) -> list[str]:
             f"{summary.foreign_addresses_skipped} manually curated NetBox IP(s) were left unchanged. "
             "Use the per-reservation Sync to claim one."
         )
+    if summary.owner_disagreements:
+        problems.append(f"{summary.owner_disagreements} IPAM owner disagreement(s) left the shared objects unchanged.")
     if summary.addresses_unattached:
         problems.append(
             f"{summary.addresses_unattached} reserved address(es) were not attached because no NetBox IP "
@@ -128,18 +141,19 @@ def _summary_problems(summary) -> list[str]:
     return problems
 
 
-def run_dhcp_plugin_import(server: Server) -> list[tuple[int, object]]:
+def run_dhcp_plugin_import(server: Server) -> list[tuple[Family, dhcp_plugin.ImportSummary]]:
     """Import every enabled version's live Kea config into the DHCP plugin.
 
     Returns a list of ``(version, ImportSummary)`` for the versions that were read.
     """
-    results: list[tuple[int, object]] = []
+    results: list[tuple[Family, dhcp_plugin.ImportSummary]] = []
     for version in _enabled_versions(server):
         intent = _fetch_config_intent(server, version)
         if intent is None:
             continue
         snapshot = _fetch_reservation_snapshot(server, version)
         results.append((version, dhcp_plugin.import_server_config(server, intent, snapshot)))
+    complete_import_observation(server, {family: summary.ownership for family, summary in results})
     return results
 
 

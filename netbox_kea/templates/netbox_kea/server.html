@@ -26,6 +26,10 @@
               <th scope="row">DHCPv4</th>
               <td>{% checkmark object.dhcp4 %}</td>
             </tr>
+            <tr>
+              <th scope="row">IPAM initial observation completed</th>
+              <td>{{ object.ipam_first_complete_at|placeholder }}</td>
+            </tr>
           </table>
         </div>
       </div>

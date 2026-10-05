@@ -204,6 +204,7 @@ class ServerForm(NetBoxModelForm):
             "sync_reservations_enabled",
             "sync_prefixes_enabled",
             "sync_ip_ranges_enabled",
+            "sync_deprecate_prefixes_and_ranges",
             "sync_vrf",
             name="IPAM Sync",
         ),
@@ -236,6 +237,7 @@ class ServerForm(NetBoxModelForm):
             "sync_reservations_enabled",
             "sync_prefixes_enabled",
             "sync_ip_ranges_enabled",
+            "sync_deprecate_prefixes_and_ranges",
             "sync_vrf",
             "sync_dhcp_plugin_enabled",
             "persist_config",
@@ -348,6 +350,7 @@ class ServerImportForm(NetBoxModelImportForm):
         "sync_reservations_enabled",
         "sync_prefixes_enabled",
         "sync_ip_ranges_enabled",
+        "sync_deprecate_prefixes_and_ranges",
         "sync_dhcp_plugin_enabled",
         "persist_config",
     )
@@ -357,7 +360,7 @@ class ServerImportForm(NetBoxModelImportForm):
         queryset=VRF.objects.all(),
         to_field_name="name",
         required=False,
-        help_text="VRF to assign to synced Prefixes and IP Ranges, by name.",
+        help_text="VRF to assign to synced Prefixes, IP Ranges, and lease and reservation IP Addresses, by name.",
     )
 
     def __init__(self, *args, **kwargs):
@@ -400,6 +403,7 @@ class ServerImportForm(NetBoxModelImportForm):
             "sync_reservations_enabled",
             "sync_prefixes_enabled",
             "sync_ip_ranges_enabled",
+            "sync_deprecate_prefixes_and_ranges",
             "sync_dhcp_plugin_enabled",
             "sync_vrf",
             "persist_config",

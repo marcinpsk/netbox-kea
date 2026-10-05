@@ -25,9 +25,9 @@ if TYPE_CHECKING:
     # package to resolve against. Keep every cross-module import behind this guard.
     from .conftest import _DualEndpointKeaClient
 
-#: Mirrors ``_KEA_DESC_PREFIX`` in netbox_kea/sync.py. This suite cannot import the
+#: Mirrors the start of every block that netbox_kea/ipam_marker.py writes. This suite cannot import the
 #: package (it needs Django), so a guard in the unit suite keeps the two in step.
-_KEA_SYNC_DESCRIPTION_PREFIX = "Synced from Kea DHCP"
+_KEA_SYNC_MARKER_PREFIX = "[kea-sync: "
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -1065,11 +1065,14 @@ class TestReservationCRUD:
         address: str,
         hostname: str,
     ) -> int | None:
-        """Return the one NetBox IP ID with the complete state-test identity."""
-        description = f"{_KEA_SYNC_DESCRIPTION_PREFIX} reservation"
+        """Return the one NetBox IP ID with the complete state-test identity.
+
+        The sync marker identifies the row, not the whole description: the status, and so the marker kind, can
+        change, and an operator note can follow the marker.
+        """
         found = nb_http.get(
             f"{netbox_url}/api/ipam/ip-addresses/",
-            params={"address": address, "dns_name": hostname, "description": description},
+            params={"address": address, "dns_name": hostname, "description__isw": _KEA_SYNC_MARKER_PREFIX},
             timeout=5,
         )
         found.raise_for_status()
@@ -1080,7 +1083,9 @@ class TestReservationCRUD:
         matches = []
         for entry in results:
             entry_address = str(ipaddress.ip_interface(str(entry.get("address"))).ip)
-            if entry_address != address or entry.get("dns_name") != hostname or entry.get("description") != description:
+            # NetBox has no case-sensitive "starts with" filter, so the exact prefix check is here.
+            marked = str(entry.get("description", "")).startswith(_KEA_SYNC_MARKER_PREFIX)
+            if entry_address != address or entry.get("dns_name") != hostname or not marked:
                 raise AssertionError(f"NetBox returned IP {entry.get('id')!r} outside the test identity")
             matches.append(entry)
 

@@ -25,9 +25,10 @@ from netbox_kea.api.views import ServerViewSet
 from netbox_kea.models import Server
 
 from .kea_stub import _subnet_stats, stub_kea
+from .utils import plugins_config
 
-_PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30, "lease_query_max_unpaged_leases": 0}}
-_GUARDED_PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30, "lease_query_max_unpaged_leases": 100}}
+_PLUGINS_CONFIG = plugins_config(lease_query_max_unpaged_leases=0)
+_GUARDED_PLUGINS_CONFIG = plugins_config(lease_query_max_unpaged_leases=100)
 
 # A Kea error response (result 1) → the real KeaClient turns this into a KeaException.
 _KEA_ERR_RESP = {"result": 1, "text": "command failed"}

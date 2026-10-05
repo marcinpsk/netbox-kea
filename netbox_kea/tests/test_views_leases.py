@@ -24,7 +24,7 @@ connectivity checks.
 
 import re
 import threading
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import requests
 from django.contrib.messages import get_messages
@@ -44,7 +44,7 @@ from .kea_stub import (
     queued,
     stub_kea,
 )
-from .utils import _PLUGINS_CONFIG, _make_db_server, _ViewTestBase
+from .utils import _PLUGINS_CONFIG, _make_db_server, _ViewTestBase, plugins_config
 
 #: The HTMX error template renders a uuid4 reference ID, so a test that stops at the
 #: label also passes when that ID is missing.
@@ -68,7 +68,7 @@ def _assert_no_error_template(test, response):
 #: The lease-query guard is off, so a Subnet lease search issues no stat-lease{v}-get
 #: preflight and needs none registered. Tests that register only the lease command name
 #: this dependency here instead of inheriting the value from the shared fixture.
-_UNGUARDED_PLUGINS_CONFIG = {"netbox_kea": {"kea_timeout": 30, "lease_query_max_unpaged_leases": 0}}
+_UNGUARDED_PLUGINS_CONFIG = plugins_config(lease_query_max_unpaged_leases=0)
 
 
 def _lease_stub(responses: dict):
@@ -376,7 +376,7 @@ class TestLeaseSearchPaths(_ViewTestBase):
         self.assertEqual(body["arguments"]["hw-address"], "aa:bb:cc:dd:ee:ff")
         self.assertEqual(body["service"], ["dhcp4"])
 
-    @override_settings(PLUGINS_CONFIG={"netbox_kea": {"kea_timeout": 30, "lease_query_max_unpaged_leases": 100}})
+    @override_settings(PLUGINS_CONFIG=plugins_config(lease_query_max_unpaged_leases=100))
     def test_a_guard_rejected_subnet_query_renders_the_bound_form(self):
         """The guard handler reads `form` and `form.cleaned_data`, so both must be bound.
 
@@ -632,7 +632,7 @@ class TestLeaseSearchPaths(_ViewTestBase):
 
         self.assertEqual(len(closed_clients), 1)
 
-    @override_settings(PLUGINS_CONFIG={"netbox_kea": {"kea_timeout": 30, "lease_query_max_unpaged_leases": 1000}})
+    @override_settings(PLUGINS_CONFIG=plugins_config())
     def test_search_by_subnet_id_and_state_filters_in_kea(self):
         lease = dict(self._LEASE4, state=1)
         with _lease_stub(
@@ -652,7 +652,7 @@ class TestLeaseSearchPaths(_ViewTestBase):
             {"subnet-id": 1, "state": 1},
         )
 
-    @override_settings(PLUGINS_CONFIG={"netbox_kea": {"kea_timeout": 30, "lease_query_max_unpaged_leases": 100}})
+    @override_settings(PLUGINS_CONFIG=plugins_config(lease_query_max_unpaged_leases=100))
     def test_large_subnet_search_prompts_for_a_state_without_get_all(self):
         with _lease_stub(
             {
@@ -761,7 +761,7 @@ class TestLeaseExport(_ViewTestBase):
         self.assertEqual(response.status_code, 302)
         self._assert_no_none_pk_redirect(response)
 
-    @override_settings(PLUGINS_CONFIG={"netbox_kea": {"kea_timeout": 30, "lease_query_max_unpaged_leases": 100}})
+    @override_settings(PLUGINS_CONFIG=plugins_config(lease_query_max_unpaged_leases=100))
     def test_export_by_subnet_uses_the_guarded_subnet_query(self):
         """A Subnet export must not rely on global lease-page ordering."""
         leases = [
@@ -1496,7 +1496,7 @@ class TestLeaseSearchHostBitsSubnet(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG={"netbox_kea": {"kea_timeout": 30}})
+@override_settings(PLUGINS_CONFIG=plugins_config())
 class TestLeaseAddView(_ViewTestBase):
     """Tests for ServerLease4AddView and ServerLease6AddView."""
 
@@ -1612,7 +1612,7 @@ class TestLeaseAddView(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG={"netbox_kea": {"kea_timeout": 30}})
+@override_settings(PLUGINS_CONFIG=plugins_config())
 class TestLeaseAddSyncToNetBox(_ViewTestBase):
     """Tests for the sync_to_netbox checkbox on ServerLease4/6AddView."""
 
@@ -1632,7 +1632,7 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
         return data
 
     # A followed redirect lands on the leases page, which fetches the subnet quick-select.
-    _SUBNETS4 = _subnet_list(4, [])
+    _SUBNETS4 = _subnet_list(4, [{"id": 1, "subnet": "10.0.0.0/24"}])
 
     def test_lease4_add_form_has_sync_to_netbox_field(self):
         """GET lease4 add page renders a sync_to_netbox checkbox."""
@@ -1640,40 +1640,247 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("sync_to_netbox", response.content.decode())
 
-    @patch("netbox_kea.views.leases.sync_lease_to_netbox", autospec=True)
-    def test_post_lease4_add_with_sync_calls_sync_lease(self, mock_sync):
-        """POST with sync_to_netbox=on calls sync_lease_to_netbox() with the lease dict."""
-        mock_sync.return_value = (MagicMock(spec=NbIP), True, False)
-        with _lease_stub({"lease4-add": {"result": 0}}):
+    def test_post_lease4_add_with_sync_links_the_created_ip(self):
+        from netbox_kea.models import IPAMOwnershipLink
+
+        with _lease_stub({"lease4-add": {"result": 0}, "subnet4-list": self._SUBNETS4}) as kea:
             response = self.client.post(self._url(version=4), self._post4(sync=True))
+        self.assertNotIn("lease4-get", kea.commands())
         self.assertEqual(response.status_code, 302)
-        mock_sync.assert_called_once()
-        lease = mock_sync.call_args[0][0]
-        self.assertEqual(lease["ip-address"], "10.0.0.200")
+        ip = NbIP.objects.get(address__net_host="10.0.0.200")
+        link = IPAMOwnershipLink.objects.get(ip_address=ip)
+        self.assertEqual((link.server_id, link.family, link.source), (self.server.pk, 4, "lease"))
+        self.assertEqual(link.facts, {"hostname": "newlease.example.com", "prefix_length": 24})
 
-    @patch("netbox_kea.views.leases.sync_lease_to_netbox", autospec=True)
-    def test_post_lease4_add_without_sync_does_not_call_sync(self, mock_sync):
-        """POST without sync_to_netbox does NOT call sync_lease_to_netbox()."""
-        with _lease_stub({"lease4-add": {"result": 0}}):
-            response = self.client.post(self._url(version=4), self._post4(sync=False))
+    @override_settings(PLUGINS_CONFIG=plugins_config(stale_ip_cleanup="remove"))
+    def test_lease_add_preserves_reserved_siblings_and_their_ownership(self):
+        from netbox_kea.models import IPAMOwnershipLink, next_confirmation_number
+
+        siblings = [
+            NbIP.objects.create(
+                address=f"198.18.0.{number}/24",
+                status="reserved",
+                dns_name="same.example.invalid",
+                description="[kea-sync: reservation] retain operator note",
+            )
+            for number in (20, 21)
+        ]
+        IPAMOwnershipLink.objects.create(
+            confirmation=next_confirmation_number(),
+            server=self.server,
+            family=4,
+            source="reservation",
+            ip_address=siblings[0],
+            facts={"hostname": "same.example.invalid", "prefix_length": 24},
+        )
+        sibling_ids = [row.pk for row in siblings]
+        before_rows = list(NbIP.objects.filter(pk__in=sibling_ids).order_by("pk").values())
+        before_links = list(IPAMOwnershipLink.objects.filter(ip_address_id__in=sibling_ids).order_by("pk").values())
+        data = self._post4(sync=True)
+        data.update(ip_address="198.18.0.22", hostname="same.example.invalid")
+        with _lease_stub(
+            {
+                "lease4-add": {"result": 0},
+                "subnet4-list": _subnet_list(4, [{"id": 1, "subnet": "198.18.0.0/24"}]),
+            }
+        ) as kea:
+            response = self.client.post(self._url(version=4), data)
         self.assertEqual(response.status_code, 302)
-        mock_sync.assert_not_called()
+        self.assertEqual(kea.commands().count("lease4-add"), 1)
+        self.assertTrue(
+            IPAMOwnershipLink.objects.filter(
+                server=self.server, source="lease", ip_address__address__net_host="198.18.0.22"
+            ).exists()
+        )
+        self.assertEqual(list(NbIP.objects.filter(pk__in=sibling_ids).order_by("pk").values()), before_rows)
+        self.assertEqual(
+            list(IPAMOwnershipLink.objects.filter(ip_address_id__in=sibling_ids).order_by("pk").values()),
+            before_links,
+        )
 
-    @patch("netbox_kea.views.leases.sync_lease_to_netbox", autospec=True)
-    def test_post_lease4_add_sync_failure_does_not_prevent_kea_success(self, mock_sync):
-        """Sync failure is a warning; the lease creation still succeeds (302 redirect)."""
-        mock_sync.side_effect = ValueError("NetBox unreachable")
-        with _lease_stub({"lease4-add": {"result": 0}}) as kea:
+    def test_optional_subnet_add_uses_the_created_lease_facts(self):
+        from ipam.models import VRF
+
+        from netbox_kea.models import IPAMOwnershipLink
+
+        self.server.sync_vrf = VRF.objects.create(name="lease-sync")
+        self.server.save()
+        data = {"ip_address": "198.18.0.42", "hw_address": "aa:bb:cc:dd:ee:ff", "sync_to_netbox": "on"}
+        responses = {
+            "lease4-add": {"result": 0},
+            "lease4-get": {"result": 0, "arguments": {"ip-address": "198.18.0.42", "subnet-id": 7}},
+            "subnet4-list": _subnet_list(
+                4, [{"id": 7, "subnet": "198.18.0.0/24"}, {"id": 8, "subnet": "198.18.0.0/25"}]
+            ),
+        }
+        with _lease_stub(responses) as kea:
+            response = self.client.post(self._url(), data)
+        self.assertEqual(response.status_code, 302)
+        ip = NbIP.objects.get(address__net_host="198.18.0.42", vrf=self.server.sync_vrf)
+        self.assertEqual(str(ip.address), "198.18.0.42/24")
+        link = IPAMOwnershipLink.objects.get(ip_address=ip)
+        self.assertEqual((link.server_id, link.family, link.source), (self.server.pk, 4, "lease"))
+        self.assertEqual(link.facts["prefix_length"], 24)
+        self.assertEqual(kea.commands().count("lease4-add"), 1)
+        self.assertEqual(kea.commands().count("lease4-get"), 1)
+        self.assertNotIn("subnet-id", kea.requests[0]["arguments"])
+
+    def test_optional_subnet_ipv6_add_matches_canonical_address(self):
+        from ipam.models import VRF
+
+        from netbox_kea.models import IPAMOwnershipLink
+
+        self.server.sync_vrf = VRF.objects.create(name="lease-sync-v6")
+        self.server.save()
+        data = {"ip_address": "2001:db8::42", "duid": "00:01:02:03", "iaid": 1, "sync_to_netbox": "on"}
+        responses = {
+            "lease6-add": {"result": 0},
+            "lease6-get": {
+                "result": 0,
+                "arguments": {"ip-address": "2001:0db8:0000:0000:0000:0000:0000:0042", "subnet-id": 7},
+            },
+            "subnet6-list": _subnet_list(
+                6, [{"id": 7, "subnet": "2001:db8::/64"}, {"id": 8, "subnet": "2001:db8::/80"}]
+            ),
+        }
+        with _lease_stub(responses) as kea:
+            response = self.client.post(self._url(6), data)
+        self.assertEqual(response.status_code, 302)
+        ip = NbIP.objects.get(address__net_host="2001:db8::42", vrf=self.server.sync_vrf)
+        self.assertEqual(str(ip.address), "2001:db8::42/64")
+        link = IPAMOwnershipLink.objects.get(ip_address=ip)
+        self.assertEqual((link.server_id, link.family, link.source), (self.server.pk, 6, "lease"))
+        self.assertEqual(link.facts["prefix_length"], 64)
+        self.assertEqual(kea.commands().count("lease6-get"), 1)
+        self.assertNotIn("subnet-id", kea.requests[0]["arguments"])
+
+    def test_optional_subnet_readback_failure_preserves_success_without_ipam_writes(self):
+        from netbox_kea.models import IPAMOwnershipLink
+
+        for family, address in ((4, "198.18.0.42"), (6, "2001:db8::42")):
+            cases = {
+                "absent": {"result": 3},
+                "wrong-address": {
+                    "result": 0,
+                    "arguments": {"ip-address": "198.18.0.43" if family == 4 else "2001:db8::43", "subnet-id": 7},
+                },
+                "malformed-response": {"result": 0, "arguments": []},
+                "malformed-address": {"result": 0, "arguments": {"ip-address": "invalid", "subnet-id": 7}},
+                "missing-id": {"result": 0, "arguments": {"ip-address": address}},
+                "malformed-id": {"result": 0, "arguments": {"ip-address": address, "subnet-id": []}},
+                "unsupported": {"result": 2},
+                "unavailable": requests.ConnectionError("readback unavailable"),
+                "invalid-json": ValueError("invalid JSON"),
+                "socket-error": OSError("readback unavailable"),
+            }
+            for name, readback in cases.items():
+                with self.subTest(family=family, readback=name):
+                    data = {
+                        "ip_address": address,
+                        "hw_address": "aa:bb:cc:dd:ee:ff",
+                        "duid": "00:01:02:03",
+                        "iaid": 1,
+                        "sync_to_netbox": "on",
+                    }
+                    subnet = "198.18.0.0/24" if family == 4 else "2001:db8::/64"
+                    with _lease_stub(
+                        {
+                            f"lease{family}-add": {"result": 0},
+                            f"lease{family}-get": readback,
+                            f"subnet{family}-list": _subnet_list(family, [{"id": 7, "subnet": subnet}]),
+                        }
+                    ) as kea:
+                        response = self.client.post(self._url(family), data)
+                    self.assertEqual(response.status_code, 302)
+                    self.assertEqual(kea.commands().count(f"lease{family}-add"), 1)
+                    self.assertEqual(kea.commands().count(f"lease{family}-get"), 1)
+                    messages = [str(message) for message in get_messages(response.wsgi_request)]
+                    self.assertTrue(any("created." in message for message in messages))
+                    self.assertTrue(any("sync failed" in message for message in messages))
+                    self.assertFalse(NbIP.objects.exists())
+                    self.assertFalse(IPAMOwnershipLink.objects.exists())
+
+    def test_optional_subnet_without_sync_does_not_read_back(self):
+        for family, address in ((4, "198.18.0.42"), (6, "2001:db8::42")):
+            with self.subTest(family=family):
+                with _lease_stub({f"lease{family}-add": {"result": 0}}) as kea:
+                    response = self.client.post(
+                        self._url(family),
+                        {
+                            "ip_address": address,
+                            "duid": "00:01:02:03",
+                            "iaid": 1,
+                            "hw_address": "aa:bb:cc:dd:ee:ff",
+                        },
+                    )
+                self.assertEqual(response.status_code, 302)
+                self.assertEqual(kea.commands(), [f"lease{family}-add"])
+                self.assertFalse(NbIP.objects.exists())
+
+    def test_post_lease4_add_keeps_kea_success_when_the_catalogue_is_unavailable(self):
+        from netbox_kea.models import IPAMOwnershipLink
+
+        with _lease_stub(
+            {"lease4-add": {"result": 0}, "subnet4-list": {"result": 1}, "config-get": {"result": 1}}
+        ) as kea:
             response = self.client.post(self._url(version=4), self._post4(sync=True))
         self.assertEqual(response.status_code, 302)
         self.assertEqual(kea.commands().count("lease4-add"), 1)
+        self.assertTrue(any("sync failed" in str(message) for message in get_messages(response.wsgi_request)))
+        self.assertFalse(NbIP.objects.exists())
+        self.assertFalse(IPAMOwnershipLink.objects.exists())
 
-    @patch("netbox_kea.views.leases.sync_lease_to_netbox", autospec=True)
-    def test_post_lease4_add_sync_skipped_without_ipam_permission(self, mock_sync):
-        """A user with server-change but no IPAM write permission must not trigger the IPAM sync."""
+    def test_post_lease4_add_without_sync_does_not_write_ipam(self):
+        from netbox_kea.models import IPAMOwnershipLink
+
+        with _lease_stub({"lease4-add": {"result": 0}, "subnet4-list": self._SUBNETS4}):
+            response = self.client.post(self._url(version=4), self._post4(sync=False))
+        self.assertEqual(response.status_code, 302)
+        self.assertFalse(NbIP.objects.exists())
+        self.assertFalse(IPAMOwnershipLink.objects.exists())
+
+    def test_post_lease4_add_reports_owner_disagreement_and_keeps_the_existing_row(self):
+        from netbox_kea.ipam_reconciliation import claim
+        from netbox_kea.models import IPAMOwnershipLink
+
+        other = Server.objects.create(name="other-owner", ca_url="https://other.example.com")
+        with _lease_stub({"subnet4-list": self._SUBNETS4}):
+            existing = claim(
+                other, 4, [{"ip-address": "10.0.0.200", "hostname": "other.example.com", "subnet-id": 1}], force=False
+            )
+        before = NbIP.objects.values().get(pk=existing.primary.pk)
+        with _lease_stub({"lease4-add": {"result": 0}, "subnet4-list": self._SUBNETS4}):
+            response = self.client.post(self._url(version=4), self._post4(sync=True), follow=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(any("owners disagree" in str(message) for message in response.context["messages"]))
+        self.assertEqual(NbIP.objects.values().get(pk=existing.primary.pk), before)
+        self.assertEqual(IPAMOwnershipLink.objects.get(server=self.server).facts["hostname"], "newlease.example.com")
+
+    def test_post_lease4_add_sync_failure_does_not_prevent_kea_success(self):
+        from django.db import connection
+
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "ALTER TABLE ipam_ipaddress ADD CONSTRAINT reject_claim CHECK (host(address) != '10.0.0.200')"
+            )
+        try:
+            with _lease_stub({"lease4-add": {"result": 0}, "subnet4-list": self._SUBNETS4}) as kea:
+                response = self.client.post(self._url(version=4), self._post4(sync=True), follow=True)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(kea.commands().count("lease4-add"), 1)
+            self.assertTrue(any("sync failed" in str(message) for message in response.context["messages"]))
+            self.assertFalse(NbIP.objects.exists())
+        finally:
+            with connection.cursor() as cursor:
+                cursor.execute("ALTER TABLE ipam_ipaddress DROP CONSTRAINT reject_claim")
+
+    def test_post_lease4_add_sync_skipped_without_ipam_permission(self):
+        """Server-change permission alone cannot write IPAM."""
         from django.contrib.auth import get_user_model
         from django.contrib.contenttypes.models import ContentType
         from users.models import ObjectPermission
+
+        from netbox_kea.models import IPAMOwnershipLink
 
         User = get_user_model()
         limited = User.objects.create_user(username="lease_no_ipam", password="x")
@@ -1682,12 +1889,15 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
         perm.users.add(limited)
         self.client.force_login(limited)
 
-        with _lease_stub({"lease4-add": {"result": 0}}) as kea:
-            response = self.client.post(self._url(version=4), self._post4(sync=True))
-        # Lease still created in Kea (302), but the IPAM sync was gated out.
+        data = self._post4(sync=True)
+        del data["subnet_id"]
+        with _lease_stub({"lease4-add": {"result": 0}, "subnet4-list": self._SUBNETS4}) as kea:
+            response = self.client.post(self._url(version=4), data)
         self.assertEqual(response.status_code, 302)
         self.assertEqual(kea.commands().count("lease4-add"), 1)
-        mock_sync.assert_not_called()
+        self.assertEqual(kea.commands(), ["lease4-add"])
+        self.assertFalse(NbIP.objects.exists())
+        self.assertFalse(IPAMOwnershipLink.objects.exists())
 
     def test_post_lease4_add_reports_foreign_ip_skip(self):
         """A foreign NetBox IP (force=False) is skipped and reported as such, not 'synced'."""
@@ -1729,7 +1939,7 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG={"netbox_kea": {"kea_timeout": 30}})
+@override_settings(PLUGINS_CONFIG=plugins_config())
 class TestBulkLeaseImportView(_ViewTestBase):
     """Tests for ServerLease4/6BulkImportView."""
 
@@ -2195,7 +2405,7 @@ class TestFetchLeasesFromServer(_ViewTestBase):
         leases = self._call(constants.BY_SUBNET_ID, q="1", resp=resp)
         self.assertIsInstance(leases, list)
 
-    @override_settings(PLUGINS_CONFIG={"netbox_kea": {"kea_timeout": 30, "lease_query_max_unpaged_leases": 100}})
+    @override_settings(PLUGINS_CONFIG=plugins_config(lease_query_max_unpaged_leases=100))
     def test_subnet_state_is_applied_by_kea(self):
         from netbox_kea import constants
         from netbox_kea.views.combined import _fetch_leases_from_server

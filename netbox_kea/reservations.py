@@ -169,6 +169,11 @@ class ReservationIdentity:
             normalized = self.value
         object.__setattr__(self, "value", normalized)
 
+    @property
+    def hardware_address(self) -> str | None:
+        """Return the normalized hardware address when the identifier is one, else None."""
+        return self.value if self.identifier_type == "hw-address" else None
+
 
 @dataclass(frozen=True)
 class GlobalReservationScope:

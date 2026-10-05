@@ -169,6 +169,7 @@ class ServerConfigIntent:
     """Everything importable from one ``(server, family)`` Kea config block."""
 
     family: int
+    configuration_complete: bool = False
     shared_networks: list[SharedNetworkIntent] = field(default_factory=list)
     subnets: list[SubnetIntent] = field(default_factory=list)
     client_classes: list[ClientClassIntent] = field(default_factory=list)
