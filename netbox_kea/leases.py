@@ -380,7 +380,7 @@ class LeaseQuery(_Value):
         if self.selector == ALL_LEASES:
             valid = self.value is None
         elif self.selector == BY_SUBNET_ID:
-            valid = isinstance(self.value, int) and self.value >= 1
+            valid = isinstance(self.value, int) and MIN_SUBNET_ID <= self.value <= MAX_SUBNET_ID
         else:
             valid = isinstance(self.value, str) and bool(self.value)
         if not valid:
