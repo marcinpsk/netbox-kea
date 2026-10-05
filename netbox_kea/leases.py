@@ -14,9 +14,18 @@ import math
 from collections import Counter
 from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
-from typing import Annotated, Any, Literal, TypeAlias
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Literal, TypeAlias
 
-from pydantic import AwareDatetime, BaseModel, BeforeValidator, ConfigDict, Field, ValidationError, model_validator
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+    ValidationError,
+    model_validator,
+)
 from pydantic_core import PydanticCustomError
 
 from .constants import (
@@ -27,18 +36,19 @@ from .constants import (
     BY_IP,
     BY_SUBNET,
     BY_SUBNET_ID,
+    INFINITE_LIFETIME,
     LEASE_CLIENT_ID_OCTETS,
     LEASE_DUID_OCTETS,
     LEASE_HW_ADDRESS_OCTETS,
     LEASE_QUERY_STATES,
+    LEASE_STATES,
+    UINT32_MAX,
     Family,
     IPAddressValue,
+    LeaseState,
 )
 from .identifiers import normalize_hex
 
-#: Kea stores an infinite valid lifetime as this value (``Lease::INFINITY_LFT``).
-INFINITE_LIFETIME = 0xFFFFFFFF
-_UINT32_MAX = 0xFFFFFFFF
 # The last second that an aware datetime can hold.
 _MAX_TIMESTAMP = int(datetime.max.replace(microsecond=0, tzinfo=timezone.utc).timestamp())
 #: The query selector of a read that covers every Lease of one family.
@@ -50,9 +60,6 @@ _QUERY_SELECTORS: dict[int, frozenset[str]] = {
 }
 _SUBNET_SELECTORS = frozenset({BY_SUBNET, BY_SUBNET_ID})
 
-LeaseState = Literal["assigned", "declined", "expired-reclaimed", "released", "registered"]
-# Kea's Lease::STATE_* codes, in code order.
-_STATES: tuple[LeaseState, ...] = ("assigned", "declined", "expired-reclaimed", "released", "registered")
 _INACTIVE_STATES: frozenset[str] = frozenset({"declined", "expired-reclaimed", "released"})
 AllocationKind = Literal["address", "delegated-prefix"]
 _EVERY_KIND: tuple[AllocationKind, ...] = ("address", "delegated-prefix")
@@ -121,8 +128,8 @@ def _hex_identifier(octets: tuple[int, int]) -> BeforeValidator:
 HardwareAddress = Annotated[str, _hex_identifier(LEASE_HW_ADDRESS_OCTETS)]
 ClientIdentifier = Annotated[str, _hex_identifier(LEASE_CLIENT_ID_OCTETS)]
 Duid = Annotated[str, _hex_identifier(LEASE_DUID_OCTETS)]
-Uint32 = Annotated[int, Field(ge=0, le=_UINT32_MAX)]
-PositiveUint32 = Annotated[int, Field(ge=1, le=_UINT32_MAX)]
+Uint32 = Annotated[int, Field(ge=0, le=UINT32_MAX)]
+PositiveUint32 = Annotated[int, Field(ge=1, le=UINT32_MAX)]
 Timestamp = Annotated[int, Field(ge=1, le=_MAX_TIMESTAMP)]
 PrefixLength = Annotated[int, Field(ge=1, le=128)]
 
@@ -167,6 +174,8 @@ class DHCPv6Binding(_Value):
 
 
 class _Lease(_Value):
+    family: ClassVar[Family]
+    kind: ClassVar[AllocationKind]
     subnet_id: PositiveUint32
     # Kea omits a zero pool ID.
     pool_id: PositiveUint32 | None = None
@@ -176,6 +185,19 @@ class _Lease(_Value):
     hostname: str
     fqdn_forward: bool
     fqdn_reverse: bool
+
+    @property
+    def prefix_length(self) -> int | None:
+        """Return the delegated prefix length, or ``None`` for an address."""
+        return None
+
+    @property
+    def identity(self) -> LeaseIdentity:
+        """Return the Lease Identity."""
+        return LeaseIdentity(family=self.family, kind=self.kind, address=self._allocation_address())
+
+    def _allocation_address(self) -> IPAddressValue:
+        raise NotImplementedError
 
     @property
     def infinite(self) -> bool:
@@ -201,34 +223,26 @@ class _Lease(_Value):
         return self
 
 
-class DHCPv4AddressLease(_Lease):
+class _AddressAllocation:
+    """The facts that every address Lease derives from its ``address`` field."""
+
+    kind: ClassVar[AllocationKind] = "address"
+    if TYPE_CHECKING:
+        address: IPAddressValue
+
+    def _allocation_address(self) -> IPAddressValue:
+        return self.address
+
+
+class DHCPv4AddressLease(_AddressAllocation, _Lease):
     """One DHCPv4 address Lease."""
 
+    family: ClassVar[Family] = 4
     variant: Literal["dhcpv4-address"] = "dhcpv4-address"
     address: ipaddress.IPv4Address
     # A declined lease keeps Kea's empty hardware address, and a client ID can replace it.
     hw_address: HardwareAddress | None
     client_id: ClientIdentifier | None = None
-
-    @property
-    def family(self) -> Literal[4]:
-        """Return the address family."""
-        return 4
-
-    @property
-    def kind(self) -> AllocationKind:
-        """Return the allocation kind."""
-        return "address"
-
-    @property
-    def prefix_length(self) -> None:
-        """Return ``None``: an address has no delegated prefix length."""
-        return None
-
-    @property
-    def identity(self) -> LeaseIdentity:
-        """Return the Lease Identity."""
-        return LeaseIdentity(family=4, kind="address", address=self.address)
 
     @property
     def binding(self) -> DHCPv4Binding:
@@ -246,15 +260,11 @@ class DHCPv4AddressLease(_Lease):
 
 
 class _DHCPv6Lease(_Lease):
+    family: ClassVar[Family] = 6
     duid: Duid | None
     iaid: Uint32
     preferred_lifetime: Uint32
     hw_address: HardwareAddress | None = None
-
-    @property
-    def family(self) -> Literal[6]:
-        """Return the address family."""
-        return 6
 
     @property
     def binding(self) -> DHCPv6Binding:
@@ -268,48 +278,27 @@ class _DHCPv6Lease(_Lease):
         return self
 
 
-class DHCPv6AddressLease(_DHCPv6Lease):
+class DHCPv6AddressLease(_AddressAllocation, _DHCPv6Lease):
     """One DHCPv6 address (IA_NA) Lease."""
 
     variant: Literal["dhcpv6-address"] = "dhcpv6-address"
     address: ipaddress.IPv6Address
 
-    @property
-    def kind(self) -> AllocationKind:
-        """Return the allocation kind."""
-        return "address"
-
-    @property
-    def prefix_length(self) -> None:
-        """Return ``None``: an address has no delegated prefix length."""
-        return None
-
-    @property
-    def identity(self) -> LeaseIdentity:
-        """Return the Lease Identity."""
-        return LeaseIdentity(family=6, kind="address", address=self.address)
-
 
 class DHCPv6PrefixLease(_DHCPv6Lease):
     """One DHCPv6 delegated-prefix (IA_PD) Lease; Kea may delegate it from outside the Subnet's CIDR."""
 
+    kind: ClassVar[AllocationKind] = "delegated-prefix"
     variant: Literal["dhcpv6-delegated-prefix"] = "dhcpv6-delegated-prefix"
     prefix: ipaddress.IPv6Network
-
-    @property
-    def kind(self) -> AllocationKind:
-        """Return the allocation kind."""
-        return "delegated-prefix"
 
     @property
     def prefix_length(self) -> int:
         """Return the delegated prefix length."""
         return self.prefix.prefixlen
 
-    @property
-    def identity(self) -> LeaseIdentity:
-        """Return the Lease Identity: the canonical base address of the prefix."""
-        return LeaseIdentity(family=6, kind="delegated-prefix", address=self.prefix.network_address)
+    def _allocation_address(self) -> IPAddressValue:
+        return self.prefix.network_address
 
     @model_validator(mode="after")
     def _prefix_rules(self) -> DHCPv6PrefixLease:
@@ -399,6 +388,7 @@ class LeaseSnapshot(_Value):
     diagnostics: tuple[LeaseDiagnostic, ...]
     coverage: LeaseCoverage
     next_cursor: IPAddressValue | None
+    _identities: frozenset[LeaseIdentity] = PrivateAttr(default=frozenset())
 
     @model_validator(mode="after")
     def _consistent(self) -> LeaseSnapshot:
@@ -408,7 +398,8 @@ class LeaseSnapshot(_Value):
             raise ValueError("The query must belong to the Snapshot family.")
         if any(record.family != self.family for record in self.records):
             raise ValueError("Every Lease of a Snapshot must belong to its family.")
-        if len({record.identity for record in self.records}) != len(self.records):
+        self._identities = frozenset(record.identity for record in self.records)
+        if len(self._identities) != len(self.records):
             raise ValueError("A Lease Snapshot cannot hold two Leases with one identity.")
         if self.next_cursor is not None and self.next_cursor.version != self.family:
             raise ValueError("The continuation must belong to the Snapshot family.")
@@ -437,7 +428,7 @@ class LeaseSnapshot(_Value):
             self.complete
             and self.query.covers_family
             and identity.family == self.family
-            and all(record.identity != identity for record in self.records)
+            and identity not in self._identities
         )
 
 
@@ -647,19 +638,25 @@ class _FieldProblem(Exception):
         self.code = code
 
 
+_Problem: TypeAlias = tuple[LeaseDiagnosticCode, str]
+
+
+def _diagnostics(
+    problems: list[_Problem], kinds: tuple[AllocationKind, ...], position: str
+) -> tuple[LeaseDiagnostic, ...]:
+    return tuple(
+        LeaseDiagnostic(code=code, field=field, source_position=position, kinds=kinds)
+        for code, field in dict.fromkeys(problems)
+    )
+
+
 class _Rejected(Exception):
     """A Kea lease record that is not a valid Lease, with its safe problems."""
 
-    def __init__(self, problems: list[tuple[LeaseDiagnosticCode, str]], kinds: tuple[AllocationKind, ...]) -> None:
+    def __init__(self, problems: list[_Problem], kinds: tuple[AllocationKind, ...]) -> None:
         super().__init__("Kea returned a malformed lease.")
-        self.problems = list(dict.fromkeys(problems))
+        self.problems = problems
         self.kinds = kinds
-
-    def diagnostics(self, position: str) -> tuple[LeaseDiagnostic, ...]:
-        return tuple(
-            LeaseDiagnostic(code=code, field=field, source_position=position, kinds=self.kinds)
-            for code, field in self.problems
-        )
 
 
 def _wire_address(value: Any, family: int) -> IPAddressValue:
@@ -677,9 +674,9 @@ def _wire_address(value: Any, family: int) -> IPAddressValue:
 def _wire_state(value: Any, _family: int) -> LeaseState:
     if isinstance(value, bool) or not isinstance(value, int):
         raise _FieldProblem("invalid-type")
-    if not 0 <= value < len(_STATES):
+    if not 0 <= value < len(LEASE_STATES):
         raise _FieldProblem("unknown-state")
-    return _STATES[value]
+    return LEASE_STATES[value]
 
 
 def _unchanged(value: Any, _family: int) -> Any:
@@ -743,7 +740,7 @@ def _lease_from_record(raw: Any, family: Family) -> Lease:
     if not isinstance(raw, dict):
         raise _Rejected([("invalid-record", "")], ("address",) if family == 4 else _EVERY_KIND)
     model, kinds = _variant(raw, family)
-    problems: list[tuple[LeaseDiagnosticCode, str]] = []
+    problems: list[_Problem] = []
     diagnosed: set[str] = set()
     values: dict[str, Any] = {}
     for key, name in _KEYS[family].items():
@@ -774,8 +771,8 @@ def _lease_from_record(raw: Any, family: Family) -> Lease:
     return lease
 
 
-def _model_problems(exc: ValidationError, family: int, diagnosed: set[str]) -> list[tuple[LeaseDiagnosticCode, str]]:
-    problems: list[tuple[LeaseDiagnosticCode, str]] = []
+def _model_problems(exc: ValidationError, family: int, diagnosed: set[str]) -> list[_Problem]:
+    problems: list[_Problem] = []
     for error in exc.errors():
         name = str(error["loc"][0]) if error["loc"] else str(error.get("ctx", {}).get("field", ""))
         if name in diagnosed:
@@ -789,7 +786,7 @@ def _record_at(raw: Any, family: Family, index: int) -> tuple[Lease | None, tupl
     try:
         return _lease_from_record(raw, family), ()
     except _Rejected as rejected:
-        return None, rejected.diagnostics(f"leases[{index}]")
+        return None, _diagnostics(rejected.problems, rejected.kinds, f"leases[{index}]")
 
 
 def _read_records(raw_leases: list[Any], family: Family) -> tuple[tuple[Lease, ...], tuple[LeaseDiagnostic, ...]]:
@@ -804,8 +801,8 @@ def _read_records(raw_leases: list[Any], family: Family) -> tuple[tuple[Lease, .
     counts = Counter(lease.identity for _index, lease in parsed)
     for index, lease in parsed:
         if counts[lease.identity] > 1:
-            duplicate = _Rejected([("duplicate-lease", "ip-address")], (lease.kind,))
-            diagnostics.extend((index, diagnostic) for diagnostic in duplicate.diagnostics(f"leases[{index}]"))
+            duplicate = _diagnostics([("duplicate-lease", "ip-address")], (lease.kind,), f"leases[{index}]")
+            diagnostics.extend((index, diagnostic) for diagnostic in duplicate)
     records = tuple(lease for _index, lease in parsed if counts[lease.identity] == 1)
     return records, tuple(diagnostic for _index, diagnostic in sorted(diagnostics, key=lambda item: item[0]))
 
@@ -919,11 +916,13 @@ def read_exact_lease(response: Any, identity: LeaseIdentity) -> ExactLeaseResult
     try:
         lease = _lease_from_record(arguments, identity.family)
     except _Rejected as rejected:
-        return LeaseLookupFailed(identity=identity, diagnostics=rejected.diagnostics("arguments"))
+        return LeaseLookupFailed(
+            identity=identity, diagnostics=_diagnostics(rejected.problems, rejected.kinds, "arguments")
+        )
     if lease.identity != identity:
         field = "type" if lease.kind != identity.kind else "ip-address"
-        mismatch = _Rejected([("target-mismatch", field)], (lease.kind,))
-        return LeaseLookupFailed(identity=identity, diagnostics=mismatch.diagnostics("arguments"))
+        mismatch = _diagnostics([("target-mismatch", field)], (lease.kind,), "arguments")
+        return LeaseLookupFailed(identity=identity, diagnostics=mismatch)
     return LeaseFound(lease=lease)
 
 

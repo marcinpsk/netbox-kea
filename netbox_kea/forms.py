@@ -1702,7 +1702,7 @@ class Lease6AddForm(forms.Form):
     iaid = forms.IntegerField(
         label="IAID",
         min_value=0,
-        max_value=4294967295,
+        max_value=constants.UINT32_MAX,
         help_text="Identity Association ID (32-bit unsigned integer).",
     )
     subnet_id = forms.IntegerField(

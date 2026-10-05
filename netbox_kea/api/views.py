@@ -94,7 +94,7 @@ def _parse_subnet_lease_state(raw_state, selector) -> tuple[int | None, str | No
         state = int(raw_state)
     except (TypeError, ValueError):
         return None, "A Subnet query supports only the Active or Declined state."
-    if state not in (0, 1):
+    if state not in constants.LEASE_QUERY_STATE_CODES:
         return None, "A Subnet query supports only the Active or Declined state."
     return state, None
 
