@@ -278,6 +278,16 @@ class ServerForm(_ServerConnectionFormMixin, NetBoxModelForm):
             "dhcp6_password": forms.PasswordInput(),
         }
 
+    def clean(self):
+        """Keep a stored password when an edit leaves its field blank."""
+        super().clean()
+        cleaned_data = self.cleaned_data
+        if not self.instance._state.adding:
+            for name in ("ca_password", "dhcp4_password", "dhcp6_password"):
+                if not cleaned_data.get(name):
+                    cleaned_data[name] = getattr(self.instance, name)
+        return cleaned_data
+
 
 class VeryHiddenInput(forms.HiddenInput):
     """Returns an empty string on render."""
