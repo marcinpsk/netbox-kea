@@ -36,3 +36,12 @@ def test_agent_sync_lifecycle_uses_the_current_ownership_interfaces():
     assert "claim()" in lifecycle
     for retired in ("cleanup_stale_ips_batch()", "_sync()", "cleanup=False"):
         assert retired not in lifecycle
+
+
+def test_agent_reconciler_scopes_the_two_phase_last_link_rule_to_ip_addresses():
+    """Prefix and IP Range links follow their own phase, so the two-phase rule names IP addresses."""
+    instructions = (REPOSITORY_ROOT / "AGENTS.md").read_text()
+    reconciler = " ".join(instructions.split("- **`ipam_reconciliation.py`**:", 1)[1].split("\n- **", 1)[0].split())
+
+    assert "The last link of a Server to an IP address needs a complete lease phase" in reconciler
+    assert "The last link of a Server needs" not in reconciler

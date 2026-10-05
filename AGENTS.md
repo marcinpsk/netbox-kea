@@ -203,7 +203,7 @@ URL request
 - **`ipam_reconciliation.py`**: `reconcile(server, family, phases) -> SyncReport` (ADR 0006). The job's
   lease, Reservation, Subnet and Pool phases run through it: it links each reported IPAM object in `Server.sync_vrf` under
   an advisory lock on the identity and a row lock, the status comes from the live links, and a complete
-  phase removes its own stale links. The last link of a Server needs a complete lease phase and a complete
+  phase removes its own stale links. The last link of a Server to an IP address needs a complete lease phase and a complete
   Reservation phase, unless that Server disables Reservation sync. The last link of an IP address follows `stale_ip_cleanup`. A complete Subnet or Pool phase
   drops its own stale links; `Server.sync_deprecate_prefixes_and_ranges` opts in to deprecation, never deletion.
   `read_catalogue` pairs the shared snapshot with a cutoff taken before its request. Per-row actions use
