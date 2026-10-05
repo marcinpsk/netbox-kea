@@ -12,9 +12,9 @@ from typing import TYPE_CHECKING, Any, Generic, Literal, TypeVar, cast
 from .constants import Family, IPAddressValue, Persistence
 from .dhcp_options import DHCPOption, parse_dhcp_options
 from .identifiers import normalize_hex
+from .leases import DHCPv4AddressLease, Lease
 
 if TYPE_CHECKING:
-    from .leases import Lease
     from .subnet_catalogue import CatalogueSnapshot, SubnetIdentity
 
 IdentifierType = Literal["hw-address", "duid", "circuit-id", "client-id", "flex-id"]
@@ -96,21 +96,34 @@ def lease_identifier_types(family: int) -> tuple[IdentifierType, ...]:
     return _LEASE_IDENTIFIERS[cast(Family, family)]
 
 
-def lease_identities(lease: Lease) -> tuple[ReservationIdentity, ...]:
-    """Return the normalized Reservation Identities that one typed Lease carries, in match order.
+def _lease_identifiers(lease: Lease) -> tuple[tuple[IdentifierType, str | None], ...]:
+    """Return each identifier that *lease* carries, in the order of ``lease_identifier_types``."""
+    if isinstance(lease, DHCPv4AddressLease):
+        return (("hw-address", lease.hw_address), ("client-id", lease.client_id))
+    return (("duid", lease.duid), ("hw-address", lease.hw_address))
 
-    An identifier that no Reservation can hold matches nothing, so it is left out.
-    """
+
+@dataclass(frozen=True)
+class LeaseIdentities:
+    """The Reservation Identities that one Lease carries, in match order."""
+
+    identities: tuple[ReservationIdentity, ...]
+    #: The Lease also carries an identifier that no Reservation can hold, so no match proves "no Reservation".
+    foreign: bool
+
+
+def lease_identities(lease: Lease) -> LeaseIdentities:
+    """Return the normalized Reservation Identities that one typed Lease carries, in match order."""
     identities: list[ReservationIdentity] = []
-    for identifier_type in lease_identifier_types(lease.family):
-        value = getattr(lease, identifier_type.replace("-", "_"))
+    foreign = False
+    for identifier_type, value in _lease_identifiers(lease):
         if value is None:
             continue
         try:
             identities.append(ReservationIdentity(identifier_type, value))
         except ValueError:
-            continue
-    return tuple(identities)
+            foreign = True
+    return LeaseIdentities(tuple(identities), foreign)
 
 
 def reservation_identifier_choices(family: int) -> tuple[tuple[IdentifierType, str], ...]:

@@ -14,7 +14,7 @@ from django.core.cache import cache
 from django.utils import timezone
 
 from . import constants, server_configuration
-from .constants import Family, IPNetworkValue
+from .constants import MAX_SUBNET_ID, MIN_SUBNET_ID, Family, IPNetworkValue
 from .kea import SUBNET_LIST, KeaClient, KeaException, subnet_network
 
 if TYPE_CHECKING:
@@ -31,10 +31,6 @@ from .server_configuration import (
 __all__ = ["Diagnostic", "Pool", "SubnetConfiguration", "SubnetSettings", "invalidate"]
 
 logger = logging.getLogger(__name__)
-
-# Kea requires subnet IDs greater than zero and less than UINT32_MAX.
-MIN_SUBNET_ID = 1
-MAX_SUBNET_ID = 4_294_967_294
 
 
 class CatalogueUnavailable(RuntimeError):

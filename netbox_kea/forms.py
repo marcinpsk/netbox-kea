@@ -17,7 +17,7 @@ from utilities.forms.rendering import FieldSet
 
 from . import constants
 from .config_write import SUBNET_LIST_UNCONFIRMED, subnet_changed
-from .constants import Family, IPNetworkValue
+from .constants import MAX_SUBNET_ID, MIN_SUBNET_ID, Family, IPNetworkValue
 from .decimal_text import parse_decimal
 from .dhcp_options import InvalidAddress, address_list, parse_dhcp_option
 from .kea import SharedNetworkEdit, SubnetEdit, SubnetFields, description_as_shown, subnet_network
@@ -31,7 +31,7 @@ from .reservations import (
     reservation_identifier_types,
 )
 from .server_connection import connection_values, validate_connection_change
-from .subnet_catalogue import MAX_SUBNET_ID, MIN_SUBNET_ID, VerifiedSubnet
+from .subnet_catalogue import VerifiedSubnet
 from .utilities import is_hex_string, parse_delegated_prefixes
 
 

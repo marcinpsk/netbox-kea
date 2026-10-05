@@ -636,19 +636,19 @@ def _claim_reports(
     """Validate and aggregate one call before acquiring locks or changing objects."""
     reports: dict[str, _Report] = {}
     for record in records:
-        if isinstance(record, LEASE_VARIANTS):
+        if not isinstance(record, Reservation):
             _add_report(reports, _lease_report(server, family, record, subnet_prefix_lengths))
-        else:
-            if record.family != family:
-                raise ValueError("The Reservation does not match the claim family")
-            facts = None
-            mac_addresses: tuple[tuple[str, str], ...] = ()
-            if isinstance(record.scope, InSubnetReservationScope):
-                facts = _Facts(record.hostname, record.scope.subnet.network.prefixlen)
-                if (hardware := record.identity.hardware_address) is not None:
-                    mac_addresses = ((hardware, record.hostname),)
-            for address in record.addresses:
-                _add_report(reports, _Report(str(address), facts, mac_addresses))
+            continue
+        if record.family != family:
+            raise ValueError("The Reservation does not match the claim family")
+        facts = None
+        mac_addresses: tuple[tuple[str, str], ...] = ()
+        if isinstance(record.scope, InSubnetReservationScope):
+            facts = _Facts(record.hostname, record.scope.subnet.network.prefixlen)
+            if (hardware := record.identity.hardware_address) is not None:
+                mac_addresses = ((hardware, record.hostname),)
+        for address in record.addresses:
+            _add_report(reports, _Report(str(address), facts, mac_addresses))
     return reports
 
 

@@ -5,7 +5,7 @@ import requests
 from django.test import SimpleTestCase
 from django.urls import reverse
 
-from netbox_kea.reservations import ReservationIdentity, lease_identifier_types, lease_identities
+from netbox_kea.reservations import LeaseIdentities, ReservationIdentity, lease_identifier_types, lease_identities
 
 from .kea_stub import (
     _catalogue_responses_for_subnets,
@@ -37,15 +37,30 @@ class TestSharedLeaseIdentityRules(SimpleTestCase):
 
         self.assertEqual(
             lease_identities(lease),
-            (ReservationIdentity("hw-address", "aa:bb:cc:dd:ee:ff"), ReservationIdentity("client-id", "01:aa:bb")),
+            LeaseIdentities(
+                (ReservationIdentity("hw-address", "aa:bb:cc:dd:ee:ff"), ReservationIdentity("client-id", "01:aa:bb")),
+                foreign=False,
+            ),
         )
 
-    def test_identifiers_a_lease_cannot_carry_are_never_matched(self):
-        """A DHCPv6 lease carries a DUID and a hardware address only; Kea's empty DUID is no identity."""
+    def test_the_identifier_order_of_each_lease_kind_is_the_published_order(self):
+        for record in (lease_record("198.18.0.20"), lease_record("2001:db8:1::10")):
+            lease = typed_lease(record)
+            with self.subTest(family=lease.family):
+                types = [identity.identifier_type for identity in lease_identities(lease).identities]
+                self.assertEqual(tuple(types), lease_identifier_types(lease.family))
+
+    def test_empty_identifiers_are_no_identity(self):
+        """Kea's empty DUID of a declined DHCPv6 lease is no identity, so it matches nothing."""
         declined = typed_lease(lease_record("2001:db8::12", duid="00:00:00", state=1, drop=("hw-address",)))
-        self.assertEqual(lease_identities(declined), ())
-        lease = typed_lease(lease_record("2001:db8::10"))
-        self.assertEqual([identity.identifier_type for identity in lease_identities(lease)], ["duid", "hw-address"])
+        self.assertEqual(lease_identities(declined), LeaseIdentities((), foreign=False))
+
+    def test_an_identifier_that_no_reservation_can_hold_is_reported_not_dropped(self):
+        long_client_id = ":".join(["01"] * 129)
+        lease = typed_lease(lease_record("198.18.0.20", client_id=long_client_id))
+        carried = lease_identities(lease)
+        self.assertEqual(carried.identities, (ReservationIdentity("hw-address", "aa:bb:cc:00:00:10"),))
+        self.assertTrue(carried.foreign)
 
     def test_lease_identifier_types_validate_the_family(self):
         self.assertEqual(lease_identifier_types(4), ("hw-address", "client-id"))
