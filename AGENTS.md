@@ -356,7 +356,9 @@ resort, reserved for true external boundaries you cannot run locally.
 - **Recorded Kea replies check the parser.** A hand-written stub shows what we expect
   Kea to return. `netbox_kea/tests/kea_recordings/` holds `config-get` and
   `subnet{4,6}-list` replies recorded from a real Kea (the harness `KEA_VERSION`), with
-  coverage configurations that use every field `server_configuration` reads.
+  coverage configurations that use every field `server_configuration` reads. The `leases`
+  section of each recording holds lease replies for every state, an infinite lifetime and
+  DHCPv6 delegated prefixes, and the lease changes that Kea refuses.
   `test_kea_recordings.py` requires zero diagnostics. The script also writes
   `accepted-keys.json` from the keyword tables that Kea's `config-test` and
   `config-set` check in the same release (`simple_parser{4,6}.cc`). `stub_kea()`
