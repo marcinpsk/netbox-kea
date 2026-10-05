@@ -11,7 +11,9 @@ SPDX-License-Identifier: Apache-2.0
 # Typed Lease observations
 
 This design session replaces raw Lease dictionaries at the domain interface. The accepted decisions below
-record the operator's answers. Runtime implementation remains deferred until a later operator decision.
+record the operator's answers. Issue 291 implements the typed values and observation contracts in
+`netbox_kea/leases.py`, with tests. Runtime consumers (reads, actions and IPAM reconciliation) still use raw
+dictionaries until issues 292 to 295 land.
 
 ## Accepted decisions
 
@@ -351,7 +353,8 @@ Its native sub-issues are:
 
 Native blocking relationships follow domain, then reads, then actions and IPAM in parallel, then
 final validation. Exact ticket contents, all five parent relationships and all five dependency edges
-were verified through GitHub API readback. All tickets remain open. Runtime implementation is deferred.
+were verified through GitHub API readback. Issue 291 is closed: `netbox_kea/leases.py` and its tests
+deliver it. Issues 290 and 292 to 295 remain open.
 
 ## Sources
 
