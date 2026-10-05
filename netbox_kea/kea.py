@@ -873,13 +873,14 @@ class KeaClient:
         self._on_config_change = on_config_change
         self.write_guard = write_guard
 
+        # command() passes these on each request, because requests lets the environment replace session values.
+        self.verify: bool | str = True if verify is None else verify
+        self.cert: tuple[str, str] | None = None
+        if client_cert is not None and client_key is not None:
+            self.cert = (client_cert, client_key)
         self._session = requests.Session()
-        if verify is not None:
-            self._session.verify = verify
         if username is not None and password is not None:
             self._session.auth = HTTPBasicAuth(username, password)
-        if client_cert is not None and client_key is not None:
-            self._session.cert = (client_cert, client_key)
 
     def command(
         self,
@@ -923,7 +924,7 @@ class KeaClient:
         if arguments is not None:
             body["arguments"] = arguments
 
-        resp = self._session.post(self.url, json=body, timeout=self.timeout)
+        resp = self._session.post(self.url, json=body, timeout=self.timeout, verify=self.verify, cert=self.cert)
         resp.raise_for_status()
         resp_json = resp.json()
         if not isinstance(resp_json, list):
@@ -942,10 +943,10 @@ class KeaClient:
         new = KeaClient.__new__(KeaClient)
         new.url = self.url
         new.timeout = self.timeout
+        new.verify = self.verify
+        new.cert = self.cert
         new._session = requests.Session()
         new._session.auth = self._session.auth
-        new._session.verify = self._session.verify
-        new._session.cert = self._session.cert
         new.persist_config = self.persist_config
         new.send_service = self.send_service
         new.max_unpaged_leases = self.max_unpaged_leases
