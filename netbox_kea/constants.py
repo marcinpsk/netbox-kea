@@ -58,12 +58,29 @@ DUID_MIN_OCTETS = 1
 CLIENT_ID_MAX_OCTETS = DUID_MAX_OCTETS
 CLIENT_ID_MIN_OCTETS = 2
 
-# Kea lease state codes and human-readable labels.
+UINT32_MAX = 0xFFFFFFFF
+# Kea stores an infinite valid lifetime as the largest uint32 (Lease::INFINITY_LFT).
+INFINITE_LIFETIME = UINT32_MAX
+
+# Kea lease states; the position of each is its Lease::STATE_* code (Kea 3.2.0 lease.h).
+LeaseState = Literal["assigned", "declined", "expired-reclaimed", "released", "registered"]
+LEASE_STATES: tuple[LeaseState, ...] = get_args(LeaseState)
+LEASE_STATE_CODES: dict[LeaseState, int] = {state: code for code, state in enumerate(LEASE_STATES)}
+# The states a Subnet lease query can filter by: stat_cmds counts only these.
+LEASE_QUERY_STATES: tuple[LeaseState, ...] = ("assigned", "declined")
+LEASE_QUERY_STATE_CODES = frozenset(LEASE_STATE_CODES[state] for state in LEASE_QUERY_STATES)
+
+# Kea 3.2.0 lease identifier octets: HWAddr::MAX_HWADDR_LEN (hwaddr.h) and the DUID and ClientId sizes (duid.h).
+LEASE_HW_ADDRESS_OCTETS = (1, 20)
+LEASE_DUID_OCTETS = (3, 130)
+LEASE_CLIENT_ID_OCTETS = (2, 255)
+
+# Human-readable labels of the lease states that the lease UI shows.
 # https://kea.readthedocs.io/en/latest/arm/lease-db.html#lease-states
 LEASE_STATE_LABELS: dict[int, str] = {
-    0: "Active",
-    1: "Declined",
-    2: "Expired",
+    LEASE_STATE_CODES["assigned"]: "Active",
+    LEASE_STATE_CODES["declined"]: "Declined",
+    LEASE_STATE_CODES["expired-reclaimed"]: "Expired",
 }
 
 LEASE_STATE_CHOICES = [("", "Any")] + [(str(k), v) for k, v in LEASE_STATE_LABELS.items()]

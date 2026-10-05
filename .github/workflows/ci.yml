@@ -173,6 +173,21 @@ jobs:
           uv pip install --native-tls --system -e . \
             "netbox-plugin-dhcp==0.2.0" "netboxlabs-netbox-branching==${NETBOX_BRANCHING_VERSION}"
 
+      - name: Verify native replay without the DHCP plugin
+        working-directory: netbox/netbox
+        env:
+          TEST_DB_NAME: test_netbox_kea_branching_without_dhcp_ci
+          TEST_REDIS_HOST: localhost
+          NETBOX_KEA_REQUIRE_BRANCHING: "1"
+        run: |
+          python "${{ github.workspace }}/scripts/write_netbox_ci_configuration.py" \
+            --output netbox/configuration.py --plugin netbox_kea --branching
+          pytest ${{ github.workspace }}/netbox_kea/tests/test_branching.py::OptionalMappingReplayTest \
+            ${{ github.workspace }}/netbox_kea/tests/test_integration_dhcp_plugin.py::TestOptionalMetadataCoordination \
+            --override-ini="DJANGO_SETTINGS_MODULE=netbox_kea.tests.isolated_settings" \
+            --override-ini="pythonpath=${{ github.workspace }}/netbox/netbox" \
+            -n auto --maxschedchunk=1 --reuse-db --no-header -q
+
       - name: Set up NetBox configuration
         working-directory: netbox/netbox
         run: |
@@ -188,6 +203,7 @@ jobs:
           NETBOX_KEA_REQUIRE_BRANCHING: "1"
         run: |
           pytest ${{ github.workspace }}/netbox_kea/tests/test_branching.py \
+            ${{ github.workspace }}/netbox_kea/tests/test_dhcp_mapping_recovery.py \
             --override-ini="DJANGO_SETTINGS_MODULE=netbox_kea.tests.isolated_settings" \
             --override-ini="pythonpath=${{ github.workspace }}/netbox/netbox" \
             -n auto \

@@ -873,13 +873,14 @@ class KeaClient:
         self._on_config_change = on_config_change
         self.write_guard = write_guard
 
+        # command() passes these on each request, because requests lets the environment replace session values.
+        self.verify: bool | str = True if verify is None else verify
+        self.cert: tuple[str, str] | None = None
+        if client_cert is not None and client_key is not None:
+            self.cert = (client_cert, client_key)
         self._session = requests.Session()
-        if verify is not None:
-            self._session.verify = verify
         if username is not None and password is not None:
             self._session.auth = HTTPBasicAuth(username, password)
-        if client_cert is not None and client_key is not None:
-            self._session.cert = (client_cert, client_key)
 
     def command(
         self,
@@ -905,6 +906,7 @@ class KeaClient:
             TypeError: If *command* is not a KeaCommand member.
             ValueError: If *target* is not 4, 6 or None.
             BranchActive: If *command* is a write and the write guard refuses it, for example in a branch.
+            KeaTLSFileError: If requests cannot find a TLS file of the client. It is a ``RequestException``.
             requests.HTTPError: If the HTTP response status is not 2xx.
             KeaException: If any response result code is not in *check*.
 
@@ -923,7 +925,12 @@ class KeaClient:
         if arguments is not None:
             body["arguments"] = arguments
 
-        resp = self._session.post(self.url, json=body, timeout=self.timeout)
+        try:
+            resp = self._session.post(self.url, json=body, timeout=self.timeout, verify=self.verify, cert=self.cert)
+        except requests.RequestException:
+            raise
+        except OSError as exc:
+            raise KeaTLSFileError("A TLS CA, certificate or key file of the client could not be found.") from exc
         resp.raise_for_status()
         resp_json = resp.json()
         if not isinstance(resp_json, list):
@@ -942,10 +949,10 @@ class KeaClient:
         new = KeaClient.__new__(KeaClient)
         new.url = self.url
         new.timeout = self.timeout
+        new.verify = self.verify
+        new.cert = self.cert
         new._session = requests.Session()
         new._session.auth = self._session.auth
-        new._session.verify = self._session.verify
-        new._session.cert = self._session.cert
         new.persist_config = self.persist_config
         new.send_service = self.send_service
         new.max_unpaged_leases = self.max_unpaged_leases
@@ -1867,7 +1874,7 @@ class KeaClient:
             raise ValueError("subnet_id must be a positive integer.") from exc
         if subnet_id < 1:
             raise ValueError("subnet_id must be a positive integer.")
-        if state is not None and (isinstance(state, bool) or state not in (0, 1)):
+        if state is not None and (isinstance(state, bool) or state not in constants.LEASE_QUERY_STATE_CODES):
             raise LeaseQueryNotMeasurable(state)
         if self.max_unpaged_leases is None:
             if state is None:
@@ -1885,7 +1892,7 @@ class KeaClient:
             command = LEASE_GET_ALL[version]
             arguments = {"subnets": [subnet_id]}
         else:
-            observed_leases = counts.active if state == 0 else counts.declined
+            observed_leases = counts.active if state == constants.LEASE_STATE_CODES["assigned"] else counts.declined
             command = LEASE_GET_BY_STATE[version]
             arguments = {"subnet-id": subnet_id, "state": state}
         if observed_leases > self.max_unpaged_leases:
@@ -2150,7 +2157,7 @@ class KeaClient:
         if not self.persist_config:
             return PersistResult("not-requested")
         service = f"dhcp{version}"
-        # requests errors are OSError subclasses; a missing TLS file raises a plain OSError.
+        # OSError covers each requests error, KeaTLSFileError included.
         try:
             candidate = self.config_candidate(version)
         except (KeaException, OSError, ValueError, RuntimeError):
@@ -2235,6 +2242,14 @@ class KeaException(Exception):
         """Return the text of Kea's failure reply, or its result code when the reply has no text."""
         text = self.response.get("text")
         return text if isinstance(text, str) and text else f"result {self.response.get('result')}"
+
+
+class KeaTLSFileError(requests.exceptions.RequestException):
+    """Raised when requests cannot find a TLS CA, certificate or key file of the client. Nothing was sent.
+
+    requests raises a plain ``OSError`` for this case. ``KeaClient.command`` raises this subclass of
+    ``RequestException`` instead, so each handler of request errors also handles it. The ``OSError`` is the cause.
+    """
 
 
 def _one_reply(

@@ -37,6 +37,7 @@ out of CI so CodeRabbit can run its own analysis on pull requests.
 
 | Rule id | Severity | Catches |
 | --- | --- | --- |
+| `kea-queryset-model-attribute-discriminator` | error | A `model` attribute check used to distinguish querysets from model instances. Model fields can use the same name. |
 | `kea-config-phase-without-reply-validation` | error | Direct config-test, config-set, or config-write calls that bypass `_one_command()` or `_config_mutation_command()` and their single-reply validation. |
 | `kea-sync-hostname-unvalidated` | error | Raw hostname reads in lease reconciliation and claims that bypass the shared string-or-null validator. |
 | `kea-get-client-missing-version` | warning | `server.get_client()` without `version=` (wrong daemon on dual-URL servers). |
@@ -48,7 +49,7 @@ out of CI so CodeRabbit can run its own analysis on pull requests.
 | `kea-config-change-rejection-caught-outside-mapper` | error | An `except` that names `ConfigChangeRejected` in `views/` outside a function named `_run_config_change()`. The one such function, in `views/_base.py`, is the one place that turns a Configuration Change outcome or rejection into a message. |
 | `kea-config-change-mapper-outside-base` | error | A `def _run_config_change` under `views/` in any file but `views/_base.py`. It closes the name exemption of the rule above. |
 | `kea-config-change-in-broad-except` | error | A `config_write` call under `views/` inside a `try` whose `except` catches `Exception`, `BaseException`, or everything. That handler would also catch `ConfigChangeRejected`. A call passed to `_run_config_change()` is exempt, because the mapper catches the rejection first. |
-| `kea-sync-except-request-exception-not-oserror` | error | An `except` that names `requests.RequestException` in `ipam_reconciliation.py`, `jobs.py`, or `sync.py`. A missing TLS file raises a plain `OSError`, which escapes that handler and stops the sync of the whole Server; catch `OSError`. |
+| `kea-http-call-outside-client` | error | `requests.Session()`, `requests.get()`, `post()`, `put()`, `patch()`, `delete()`, `head()` or `request()` in `netbox_kea/` outside `kea.py` and the tests. `KeaClient.command()` is the one seam that applies the Server TLS settings on each request and reports a missing TLS file as a `RequestException`. Limit: it matches the `requests.` module prefix only, so an aliased import (`from requests import post`, `import requests as r`) is not detected. |
 | `kea-mac-sync-write-without-savepoint` | error | Direct MAC lookup and save calls in `sync_mac_address()` outside `transaction.atomic()`. The guard covers this synchronizer's savepoint boundary, not transaction ownership across other callers. |
 | `subprocess-without-timeout` | error | `subprocess.run()`, `call()`, `check_call()`, or `check_output()` without `timeout=`, in the package, the scripts, or the tests. A child process that stops responding would block the caller with no limit. |
 | `netbox-ipam-get-or-create-non-unique-key` | error | `get_or_create()` or `update_or_create()` on `Prefix`, `IPRange`, or `IPAddress`, directly or on a queryset chain such as `.filter(...)`. An exact `pk=` or `id=` lookup is exempt. NetBox does not enforce these keys in the database, so a duplicate row makes every call raise `MultipleObjectsReturned`. |

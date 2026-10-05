@@ -7,7 +7,9 @@ SPDX-License-Identifier: Apache-2.0
 
 This is the design for running netbox-kea with netbox-branching. It applies to NetBox 4.7.0 with
 netbox-branching 1.2.1, and to branches created after the release that adds support. ADR 0007
-records the decision, and issue #231 tracks the implementation.
+records the main-only policy. ADR 0008 adds the DHCP Import Mapping recovery exception.
+Initial evidence and candidate choices below describe the pre-support survey; the Contract
+section states the current behavior.
 
 ## Problem brief
 
@@ -19,7 +21,7 @@ to main. A model is branchable when it is in `INCLUDE_MODELS`, when a registered
 or when it inherits `ChangeLoggingMixin`; `EXEMPT_MODELS` and `exempt_models` always win
 (`utilities.py` `supports_branching`). Merge, sync and revert replay `ObjectChange` rows only.
 
-netbox-kea has no code for branching today, and a user can install both. Kea is an external
+At the initial survey, netbox-kea had no branching guard, and a user could install both. Kea is an external
 system: every Kea change the plugin makes is live when the command returns. A branch cannot
 stage it.
 
@@ -30,20 +32,23 @@ enforces it?
 
 - Support level (2026-09-29): **reads work in a branch; every write is refused.** Rejected: refuse
   every plugin URL (the netbox-data-import design), and full support (the netbox-librenms design).
+- Mapping exception (2026-10-03): DHCP Import Mappings follow imported targets through deletion,
+  squash merge and revert. Live Kea and import operations remain main-only (ADR 0008).
 
 ### Constraints
 
 - netbox-branching stays optional. Without it, behaviour does not change.
 - No backwards-compatibility layers; remove obsolete paths.
 - Fail fast and visibly; no silent fallback to main.
-- The plugin was never compatible with netbox-branching, so no deployment has a branch that
-  predates the release that adds support (the netbox-data-import operator decision, applied here).
+- New branchable tables require fresh branches. Older branches retain independent reads, with
+  a scoped refusal for unavailable mappings. Branch schemas and history are not retrofitted.
 
 ### Acceptance conditions
 
 1. With a branch active, every plugin entry point (UI view, REST API, GraphQL, background job,
    template extension on a core page) has one documented outcome. A read returns data and says
-   where the plugin's own sources come from: Kea data is live, and netbox_kea rows come from main.
+   where the plugin's sources come from: Kea data is live, Server and sync data come from main,
+   and available DHCP Import Mappings follow the branch.
    It names the active branch as the routing context only. Other NetBox objects follow
    netbox-branching's routing. A write is refused before any Kea command and before any database
    write. No outcome is an unhandled 500.
@@ -55,7 +60,8 @@ enforces it?
 4. A CI job with netbox-branching on NetBox 4.7 runs tests that fail when 1 to 3 regress.
 5. A mechanical guard stops a new plugin route or a new Kea write command from bypassing the
    refusal. Queryset `update()`, `bulk_create()`, `bulk_update()` and raw SQL on plugin models
-   are outside the contract (see the table below), so no guard covers them.
+   remain outside the main-only model contract (see the table below). Mapping and target writer
+   coordination is specified separately in ADR 0008.
 
 ### Prior art (sibling plugins, same NetBox and netbox-branching versions)
 
@@ -123,7 +129,7 @@ Cascades with a branch active (*derived*):
 |---|---|
 | Delete a Server | Branch Server row deleted. `KeaDhcpLink` rows (table not copied) deleted **in main**, with no ObjectChange. `core.Job`, Bookmark and Subscription rows deleted in main |
 | Delete the VRF in `Server.sync_vrf` | Branch Server copy nulled, with no ObjectChange (`related_name="+"` hides the relation from NetBox's changelog loop). Main unchanged until merge |
-| Delete a netbox_dhcp object a `KeaDhcpLink` points at | No cascade (GenericForeignKey). The main link row points at a deleted id. Same without branching |
+| Delete a netbox_dhcp object a `KeaDhcpLink` points at | A target delete receiver removes matching links through the alias of the delete. A branch delete removes the branch mapping, and main keeps its own until merge (ADR 0008) |
 | Delete an IPAM object the sync wrote | No plugin table references it (ADR 0006 is accepted, not implemented). netbox_dhcp `PROTECT` keys raise `ProtectedError` for Prefix and IPRange |
 
 Migrations: only 0015 has `RunPython` (deletes invalid `KeaDhcpLink` rows); branch migrate fakes it,
@@ -165,6 +171,9 @@ Which plugin models are branchable:
 
 ## Decisions
 
+ADR 0008 supersedes D3 and D8 and adds scoped schema and exemption checks to D14 and D15.
+The choices below retain the original rationale.
+
 These choices had no competing alternative: a `netbox_kea/branching.py` owner; refusal in plugin
 middleware (branch activation runs earlier, in `CoreMiddleware` request processors, and a processor
 cannot refuse, `NB/utilities/request.py:131-142`); a read or write kind on every Kea command,
@@ -176,7 +185,7 @@ provisioned branch.
 |---|---|---|---|---|
 | D1 | Is `Server` branchable | No: resolver `False`. One row per pk, so the Kea client and the Redis keys always use main's current connection fields | Yes. Branch reads use the branch copy's connection fields. Branch sync is refused when main changed Server create, delete or connection fields; the operator recreates the branch | Server changelogs censor passwords (`models.py:341-361`), so a synced connection edit writes a censored password into the branch copy. Sync selects by branchable type (`NBB/models/branches.py:412-426`), so a main-only Server never syncs. With a branchable Server, any main edit of a Server's connection fields blocks sync of every open branch, and the design needs a cache bypass (D6), sync and merge validators (D8), and a stale-copy policy; a main-only Server needs none of them |
 | D2 | `Server.sync_vrf` | `SET_NULL` to `PROTECT` | Keep `SET_NULL`; make the reverse relation visible so NetBox snapshots the Server before it nulls the key | With Server main-only, a `SET_NULL` cascade from a branch VRF delete runs on the branch connection and resolves `netbox_kea_server` to main, so main changes at once. `PROTECT` raises in `Collector.collect()` before any write or signal. Today a VRF delete silently moves the next sync into the global VRF. **Operator-visible change in main:** a VRF that a Server syncs into can no longer be deleted until the Server stops using it |
-| D3 | `KeaDhcpLink` | Main-only; a link to a deleted target stays until the next import relinks (today's behaviour) | Branchable, plus receivers that delete links when a netbox_dhcp target is deleted | A receiver running in a branch against a main-only table deletes main rows. Branchable links need revert and sync validators (sync writes synthetic DELETEs for them, `branches.py:837-897`). Readers already treat a missing target as absent (`integrations/dhcp_plugin.py:650-654`). The receivers improve main without branching too; they are a follow-up. Reopen if a reader treats a dangling link as a live object |
+| D3 | `KeaDhcpLink` | Superseded by ADR 0008: branchable. A target delete receiver removes matching mappings through the alias of the delete, so a branch delete removes the branch mapping and main keeps its own until merge | Main-only, with receivers that clean up links on main and skip active branches | ADR 0008 makes mappings follow their targets through deletion, squash merge and revert. Merge replays the target delete on main and removes its links in that transaction. Readers treat a missing target as absent |
 | D4 | Refusal seams | Middleware (by HTTP method), the Kea transport, `pre_save`/`pre_delete` receivers on the three plugin models, a job guard | Middleware (by classified operation), view dispatch again for `AsyncViewJob`, REST action guards, guards on every domain write, an AST write-boundary gate | Every plugin HTTP entry, including those that enqueue `AsyncViewJob` or `AsyncAPIJob`, passes plugin middleware first. A job can only be queued by a request that the middleware already let through, so a branch-context plugin job cannot exist. A Custom Script reaches plugin write code without plugin middleware (`NB/extras/jobs.py:398-403`); the transport and the receivers refuse its Kea mutations and plugin instance writes, and the contract lists the rest. Reopen on another caller that reaches plugin write code with a branch active and without plugin middleware |
 | D5 | Read versus write | HTTP method; no exceptions | A classified inventory of every operation | The one read-only POST (lease bulk delete confirmation, `views/leases.py:534-548`) leads only to a delete that is refused anyway. No GET reaches a Kea write |
 | D6 | Redis caches in a branch | Shared; valid because D1 gives one connection per Server | Bypass both caches in a branch | Follows D1 |
@@ -185,7 +194,7 @@ provisioned branch.
 | D9 | `Server.clean()` sends `version-get` | Out of scope, a follow-up | Move the connectivity check out of `clean()` into the form and serializer validation | A Server change record created by a Tag delete in a branch is written to main's changelog: the ObjectChange takes the loaded Server's database through its ContentType foreign key (`NB/netbox/models/features.py:117-127`, `NBB/database.py:49-50`), and NBB records no ChangeDiff for it (`NBB/signal_receivers.py:125-127`). Under D1 no Server change reaches a branch changelog, so no merge replays `Server.clean()` |
 | D10 | Kea client used from a thread pool | The client records the branch state at construction; `clone()` keeps it | Context variable only | Thread-pool workers do not inherit context variables; clones run in pools (`kea.py:772-789`, `views/leases.py:944`) |
 | D11 | Stale branch selection | Refuse with 409 `branch_selection_unusable` | Run the request on main, as for every NetBox view | A stale cookie or unready query runs on main (`NBB/utilities.py:548-597`, `NBB/middleware.py:53-89`), which the "no silent fallback" constraint forbids |
-| D12 | Write controls in the UI | A banner; the IPAddress panel hides its add links | Disable mutation controls | 44 mutation views. Refusal already meets condition 1; disabling controls is a follow-up |
+| D12 | Write controls in the UI | Disable mutation controls in the final rendered HTML, with an accessible reason; keep the banner and the IPAddress panel policy | Separate template annotations or browser-only disabling | Completed. `BranchRefusalMiddleware` transforms full pages and HTMX fragments through `branch_controls.py`. Targets come from the shared unsafe callback predicate, `_KeaChangeMixin` and generic CRUD classes. Mixed-method read pages remain navigable. Safe reads and main responses retain their behavior. The refusal seams remain the backstop for stale pages and direct requests |
 | D13 | Early Server delete guard | `pre_delete` receiver | At `delete()`, because `JobsMixin.delete()` removes jobs before the collector runs | `JobsMixin.delete()` wraps the job deletion and `super().delete()` in one `atomic(using=...)` (`NB/netbox/models/features.py:513-520`), so a `pre_delete` refusal rolls the job deletion back. Reopen if NetBox removes that transaction |
 | D14 | Startup validation of `exempt_models` | None; every plugin model remains main-only, including the ADR 0006 ownership link | Reject exemptions that break the required branchable set | No plugin model is branchable today, so no exemption can break the set |
 | D15 | Branch table footprint check per request | None | Validate before reads and core actions | Constraint: no branch predates this release. Guard 2 blocks a new branchable model without a design decision |
@@ -196,20 +205,21 @@ provisioned branch.
 
 ### Contract
 
-Kea is live and shared by every branch. The plugin's own rows describe that live system, so they
-exist in main only. In a branch the plugin is a viewer.
+Kea is live and shared by every branch. Server, sync settings and IPAM ownership remain in main.
+DHCP Import Mappings follow imported targets in fresh branches under ADR 0008. The plugin remains
+a viewer for live Kea and import operations.
 
 | Entry point, branch active | Outcome |
 |---|---|
-| Plugin-owned URL callback, GET, HEAD or OPTIONS (UI, HTMX) | Served. A banner on plugin pages says: Kea data is live; Kea servers, sync settings and DHCP plugin links come from main; other NetBox objects follow netbox-branching's routing for branch `<name>`; changes are refused |
-| Response from a plugin-owned callback or the GraphQL endpoint while a branch is active | Carries `X-NetBox-Kea-Sources: kea=live; plugin=main; branch=<schema_id>`: Kea data in the response is live, and netbox_kea rows (Server, sync settings, links) come from main. `branch` names the active routing context; it does not state where other NetBox objects came from (netbox-branching's routing decides that, and exempt models such as `core.Job` read main) |
+| Plugin-owned URL callback, GET, HEAD or OPTIONS (UI, HTMX) | Served. A banner identifies live Kea, main-only Server/settings/ownership data and branch-local DHCP Import Mappings. Older mappings require a fresh branch; other NetBox objects follow native routing |
+| Response from a plugin-owned callback or GraphQL while a branch is active | Carries `X-NetBox-Kea-Sources: kea=live; plugin=main; dhcp-import-mappings=branch; branch=<schema_id>` for available mappings, or `dhcp-import-mappings=unavailable` for old schemas or excluded routing. Other NetBox objects follow native routing |
 | Plugin-owned URL callback, any other method (UI) | HTTP 409 page naming the branch, with a link to switch to main (`?_branch=`) |
 | Plugin-owned URL callback, any other method (HTMX) | A Django error message is queued, and the 409, with an empty body, carries `HX-Refresh: true`. htmx swaps no 4xx response by default (`NB/static/django_htmx/htmx-2.js:264-267`), but handles `HX-Refresh` before its status rules (`htmx-2.js:4831-4843`), so the page reloads in the branch and shows the message. The empty body leaves the message unconsumed for the reload |
 | Plugin-owned URL callback, any other method (REST) | HTTP 409, `{"detail": ..., "code": "branch_write_refused"}` |
 | GraphQL `server`, `server_list` | Served from main, with the sources header. Nested branchable objects (`sync_vrf`, tags) come from the branch |
 | IPAddress panel on a core page | Served; lists main's Servers under a "Kea servers (main)" label; hides the reservation add links |
 | `KeaIpamSyncJob` | Always runs on main (workers apply no request processors). Raises `JobFailed` before any read if a branch is active in the worker |
-| Non-HTTP caller in a branch (Custom Script, event-rule script, `nbshell`) | A mutating Kea command raises `BranchActive` in the transport. A `save()` or `delete()` of `Server`, `SyncConfig` or `KeaDhcpLink` raises `BranchActive`. Core rows follow branch routing, including rows that plugin helpers write. Queryset `update()`, `bulk_create()`, `bulk_update()` and raw SQL on plugin models are outside the contract, as for every non-branchable model in NetBox |
+| Non-HTTP caller in a branch (Custom Script, event-rule script, `nbshell`) | Mutating Kea commands and `save()`/`delete()` of Server, settings and IPAM ownership raise `BranchActive`. Mappings and imported targets follow ADR 0008. Other core rows follow native routing. Queryset update/bulk writes and raw SQL on main-only plugin models remain outside their refusal guarantee |
 | Core metadata on a Server (journal entry, bookmark, subscription) from a branch | NetBox's routing: a journal entry lands in the branch; a bookmark or subscription lands in main. Neither changes a plugin row or contacts Kea |
 
 With no branch active, a plugin-owned URL callback with an unsafe method is checked for an
@@ -257,10 +267,13 @@ Without netbox-branching every guard is a no-op and behaviour does not change, e
   import of `netbox_branching` in the plugin.
 - `refuse_in_branch(operation)`: raises `BranchActive` when a branch is active. `BranchActive` is
   not a `KeaException`, so a view's `except KeaException` cannot turn it into a Kea error.
-- `is_branchable(model)`: the resolver. For a plugin model, `True` iff it has a concrete
-  `ForeignKey` or `OneToOneField` whose `on_delete` writes (`CASCADE`, `SET_NULL`, `SET_DEFAULT`,
-  `SET(...)`) to a model outside the plugin that `supports_branching()` accepts; otherwise
-  `False`. `None` for models of other apps. Today it returns `False` for all three models.
+- `is_branchable(model)`: the resolver. It returns `True` only for `netbox_kea.KeaDhcpLink`,
+  `False` for other plugin models, and `None` for other apps. It also accepts historical models.
+  Native configured exemptions still apply.
+- `supports_branching`, `branch_scope` and `connection_aliases`: native routing and activation
+  facts used by the mapping lifecycle owner.
+- Native merge/revert adapters validate affected history under mapping coordination, then
+  delegate to the selected native strategy. See `dhcp-import-mapping-transactions.md`.
 - `BranchRefusalMiddleware` (in `PluginConfig.middleware`): for a request whose resolved callback
   module is inside `netbox_kea`, refuses an unsafe method when a branch is active or when a branch
   selector is unusable (the predicate above), both in `process_view`; adds the sources header to
@@ -285,7 +298,7 @@ model. It evaluates no rule at run time. The reasons:
 
 Guard 2 is now the only place that computes the rule, transitively, from the live models. It fails,
 and names the foreign-key path, when a plugin model would need a branch copy. It also asserts that
-`supports_branching()` is `False` for every plugin model.
+`supports_branching()` permits only DHCP Import Mappings among plugin models (ADR 0008).
 
 #### Implementation note (2026-09-30, increment 3)
 
@@ -307,8 +320,8 @@ The middleware follows the contract, with these facts from netbox-branching 1.2.
   button beside netbox-branching's selector; its menu holds the full wording. The 409 page links
   to the Server list with `?_branch=`, the same target as the HTMX stale-selector refusal.
 - `process_exception` renders `BranchActive` from any view, not only from plugin-owned callbacks.
-- Guard 1 fills each URL pattern itself, because two plugin patterns can share a URL name (#246),
-  and checks that the URL resolves back to the same view. It sends GET, HEAD and OPTIONS, and
+- Guard 1 fills each URL pattern itself, including REST format-suffix variants that share URL
+  names, and checks that the URL resolves back to the same view. It sends GET, HEAD and OPTIONS, and
   POST, PUT, PATCH and DELETE, to every plugin URL. Its Kea replies come from `kea_recordings/`; a
   read may send only the commands that this read-only Kea answers. It found that the format-suffix
   URLs of the four REST Kea actions (`servers/<pk>/leases4.json` and the like) answer 500 on main,
@@ -325,8 +338,8 @@ The middleware follows the contract, with these facts from netbox-branching 1.2.
   branch is active; `clone()` keeps the binding (thread-pool workers do not inherit context
   variables, and `clone()` copies fields explicitly, `K/netbox_kea/kea.py:772-789`). A string
   command is a type error (mypy) and a `TypeError` at runtime.
-- **Plugin models.** `pre_save` and `pre_delete` receivers on `Server`, `SyncConfig` and
-  `KeaDhcpLink` call `refuse_in_branch()`. A `pre_delete` receiver disables Django's fast delete,
+- **Main-only plugin models.** `pre_save` and `pre_delete` receivers on `Server`, `SyncConfig` and
+  `IPAMOwnershipLink` call the branch refusal. A `pre_delete` receiver disables Django's fast delete,
   so queryset `delete()` reaches it. `JobsMixin.delete()` runs its job deletion and the collector
   in one transaction (`NB/netbox/models/features.py:513-520`), so the refusal rolls the job
   deletion back.
@@ -349,7 +362,7 @@ The sinks follow the design, with these facts from the code:
   `Server.get_client()`, and for any client whose guard is a `BranchBinding`.
 - `register()` connects the model receivers only when netbox-branching is installed, because a
   `pre_delete` receiver turns off Django's fast delete. They cover every netbox_kea model from the
-  app registry, the set that the resolver keeps in main.
+  app registry, excluding DHCP Import Mappings, which use their lifecycle boundaries.
 - The job guard sets `job.error` and raises `JobFailed`. NetBox saves the error when it marks the
   job failed.
 - The OpenGrep rules that matched command strings now match `KeaCommand` members.
@@ -365,7 +378,7 @@ The sinks follow the design, with these facts from the code:
 |---|---|---|
 | `Server` | No (resolver) | One row per pk: the Kea client and the Redis keys use main's current connection fields; sync never copies censored passwords into a branch |
 | `SyncConfig` | No (plain model) | Global singleton |
-| `KeaDhcpLink` | No (plain model, resolver) | Its only foreign keys go to `Server` (main-only) and `ContentType` (exempt) |
+| `KeaDhcpLink` | Yes, unless configured exempt | Change-logged association that must recover with its imported target; ADR 0008 |
 | ADR 0006 ownership link | No (resolver) | `CASCADE` keys to IPAddress, Prefix, IPRange. A delete of a linked object in a branch reaches main's link table, and the `pre_delete` receiver refuses it. Merge and revert delete on main, where `CASCADE` removes the links. Design: `docs/design/ipam-ownership-branching.md` |
 
 `Server.sync_vrf` becomes `PROTECT`. A VRF delete, in a branch or in main, is refused while a
@@ -378,25 +391,31 @@ deletion signals or writes (`DJ/db/models/deletion.py:343-357`); NetBox's delete
   one-time backfill. `SyncConfig.get()` becomes a plain read, and `backfill_applied` is removed.
 - Redis writes on display stay: the cache is derived from live Kea and, with Server main-only, is
   the same for main and every branch.
+- Reservation edit and delete GET pages validate their targets through a live Subnet Identity
+  read that preserves the display snapshots. Their POST handlers enter `MutationScope`, which
+  invalidates both display snapshots before and after the operation.
 
 ### Merge, discard, revert
 
-No plugin row exists in a branch, and no Server change reaches a branch changelog, so no plugin
-validator is registered. Known limits, documented:
+DHCP Import Mappings have branch rows and native history. Their deletion, squash merge and revert
+contract is in `dhcp-import-mapping-branching.md`; transaction and writer rules are in
+`dhcp-import-mapping-transactions.md`. Other plugin rows retain main-only routing. Known limits:
 
 - A Tag delete in a branch removes the Tag's `TaggedItem` rows for main's Servers in the branch
   (TaggedItem is branchable), and NetBox writes the Server change record to main's changelog
   before any merge (see D9). Merge replays the Tag delete in main. A revert of that merge
   does not restore the Servers' tag assignments.
-- A link whose netbox_dhcp target a merged branch deleted stays until the next import relinks
-  (today's behaviour for a delete in main).
+- An older branch without complete mapping history cannot safely recover an imported target.
+  Recreate that branch. Already-lost associations require explicit operator repair; target names
+  cannot reconstruct provenance.
 
 ### Migrations
 
 The `sync_vrf` migration alters a model that is no longer branchable, so branch migrate fakes it
 (`NBB/models/branches.py:138-186`). The `SyncConfig` data migration sets `fake_on_branch = True`.
-The release ships a migration, so `migrate` refreshes stored `ObjectType.features` for Server
-(`NB/core/signals.py:52-75`).
+The mapping-history migration adds `last_updated` and sets `fake_on_branch = True`: existing
+branch tables are not retrofitted. `migrate` refreshes stored `ObjectType.features`, and fresh
+branches copy the mapping table. Schema and routing checks refuse affected older branches.
 
 ### Mechanical guards
 
@@ -409,7 +428,8 @@ The release ships a migration, so `migrate` refreshes stored `ObjectType.feature
 2. Branchability pin: compute, from `_meta` of every plugin model (auto-created ones included),
    the relations that a delete in a branch reaches, and assert that they equal a pinned set of
    `(model.field, on_delete)`. Each one must be a concrete `CASCADE` key on a model with the refusal
-   receiver. Assert that `supports_branching()` is `False` for every plugin model. The message says
+   receiver. Assert that only DHCP Import Mappings support branching among plugin models.
+   The message says
    that a change needs a design decision (`docs/design/ipam-ownership-branching.md`).
 3. Kea transport: an AST scan asserts that the runtime package has exactly one HTTP send, inside
    `KeaClient.command()`. A test pins the `read` and `write` members of `KeaCommand` as two
@@ -423,15 +443,16 @@ The release ships a migration, so `migrate` refreshes stored `ObjectType.feature
 ### CI
 
 A new job: NetBox 4.7.0, netbox-branching 1.2.1, netbox-plugin-dhcp 0.2.0, `DynamicSchemaDict`,
-`BranchAwareRouter`, netbox_branching last. It runs `test_branching.py` with an environment
-variable that turns the module's `importorskip` into a failure, so the job cannot pass with the
-tests skipped. With real provisioning, it covers guards 1 to 4 and:
+`BranchAwareRouter`, netbox_branching last. It runs `test_branching.py` and
+`test_dhcp_mapping_recovery.py` with `NETBOX_KEA_REQUIRE_BRANCHING=1`, so absent branching
+fails instead of skipping the modules. With real provisioning, it covers guards 1 to 4 and:
 
-- a provisioned branch holds no `netbox_kea_*` table; stored `ObjectType.features` for Server has
+- a provisioned branch copies only the mapping plugin table; stored `ObjectType.features` for Server has
   no `branching`; a Server edited in main after the branch was created reads with main's values in
   the branch (fails with the resolver removed);
 - a VRF delete in a branch, with a Server syncing into it, raises `ProtectedError`; main unchanged;
-- instance writes of the three plugin models in a branch raise `BranchActive`; main unchanged;
+- instance writes of Server, sync settings and IPAM ownership in a branch raise `BranchActive`;
+  mapping save/delete affects branch rows only; main unchanged;
 - a mutating Kea command in a branch, also from a cloned client in a thread, raises
   `BranchActive`, and the Kea stub records nothing;
 - the selector table above, parameterized (UI and API, header, query empty, unknown, unready and
@@ -457,22 +478,26 @@ tests skipped. With real provisioning, it covers guards 1 to 4 and:
 - a Tag on a Server deleted in a branch: the Server change record is in main's changelog and no
   Server ChangeDiff exists; after merge, main's Server has lost the tag, its other fields
   (credentials included) are unchanged, and the Kea stub recorded nothing;
-- a netbox_dhcp Subnet delete in a branch leaves main's link; merge leaves it dangling; the next
-  import relinks.
+- Subnet and Global Reservation deletes remove branch-local mappings and preserve main; squash
+  merge removes the main pair, revert restores both original identities, and reimport creates no
+  duplicate. Real PostgreSQL races cover replay and coordinated writers. Refusal tests cover old
+  schemas, exemptions, incomplete history, dependencies and newer main state. Main deletion tests
+  retain content-type isolation and transaction rollback.
 
 ### Out of scope, follow-ups
 
-- `Server.clean()` sends `version-get` (network I/O in model validation). Under this design no
-  merge replays a Server change, so branching does not need the move; it is adjacent debt.
+- Server connectivity validation now runs at submission boundaries. `Server.clean()` validates
+  local settings only; `server-connectivity-validation.md` records that contract.
 - `snapshot()` before plugin updates (13 sites) and `KeaIpamSyncJob` writing IPAM with no
   ObjectChange: main changelog defects. With branching, merge conflict detection cannot see the
   job's edits.
-- netbox_dhcp target deletion receivers for `KeaDhcpLink` (D3).
-- Disabling mutation controls in a branch (D12).
-- The reservation edit and delete GET pages invalidate the Redis cache through `MutationScope`
-  (`views/reservation_mutations.py:218-249`); harmless under this design, but a GET should not.
+Mutation controls in a branch (D12) are complete. The rendered-response transformation disables
+mutation navigation, unsafe form submissions and HTMX requests. Focusable wrappers show the
+reason on hover and keyboard focus. Fixed tooltips remain visible outside responsive tables.
+The response tests walk provisioned-branch pages and cover native submission semantics, HTMX
+fragments and compression.
 
-### Increments
+### Original implementation increments
 
 1. Resolver, `sync_vrf` `PROTECT`, the CI job, guards 2 and 4. Done when a provisioned branch holds
    no `netbox_kea_*` table and a Server edited in main after branch creation reads with main's

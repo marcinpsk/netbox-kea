@@ -443,6 +443,293 @@
     "result": 0
   },
   "kea-version": "3.2.0",
+  "leases": {
+    "lease4-get": {
+      "absent": {
+        "result": 3,
+        "text": "Lease not found."
+      },
+      "present": {
+        "arguments": {
+          "client-id": "01:aa:bb:cc:00:00:10",
+          "cltt": 1791204538,
+          "fqdn-fwd": true,
+          "fqdn-rev": true,
+          "hostname": "host10.example.org",
+          "hw-address": "aa:bb:cc:00:00:10",
+          "ip-address": "192.0.2.10",
+          "pool-id": 1,
+          "state": 0,
+          "subnet-id": 10,
+          "user-context": {
+            "site": {
+              "rack": "r1",
+              "slots": [
+                1,
+                2
+              ]
+            }
+          },
+          "valid-lft": 3600
+        },
+        "result": 0,
+        "text": "IPv4 lease found."
+      }
+    },
+    "lease4-get-all": {
+      "arguments": {
+        "leases": [
+          {
+            "client-id": "01:aa:bb:cc:00:00:10",
+            "cltt": 1791204538,
+            "fqdn-fwd": true,
+            "fqdn-rev": true,
+            "hostname": "host10.example.org",
+            "hw-address": "aa:bb:cc:00:00:10",
+            "ip-address": "192.0.2.10",
+            "pool-id": 1,
+            "state": 0,
+            "subnet-id": 10,
+            "user-context": {
+              "site": {
+                "rack": "r1",
+                "slots": [
+                  1,
+                  2
+                ]
+              }
+            },
+            "valid-lft": 3600
+          },
+          {
+            "cltt": 1791204538,
+            "fqdn-fwd": false,
+            "fqdn-rev": false,
+            "hostname": "",
+            "hw-address": "aa:bb:cc:00:00:11",
+            "ip-address": "192.0.2.11",
+            "state": 0,
+            "subnet-id": 10,
+            "valid-lft": 4294967295
+          },
+          {
+            "cltt": 1791204538,
+            "fqdn-fwd": false,
+            "fqdn-rev": false,
+            "hostname": "",
+            "hw-address": "",
+            "ip-address": "192.0.2.12",
+            "state": 1,
+            "subnet-id": 10,
+            "valid-lft": 86400
+          },
+          {
+            "cltt": 1791204538,
+            "fqdn-fwd": false,
+            "fqdn-rev": false,
+            "hostname": "",
+            "hw-address": "aa:bb:cc:00:00:13",
+            "ip-address": "192.0.2.13",
+            "state": 2,
+            "subnet-id": 10,
+            "valid-lft": 3600
+          },
+          {
+            "cltt": 1791204538,
+            "fqdn-fwd": false,
+            "fqdn-rev": false,
+            "hostname": "",
+            "hw-address": "aa:bb:cc:00:00:14",
+            "ip-address": "192.0.2.14",
+            "state": 3,
+            "subnet-id": 10,
+            "valid-lft": 3600
+          },
+          {
+            "client-id": "ff:00:00:00:15:00:02",
+            "cltt": 1791204538,
+            "fqdn-fwd": false,
+            "fqdn-rev": false,
+            "hostname": "",
+            "hw-address": "",
+            "ip-address": "192.0.2.15",
+            "state": 0,
+            "subnet-id": 10,
+            "valid-lft": 3600
+          }
+        ]
+      },
+      "result": 0,
+      "text": "6 IPv4 lease(s) found."
+    },
+    "lease4-get-page": [
+      {
+        "arguments": {
+          "count": 3,
+          "leases": [
+            {
+              "client-id": "01:aa:bb:cc:00:00:10",
+              "cltt": 1791204538,
+              "fqdn-fwd": true,
+              "fqdn-rev": true,
+              "hostname": "host10.example.org",
+              "hw-address": "aa:bb:cc:00:00:10",
+              "ip-address": "192.0.2.10",
+              "pool-id": 1,
+              "state": 0,
+              "subnet-id": 10,
+              "user-context": {
+                "site": {
+                  "rack": "r1",
+                  "slots": [
+                    1,
+                    2
+                  ]
+                }
+              },
+              "valid-lft": 3600
+            },
+            {
+              "cltt": 1791204538,
+              "fqdn-fwd": false,
+              "fqdn-rev": false,
+              "hostname": "",
+              "hw-address": "aa:bb:cc:00:00:11",
+              "ip-address": "192.0.2.11",
+              "state": 0,
+              "subnet-id": 10,
+              "valid-lft": 4294967295
+            },
+            {
+              "cltt": 1791204538,
+              "fqdn-fwd": false,
+              "fqdn-rev": false,
+              "hostname": "",
+              "hw-address": "",
+              "ip-address": "192.0.2.12",
+              "state": 1,
+              "subnet-id": 10,
+              "valid-lft": 86400
+            }
+          ]
+        },
+        "result": 0,
+        "text": "3 IPv4 lease(s) found."
+      },
+      {
+        "arguments": {
+          "count": 3,
+          "leases": [
+            {
+              "cltt": 1791204538,
+              "fqdn-fwd": false,
+              "fqdn-rev": false,
+              "hostname": "",
+              "hw-address": "aa:bb:cc:00:00:13",
+              "ip-address": "192.0.2.13",
+              "state": 2,
+              "subnet-id": 10,
+              "valid-lft": 3600
+            },
+            {
+              "cltt": 1791204538,
+              "fqdn-fwd": false,
+              "fqdn-rev": false,
+              "hostname": "",
+              "hw-address": "aa:bb:cc:00:00:14",
+              "ip-address": "192.0.2.14",
+              "state": 3,
+              "subnet-id": 10,
+              "valid-lft": 3600
+            },
+            {
+              "client-id": "ff:00:00:00:15:00:02",
+              "cltt": 1791204538,
+              "fqdn-fwd": false,
+              "fqdn-rev": false,
+              "hostname": "",
+              "hw-address": "",
+              "ip-address": "192.0.2.15",
+              "state": 0,
+              "subnet-id": 10,
+              "valid-lft": 3600
+            }
+          ]
+        },
+        "result": 0,
+        "text": "3 IPv4 lease(s) found."
+      },
+      {
+        "arguments": {
+          "count": 0,
+          "leases": []
+        },
+        "result": 3,
+        "text": "0 IPv4 lease(s) found."
+      }
+    ],
+    "lease4-update": {
+      "after-update-with-expire": {
+        "arguments": {
+          "cltt": 1999996400,
+          "fqdn-fwd": false,
+          "fqdn-rev": false,
+          "hostname": "",
+          "hw-address": "aa:bb:cc:00:00:30",
+          "ip-address": "192.0.2.30",
+          "state": 0,
+          "subnet-id": 10,
+          "valid-lft": 3600
+        },
+        "result": 0,
+        "text": "IPv4 lease found."
+      },
+      "after-update-without-expire": {
+        "arguments": {
+          "cltt": 1791204538,
+          "fqdn-fwd": false,
+          "fqdn-rev": false,
+          "hostname": "",
+          "hw-address": "aa:bb:cc:00:00:30",
+          "ip-address": "192.0.2.30",
+          "state": 0,
+          "subnet-id": 10,
+          "valid-lft": 3600
+        },
+        "result": 0,
+        "text": "IPv4 lease found."
+      },
+      "before": {
+        "arguments": {
+          "cltt": 1999996400,
+          "fqdn-fwd": false,
+          "fqdn-rev": false,
+          "hostname": "",
+          "hw-address": "aa:bb:cc:00:00:30",
+          "ip-address": "192.0.2.30",
+          "state": 0,
+          "subnet-id": 10,
+          "valid-lft": 3600
+        },
+        "result": 0,
+        "text": "IPv4 lease found."
+      }
+    },
+    "refused": {
+      "fqdn-without-hostname": {
+        "result": 1,
+        "text": "No hostname specified and either forward or reverse fqdn was set to true."
+      },
+      "missing-hw-address": {
+        "result": 1,
+        "text": "missing parameter 'hw-address' (<string>:1:41)"
+      },
+      "registered-state": {
+        "result": 1,
+        "text": "DHCPv4 leases do not support registered state"
+      }
+    }
+  },
   "list-commands": {
     "arguments": [
       "build-report",

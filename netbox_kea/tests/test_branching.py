@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
-"""With netbox-branching installed, netbox_kea rows stay in main (ADR 0007).
+"""Only DHCP Import Mappings follow branches; other plugin rows stay in main (ADRs 0007 and 0008).
 
 The CI branching job sets NETBOX_KEA_REQUIRE_BRANCHING=1, so this module fails instead of
 skipping when netbox-branching is not an installed app.
@@ -15,10 +15,12 @@ from collections.abc import Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
+from datetime import timedelta
 from ipaddress import ip_address
 from pathlib import Path
+from threading import Event
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urljoin, urlsplit
 
 import pytest
 
@@ -44,6 +46,7 @@ from django.contrib.auth import get_user_model  # noqa: E402
 from django.contrib.contenttypes.models import ContentType  # noqa: E402
 from django.core.cache import cache  # noqa: E402
 from django.core.management import call_command  # noqa: E402
+from django.core.signals import request_finished  # noqa: E402
 from django.db import connection, connections, models, router, transaction  # noqa: E402
 from django.db.migrations import RunPython, RunSQL, SeparateDatabaseAndState  # noqa: E402
 from django.db.migrations.loader import MigrationLoader  # noqa: E402
@@ -54,7 +57,9 @@ from django.db.models.signals import pre_delete, pre_save  # noqa: E402
 from django.test import Client, RequestFactory, SimpleTestCase, TransactionTestCase, override_settings  # noqa: E402
 from django.test.utils import CaptureQueriesContext, isolate_apps  # noqa: E402
 from django.urls import URLPattern, URLResolver, get_resolver, resolve, reverse  # noqa: E402
+from django.utils import timezone  # noqa: E402
 from django.utils.html import escape  # noqa: E402
+from extras.models import Tag  # noqa: E402
 from ipam.models import VRF, IPAddress, IPRange, Prefix  # noqa: E402
 from netaddr import IPNetwork  # noqa: E402
 from netbox.context_managers import event_tracking  # noqa: E402
@@ -76,6 +81,7 @@ from netbox_kea.tests.utils import (  # noqa: E402
     DISPATCHED_EVENTS,
     _make_db_server,
     _refusal_receivers,
+    linked_dhcp_targets,
 )
 
 # Changing this set needs a design decision (docs/design/ipam-ownership-branching.md).
@@ -83,8 +89,8 @@ EXPOSED_RELATIONS: frozenset[tuple[str, str]] = frozenset(
     (f"netbox_kea.IPAMOwnershipLink.{key}", "CASCADE") for key in ("ip_address", "prefix", "ip_range")
 )
 _DESIGN_DECISION = (
-    "This change needs a design decision (docs/design/ipam-ownership-branching.md): the resolver keeps every "
-    "netbox_kea model in main, so a delete in a branch that reaches one of these relations writes main's table."
+    "This change needs a design decision (docs/design/ipam-ownership-branching.md): the resolver keeps "
+    "main-only plugin models in main, so a delete in a branch that reaches one of these relations writes main's table."
 )
 
 # The on_delete handlers that do not write the referencing row. Every other one does (SET(...) and DB_* too).
@@ -175,17 +181,17 @@ def _guard_failures(rule_models: Sequence[type[models.Model]], pinned: frozenset
 
 
 class BranchabilityPinTest(SimpleTestCase):
-    """Guard 2: the rule, computed here only, gives the pinned relations, and netbox-branching routes none to a branch."""
+    """Guard 2: pin main-only relations and the one branchable plugin model."""
 
     def test_the_relations_that_a_delete_in_a_branch_reaches_are_the_pinned_set(self):
         failures = _guard_failures(_rule_models(), EXPOSED_RELATIONS)
 
         self.assertEqual(failures, [], "\n".join(failures))
 
-    def test_netbox_branching_keeps_every_plugin_model_in_main(self):
+    def test_netbox_branching_branches_only_dhcp_import_mappings(self):
         for model in _plugin_models():
             with self.subTest(model=model._meta.label):
-                self.assertIs(supports_branching(model), False)
+                self.assertIs(supports_branching(model), model is KeaDhcpLink)
 
     def test_the_rule_reads_every_plugin_model(self):
         self.assertEqual(
@@ -409,6 +415,7 @@ class MigrationFakeOnBranchTest(SimpleTestCase):
 def _provisioned_branch(test: TransactionTestCase, name: str) -> Branch:
     branch = Branch(name=name)
     branch.save(provision=False)
+    test.addCleanup(connections[_branch_alias(branch)].close)
     test.addCleanup(branch.deprovision)
     branch.provision(user=None)
     branch.refresh_from_db()
@@ -416,8 +423,62 @@ def _provisioned_branch(test: TransactionTestCase, name: str) -> Branch:
     return branch
 
 
+class BranchConnectionCleanupTest(TransactionTestCase):
+    def test_provisioned_branch_cleanup_closes_its_dynamic_connection(self):
+        owner = TransactionTestCase()
+        self.addCleanup(owner.doCleanups)
+        branch = _provisioned_branch(owner, "connection cleanup")
+        alias = _branch_alias(branch)
+        with activate_branch(branch):
+            VRF.objects.exists()
+        self.assertIsNotNone(connections[alias].connection)
+
+        self.assertTrue(owner.doCleanups())
+
+        self.assertIsNone(connections[alias].connection)
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT 1 FROM information_schema.schemata WHERE schema_name = %s", [branch.schema_name])
+            self.assertIsNone(cursor.fetchone())
+
+
+class OptionalMappingReplayTest(TransactionTestCase):
+    def test_native_merge_and_revert_do_not_acquire_the_mapping_lock_without_dhcp(self):
+        from netbox_kea.dhcp_mapping_lifecycle import _METADATA_LOCK
+
+        if apps.is_installed("netbox_dhcp"):
+            self.skipTest("This profile verifies native replay without DHCP targets")
+        user = get_user_model().objects.create_superuser("ordinary-native-replay-admin")
+        for strategy in ("squash", "iterative"):
+            with self.subTest(strategy=strategy):
+                vrf = VRF.objects.create(name=f"ordinary native {strategy}", description="original")
+                branch = _provisioned_branch(self, f"ordinary native {strategy}")
+                branch.merge_strategy = strategy
+                branch.save(provision=False)
+                with activate_branch(branch), event_tracking(_change_request(user)):
+                    local = VRF.objects.get(pk=vrf.pk)
+                    local.snapshot()
+                    local.description = "branch edit"
+                    local.save()
+                holder = connection.Database.connect(**connection.get_connection_params())
+                try:
+                    with holder.cursor() as cursor:
+                        cursor.execute("SELECT pg_advisory_lock(%s, %s)", _METADATA_LOCK)
+                    with transaction.atomic():
+                        with connection.cursor() as cursor:
+                            cursor.execute("SELECT pg_try_advisory_xact_lock(%s, %s)", _METADATA_LOCK)
+                            self.assertFalse(cursor.fetchone()[0])
+                        branch.merge(user=user)
+                        vrf.refresh_from_db()
+                        self.assertEqual(vrf.description, "branch edit")
+                        branch.revert(user=user)
+                        vrf.refresh_from_db()
+                        self.assertEqual(vrf.description, "original")
+                finally:
+                    holder.close()
+
+
 class ProvisionedBranchTest(TransactionTestCase):
-    """A provisioned branch holds no netbox_kea table, so it reads main's rows."""
+    """A fresh branch copies DHCP Import Mappings and reads other plugin rows from main."""
 
     @classmethod
     def setUpClass(cls):
@@ -425,15 +486,15 @@ class ProvisionedBranchTest(TransactionTestCase):
         # A deployment runs migrate after the upgrade, which stores the resolver's answer.
         call_command("migrate", verbosity=0)
 
-    def test_stored_features_hold_no_branching_for_plugin_models(self):
+    def test_stored_features_enable_branching_only_for_dhcp_import_mappings(self):
         for model in _plugin_models():
             with self.subTest(model=model._meta.label):
                 features = ObjectType.objects.get_for_model(model).features
 
-                self.assertNotIn("branching", features)
+                self.assertEqual("branching" in features, model is KeaDhcpLink)
 
-    def test_a_provisioned_branch_holds_no_plugin_table(self):
-        branch = _provisioned_branch(self, "no plugin tables")
+    def test_a_provisioned_branch_copies_only_the_mapping_plugin_table(self):
+        branch = _provisioned_branch(self, "mapping plugin table")
         with connection.cursor() as cursor:
             cursor.execute(
                 "SELECT table_name FROM information_schema.tables WHERE table_schema = %s", [branch.schema_name]
@@ -441,7 +502,7 @@ class ProvisionedBranchTest(TransactionTestCase):
             tables = {row[0] for row in cursor.fetchall()}
 
         self.assertIn(VRF._meta.db_table, tables, "the branch copied no table, so the check below reads nothing")
-        self.assertEqual({table for table in tables if table.startswith(f"{APP_LABEL}_")}, set())
+        self.assertEqual({table for table in tables if table.startswith(f"{APP_LABEL}_")}, {KeaDhcpLink._meta.db_table})
 
     def test_a_server_edited_in_main_after_branch_creation_reads_mains_values_in_the_branch(self):
         server = _make_db_server(name="before-branch", ca_url="https://before.example.com")
@@ -701,7 +762,7 @@ class SourcesHeaderTest(_BranchReadTestCase):
 
     def setUp(self):
         super().setUp()
-        self.sources = f"kea=live; plugin=main; branch={self.branch.schema_id}"
+        self.sources = f"kea=live; plugin=main; dhcp-import-mappings=branch; branch={self.branch.schema_id}"
 
     def test_a_plugin_page_carries_the_sources_header(self):
         self.client.cookies[COOKIE_NAME] = self.branch.schema_id
@@ -744,8 +805,21 @@ class SourcesHeaderTest(_BranchReadTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertNotIn(branching.SOURCES_HEADER, response.headers)
 
+    def test_an_old_branch_read_names_unavailable_mappings(self):
+        with connection.cursor() as cursor:
+            cursor.execute('DROP TABLE "' + self.branch.schema_name + '"."' + KeaDhcpLink._meta.db_table + '"')
+        self.client.cookies[COOKIE_NAME] = self.branch.schema_id
 
-_BANNER_TEXT = "netbox-kea refuses changes"
+        response = self.client.get(reverse("plugins:netbox_kea:server_list"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.headers[branching.SOURCES_HEADER],
+            f"kea=live; plugin=main; dhcp-import-mappings=unavailable; branch={self.branch.schema_id}",
+        )
+
+
+_BANNER_TEXT = "netbox-kea refuses live and import changes"
 
 
 class BranchPageTest(_BranchReadTestCase):
@@ -758,6 +832,8 @@ class BranchPageTest(_BranchReadTestCase):
 
         self.assertContains(response, _BANNER_TEXT)
         self.assertContains(response, f"netbox-branching's routing for branch {self.branch.name}")
+        self.assertContains(response, "DHCP Import Mappings follow the selected branch")
+        self.assertNotContains(response, "DHCP plugin links come from main")
 
     def test_a_plugin_page_on_main_shows_no_banner(self):
         self.assertNotContains(self.client.get(reverse("plugins:netbox_kea:server_list")), _BANNER_TEXT)
@@ -852,8 +928,56 @@ def _save_with(instance: models.Model, **fields: object) -> None:
     instance.save()
 
 
+class DhcpTargetBranchLifecycleTest(TransactionTestCase):
+    """DHCP target deletes remove branch mappings and preserve main until merge."""
+
+    def setUp(self):
+        if not apps.is_installed("netbox_dhcp"):
+            if _required:
+                self.fail("The branching CI job requires netbox_dhcp for target deletion tests.")
+            self.skipTest("netbox_dhcp is not installed")
+        self.user = get_user_model().objects.create_superuser("dhcp-target-admin")
+        self.server = _make_db_server(name="dhcp-target-links")
+        self.targets = linked_dhcp_targets(self.server)
+        self.branch = _provisioned_branch(self, "dhcp target delete")
+        self.branch.merge_strategy = "squash"
+        self.branch.save(provision=False)
+
+    def _delete_and_merge(self, *, queryset):
+        link_pks = {link.pk for _, link in self.targets}
+        branch_link_pks = link_pks.copy()
+        with activate_branch(self.branch), event_tracking(_change_request(self.user)):
+            for target, link in self.targets:
+                with self.subTest(model=target._meta.label, object_id=target.pk):
+                    self.assertTrue(supports_branching(type(target)))
+                    if queryset:
+                        type(target).objects.filter(pk=target.pk).delete()
+                    else:
+                        type(target).objects.get(pk=target.pk).delete()
+                    self.assertFalse(type(target).objects.filter(pk=target.pk).exists())
+                    branch_link_pks.remove(link.pk)
+                    self.assertSetEqual(set(KeaDhcpLink.objects.values_list("pk", flat=True)), branch_link_pks)
+        for target, _ in self.targets:
+            self.assertTrue(type(target).objects.filter(pk=target.pk).exists())
+        self.assertSetEqual(set(KeaDhcpLink.objects.values_list("pk", flat=True)), link_pks)
+
+        self.branch.merge(user=self.user)
+
+        self.branch.refresh_from_db()
+        self.assertEqual(self.branch.status, BranchStatusChoices.MERGED)
+        for target, link in self.targets:
+            self.assertFalse(type(target).objects.filter(pk=target.pk).exists())
+            self.assertFalse(KeaDhcpLink.objects.filter(pk=link.pk).exists())
+
+    def test_target_instance_delete_removes_only_the_branch_mapping(self):
+        self._delete_and_merge(queryset=False)
+
+    def test_target_queryset_delete_removes_only_the_branch_mapping(self):
+        self._delete_and_merge(queryset=True)
+
+
 class PluginRowWritesInBranchTest(TransactionTestCase):
-    """A save or a delete of a netbox_kea row in a branch raises BranchActive, and main does not change."""
+    """Server, settings and ownership writes remain main-only; mappings follow the branch."""
 
     def setUp(self):
         self.server = _make_db_server(name="rows", ca_url=_BEFORE)
@@ -874,25 +998,22 @@ class PluginRowWritesInBranchTest(TransactionTestCase):
             list(SyncConfig.objects.values_list("pk", "interval_minutes")),
         )
 
-    def test_the_receivers_cover_every_plugin_model(self):
+    def test_the_receivers_cover_every_main_only_plugin_model(self):
         labels = {model._meta.label for model in _plugin_models()}
 
         self.assertEqual(
             labels,
             {"netbox_kea.Server", "netbox_kea.SyncConfig", "netbox_kea.KeaDhcpLink", "netbox_kea.IPAMOwnershipLink"},
         )
-        self.assertEqual((_refusal_receivers(pre_save), _refusal_receivers(pre_delete)), (labels, labels))
+        main_only = {"netbox_kea.Server", "netbox_kea.SyncConfig", "netbox_kea.IPAMOwnershipLink"}
+        self.assertEqual((_refusal_receivers(pre_save), _refusal_receivers(pre_delete)), (main_only, main_only))
 
     def test_a_save_in_a_branch_is_refused(self):
         before = self._main()
         changes = {
             "server": lambda: _save_with(self.server, ca_url=_AFTER),
-            "link": lambda: _save_with(self.link, kea_subnet_id=8),
             "sync config": lambda: _save_with(self.config, interval_minutes=9),
             "new server": lambda: _make_db_server(name="new in branch"),
-            "new link": lambda: KeaDhcpLink.objects.create(
-                server=self.server, family=6, kea_subnet_id=7, object_type=self.link.object_type, object_id=2
-            ),
         }
         for label, change in changes.items():
             with self.subTest(label):
@@ -906,14 +1027,24 @@ class PluginRowWritesInBranchTest(TransactionTestCase):
         before = self._main()
         deletes = {
             "server": lambda: Server.objects.get(pk=self.server.pk).delete(),
-            "link": lambda: KeaDhcpLink.objects.get(pk=self.link.pk).delete(),
             "server queryset": lambda: Server.objects.all().delete(),
-            "link queryset": lambda: KeaDhcpLink.objects.all().delete(),
             "sync config queryset": lambda: SyncConfig.objects.all().delete(),
         }
         for label, delete in deletes.items():
             with self.subTest(label), activate_branch(self.branch), self.assertRaises(branching.BranchActive):
                 delete()
+
+        self.assertEqual(self._main(), before)
+
+    def test_mapping_save_and_delete_change_only_branch_rows(self):
+        before = self._main()
+        with activate_branch(self.branch):
+            link = KeaDhcpLink.objects.get(pk=self.link.pk)
+            link.kea_subnet_id = 8
+            link.save()
+            self.assertEqual(KeaDhcpLink.objects.get(pk=link.pk).kea_subnet_id, 8)
+            KeaDhcpLink.objects.filter(pk=link.pk).delete()
+            self.assertFalse(KeaDhcpLink.objects.filter(pk=link.pk).exists())
 
         self.assertEqual(self._main(), before)
 
@@ -1570,6 +1701,8 @@ def _route_query(route: _Route, ip: IPAddress) -> str:
         return urlencode({"ip": str(ip.address.ip)})
     if short in ("server-leases4", "server-leases6"):
         return urlencode({"ip_address": _KEA_OBJECTS[int(short[-1])].lease["ip-address"]})
+    if short in ("server_leases4", "server_leases6"):
+        return urlencode({"by": "ip", "q": _KEA_OBJECTS[int(short[-1])].lease["ip-address"]})
     if short in ("server-reservations4", "server-reservations6"):
         return urlencode({"limit": 100})
     return ""
@@ -1673,8 +1806,7 @@ class UrlTreeGuardTest(TransactionTestCase):
         client, headers = self._client(user, route, None)
         with stub_kea(_recorded_kea()) as kea:
             on_main = client.generic(method, url, headers=headers)
-        # The format-suffix URLs of the REST Kea actions answer 500 on main (#245).
-        if method == "GET" and "format" not in route.parameters:
+        if method == "GET":
             self.assertEqual(on_main.status_code, _main_get_status(route), f"{url} on main: {kea.commands()}")
 
         client, headers = self._client(user, route, branch)
@@ -1698,3 +1830,419 @@ class UrlTreeGuardTest(TransactionTestCase):
         self.assertEqual(kea.commands(), [])
         self.assertEqual(writes, [])
         self.assertTrue(Server.objects.filter(pk=server.pk).exists())
+
+
+class TagWriterRecoveryTest(TransactionTestCase):
+    def setUp(self):
+        super().setUp()
+        if not apps.is_installed("netbox_dhcp"):
+            if _required:
+                self.fail("The branching CI job requires netbox_dhcp for tag writer recovery tests.")
+            self.skipTest("netbox_dhcp is not installed")
+
+    def test_tag_rename_waits_until_mapped_target_merge_commits(self):
+        user = get_user_model().objects.create_superuser("tag-writer-reader")
+        server = _make_db_server(name="tag-writer-source")
+        target, mapping = linked_dhcp_targets(server)[0]
+        tag = Tag.objects.create(name="mapping-tag-original", slug="mapping-tag-original")
+        target.tags.add(tag)
+        branch = _provisioned_branch(self, "tag writer recovery")
+        branch.merge_strategy = "squash"
+        branch.save(provision=False)
+        with activate_branch(branch), event_tracking(_change_request(user)):
+            type(target).objects.get(pk=target.pk).delete()
+        request_finished.send(sender=type(self))
+        selected, release, writer_ready, writer_done = Event(), Event(), Event(), Event()
+        writer_pid = []
+        replay_pid = []
+
+        def pause_delete(sender, instance, using, **kwargs):
+            if using == "default" and instance.pk == target.pk:
+                with connections[using].cursor() as cursor:
+                    cursor.execute("SELECT pg_backend_pid()")
+                    replay_pid.append(cursor.fetchone()[0])
+                selected.set()
+                self.assertTrue(release.wait(20), "Native deletion was not released")
+
+        def merge():
+            try:
+                Branch.objects.get(pk=branch.pk).merge(user=user)
+            finally:
+                connections.close_all()
+
+        def rename():
+            try:
+                changed = Tag.objects.get(pk=tag.pk)
+                with connections["default"].cursor() as cursor:
+                    cursor.execute("SELECT pg_backend_pid()")
+                    writer_pid.append(cursor.fetchone()[0])
+                changed.name = "mapping-tag-renamed"
+                writer_ready.set()
+                with event_tracking(_change_request(user)):
+                    changed.save()
+            finally:
+                writer_done.set()
+                connections.close_all()
+
+        pre_delete.connect(pause_delete, sender=type(target), weak=False)
+        blocked = False
+        try:
+            with ThreadPoolExecutor(2) as pool:
+                replay = pool.submit(merge)
+                try:
+                    self.assertTrue(selected.wait(20), "Native target deletion did not start")
+                    writer = pool.submit(rename)
+                    self.assertTrue(writer_ready.wait(20), "The ordinary tag writer did not start")
+                    self.assertNotEqual(writer_pid, replay_pid)
+                    deadline = timezone.now() + timedelta(seconds=20)
+                    while not writer_done.is_set() and timezone.now() < deadline:
+                        with connection.cursor() as cursor:
+                            cursor.execute(
+                                "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE pid = %s "
+                                "AND locktype = 'advisory' AND NOT granted)",
+                                writer_pid,
+                            )
+                            blocked = cursor.fetchone()[0]
+                        if blocked:
+                            break
+                        writer_done.wait(0.02)
+                finally:
+                    release.set()
+                replay.result(timeout=20)
+                writer.result(timeout=20)
+        finally:
+            release.set()
+            pre_delete.disconnect(pause_delete, sender=type(target))
+        self.assertEqual(Tag.objects.get(pk=tag.pk).name, "mapping-tag-renamed")
+        self.assertFalse(type(target).objects.filter(pk=target.pk).exists())
+        self.assertFalse(KeaDhcpLink.objects.filter(pk=mapping.pk).exists())
+        branch.refresh_from_db()
+        self.assertEqual(branch.status, "merged")
+        self.assertTrue(blocked, "The tag writer committed newer target semantics before native deletion")
+
+
+class RenderedBranchControlsTest(TransactionTestCase):
+    """A branch page disables changes before JavaScript runs and keeps main controls enabled."""
+
+    def test_server_edit_and_delete_links_are_disabled_only_in_a_branch(self):
+        user = get_user_model().objects.create_superuser("branch-controls")
+        server = _make_db_server(name="branch-controls")
+        branch = _provisioned_branch(self, "controls")
+        client = Client()
+        client.force_login(user)
+        url = reverse("plugins:netbox_kea:server", args=[server.pk])
+        edit = reverse("plugins:netbox_kea:server_edit", args=[server.pk])
+        delete = reverse("plugins:netbox_kea:server_delete", args=[server.pk])
+
+        with stub_kea(_recorded_kea()):
+            on_main = client.get(url)
+            client.cookies[COOKIE_NAME] = branch.schema_id
+            in_branch = client.get(url)
+
+        self.assertContains(on_main, f'href="{edit}"')
+        self.assertContains(on_main, f'hx-get="{delete}"')
+        self.assertNotContains(in_branch, f'href="{edit}"')
+        self.assertNotContains(in_branch, f'hx-get="{delete}"')
+        self.assertContains(in_branch, 'aria-disabled="true"')
+        self.assertContains(in_branch, "Switch to main to make this change.")
+
+    def test_every_rendered_plugin_page_disables_its_known_mutation_controls(self):
+        from bs4 import BeautifulSoup
+
+        user = get_user_model().objects.create_superuser("page-controls")
+        server = _make_db_server(name="page-controls", dhcp4=True, dhcp6=True, has_control_agent=True)
+        ip = IPAddress.objects.create(address="192.0.2.16/24", dns_name="r4.example.com")
+        ip.refresh_from_db()
+        branch = _provisioned_branch(self, "page controls")
+        self.client.force_login(user)
+        routes = [route for route in _plugin_routes() if not route.api]
+        plugin_paths = {urlsplit(_route_url(route, server, ip)).path for route in routes}
+        mutation_paths = {
+            urlsplit(_route_url(route, server, ip)).path
+            for route in routes
+            if re.search(r"(?:add|edit|delete|import|enable|disable)$", route.name)
+        }
+        checked = 0
+        covered = set()
+        for route in routes:
+            if _main_get_status(route) != 200:
+                continue
+            url = _route_url(route, server, ip)
+            for htmx in (False, True):
+                headers = {"HX-Request": "true"} if htmx else {}
+                self.client.cookies.pop(COOKIE_NAME, None)
+                with stub_kea(_recorded_kea()):
+                    main = self.client.get(url, headers=headers)
+                self.client.cookies[COOKIE_NAME] = branch.schema_id
+                with stub_kea(_recorded_kea()):
+                    response = self.client.get(url, headers=headers)
+                with self.subTest(route=route.name, htmx=htmx):
+                    self.assertEqual(response.status_code, 200)
+                    if not main.get("Content-Type", "").startswith("text/html"):
+                        continue
+                    before = BeautifulSoup(main.content, "html.parser")
+                    after = BeautifulSoup(response.content, "html.parser")
+                    self._assert_no_active_mutation_targets(after, url, mutation_paths, plugin_paths)
+                    for control in before.find_all(["a", "button", "input"]):
+                        if control.has_attr("disabled"):
+                            continue
+                        mutation = False
+                        for attr in ("href", "hx-get", "data-hx-get"):
+                            target = control.get(attr)
+                            if target and urlsplit(urljoin(url, target)).path in mutation_paths:
+                                mutation = True
+                        for attr in (
+                            "hx-post",
+                            "hx-put",
+                            "hx-patch",
+                            "hx-delete",
+                            "data-hx-post",
+                            "data-hx-put",
+                            "data-hx-patch",
+                            "data-hx-delete",
+                        ):
+                            target = control.get(attr)
+                            if target is not None and urlsplit(urljoin(url, target)).path in plugin_paths:
+                                mutation = True
+                        form = control.find_parent("form")
+                        kind = control.get("type", "submit" if control.name == "button" else "text")
+                        if form and kind in ("submit", "image"):
+                            method = control.get("formmethod", form.get("method", "get")).lower()
+                            target = control.get("formaction", form.get("action", ""))
+                            if method == "post" and urlsplit(urljoin(url, target)).path in plugin_paths:
+                                mutation = True
+                        if not mutation:
+                            continue
+                        checked += 1
+                        covered.add(route.name)
+                        candidates = [
+                            candidate
+                            for candidate in after.find_all(control.name)
+                            if candidate.get_text(" ", strip=True) == control.get_text(" ", strip=True)
+                            and candidate.get("name") == control.get("name")
+                            and candidate.get("value") == control.get("value")
+                        ]
+                        self.assertTrue(candidates, f"the branch omitted {control} on {url}")
+                        self.assertTrue(
+                            any(candidate.get("aria-disabled") == "true" for candidate in candidates),
+                            f"enabled {control} on {url}",
+                        )
+        self.assertGreater(checked, 100, "the recorded pages must populate their mutation controls")
+        for name in (
+            "server",
+            "server_subnets4",
+            "server_shared_networks4",
+            "server_reservations4",
+            "server_leases4",
+            "sync_jobs",
+        ):
+            self.assertIn(f"plugins:netbox_kea:{name}", covered)
+
+    def _assert_no_active_mutation_targets(self, page, url, mutation_paths, plugin_paths):
+        for control in page.find_all(True):
+            for attr in ("href", "hx-get", "data-hx-get"):
+                target = control.get(attr)
+                if target:
+                    self.assertNotIn(
+                        urlsplit(urljoin(url, target)).path,
+                        mutation_paths,
+                        f"active {attr} on {control} at {url}",
+                    )
+            for attr in (
+                "hx-post",
+                "hx-put",
+                "hx-patch",
+                "hx-delete",
+                "data-hx-post",
+                "data-hx-put",
+                "data-hx-patch",
+                "data-hx-delete",
+            ):
+                target = control.get(attr)
+                if target is not None:
+                    self.assertNotIn(
+                        urlsplit(urljoin(url, target)).path,
+                        plugin_paths,
+                        f"active {attr} on {control} at {url}",
+                    )
+            if control.name == "form" and control.get("method", "get").lower() == "post":
+                self.assertNotIn(
+                    urlsplit(urljoin(url, control.get("action", ""))).path,
+                    plugin_paths,
+                    f"active POST form at {url}",
+                )
+
+
+@override_settings(ROOT_URLCONF="netbox_kea.tests.branch_control_urls")
+class RenderedSubmissionControlsTest(TransactionTestCase):
+    """Rendered responses preserve read controls and refuse browser submission semantics."""
+
+    def setUp(self):
+        self.client.force_login(get_user_model().objects.create_superuser("submission-controls"))
+        self.branch = _provisioned_branch(self, "submission controls")
+        self.client.cookies[COOKIE_NAME] = self.branch.schema_id
+
+    def test_classless_controls_gain_only_the_disabled_class(self):
+        from bs4 import BeautifulSoup
+
+        response = self.client.get("/kea-controls/read/")
+        page = BeautifulSoup(response.content, "html.parser")
+        for name in ("edit", "save"):
+            with self.subTest(control=name):
+                self.assertEqual(page.find(id=name)["class"], ["disabled"])
+
+    def test_real_forms_and_overrides_refuse_writes_but_preserve_safe_controls(self):
+        from bs4 import BeautifulSoup
+
+        response = self.client.get("/kea-controls/read/")
+        self.assertEqual(response.status_code, 200)
+        page = BeautifulSoup(response.content, "html.parser")
+        for name in ("save", "image", "external", "override", "invalid-type"):
+            with self.subTest(control=name):
+                self.assertEqual(page.find(id=name).get("aria-disabled"), "true")
+                self.assertTrue(page.find(id=name).has_attr("disabled"))
+        self.assertEqual(page.find(id="implicit").get("method"), "dialog", "implicit submission must not send POST")
+        self.assertFalse(page.find(id="implicit").has_attr("action"))
+        for name in ("export", "menu", "find", "default-get", "htmx-read"):
+            with self.subTest(control=name):
+                self.assertFalse(page.find(id=name).has_attr("disabled"))
+                self.assertFalse(page.find(id=name).has_attr("aria-disabled"))
+        self.assertEqual(page.find(id="implicit-only")["method"], "dialog")
+        self.assertEqual(page.find(id="jobs")["href"], "/plugins/kea/sync-jobs/")
+        self.assertEqual(page.find(id="export-inherited-action")["formaction"], "/kea-controls/read/")
+        self.assertFalse(page.find("input", attrs={"name": "query", "value": "example"}).has_attr("disabled"))
+        self.assertEqual(page.find(id="nested-read")["hx-get"], "/kea-controls/read/")
+        self.assertFalse(page.find(id="nested-read").find_parent(attrs={"aria-disabled": "true"}))
+        self.assertEqual(page.find(id="export")["formmethod"], "get")
+        self.assertEqual(page.find(id="export")["formaction"], "/kea-controls/read/")
+        self.assertEqual(page.find(id="search")["method"], "get")
+        self.assertEqual(page.find(id="cancel")["href"], "/kea-controls/read/")
+        self.assertEqual(page.find(id="read")["href"], "/kea-controls/read/")
+        self.assertEqual(page.find(id="foreign")["href"], "https://example.invalid/kea-controls/change/")
+        self.assertEqual(page.find(id="missing")["href"], "/kea-controls/unknown/")
+        for name in ("edit", "modal", "patch"):
+            with self.subTest(control=name):
+                control = page.find(id=name)
+                self.assertEqual(control["aria-disabled"], "true")
+                self.assertFalse(any(key in control.attrs for key in ("href", "hx-get", "data-hx-patch")))
+                wrapper = control.parent
+                self.assertEqual(wrapper["tabindex"], "0")
+                tooltip = page.find(id=wrapper["aria-describedby"])
+                self.assertIn("Switch to main", tooltip.get_text())
+        self.assertFalse(page.find(id="inherited").find_parent("div").has_attr("data-hx-post"))
+        self.assertEqual(page.find(id="nested-read").find_parent("div")["hx-target"], "#results")
+        self.assertEqual(page.find(id="nested-read").find_parent("div")["hx-swap"], "innerHTML")
+        self.assertTrue(page.find(id="inherited").has_attr("disabled"))
+        if "Content-Length" in response:
+            self.assertEqual(
+                int(response["Content-Length"]), len(response.content), "outer middleware may recompute length"
+            )
+
+    def test_main_html_non_html_and_streaming_responses_keep_their_bytes(self):
+        from netbox_kea.tests.branch_control_urls import HTML
+
+        del self.client.cookies[COOKIE_NAME]
+        on_main = self.client.get("/kea-controls/read/")
+        self.assertEqual(on_main.content, HTML.encode())
+        self.client.cookies[COOKIE_NAME] = self.branch.schema_id
+        non_html = self.client.get("/kea-controls/read/?response=json")
+        self.assertEqual(non_html.json(), {"html": HTML})
+        stream = self.client.get("/kea-controls/read/?response=stream")
+        self.assertTrue(stream.streaming)
+        self.assertEqual(b"".join(stream.streaming_content), HTML.encode())
+
+    def test_compression_runs_after_controls_are_disabled(self):
+        import gzip
+
+        from bs4 import BeautifulSoup
+
+        middleware = [
+            "django.middleware.gzip.GZipMiddleware",
+            "netbox_kea.tests.branch_control_urls.passthrough",
+            *settings.MIDDLEWARE,
+        ]
+        with override_settings(MIDDLEWARE=middleware):
+            response = self.client.get("/kea-controls/read/", headers={"Accept-Encoding": "gzip"})
+
+        self.assertEqual(response["Content-Encoding"], "gzip")
+        self.assertIn("Accept-Encoding", response["Vary"])
+        page = BeautifulSoup(gzip.decompress(response.content), "html.parser")
+        self.assertEqual(page.find(id="save")["aria-disabled"], "true")
+        self.assertFalse(page.find(id="edit").has_attr("href"))
+        self.assertEqual(int(response["Content-Length"]), len(response.content))
+
+    def test_preencoded_html_reports_a_configuration_error_before_decoding(self):
+        from django.core.exceptions import ImproperlyConfigured
+
+        with self.assertRaisesRegex(ImproperlyConfigured, "before.*BranchRefusalMiddleware"):
+            self.client.get("/kea-controls/read/?response=encoded")
+
+    def test_htmx_fragments_disable_controls_with_their_own_accessible_reasons(self):
+        from bs4 import BeautifulSoup
+
+        responses = [self.client.get("/kea-controls/read/", headers={"HX-Request": "true"}) for _ in range(2)]
+        reason_ids = []
+        for response in responses:
+            page = BeautifulSoup(response.content, "html.parser")
+            self.assertEqual(page.find(id="save")["aria-disabled"], "true")
+            wrapper = page.find(id="save").parent
+            reason_ids.append(wrapper["aria-describedby"])
+            self.assertEqual(page.find(id=reason_ids[-1])["role"], "tooltip")
+        self.assertNotEqual(*reason_ids, "a fragment must not reuse a tooltip ID that can remain on the full page")
+
+    def test_repeated_targets_resolve_once_per_request_kind(self):
+        from unittest.mock import patch
+
+        from bs4 import BeautifulSoup
+        from django.urls import resolve
+
+        with patch("netbox_kea.branch_controls.resolve", wraps=resolve) as spy:
+            response = self.client.get("/kea-controls/read/?response=repeated")
+        page = BeautifulSoup(response.content, "html.parser")
+        self.assertEqual(len(page.find_all(attrs={"aria-disabled": "true"})), 75)
+        self.assertEqual(
+            sorted(call.args[0] for call in spy.call_args_list),
+            ["/kea-controls/change/", "/kea-controls/read/", "/kea-controls/read/"],
+            "one resolve per (target, method, navigation): change GET nav, read PATCH, read POST",
+        )
+
+
+class ResponseMiddlewareOrderTest(SimpleTestCase):
+    def test_gzip_after_refusal_is_rejected_while_loading_the_real_chain(self):
+        from django.core.exceptions import ImproperlyConfigured
+        from django.core.handlers.base import BaseHandler
+
+        for encoder in (
+            "django.middleware.gzip.GZipMiddleware",
+            "netbox_kea.tests.branch_control_urls.GZipSubclass",
+            "netbox_kea.tests.branch_control_urls.GZipAlias",
+        ):
+            for refusal in (
+                "netbox_kea.branching.BranchRefusalMiddleware",
+                "netbox_kea.tests.branch_control_urls.RefusalSubclass",
+                "netbox_kea.tests.branch_control_urls.RefusalAlias",
+            ):
+                for outer in ([], ["django.middleware.gzip.GZipMiddleware"]):
+                    with self.subTest(encoder=encoder, refusal=refusal, outer=outer):
+                        with override_settings(MIDDLEWARE=[*outer, refusal, encoder]):
+                            with self.assertRaisesRegex(ImproperlyConfigured, "before.*BranchRefusalMiddleware"):
+                                BaseHandler().load_middleware()
+
+    def test_startup_registration_rejects_wrong_gzip_order(self):
+        from django.core.exceptions import ImproperlyConfigured
+
+        middleware = [*settings.MIDDLEWARE, "django.middleware.gzip.GZipMiddleware"]
+        with override_settings(MIDDLEWARE=middleware):
+            with self.assertRaisesRegex(ImproperlyConfigured, "before.*BranchRefusalMiddleware"):
+                apps.get_app_config("netbox_kea").ready()
+
+    def test_correct_order_accepts_a_regular_middleware_factory(self):
+        from django.core.handlers.base import BaseHandler
+
+        middleware = [
+            "django.middleware.gzip.GZipMiddleware",
+            "netbox_kea.tests.branch_control_urls.passthrough",
+            *settings.MIDDLEWARE,
+        ]
+        with override_settings(MIDDLEWARE=middleware):
+            BaseHandler().load_middleware()

@@ -7,6 +7,20 @@
 #
 # Rule-test fixtures live in .opengrep/tests/; run them with scripts/opengrep-test.sh.
 rules:
+  - id: kea-queryset-model-attribute-discriminator
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Use isinstance with QuerySet to distinguish a queryset from a model instance.
+      A model instance can also have a model attribute.
+    paths:
+      exclude:
+        - "**/tests/**"
+        - "**/migrations/**"
+    pattern-either:
+      - pattern: hasattr($OBJECT, "model")
+      - pattern: getattr($OBJECT, "model", type($OBJECT))
+
   - id: kea-config-phase-without-reply-validation
     languages: [python]
     severity: ERROR
@@ -409,43 +423,34 @@ rules:
           - pattern: subprocess.check_output(...)
       - pattern-not: subprocess.$FUNCTION(..., timeout=$SECONDS, ...)
 
-  - id: kea-sync-except-request-exception-not-oserror
+  - id: kea-http-call-outside-client
     languages: [python]
     severity: ERROR
     message: >-
-      Catch OSError, not requests.RequestException, at a Kea call in the IPAM sync job. A missing
-      TLS file raises a plain OSError that is not a RequestException; it escapes the phase and
-      stops the sync of the whole Server. RequestException is an OSError subclass, so OSError covers both.
+      Send Kea HTTP requests through KeaClient.command(). It applies the TLS settings of the Server on
+      each request and reports a missing TLS file as KeaTLSFileError, a RequestException. A request sent
+      outside it lets the environment CA bundle replace those settings, and a missing TLS file escapes
+      the RequestException handlers of the views as a plain OSError.
     metadata:
       category: correctness
       confidence: HIGH
     paths:
       include:
-        - "netbox_kea/ipam_reconciliation.py"
-        - "netbox_kea/jobs.py"
-        - "netbox_kea/sync.py"
-        - "kea-sync-except-request-exception-not-oserror.py"
+        - "netbox_kea/**"
+        - "kea-http-call-outside-client.py"
+      exclude:
+        - "netbox_kea/kea.py"
+        - "netbox_kea/tests/**"
     pattern-either:
-      - pattern: |
-          try:
-              ...
-          except requests.RequestException:
-              ...
-      - pattern: |
-          try:
-              ...
-          except requests.RequestException as $E:
-              ...
-      - pattern: |
-          try:
-              ...
-          except (..., requests.RequestException, ...):
-              ...
-      - pattern: |
-          try:
-              ...
-          except (..., requests.RequestException, ...) as $E:
-              ...
+      - pattern: requests.Session(...)
+      - pattern: requests.session(...)
+      - pattern: requests.get(...)
+      - pattern: requests.post(...)
+      - pattern: requests.put(...)
+      - pattern: requests.patch(...)
+      - pattern: requests.delete(...)
+      - pattern: requests.head(...)
+      - pattern: requests.request(...)
 
   - id: kea-mac-sync-write-without-savepoint
     languages: [python]

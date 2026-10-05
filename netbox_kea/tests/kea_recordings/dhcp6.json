@@ -463,6 +463,427 @@
     "result": 0
   },
   "kea-version": "3.2.0",
+  "leases": {
+    "lease6-get": {
+      "absent": {
+        "result": 3,
+        "text": "Lease not found."
+      },
+      "delegated-prefix": {
+        "arguments": {
+          "cltt": 1791204540,
+          "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
+          "fqdn-fwd": false,
+          "fqdn-rev": false,
+          "hostname": "",
+          "iaid": 6,
+          "ip-address": "2001:db8:100:100::",
+          "preferred-lft": 3600,
+          "prefix-len": 56,
+          "state": 0,
+          "subnet-id": 10,
+          "type": "IA_PD",
+          "valid-lft": 3600
+        },
+        "result": 0,
+        "text": "IPv6 lease found."
+      },
+      "delegated-prefix-as-address": {
+        "result": 3,
+        "text": "Lease not found."
+      },
+      "present": {
+        "arguments": {
+          "cltt": 1791204540,
+          "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
+          "fqdn-fwd": true,
+          "fqdn-rev": false,
+          "hostname": "host10.example.org",
+          "hw-address": "aa:bb:cc:00:00:01",
+          "iaid": 1,
+          "ip-address": "2001:db8:1::10",
+          "pool-id": 1,
+          "preferred-lft": 1800,
+          "state": 0,
+          "subnet-id": 10,
+          "type": "IA_NA",
+          "user-context": {
+            "site": {
+              "rack": "r1",
+              "slots": [
+                1,
+                2
+              ]
+            }
+          },
+          "valid-lft": 3600
+        },
+        "result": 0,
+        "text": "IPv6 lease found."
+      }
+    },
+    "lease6-get-all": {
+      "arguments": {
+        "leases": [
+          {
+            "cltt": 1791204540,
+            "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
+            "fqdn-fwd": true,
+            "fqdn-rev": false,
+            "hostname": "host10.example.org",
+            "hw-address": "aa:bb:cc:00:00:01",
+            "iaid": 1,
+            "ip-address": "2001:db8:1::10",
+            "pool-id": 1,
+            "preferred-lft": 1800,
+            "state": 0,
+            "subnet-id": 10,
+            "type": "IA_NA",
+            "user-context": {
+              "site": {
+                "rack": "r1",
+                "slots": [
+                  1,
+                  2
+                ]
+              }
+            },
+            "valid-lft": 3600
+          },
+          {
+            "cltt": 1791204540,
+            "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
+            "fqdn-fwd": false,
+            "fqdn-rev": false,
+            "hostname": "",
+            "iaid": 2,
+            "ip-address": "2001:db8:1::11",
+            "preferred-lft": 3600,
+            "state": 4,
+            "subnet-id": 10,
+            "type": "IA_NA",
+            "valid-lft": 3600
+          },
+          {
+            "cltt": 1791204540,
+            "duid": "00:00:00",
+            "fqdn-fwd": false,
+            "fqdn-rev": false,
+            "hostname": "",
+            "iaid": 0,
+            "ip-address": "2001:db8:1::12",
+            "preferred-lft": 0,
+            "state": 1,
+            "subnet-id": 10,
+            "type": "IA_NA",
+            "valid-lft": 3600
+          },
+          {
+            "cltt": 1791204540,
+            "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
+            "fqdn-fwd": false,
+            "fqdn-rev": false,
+            "hostname": "",
+            "iaid": 3,
+            "ip-address": "2001:db8:1::13",
+            "preferred-lft": 3600,
+            "state": 2,
+            "subnet-id": 10,
+            "type": "IA_NA",
+            "valid-lft": 3600
+          },
+          {
+            "cltt": 1791204540,
+            "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
+            "fqdn-fwd": false,
+            "fqdn-rev": false,
+            "hostname": "",
+            "iaid": 4,
+            "ip-address": "2001:db8:1::14",
+            "preferred-lft": 3600,
+            "state": 3,
+            "subnet-id": 10,
+            "type": "IA_NA",
+            "valid-lft": 3600
+          },
+          {
+            "cltt": 1791204540,
+            "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
+            "fqdn-fwd": false,
+            "fqdn-rev": false,
+            "hostname": "",
+            "iaid": 5,
+            "ip-address": "2001:db8:1::15",
+            "preferred-lft": 4294967295,
+            "state": 0,
+            "subnet-id": 10,
+            "type": "IA_NA",
+            "valid-lft": 4294967295
+          },
+          {
+            "cltt": 1791204540,
+            "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
+            "fqdn-fwd": false,
+            "fqdn-rev": false,
+            "hostname": "",
+            "iaid": 6,
+            "ip-address": "2001:db8:100:100::",
+            "preferred-lft": 3600,
+            "prefix-len": 56,
+            "state": 0,
+            "subnet-id": 10,
+            "type": "IA_PD",
+            "valid-lft": 3600
+          },
+          {
+            "cltt": 1791204540,
+            "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
+            "fqdn-fwd": false,
+            "fqdn-rev": false,
+            "hostname": "",
+            "iaid": 7,
+            "ip-address": "2001:db8:100:200::",
+            "preferred-lft": 4294967295,
+            "prefix-len": 56,
+            "state": 0,
+            "subnet-id": 10,
+            "type": "IA_PD",
+            "valid-lft": 4294967295
+          },
+          {
+            "cltt": 1791204540,
+            "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
+            "fqdn-fwd": false,
+            "fqdn-rev": false,
+            "hostname": "",
+            "iaid": 8,
+            "ip-address": "2001:db8:100:300::",
+            "preferred-lft": 3600,
+            "prefix-len": 56,
+            "state": 4,
+            "subnet-id": 10,
+            "type": "IA_PD",
+            "valid-lft": 3600
+          },
+          {
+            "cltt": 1791204540,
+            "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
+            "fqdn-fwd": false,
+            "fqdn-rev": false,
+            "hostname": "",
+            "iaid": 9,
+            "ip-address": "2001:db8:100:400::",
+            "preferred-lft": 3600,
+            "prefix-len": 56,
+            "state": 3,
+            "subnet-id": 10,
+            "type": "IA_PD",
+            "valid-lft": 3600
+          }
+        ]
+      },
+      "result": 0,
+      "text": "10 IPv6 lease(s) found."
+    },
+    "lease6-get-page": [
+      {
+        "arguments": {
+          "count": 4,
+          "leases": [
+            {
+              "cltt": 1791204540,
+              "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
+              "fqdn-fwd": true,
+              "fqdn-rev": false,
+              "hostname": "host10.example.org",
+              "hw-address": "aa:bb:cc:00:00:01",
+              "iaid": 1,
+              "ip-address": "2001:db8:1::10",
+              "pool-id": 1,
+              "preferred-lft": 1800,
+              "state": 0,
+              "subnet-id": 10,
+              "type": "IA_NA",
+              "user-context": {
+                "site": {
+                  "rack": "r1",
+                  "slots": [
+                    1,
+                    2
+                  ]
+                }
+              },
+              "valid-lft": 3600
+            },
+            {
+              "cltt": 1791204540,
+              "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
+              "fqdn-fwd": false,
+              "fqdn-rev": false,
+              "hostname": "",
+              "iaid": 2,
+              "ip-address": "2001:db8:1::11",
+              "preferred-lft": 3600,
+              "state": 4,
+              "subnet-id": 10,
+              "type": "IA_NA",
+              "valid-lft": 3600
+            },
+            {
+              "cltt": 1791204540,
+              "duid": "00:00:00",
+              "fqdn-fwd": false,
+              "fqdn-rev": false,
+              "hostname": "",
+              "iaid": 0,
+              "ip-address": "2001:db8:1::12",
+              "preferred-lft": 0,
+              "state": 1,
+              "subnet-id": 10,
+              "type": "IA_NA",
+              "valid-lft": 3600
+            },
+            {
+              "cltt": 1791204540,
+              "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
+              "fqdn-fwd": false,
+              "fqdn-rev": false,
+              "hostname": "",
+              "iaid": 3,
+              "ip-address": "2001:db8:1::13",
+              "preferred-lft": 3600,
+              "state": 2,
+              "subnet-id": 10,
+              "type": "IA_NA",
+              "valid-lft": 3600
+            }
+          ]
+        },
+        "result": 0,
+        "text": "4 IPv6 lease(s) found."
+      },
+      {
+        "arguments": {
+          "count": 4,
+          "leases": [
+            {
+              "cltt": 1791204540,
+              "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
+              "fqdn-fwd": false,
+              "fqdn-rev": false,
+              "hostname": "",
+              "iaid": 4,
+              "ip-address": "2001:db8:1::14",
+              "preferred-lft": 3600,
+              "state": 3,
+              "subnet-id": 10,
+              "type": "IA_NA",
+              "valid-lft": 3600
+            },
+            {
+              "cltt": 1791204540,
+              "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
+              "fqdn-fwd": false,
+              "fqdn-rev": false,
+              "hostname": "",
+              "iaid": 5,
+              "ip-address": "2001:db8:1::15",
+              "preferred-lft": 4294967295,
+              "state": 0,
+              "subnet-id": 10,
+              "type": "IA_NA",
+              "valid-lft": 4294967295
+            },
+            {
+              "cltt": 1791204540,
+              "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
+              "fqdn-fwd": false,
+              "fqdn-rev": false,
+              "hostname": "",
+              "iaid": 6,
+              "ip-address": "2001:db8:100:100::",
+              "preferred-lft": 3600,
+              "prefix-len": 56,
+              "state": 0,
+              "subnet-id": 10,
+              "type": "IA_PD",
+              "valid-lft": 3600
+            },
+            {
+              "cltt": 1791204540,
+              "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
+              "fqdn-fwd": false,
+              "fqdn-rev": false,
+              "hostname": "",
+              "iaid": 7,
+              "ip-address": "2001:db8:100:200::",
+              "preferred-lft": 4294967295,
+              "prefix-len": 56,
+              "state": 0,
+              "subnet-id": 10,
+              "type": "IA_PD",
+              "valid-lft": 4294967295
+            }
+          ]
+        },
+        "result": 0,
+        "text": "4 IPv6 lease(s) found."
+      },
+      {
+        "arguments": {
+          "count": 2,
+          "leases": [
+            {
+              "cltt": 1791204540,
+              "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
+              "fqdn-fwd": false,
+              "fqdn-rev": false,
+              "hostname": "",
+              "iaid": 8,
+              "ip-address": "2001:db8:100:300::",
+              "preferred-lft": 3600,
+              "prefix-len": 56,
+              "state": 4,
+              "subnet-id": 10,
+              "type": "IA_PD",
+              "valid-lft": 3600
+            },
+            {
+              "cltt": 1791204540,
+              "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
+              "fqdn-fwd": false,
+              "fqdn-rev": false,
+              "hostname": "",
+              "iaid": 9,
+              "ip-address": "2001:db8:100:400::",
+              "preferred-lft": 3600,
+              "prefix-len": 56,
+              "state": 3,
+              "subnet-id": 10,
+              "type": "IA_PD",
+              "valid-lft": 3600
+            }
+          ]
+        },
+        "result": 0,
+        "text": "2 IPv6 lease(s) found."
+      }
+    ],
+    "refused": {
+      "declined-delegated-prefix": {
+        "result": 1,
+        "text": "Invalid declined state for PD prefix."
+      },
+      "non-canonical-delegated-prefix": {
+        "result": 1,
+        "text": "Prefix address: 2001:db8:100:501:: exceeds prefix/prefix-len pair: 2001:db8:100:500::/56"
+      },
+      "temporary-address-kind": {
+        "result": 1,
+        "text": "Incorrect lease type: IA_TA, the only supported values are: IA_NA and IA_PD"
+      }
+    }
+  },
   "list-commands": {
     "arguments": [
       "build-report",

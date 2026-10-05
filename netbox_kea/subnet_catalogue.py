@@ -899,6 +899,8 @@ _CONFIGURATION_NOT_READ = _ConfigurationObservation(facts=(), diagnostics=(), av
 class IdentityRead(_SubnetLookup):
     """One live ``subnet{v}-list`` read: the identity and Shared Network membership of each Subnet."""
 
+    snapshot: CatalogueSnapshot
+
     def __init__(self, snapshot: CatalogueSnapshot) -> None:
         self.snapshot = snapshot
 

@@ -21,11 +21,12 @@ page renders.
 """
 
 import requests
+from django.contrib import messages as django_messages
 from django.test import override_settings
 from django.urls import reverse
 
 from .kea_stub import stub_kea
-from .utils import _PLUGINS_CONFIG, _ViewTestBase
+from .utils import _PLUGINS_CONFIG, _make_db_server, _ViewTestBase
 
 
 def _config_get_empty(body):
@@ -101,6 +102,22 @@ class TestServerDHCP4EnableView(_ViewTestBase):
         self.client.logout()
         response = self.client.post(self._url())
         self.assertIn(response.status_code, (302, 403))
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestServerDHCPEnableMissingTLSFile(_ViewTestBase):
+    """A CA file removed after the Server was saved gives the error message of the view, not HTTP 500."""
+
+    def test_post_with_a_missing_ca_file_shows_the_error_message(self):
+        # No stub: requests itself refuses the missing file before it opens a connection.
+        server = _make_db_server(
+            name="missing-ca", ca_url="https://127.0.0.1:9/", ca_file_path="/nonexistent/kea-ca.pem", ssl_verify=True
+        )
+        response = self.client.post(reverse("plugins:netbox_kea:server_dhcp4_enable", args=[server.pk]))
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            [str(m) for m in django_messages.get_messages(response.wsgi_request)], ["An internal error occurred."]
+        )
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)

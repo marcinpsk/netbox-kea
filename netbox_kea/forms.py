@@ -7,7 +7,7 @@ import ipaddress
 from typing import Any, Generic, TypeVar, cast
 
 from django import forms
-from django.core.exceptions import ValidationError
+from django.core.exceptions import NON_FIELD_ERRORS, ValidationError
 from ipam.models import VRF
 from netaddr import EUI, AddrFormatError, IPAddress, IPNetwork, mac_unix_expanded
 from netbox.forms import NetBoxModelBulkEditForm, NetBoxModelFilterSetForm, NetBoxModelForm, NetBoxModelImportForm
@@ -29,6 +29,7 @@ from .reservations import (
     reservation_identifier_choices,
     reservation_identifier_types,
 )
+from .server_connection import connection_values, validate_connection_change
 from .subnet_catalogue import MAX_SUBNET_ID, MIN_SUBNET_ID, VerifiedSubnet
 from .utilities import is_hex_string, parse_delegated_prefixes
 
@@ -168,7 +169,35 @@ def _validate_ip(value: str, version: Family) -> str:
     return str(addr)
 
 
-class ServerForm(NetBoxModelForm):
+class _ServerConnectionFormMixin:
+    """Check the effective connection after native local model validation."""
+
+    def _post_clean(self):
+        before = None if self.instance._state.adding else connection_values(self.instance)
+        super()._post_clean()
+        if not self.errors:
+            try:
+                validate_connection_change(self.instance, before)
+            except ValidationError as exc:
+                self._update_errors(exc)
+
+    def _update_errors(self, errors):
+        """Keep omitted CSV fields as labeled row errors on every supported NetBox release."""
+        if hasattr(errors, "error_dict"):
+            mapped = {}
+            for field, field_errors in errors.error_dict.items():
+                if field != NON_FIELD_ERRORS and field not in self.fields:
+                    label = self._meta.model._meta.get_field(field).verbose_name
+                    mapped.setdefault(NON_FIELD_ERRORS, []).extend(
+                        ValidationError(f"{label}: {message}") for error in field_errors for message in error.messages
+                    )
+                else:
+                    mapped.setdefault(field, []).extend(field_errors)
+            errors = ValidationError(mapped)
+        super()._update_errors(errors)
+
+
+class ServerForm(_ServerConnectionFormMixin, NetBoxModelForm):
     """NetBox model form for creating and editing Kea Server objects."""
 
     fieldsets = (
@@ -248,6 +277,16 @@ class ServerForm(NetBoxModelForm):
             "dhcp4_password": forms.PasswordInput(),
             "dhcp6_password": forms.PasswordInput(),
         }
+
+    def clean(self):
+        """Keep a stored password when an edit leaves its field blank."""
+        super().clean()
+        cleaned_data = self.cleaned_data
+        if not self.instance._state.adding:
+            for name in ("ca_password", "dhcp4_password", "dhcp6_password"):
+                if not cleaned_data.get(name):
+                    cleaned_data[name] = getattr(self.instance, name)
+        return cleaned_data
 
 
 class VeryHiddenInput(forms.HiddenInput):
@@ -336,7 +375,7 @@ class CSVDefaultedBooleanField(forms.BooleanField):
         return super().to_python(value)
 
 
-class ServerImportForm(NetBoxModelImportForm):
+class ServerImportForm(_ServerConnectionFormMixin, NetBoxModelImportForm):
     """CSV/YAML bulk-import form for Server objects."""
 
     #: Booleans an omitted column must leave alone. See CSVDefaultedBooleanField.
@@ -372,7 +411,8 @@ class ServerImportForm(NetBoxModelImportForm):
 
     def clean(self):
         """Drop every unset defaulted boolean so ``construct_instance`` skips it."""
-        cleaned_data = super().clean()
+        super().clean()
+        cleaned_data = self.cleaned_data
         for name in self.DEFAULTED_BOOLEANS:
             if cleaned_data.get(name) is None:
                 cleaned_data.pop(name, None)
@@ -474,7 +514,7 @@ class BaseLeasesSarchForm(forms.Form):
         elif by == constants.BY_SUBNET_ID:
             try:
                 i = int(q)
-                if i <= 0:
+                if not MIN_SUBNET_ID <= i <= MAX_SUBNET_ID:
                     raise ValidationError({"q": "Invalid subnet ID."})
                 cleaned_data["q"] = i
             except ValueError as e:
@@ -1662,7 +1702,7 @@ class Lease6AddForm(forms.Form):
     iaid = forms.IntegerField(
         label="IAID",
         min_value=0,
-        max_value=4294967295,
+        max_value=constants.UINT32_MAX,
         help_text="Identity Association ID (32-bit unsigned integer).",
     )
     subnet_id = forms.IntegerField(

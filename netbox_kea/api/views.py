@@ -94,7 +94,7 @@ def _parse_subnet_lease_state(raw_state, selector) -> tuple[int | None, str | No
         state = int(raw_state)
     except (TypeError, ValueError):
         return None, "A Subnet query supports only the Active or Declined state."
-    if state not in (0, 1):
+    if state not in constants.LEASE_QUERY_STATE_CODES:
         return None, "A Subnet query supports only the Active or Declined state."
     return state, None
 
@@ -111,7 +111,7 @@ class ServerViewSet(NetBoxModelViewSet):
     # ─────────────────────────────────────────────────────────────────────
 
     @action(detail=True, methods=["get"], url_path="leases4", url_name="leases4")
-    def leases4(self, request, pk=None):
+    def leases4(self, request, pk=None, format=None):  # noqa: A002 - DRF format-suffix keyword
         """Search DHCPv4 leases on this server.
 
         Query parameters (at least one required):
@@ -124,7 +124,7 @@ class ServerViewSet(NetBoxModelViewSet):
         return self._lease_search(request, version=4)
 
     @action(detail=True, methods=["get"], url_path="leases6", url_name="leases6")
-    def leases6(self, request, pk=None):
+    def leases6(self, request, pk=None, format=None):  # noqa: A002 - DRF format-suffix keyword
         """Search DHCPv6 leases on this server.
 
         Query parameters (at least one required):
@@ -214,7 +214,7 @@ class ServerViewSet(NetBoxModelViewSet):
     # ─────────────────────────────────────────────────────────────────────
 
     @action(detail=True, methods=["get"], url_path="reservations4", url_name="reservations4")
-    def reservations4(self, request, pk=None):
+    def reservations4(self, request, pk=None, format=None):  # noqa: A002 - DRF format-suffix keyword
         """Search DHCPv4 host reservations on this server.
 
         Select exactly one bounded page, exact identity, scoped address, or
@@ -223,7 +223,7 @@ class ServerViewSet(NetBoxModelViewSet):
         return self._reservation_search(request, version=4)
 
     @action(detail=True, methods=["get"], url_path="reservations6", url_name="reservations6")
-    def reservations6(self, request, pk=None):
+    def reservations6(self, request, pk=None, format=None):  # noqa: A002 - DRF format-suffix keyword
         """Search DHCPv6 host reservations on this server.
 
         Select exactly one bounded page, exact identity, scoped address, or

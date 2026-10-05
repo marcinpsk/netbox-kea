@@ -1,14 +1,11 @@
 # SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-FileCopyrightText: 2023 Devon Mar <devon-mar@users.noreply.github.com>
 # SPDX-License-Identifier: Apache-2.0
-import json
-import logging
 from functools import reduce
 from operator import or_
 from pathlib import Path
 from typing import get_args
 
-import requests
 from django.contrib.contenttypes.fields import GenericForeignKey
 from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator
@@ -16,15 +13,13 @@ from django.db import connection, models
 from django.urls import reverse
 from netbox.constants import CENSOR_TOKEN, CENSOR_TOKEN_CHANGED
 from netbox.models import NetBoxModel
-from netbox.models.features import JobsMixin
+from netbox.models.features import ChangeLoggingMixin, JobsMixin
 
 from . import branching
 from .constants import Family
-from .kea import KeaClient, KeaCommand, KeaException
+from .kea import KeaClient
 from .plugin_settings import plugin_setting
 from .reservations import MAX_IDENTITY_LENGTH
-
-logger = logging.getLogger(__name__)
 
 
 def _get_kea_timeout() -> int:
@@ -305,7 +300,7 @@ class Server(JobsMixin, NetBoxModel):
         )
 
     def clean(self) -> None:
-        """Validate configuration and perform a live connectivity check against Kea."""
+        """Validate the local Server configuration."""
         super().clean()
 
         if self.dhcp4 is False and self.dhcp6 is False:
@@ -323,31 +318,6 @@ class Server(JobsMixin, NetBoxModel):
 
         if self.ca_file_path and not self.ssl_verify:
             raise ValidationError({"ca_file_path": "Cannot specify a CA file when SSL verification is disabled."})
-
-        if self.dhcp6:
-            try:
-                self.get_client(version=6).command(KeaCommand.VERSION_GET, 6)
-            except KeaException as e:
-                logger.exception("DHCPv6 connectivity check failed during Server.clean()")
-                raise ValidationError({"dhcp6": "Unable to reach the Kea DHCPv6 service."}) from e
-            except json.JSONDecodeError as e:
-                logger.exception("Malformed response during DHCPv6 connectivity check")
-                raise ValidationError({"dhcp6": "An internal error occurred."}) from e
-            except (requests.exceptions.RequestException, ValueError) as e:
-                logger.exception("Unexpected error during DHCPv6 connectivity check")
-                raise ValidationError({"dhcp6": "Unable to reach the Kea DHCPv6 service."}) from e
-        if self.dhcp4:
-            try:
-                self.get_client(version=4).command(KeaCommand.VERSION_GET, 4)
-            except KeaException as e:
-                logger.exception("DHCPv4 connectivity check failed during Server.clean()")
-                raise ValidationError({"dhcp4": "Unable to reach the Kea DHCPv4 service."}) from e
-            except json.JSONDecodeError as e:
-                logger.exception("Malformed response during DHCPv4 connectivity check")
-                raise ValidationError({"dhcp4": "An internal error occurred."}) from e
-            except (requests.exceptions.RequestException, ValueError) as e:
-                logger.exception("Unexpected error during DHCPv4 connectivity check")
-                raise ValidationError({"dhcp4": "Unable to reach the Kea DHCPv4 service."}) from e
 
     def to_objectchange(self, action: str):
         """Censor all password fields in NetBox change log entries."""
@@ -437,7 +407,7 @@ class SyncConfig(models.Model):
         return cls.objects.get(pk=1)
 
 
-class KeaDhcpLink(models.Model):
+class KeaDhcpLink(ChangeLoggingMixin):
     """Maps a Kea object identity to the netbox-plugin-dhcp (``netbox_dhcp``) record imported from it.
 
     Kea's ``subnet-id`` is unique only per ``(server, protocol)`` — overlaps across
@@ -495,7 +465,7 @@ class KeaDhcpLink(models.Model):
 
     class Meta:
         app_label = "netbox_kea"
-        verbose_name = "Kea DHCP-plugin link"
+        verbose_name = "DHCP Import Mapping"
         constraints = [
             models.UniqueConstraint(
                 fields=["object_type", "object_id"],
