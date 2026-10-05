@@ -453,6 +453,12 @@ def test_a_snapshot_requires_an_aware_read_interval_and_its_own_family():
         LeaseQuery(family=4, selector=constants.BY_SUBNET_ID, value=True)
 
 
+def test_a_subnet_id_query_stays_in_the_kea_range():
+    assert LeaseQuery(family=4, selector=constants.BY_SUBNET_ID, value=constants.MAX_SUBNET_ID).value
+    with pytest.raises(ValidationError):
+        LeaseQuery(family=4, selector=constants.BY_SUBNET_ID, value=constants.MAX_SUBNET_ID + 1)
+
+
 # --- exact lookups ---
 
 
