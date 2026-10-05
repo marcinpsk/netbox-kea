@@ -85,6 +85,36 @@ class ServerSubmissionConnectivityTest(_ViewTestBase):
         self.assertEqual(self.server.name, "renamed-server")
         self.assertTrue(self.server.sync_dhcp_plugin_enabled)
 
+    def test_blank_password_edit_keeps_stored_passwords(self):
+        passwords = {"ca_password": "ca-secret", "dhcp4_password": "v4-secret", "dhcp6_password": "v6-secret"}
+        Server.objects.filter(pk=self.server.pk).update(**passwords)
+        url = reverse("plugins:netbox_kea:server_edit", args=[self.server.pk])
+        payload = self._payload(name="renamed-server", ca_url=self.server.ca_url, dhcp6=True)
+        payload.update(dict.fromkeys(passwords, ""))
+        with stub_kea({"version-get": requests.ConnectionError("Unavailable")}) as kea:
+            response = self.client.post(url, payload)
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(kea.requests, [])
+        self.server.refresh_from_db()
+        self.assertEqual(self.server.name, "renamed-server")
+        self.assertEqual({name: getattr(self.server, name) for name in passwords}, passwords)
+
+        with stub_kea({"version-get": _VERSION_OK}) as kea:
+            response = self.client.post(url, {**payload, "dhcp4_password": "new-secret"})
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(len(kea.requests), 2)
+        self.server.refresh_from_db()
+        self.assertEqual(self.server.dhcp4_password, "new-secret")
+        self.assertEqual(self.server.ca_password, "ca-secret")
+
+    def test_create_with_blank_passwords_stores_blank_passwords(self):
+        payload = self._payload(ca_password="", dhcp4_password="", dhcp6_password="")
+        with stub_kea({"version-get": _VERSION_OK}):
+            response = self.client.post(reverse("plugins:netbox_kea:server_add"), payload)
+        self.assertEqual(response.status_code, 302)
+        server = Server.objects.get(name="submitted-server")
+        self.assertEqual((server.ca_password, server.dhcp4_password, server.dhcp6_password), ("", "", ""))
+
     def test_create_preserves_family_errors_and_exception_routing(self):
         cases = (
             (requests.ConnectionError("private diagnostic"), "Unable to reach"),
