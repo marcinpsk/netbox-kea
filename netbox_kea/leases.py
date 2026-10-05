@@ -11,7 +11,6 @@ from __future__ import annotations
 import copy
 import ipaddress
 import math
-import re
 from collections import Counter
 from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
@@ -20,7 +19,22 @@ from typing import Annotated, Any, Literal, TypeAlias
 from pydantic import AwareDatetime, BaseModel, BeforeValidator, ConfigDict, Field, ValidationError, model_validator
 from pydantic_core import PydanticCustomError
 
-from .constants import BY_CLIENT_ID, BY_DUID, BY_HOSTNAME, BY_HW_ADDRESS, BY_IP, BY_SUBNET_ID, Family, IPAddressValue
+from .constants import (
+    BY_CLIENT_ID,
+    BY_DUID,
+    BY_HOSTNAME,
+    BY_HW_ADDRESS,
+    BY_IP,
+    BY_SUBNET,
+    BY_SUBNET_ID,
+    LEASE_CLIENT_ID_OCTETS,
+    LEASE_DUID_OCTETS,
+    LEASE_HW_ADDRESS_OCTETS,
+    LEASE_QUERY_STATES,
+    Family,
+    IPAddressValue,
+)
+from .identifiers import normalize_hex
 
 #: Kea stores an infinite valid lifetime as this value (``Lease::INFINITY_LFT``).
 INFINITE_LIFETIME = 0xFFFFFFFF
@@ -29,7 +43,12 @@ _UINT32_MAX = 0xFFFFFFFF
 _MAX_TIMESTAMP = int(datetime.max.replace(microsecond=0, tzinfo=timezone.utc).timestamp())
 #: The query selector of a read that covers every Lease of one family.
 ALL_LEASES = "all"
-_QUERY_SELECTORS = frozenset({ALL_LEASES, BY_IP, BY_HOSTNAME, BY_DUID, BY_SUBNET_ID, BY_HW_ADDRESS, BY_CLIENT_ID})
+# The selectors of KeaClient.lease_search for each family, and ALL_LEASES for page traversal.
+_QUERY_SELECTORS: dict[int, frozenset[str]] = {
+    4: frozenset({ALL_LEASES, BY_IP, BY_HW_ADDRESS, BY_HOSTNAME, BY_CLIENT_ID, BY_SUBNET, BY_SUBNET_ID}),
+    6: frozenset({ALL_LEASES, BY_IP, BY_HOSTNAME, BY_DUID, BY_SUBNET, BY_SUBNET_ID}),
+}
+_SUBNET_SELECTORS = frozenset({BY_SUBNET, BY_SUBNET_ID})
 
 LeaseState = Literal["assigned", "declined", "expired-reclaimed", "released", "registered"]
 # Kea's Lease::STATE_* codes, in code order.
@@ -83,22 +102,25 @@ _PYDANTIC_CODES: dict[str, LeaseDiagnosticCode] = {
     "string_type": "invalid-type",
     "greater_than_equal": "out-of-range",
     "less_than_equal": "out-of-range",
-    "string_pattern_mismatch": "invalid-identifier",
 }
 
 
-def _hex_pattern(minimum: int, maximum: int) -> str:
-    return rf"^[0-9a-f]{{2}}(:[0-9a-f]{{2}}){{{minimum - 1},{maximum - 1}}}$"
+def _hex_identifier(octets: tuple[int, int]) -> BeforeValidator:
+    def normalize(value: Any) -> Any:
+        # A value of another type passes through, so the strict string check reports its type.
+        if not isinstance(value, str):
+            return value
+        try:
+            return normalize_hex(value, octets)
+        except ValueError:
+            raise PydanticCustomError("invalid-identifier", _MESSAGES["invalid-identifier"]) from None
+
+    return BeforeValidator(normalize)
 
 
-# Octet bounds of Kea 3.2.0: HWAddr::MAX_HWADDR_LEN and the ClientId and DUID identifier sizes.
-_HARDWARE_ADDRESS_PATTERN = _hex_pattern(1, 20)
-_CLIENT_ID_PATTERN = _hex_pattern(2, 255)
-_DUID_PATTERN = _hex_pattern(3, 130)
-_lowercase = BeforeValidator(lambda value: value.lower() if isinstance(value, str) else value)
-HardwareAddress = Annotated[str, _lowercase, Field(pattern=_HARDWARE_ADDRESS_PATTERN)]
-ClientIdentifier = Annotated[str, _lowercase, Field(pattern=_CLIENT_ID_PATTERN)]
-Duid = Annotated[str, _lowercase, Field(pattern=_DUID_PATTERN)]
+HardwareAddress = Annotated[str, _hex_identifier(LEASE_HW_ADDRESS_OCTETS)]
+ClientIdentifier = Annotated[str, _hex_identifier(LEASE_CLIENT_ID_OCTETS)]
+Duid = Annotated[str, _hex_identifier(LEASE_DUID_OCTETS)]
 Uint32 = Annotated[int, Field(ge=0, le=_UINT32_MAX)]
 PositiveUint32 = Annotated[int, Field(ge=1, le=_UINT32_MAX)]
 Timestamp = Annotated[int, Field(ge=1, le=_MAX_TIMESTAMP)]
@@ -332,14 +354,15 @@ class LeaseRead(_Value):
 class LeaseQuery(_Value):
     """The scope that one Lease observation requested from Kea."""
 
+    family: Family
     selector: str
     value: int | str | None = None
     state: LeaseState | None = None
 
     @model_validator(mode="after")
     def _scope(self) -> LeaseQuery:
-        if self.selector not in _QUERY_SELECTORS:
-            raise ValueError("Unsupported Lease query selector.")
+        if self.selector not in _QUERY_SELECTORS[self.family]:
+            raise ValueError("The Lease query selector is not supported for this family.")
         if self.selector == ALL_LEASES:
             valid = self.value is None
         elif self.selector == BY_SUBNET_ID:
@@ -348,8 +371,8 @@ class LeaseQuery(_Value):
             valid = isinstance(self.value, str) and bool(self.value)
         if not valid:
             raise ValueError("The Lease query value does not fit its selector.")
-        if self.state is not None and self.selector != BY_SUBNET_ID:
-            raise ValueError("Only a Subnet query can filter by state.")
+        if self.state is not None and (self.selector not in _SUBNET_SELECTORS or self.state not in LEASE_QUERY_STATES):
+            raise ValueError("Only a Subnet query can filter by state, and only by a state that Kea can count.")
         return self
 
     @property
@@ -381,6 +404,8 @@ class LeaseSnapshot(_Value):
     def _consistent(self) -> LeaseSnapshot:
         if self.read_finished < self.read_started:
             raise ValueError("A Lease Snapshot read cannot finish before it starts.")
+        if self.query.family != self.family:
+            raise ValueError("The query must belong to the Snapshot family.")
         if any(record.family != self.family for record in self.records):
             raise ValueError("Every Lease of a Snapshot must belong to its family.")
         if len({record.identity for record in self.records}) != len(self.records):
@@ -538,10 +563,9 @@ def shown_lease(lease: Lease) -> ShownLease:
 
 def _client_identifier(value: str, family: int) -> str:
     """Return a submitted client identifier in Kea's form, or raise ValueError."""
-    normalized = value.strip().lower()
-    pattern = _HARDWARE_ADDRESS_PATTERN if family == 4 else _DUID_PATTERN
-    if re.fullmatch(pattern, normalized) is None or (family == 6 and normalized == _EMPTY_DUID):
-        raise ValueError("The client identifier is not valid.")
+    normalized = normalize_hex(value.strip(), LEASE_HW_ADDRESS_OCTETS if family == 4 else LEASE_DUID_OCTETS)
+    if family == 6 and normalized == _EMPTY_DUID:
+        raise ValueError("A client DUID cannot be Kea's empty DUID.")
     return normalized
 
 
@@ -658,16 +682,28 @@ def _wire_state(value: Any, _family: int) -> LeaseState:
     return _STATES[value]
 
 
-def _empty_as_none(empty: str) -> Callable[[Any, int], Any]:
-    # A value of the wrong type passes through, so the model reports its type.
-    return lambda value, _family: None if isinstance(value, str) and value.lower() == empty else value
+def _unchanged(value: Any, _family: int) -> Any:
+    return value
+
+
+def _wire_hw_address(value: Any, _family: int) -> Any:
+    return None if value == "" else value
+
+
+def _wire_duid(value: Any, _family: int) -> Any:
+    # A value that is not a DUID passes through, so the model reports it.
+    try:
+        empty = isinstance(value, str) and normalize_hex(value, LEASE_DUID_OCTETS) == _EMPTY_DUID
+    except ValueError:
+        return value
+    return None if empty else value
 
 
 _CONVERTERS: dict[str, Callable[[Any, int], Any]] = {
     "address": _wire_address,
     "state": _wire_state,
-    "hw_address": _empty_as_none(""),
-    "duid": _empty_as_none(_EMPTY_DUID),
+    "hw_address": _wire_hw_address,
+    "duid": _wire_duid,
 }
 
 
@@ -714,7 +750,7 @@ def _lease_from_record(raw: Any, family: Family) -> Lease:
         if key not in raw:
             continue
         try:
-            values[name] = _CONVERTERS.get(name, lambda value, _family: value)(raw[key], family)
+            values[name] = _CONVERTERS.get(name, _unchanged)(raw[key], family)
         except _FieldProblem as problem:
             problems.append((problem.code, key))
             diagnosed.add(name)
@@ -779,7 +815,7 @@ def _reply(response: Any) -> tuple[int, Any]:
     if not isinstance(response, list) or len(response) != 1 or not isinstance(response[0], dict):
         raise MalformedLeaseResponse("Kea returned a malformed lease response.")
     result = response[0].get("result")
-    if isinstance(result, bool) or result not in (0, 3):
+    if isinstance(result, bool) or not isinstance(result, int) or result not in (0, 3):
         raise MalformedLeaseResponse("Kea returned a lease response with an unexpected result.")
     return result, response[0].get("arguments")
 
@@ -816,7 +852,8 @@ def read_lease_page(response: Any, *, family: Family, limit: int, after: IPAddre
 
     Raises:
         ValueError: If *limit* or *after* is not valid for the request.
-        MalformedLeaseResponse: If the envelope, count or continuation is unusable, or the page does not advance.
+        MalformedLeaseResponse: If the envelope, count or continuation is unusable, or a record is not
+            after the cursor and the record before it.
 
     """
     if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
@@ -830,17 +867,28 @@ def read_lease_page(response: Any, *, family: Family, limit: int, after: IPAddre
         raise MalformedLeaseResponse("Kea returned an invalid lease page count.")
     if result == 3 and count:
         raise MalformedLeaseResponse("Kea reported no leases and returned some.")
-    next_cursor = None
-    if count == limit:
-        last = raw_leases[-1]
-        try:
-            next_cursor = _wire_address(last.get("ip-address") if isinstance(last, dict) else None, family)
-        except _FieldProblem:
-            raise MalformedLeaseResponse("Kea returned a lease page without a usable continuation.") from None
-        if after is not None and int(next_cursor) <= int(after):
-            raise MalformedLeaseResponse("The lease page did not advance.")
+    addresses = [_raw_address(raw, family) for raw in raw_leases]
+    previous = after
+    # Each page continues strictly after the last one, so no record repeats across pages.
+    for address in addresses:
+        if address is None:
+            continue
+        if previous is not None and int(address) <= int(previous):
+            raise MalformedLeaseResponse("The lease page is not in ascending order after its cursor.")
+        previous = address
+    next_cursor = addresses[-1] if count == limit else None
+    if count == limit and next_cursor is None:
+        raise MalformedLeaseResponse("Kea returned a lease page without a usable continuation.")
     records, diagnostics = _read_records(raw_leases, family)
     return LeaseRead(family=family, records=records, diagnostics=diagnostics, raw_count=count, next_cursor=next_cursor)
+
+
+def _raw_address(raw: Any, family: int) -> IPAddressValue | None:
+    """Return the address of one raw page record, or ``None`` when its own diagnostic covers it."""
+    try:
+        return _wire_address(raw.get("ip-address") if isinstance(raw, dict) else None, family)
+    except _FieldProblem:
+        return None
 
 
 def _lookup_arguments(identity: LeaseIdentity) -> dict[str, Any]:
@@ -858,10 +906,12 @@ def read_exact_lease(response: Any, identity: LeaseIdentity) -> ExactLeaseResult
     A malformed record or another target is a failed observation, never a confirmed absence.
 
     Raises:
-        MalformedLeaseResponse: If the envelope is unusable.
+        MalformedLeaseResponse: If the envelope is unusable, or a not-found reply carries arguments.
 
     """
     result, arguments = _reply(response)
+    if result == 3 and arguments is not None:
+        raise MalformedLeaseResponse("Kea reported no lease and returned one.")
     if result == 3:
         return LeaseAbsent(identity=identity)
     if not isinstance(arguments, dict):
@@ -880,6 +930,7 @@ def read_exact_lease(response: Any, identity: LeaseIdentity) -> ExactLeaseResult
 def _edited_arguments(raw: Mapping[str, Any], fresh: Lease, edit: LeaseEdit) -> dict[str, Any]:
     """Return a copy of the fresh Kea body with only the written fields changed.
 
+    An unwritten lifetime keeps the fresh transaction time; a written one starts at the update.
     Nested extension values, including changes by another writer, stay as the fresh read returned them.
 
     Raises:
@@ -900,10 +951,13 @@ def _edited_arguments(raw: Mapping[str, Any], fresh: Lease, edit: LeaseEdit) -> 
             body["fqdn-fwd"] = body["fqdn-rev"] = False
     if edit.client_identifier is not None:
         body["hw-address" if fresh.family == 4 else "duid"] = _client_identifier(edit.client_identifier, fresh.family)
-    valid_lifetime = fresh.valid_lifetime if edit.valid_lifetime is None else edit.valid_lifetime
-    body["valid-lft"] = valid_lifetime
-    # Without an expiration time, Kea sets the transaction time of the update to now.
-    body["expire"] = fresh.cltt + valid_lifetime
+    if edit.valid_lifetime is None:
+        # Without an expiration time, Kea sets the transaction time of the update to now.
+        body["expire"] = fresh.cltt + fresh.valid_lifetime
+    else:
+        # A written lifetime counts from the update, so the body sends no expiration time.
+        body["valid-lft"] = edit.valid_lifetime
+        body.pop("expire", None)
     return body
 
 

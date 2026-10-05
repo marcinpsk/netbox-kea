@@ -5,13 +5,13 @@ from __future__ import annotations
 import hashlib
 import ipaddress
 import json
-import re
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Generic, Literal, TypeVar, cast
 
 from .constants import Family, IPAddressValue, Persistence
 from .dhcp_options import DHCPOption, parse_dhcp_options
+from .identifiers import normalize_hex
 
 if TYPE_CHECKING:
     from .subnet_catalogue import CatalogueSnapshot, SubnetIdentity
@@ -557,28 +557,16 @@ def _family(value: int) -> Family:
 
 
 def _normalize_hex(value: Any, identifier_type: IdentifierType) -> str:
-    if not isinstance(value, str) or not value:
+    try:
+        if not isinstance(value, str):
+            raise ValueError("The identifier is not a string.")
+        return normalize_hex(value, _HEX_IDENTIFIER_OCTETS[identifier_type])
+    except ValueError as exc:
         raise MalformedReservation(
             RESERVATION_INVALID_IDENTIFIER,
             "The Reservation identifier is invalid.",
             identifier_type,
-        )
-    compact = re.sub(r"[:.-]", "", value)
-    if not compact or len(compact) % 2 or re.fullmatch(r"[0-9A-Fa-f]+", compact) is None:
-        raise MalformedReservation(
-            RESERVATION_INVALID_IDENTIFIER,
-            "The Reservation identifier is invalid.",
-            identifier_type,
-        )
-    octets = len(compact) // 2
-    minimum, maximum = _HEX_IDENTIFIER_OCTETS[identifier_type]
-    if not minimum <= octets <= maximum:
-        raise MalformedReservation(
-            RESERVATION_INVALID_IDENTIFIER,
-            "The Reservation identifier is invalid.",
-            identifier_type,
-        )
-    return ":".join(compact[index : index + 2].lower() for index in range(0, len(compact), 2))
+        ) from exc
 
 
 def _identity(raw: dict[str, Any], family: Family) -> ReservationIdentity:

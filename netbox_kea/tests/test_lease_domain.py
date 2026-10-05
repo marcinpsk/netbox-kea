@@ -102,7 +102,7 @@ def _snapshot(
     return LeaseSnapshot(
         server_id=1,
         family=family,
-        query=query or LeaseQuery(selector=leases.ALL_LEASES),
+        query=query or LeaseQuery(family=family, selector=leases.ALL_LEASES),
         read_started=_AT,
         read_finished=_AT + timedelta(seconds=1),
         records=read.records,
@@ -422,9 +422,10 @@ def test_a_filtered_query_never_attests_absence_for_the_whole_family():
     read = _collection(4, _recorded(4)["lease4-get-all"])
     absent = LeaseIdentity(family=4, kind="address", address=ipaddress.ip_address("192.0.2.99"))
     for query in (
-        LeaseQuery(selector=constants.BY_SUBNET_ID, value=10),
-        LeaseQuery(selector=constants.BY_SUBNET_ID, value=10, state="assigned"),
-        LeaseQuery(selector=constants.BY_HW_ADDRESS, value="aa:bb:cc:00:00:10"),
+        LeaseQuery(family=4, selector=constants.BY_SUBNET_ID, value=10),
+        LeaseQuery(family=4, selector=constants.BY_SUBNET_ID, value=10, state="assigned"),
+        LeaseQuery(family=4, selector=constants.BY_SUBNET, value="192.0.2.0/24", state="declined"),
+        LeaseQuery(family=4, selector=constants.BY_HW_ADDRESS, value="aa:bb:cc:00:00:10"),
     ):
         snapshot = _snapshot(read, coverage="exhaustive", query=query)
         assert snapshot.complete and not snapshot.attests_absence(absent)
@@ -436,7 +437,7 @@ def test_a_snapshot_requires_an_aware_read_interval_and_its_own_family():
         LeaseSnapshot(
             server_id=1,
             family=4,
-            query=LeaseQuery(selector=leases.ALL_LEASES),
+            query=LeaseQuery(family=4, selector=leases.ALL_LEASES),
             read_started=_AT.replace(tzinfo=None),
             read_finished=_AT,
             records=read.records,
@@ -447,7 +448,7 @@ def test_a_snapshot_requires_an_aware_read_interval_and_its_own_family():
     with pytest.raises(ValidationError):
         _snapshot(read, coverage="exhaustive", family=6)
     with pytest.raises(ValidationError):
-        LeaseQuery(selector=constants.BY_SUBNET_ID, value=True)
+        LeaseQuery(family=4, selector=constants.BY_SUBNET_ID, value=True)
 
 
 # --- exact lookups ---
@@ -682,11 +683,9 @@ def test_an_edit_changes_only_written_fields_in_the_fresh_body():
         key: value for key, value in raw.items() if key not in {"hostname", "fqdn-fwd", "fqdn-rev"}
     }
     lifetime = leases._edited_arguments(raw, fresh, LeaseEdit(valid_lifetime=60, client_identifier="aa:bb:cc:00:00:99"))
-    assert (lifetime["valid-lft"], lifetime["expire"], lifetime["hw-address"]) == (
-        60,
-        raw["cltt"] + 60,
-        "aa:bb:cc:00:00:99",
-    )
+    assert (lifetime["valid-lft"], lifetime["hw-address"]) == (60, "aa:bb:cc:00:00:99")
+    # A written lifetime counts from the update, so the body sends no expire.
+    assert "expire" not in lifetime
     with pytest.raises(ValueError):
         leases._edited_arguments({**raw, "hostname": "other"}, fresh, LeaseEdit())
 
@@ -699,3 +698,104 @@ def test_the_recorded_update_keeps_the_transaction_time_only_with_expire():
     assert body["expire"] == before["cltt"] + before["valid-lft"]
     assert recorded["after-update-with-expire"]["arguments"]["cltt"] == before["cltt"]
     assert recorded["after-update-without-expire"]["arguments"]["cltt"] != before["cltt"]
+    # A shorter written lifetime must not end before the update: Kea starts it at the update time.
+    lifetime = leases._edited_arguments(before, fresh, LeaseEdit(valid_lifetime=60))
+    assert "expire" not in lifetime and lifetime["valid-lft"] == 60
+
+
+# --- review findings ---
+
+
+def test_a_not_found_reply_that_carries_a_record_fails_the_read():
+    record = _recorded(4)["lease4-get"]["present"]["arguments"]
+    identity = LeaseIdentity(family=4, kind="address", address=ipaddress.ip_address("192.0.2.10"))
+    with pytest.raises(MalformedLeaseResponse):
+        _exact(4, {"result": 3, "text": "Lease not found.", "arguments": record}, identity)
+
+
+@pytest.mark.parametrize("result", [0.0, 3.0])
+def test_a_reply_result_must_be_an_integer(result):
+    identity = LeaseIdentity(family=4, kind="address", address=ipaddress.ip_address("192.0.2.10"))
+    reply = {**_recorded(4)["lease4-get"]["present"], "result": result}
+    with pytest.raises(MalformedLeaseResponse):
+        read_exact_lease([reply], identity)
+    with pytest.raises(MalformedLeaseResponse):
+        read_lease_collection([{**_recorded(4)["lease4-get-all"], "result": result}], family=4)
+
+
+@pytest.mark.parametrize(
+    ("addresses", "after"),
+    [
+        (("192.0.2.11", "192.0.2.10"), None),
+        (("192.0.2.10", "192.0.2.10"), None),
+        (("192.0.2.12", "192.0.2.13"), "192.0.2.12"),
+        (("192.0.2.13",), "192.0.2.13"),
+    ],
+)
+def test_a_page_out_of_order_or_not_after_its_cursor_fails_the_read(addresses, after):
+    records = [_raw(4, address) for address in addresses]
+    cursor = None if after is None else ipaddress.IPv4Address(after)
+    with pytest.raises(MalformedLeaseResponse):
+        _read_page(4, _page(4, *records), limit=3, after=cursor)
+
+
+def test_a_short_page_that_repeats_the_previous_page_fails_the_read():
+    pages = _recorded(4)["lease4-get-page"]
+    repeated = _page(4, pages[0]["arguments"]["leases"][-1])
+    with pytest.raises(MalformedLeaseResponse):
+        _read_page(4, repeated, limit=3, after=ipaddress.IPv4Address("192.0.2.12"))
+
+
+def test_query_selectors_and_state_filters_match_lease_search():
+    client = kea_client("http://kea.example.com")
+    selectors = (
+        constants.BY_IP,
+        constants.BY_HW_ADDRESS,
+        constants.BY_HOSTNAME,
+        constants.BY_CLIENT_ID,
+        constants.BY_SUBNET,
+        constants.BY_SUBNET_ID,
+        constants.BY_DUID,
+    )
+    values = {constants.BY_SUBNET_ID: 10, constants.BY_SUBNET: "192.0.2.0/24"}
+    for family in (4, 6):
+        for selector in selectors:
+            value = values.get(selector, "x")
+            try:
+                LeaseQuery(family=family, selector=selector, value=value)
+            except ValidationError:
+                with pytest.raises(ValueError, match="not supported"):
+                    client.lease_search(family, selector, value)
+            else:
+                assert selector in leases._QUERY_SELECTORS[family]
+    assert leases._QUERY_SELECTORS[4] - {leases.ALL_LEASES} == {
+        constants.BY_IP,
+        constants.BY_HW_ADDRESS,
+        constants.BY_HOSTNAME,
+        constants.BY_CLIENT_ID,
+        constants.BY_SUBNET,
+        constants.BY_SUBNET_ID,
+    }
+    for state in ("expired-reclaimed", "released", "registered"):
+        with pytest.raises(ValidationError):
+            LeaseQuery(family=4, selector=constants.BY_SUBNET_ID, value=10, state=state)
+    with pytest.raises(ValidationError):
+        LeaseQuery(family=6, selector=constants.BY_HW_ADDRESS, value="aa:bb:cc:00:00:10")
+    with pytest.raises(ValidationError):
+        LeaseQuery(family=4, selector=constants.BY_IP, value="192.0.2.10", state="assigned")
+
+
+def test_a_snapshot_query_belongs_to_the_snapshot_family():
+    read = _collection(4, _recorded(4)["lease4-get-all"])
+    with pytest.raises(ValidationError):
+        _snapshot(read, coverage="exhaustive", query=LeaseQuery(family=6, selector=leases.ALL_LEASES))
+
+
+def test_client_identifiers_accept_the_separator_forms_that_reservations_accept():
+    shown = shown_lease(_parsed(4, "192.0.2.10"))
+    for form in ("AA-BB-CC-00-00-10", "aabb.cc00.0010", "aabbcc000010"):
+        assert (
+            lease_edit(shown, hostname="host10.example.org", client_identifier=form, valid_lifetime=None) == LeaseEdit()
+        )
+    request = DHCPv6LeaseRequest(address=ipaddress.IPv6Address("2001:db8:1::20"), duid="00-01-00-01-AA-BB", iaid=1)
+    assert request.duid == "00:01:00:01:aa:bb"
