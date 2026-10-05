@@ -2181,6 +2181,22 @@ class RenderedSubmissionControlsTest(TransactionTestCase):
             self.assertEqual(page.find(id=reason_ids[-1])["role"], "tooltip")
         self.assertNotEqual(*reason_ids, "a fragment must not reuse a tooltip ID that can remain on the full page")
 
+    def test_repeated_targets_resolve_once_per_request_kind(self):
+        from unittest.mock import patch
+
+        from bs4 import BeautifulSoup
+        from django.urls import resolve
+
+        with patch("netbox_kea.branch_controls.resolve", wraps=resolve) as spy:
+            response = self.client.get("/kea-controls/read/?response=repeated")
+        page = BeautifulSoup(response.content, "html.parser")
+        self.assertEqual(len(page.find_all(attrs={"aria-disabled": "true"})), 75)
+        self.assertEqual(
+            sorted(call.args[0] for call in spy.call_args_list),
+            ["/kea-controls/change/", "/kea-controls/read/", "/kea-controls/read/"],
+            "one resolve per (target, method, navigation): change GET nav, read PATCH, read POST",
+        )
+
 
 class ResponseMiddlewareOrderTest(SimpleTestCase):
     def test_gzip_after_refusal_is_rejected_while_loading_the_real_chain(self):
