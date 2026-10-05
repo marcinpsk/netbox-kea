@@ -16,6 +16,7 @@ from unittest.mock import MagicMock, patch
 
 import requests
 
+from netbox_kea.constants import MAX_SUBNET_ID
 from netbox_kea.kea import (
     KeaClient,
     KeaCommand,
@@ -1125,6 +1126,9 @@ class TestLeaseSearch(TestCase):
             (4, "subnet_id", object(), None, "positive integer"),
             (4, "subnet_id", "\u0661\u0662", None, "positive integer"),
             (4, "subnet_id", " 12", None, "positive integer"),
+            (4, "subnet_id", 0, None, "from 1 to 4294967294"),
+            (6, "subnet_id", MAX_SUBNET_ID + 1, None, "from 1 to 4294967294"),
+            (4, "subnet_id", "99999999999999999999", None, "from 1 to 4294967294"),
         )
 
         for version, selector, value, state, message in cases:

@@ -394,15 +394,15 @@ def _lease_cursor(version: int, cursor: str | None) -> IPAddressValue | None:
 
 
 def _subnet_id_value(value: Any) -> int:
-    """Return the positive Subnet ID of a lease query value, an integer or its decimal text."""
+    """Return the Subnet ID in the Kea range of a lease query value, an integer or its decimal text."""
     if isinstance(value, bool) or not isinstance(value, (int, str)):
         raise ValueError("subnet_id must be a positive integer.")
     try:
         subnet_id = int(value)
     except ValueError as exc:
         raise ValueError("subnet_id must be a positive integer.") from exc
-    if subnet_id < 1:
-        raise ValueError("subnet_id must be a positive integer.")
+    if not constants.MIN_SUBNET_ID <= subnet_id <= constants.MAX_SUBNET_ID:
+        raise ValueError(f"subnet_id must be from {constants.MIN_SUBNET_ID} to {constants.MAX_SUBNET_ID}.")
     return subnet_id
 
 

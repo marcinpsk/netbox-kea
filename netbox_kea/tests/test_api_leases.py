@@ -18,6 +18,7 @@ from django.test import TestCase, override_settings
 from django.urls import reverse
 from rest_framework.test import APIClient
 
+from netbox_kea.constants import MAX_SUBNET_ID
 from netbox_kea.models import Server
 
 from .kea_stub import complete_lease, stub_kea
@@ -128,6 +129,19 @@ class TestLeaseAPIAuth(_APITestBase):
         url = reverse("plugins-api:netbox_kea-api:server-leases6", args=[self.server.pk])
         response = anon.get(url, {"ip_address": "2001:db8::1"})
         self.assertIn(response.status_code, (401, 403))
+
+
+class TestLeaseAPISubnetIdBounds(_APITestBase):
+    def test_subnet_ids_outside_the_kea_range_are_refused_without_kea_requests(self):
+        for family in (4, 6):
+            for subnet_id in ("0", str(MAX_SUBNET_ID + 1), "99999999999999999999"):
+                with self.subTest(family=family, subnet_id=subnet_id), stub_kea({}) as kea:
+                    url = reverse(f"plugins-api:netbox_kea-api:server-leases{family}", args=[self.server.pk])
+                    response = self.api_client.get(url, {"subnet_id": subnet_id})
+
+                    self.assertEqual(response.status_code, 400)
+                    self.assertEqual(response.json(), {"detail": f"subnet_id must be from 1 to {MAX_SUBNET_ID}."})
+                    self.assertEqual(kea.commands(), [])
 
 
 class TestLeaseAPIFormatSuffix(_APITestBase):
