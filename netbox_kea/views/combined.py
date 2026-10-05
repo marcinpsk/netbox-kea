@@ -3,6 +3,7 @@
 import concurrent.futures
 import contextlib
 import logging
+from dataclasses import dataclass, field
 from typing import Any
 
 from django.http import HttpResponse
@@ -14,13 +15,14 @@ from .. import constants, forms, server_configuration, tables
 from ..constants import Family
 from ..decimal_text import parse_decimal
 from ..kea import LeaseQueryGuardError, lease_query_guard_message
+from ..leases import LeaseSnapshot
 from ..models import Server
 from ..reservation_transfer import export_reservation_document
 from ..reservations import ReservationCapabilities, ReservationDiagnostic, ReservationSnapshot
 from ..subnet_catalogue import CatalogueSnapshot, display
 from ..utilities import (
     export_table,
-    format_leases,
+    lease_rows,
 )
 from ._base import ConditionalLoginRequiredMixin, _catalogue_subnet_row, _enrich_subnet_statistics, _shared_network_row
 from .leases import _enrich_leases_with_badges
@@ -44,44 +46,76 @@ def _fetch_leases_from_server(
     version: Family,
     *,
     state: int | None = None,
-) -> list[dict[str, Any]]:
-    """Fetch leases matching *q*/*by* from one server and tag them with server details."""
+) -> LeaseSnapshot:
+    """Read the leases matching *q*/*by* from one server."""
     client = server.get_client(version=version)
     value = str(q.cidr) if by == constants.BY_SUBNET else q
-    leases = format_leases(client.lease_search(version, by, value, state=state))
-    for lease in leases:
-        lease["server_name"] = server.name
-        lease["server_pk"] = server.pk
-    return leases
+    return client.lease_search(version, by, value, state=state, server_id=server.pk)
 
 
-def _fetch_all_leases_from_server(
-    server: "Server", version: Family, max_leases: int = 1000
-) -> tuple[list[dict[str, Any]], bool]:
-    """Enumerate all leases on *server* through the Kea client.
-
-    Fetches leases until the collection is complete or *max_leases* is reached.
-    Leases are tagged with ``server_name`` and ``server_pk``.
-
-    Args:
-        server: The Kea server to query.
-        version: DHCP version (4 or 6).
-        max_leases: Cap on leases collected per server; returns ``truncated=True``
-            if more leases exist.
-
-    Returns:
-        Tuple of ``(leases, truncated)`` where ``truncated`` is ``True`` when
-        the cap was hit and some leases were omitted.
-
-    """
+def _fetch_all_leases_from_server(server: "Server", version: Family, max_leases: int = 1000) -> LeaseSnapshot:
+    """Read every lease on *server* up to *max_leases* raw records; reaching the cap gives ``page`` coverage."""
     client = server.get_client(version=version)
-    collection = client.lease_get_all(version, max_leases=max_leases)
-    all_leases = format_leases(collection.leases)
+    return client.lease_get_all(version, max_leases=max_leases, server_id=server.pk)
 
-    for lease in all_leases:
-        lease["server_name"] = server.name
-        lease["server_pk"] = server.pk
-    return all_leases, collection.truncated
+
+def _server_lease_rows(server: Server, snapshot: LeaseSnapshot, state_filter: int | None) -> list[dict[str, Any]]:
+    """Return the presentation rows of one server's Snapshot, tagged with the server."""
+    records = snapshot.records
+    if state_filter is not None:
+        records = tuple(lease for lease in records if constants.LEASE_STATE_CODES[lease.state] == state_filter)
+    rows = lease_rows(records, evaluated_at=snapshot.evaluated_at)
+    for row in rows:
+        row["server_name"] = server.name
+        row["server_pk"] = server.pk
+    return rows
+
+
+@dataclass
+class _CombinedLeaseRead:
+    """The lease rows of several servers and why some servers are missing or partial."""
+
+    rows: list[dict[str, Any]] = field(default_factory=list)
+    errors: list[tuple[str, str]] = field(default_factory=list)
+    truncated_servers: list[str] = field(default_factory=list)
+    incomplete_servers: list[tuple[str, str]] = field(default_factory=list)
+
+    def add(self, server: Server, snapshot: LeaseSnapshot, state_filter: int | None) -> None:
+        """Add the valid Leases of one server, and its excluded records as a safe reason."""
+        self.rows.extend(_server_lease_rows(server, snapshot, state_filter))
+        if snapshot.diagnostics:
+            reasons = "; ".join(dict.fromkeys(diagnostic.message for diagnostic in snapshot.diagnostics))
+            self.incomplete_servers.append(
+                (server.name, f"{len(snapshot.diagnostics)} record(s) could not be read: {reasons}")
+            )
+        if snapshot.coverage != "exhaustive":
+            self.truncated_servers.append(server.name)
+
+
+def _read_combined_leases(
+    servers: list[Server], version: Family, q: Any, by: str | None, state_filter: int | None
+) -> _CombinedLeaseRead:
+    """Search each server, or read each one up to its cap for a state-only filter."""
+    read = _CombinedLeaseRead()
+    subnet_search = by in (constants.BY_SUBNET, constants.BY_SUBNET_ID)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        if q and by:
+            state_in_kea = state_filter if subnet_search else None
+            futures = {
+                executor.submit(_fetch_leases_from_server, s, q, by, version, state=state_in_kea): s for s in servers
+            }
+        else:
+            futures = {executor.submit(_fetch_all_leases_from_server, s, version): s for s in servers}
+        for future in concurrent.futures.as_completed(futures):
+            server = futures[future]
+            try:
+                read.add(server, future.result(), None if subnet_search else state_filter)
+            except LeaseQueryGuardError as exc:
+                read.errors.append((server.name, lease_query_guard_message(exc, state_filter)))
+            except Exception:
+                logger.exception("Failed to query server %s", server.name)
+                read.errors.append((server.name, "Failed to query server"))
+    return read
 
 
 def _selected_server_pks(request: HttpRequest) -> set[int]:
@@ -619,53 +653,8 @@ class _CombinedLeasesView(_CombinedViewMixin):
         state_filter = search_form.cleaned_data.get("state")
         servers = self._get_servers(request, self.dhcp_version)
 
-        all_leases: list[dict[str, Any]] = []
-        errors: list[tuple[str, str]] = []
-        truncated_servers: list[str] = []
-
-        if q and by:
-            state_in_kea = state_filter if by in (constants.BY_SUBNET, constants.BY_SUBNET_ID) else None
-            with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-                future_to_server = {
-                    executor.submit(
-                        _fetch_leases_from_server,
-                        s,
-                        q,
-                        by,
-                        self.dhcp_version,
-                        state=state_in_kea,
-                    ): s
-                    for s in servers
-                }
-                for future in concurrent.futures.as_completed(future_to_server):
-                    server = future_to_server[future]
-                    try:
-                        all_leases.extend(future.result())
-                    except LeaseQueryGuardError as exc:
-                        errors.append((server.name, lease_query_guard_message(exc, state_filter)))
-                    except Exception:
-                        logger.exception("Failed to query server %s", server.name)
-                        errors.append((server.name, "Failed to query server"))
-        else:
-            # State-only filter: enumerate all leases via get-page (capped per server).
-            with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-                # A distinct name: these futures yield (leases, truncated), not a bare list.
-                paged_future_to_server = {
-                    executor.submit(_fetch_all_leases_from_server, s, self.dhcp_version): s for s in servers
-                }
-                for paged_future in concurrent.futures.as_completed(paged_future_to_server):
-                    server = paged_future_to_server[paged_future]
-                    try:
-                        leases, was_truncated = paged_future.result()
-                        all_leases.extend(leases)
-                        if was_truncated:
-                            truncated_servers.append(server.name)
-                    except Exception:
-                        logger.exception("Failed to query server %s", server.name)
-                        errors.append((server.name, "Failed to query server"))
-
-        if state_filter is not None and by not in (constants.BY_SUBNET, constants.BY_SUBNET_ID):
-            all_leases = [ls for ls in all_leases if ls.get("state") == state_filter]
+        read = _read_combined_leases(servers, self.dhcp_version, q, by, state_filter)
+        all_leases = read.rows
 
         # Enrich in the main thread so Django ORM queries see the test transaction.
         server_map = {s.pk: s for s in servers}
@@ -682,15 +671,17 @@ class _CombinedLeasesView(_CombinedViewMixin):
         table.configure(request)
 
         if "export" in request.GET:
+            # Each server is a capped or scoped observation, so the export has limited coverage.
             return export_table(
                 table,
-                filename=f"kea-dhcpv{self.dhcp_version}-leases.csv",
+                filename=f"kea-dhcpv{self.dhcp_version}-leases-limited-coverage.csv",
                 use_selected_columns=request.GET["export"] == "table",
             )
 
         ctx["table"] = table
-        ctx["errors"] = errors
-        ctx["truncated_servers"] = truncated_servers
+        ctx["errors"] = read.errors
+        ctx["truncated_servers"] = read.truncated_servers
+        ctx["incomplete_servers"] = read.incomplete_servers
         return render(request, self.template_name, ctx)
 
 

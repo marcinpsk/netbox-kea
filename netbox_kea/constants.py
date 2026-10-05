@@ -77,13 +77,14 @@ LEASE_CLIENT_ID_OCTETS = (2, 255)
 
 # Human-readable labels of the lease states that the lease UI shows.
 # https://kea.readthedocs.io/en/latest/arm/lease-db.html#lease-states
-LEASE_STATE_LABELS: dict[int, str] = {
-    LEASE_STATE_CODES["assigned"]: "Active",
-    LEASE_STATE_CODES["declined"]: "Declined",
-    LEASE_STATE_CODES["expired-reclaimed"]: "Expired",
-}
+LEASE_STATE_LABELS: dict[LeaseState, str] = dict(
+    zip(LEASE_STATES, ("Active", "Declined", "Expired", "Released", "Registered"), strict=True)
+)
 
-LEASE_STATE_CHOICES = [("", "Any")] + [(str(k), v) for k, v in LEASE_STATE_LABELS.items()]
+# The states that the lease search form filters by: assigned, declined and expired-reclaimed.
+LEASE_STATE_CHOICES = [("", "Any")] + [
+    (str(LEASE_STATE_CODES[state]), LEASE_STATE_LABELS[state]) for state in LEASE_STATES[:3]
+]
 
 # ---------------------------------------------------------------------------
 # Standard DHCP option names shipped with Kea's built-in option definitions.

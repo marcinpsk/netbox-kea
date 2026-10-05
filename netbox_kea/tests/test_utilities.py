@@ -11,13 +11,13 @@ from django.http import HttpResponse
 
 from netbox_kea.constants import Family
 from netbox_kea.models import Server
+from netbox_kea.tests.kea_stub import lease_record, typed_lease
 from netbox_kea.utilities import (
-    _enrich_lease,
     check_dhcp_enabled,
     format_duration,
-    format_leases,
     format_option_data,
     is_hex_string,
+    lease_rows,
     parse_subnet_stats,
 )
 
@@ -51,167 +51,73 @@ class TestFormatDuration(TestCase):
         self.assertEqual(format_duration(59 * 3600 + 59 * 60 + 59), "59:59:59")
 
 
-class TestEnrichLease(TestCase):
-    """Tests for _enrich_lease()."""
-
-    def _now(self):
-        return datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
-
-    def test_missing_cltt_and_valid_lft_adds_state_label(self):
-        lease = {"ip_address": "10.0.0.1"}
-        result = _enrich_lease(self._now(), lease)
-        self.assertEqual(result["ip_address"], "10.0.0.1")
-        self.assertEqual(result["state_label"], "Unknown")
-        self.assertNotIn("expires_at", result)
-        self.assertNotIn("expires_in", result)
-
-    def test_hyphen_keys_replaced_with_underscore(self):
-        lease = {"ip-address": "10.0.0.1", "cltt": 0, "valid_lft": 3600}
-        result = _enrich_lease(self._now(), lease)
-        self.assertIn("ip_address", result)
-        self.assertNotIn("ip-address", result)
-
-    def test_expires_at_added(self):
-        # cltt=0, valid_lft=3600 → expires at epoch+3600
-        lease = {"cltt": 0, "valid_lft": 3600}
-        result = _enrich_lease(self._now(), lease)
-        self.assertIn("expires_at", result)
-        self.assertIsInstance(result["expires_at"], datetime)
-
-    def test_expires_in_added(self):
-        lease = {"cltt": 0, "valid_lft": 3600}
-        result = _enrich_lease(self._now(), lease)
-        self.assertIn("expires_in", result)
-
-    def test_cltt_converted_to_datetime(self):
-        lease = {"cltt": 0, "valid_lft": 0}
-        result = _enrich_lease(self._now(), lease)
-        self.assertIsInstance(result["cltt"], datetime)
+_NOW = datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+_NOW_TS = int(_NOW.timestamp())
 
 
-class TestFormatLeases(TestCase):
-    """Tests for format_leases() — applies enrichment to a list."""
+def _row(address: str = "10.0.0.1", **changes) -> dict:
+    """Return the presentation row of one typed Lease, evaluated at ``_NOW``."""
+    changes.setdefault("cltt", _NOW_TS - 60)
+    [row] = lease_rows([typed_lease(lease_record(address, **changes))], evaluated_at=_NOW)
+    return row
+
+
+class TestLeaseRows(TestCase):
+    """lease_rows() projects typed Leases into display rows; it parses nothing."""
 
     def test_empty_list(self):
-        self.assertEqual(format_leases([]), [])
+        self.assertEqual(lease_rows([], evaluated_at=_NOW), [])
 
-    def test_single_lease_enriched(self):
-        leases = [{"cltt": 0, "valid_lft": 3600}]
-        result = format_leases(leases)
-        self.assertEqual(len(result), 1)
-        self.assertIn("expires_at", result[0])
+    def test_rows_keep_the_typed_lease_and_its_display_values(self):
+        lease = typed_lease(lease_record("10.0.0.1", cltt=_NOW_TS - 60, valid_lft=3600, state=1))
+        [row] = lease_rows([lease], evaluated_at=_NOW)
 
-    def test_multiple_leases_all_enriched(self):
-        leases = [{"cltt": 0, "valid_lft": 3600}, {"cltt": 100, "valid_lft": 7200}]
-        result = format_leases(leases)
-        self.assertEqual(len(result), 2)
-        for lease in result:
-            self.assertIn("expires_at", lease)
+        self.assertIs(row["lease"], lease)
+        self.assertEqual(
+            {key: row[key] for key in ("ip_address", "family", "kind", "prefix_length", "subnet_id", "state_label")},
+            {
+                "ip_address": "10.0.0.1",
+                "family": 4,
+                "kind": "address",
+                "prefix_length": None,
+                "subnet_id": 10,
+                "state_label": "Declined",
+            },
+        )
+        self.assertEqual(row["client_id"], "01:aa:bb:cc:00:00:10")
+
+    def test_every_state_has_a_label(self):
+        for state, label in enumerate(("Active", "Declined", "Expired", "Released")):
+            with self.subTest(state=state):
+                self.assertEqual(_row(state=state)["state_label"], label)
+        self.assertEqual(_row("2001:db8::1", state=4)["state_label"], "Registered")
+
+    def test_delegated_prefix_rows_show_kind_and_length(self):
+        row = _row("2001:db8:100:100::", type="IA_PD", prefix_len=56)
+        self.assertEqual((row["family"], row["kind"], row["prefix_length"]), (6, "delegated-prefix", 56))
+        self.assertEqual((row["duid"], row["iaid"]), ("00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01", 1))
 
     def test_timestamps_are_utc_aware(self):
-        """Kea reports cltt as a Unix epoch, so both derived times must be aware UTC.
+        """A naive value is rendered verbatim by the table columns, so both derived times must be aware UTC."""
+        row = _row(cltt=1, valid_lft=3600)
+        self.assertEqual(row["cltt"], datetime(1970, 1, 1, 0, 0, 1, tzinfo=timezone.utc))
+        self.assertEqual(row["expires_at"], datetime(1970, 1, 1, 1, 0, 1, tzinfo=timezone.utc))
 
-        A naive value is rendered verbatim by the table columns, so on a server whose
-        local zone is not the NetBox display zone the lease times are silently wrong.
-        """
-        [lease] = format_leases([{"cltt": 0, "valid_lft": 3600}])
-        self.assertEqual(lease["cltt"], datetime(1970, 1, 1, 0, 0, 0, tzinfo=timezone.utc))
-        self.assertEqual(lease["expires_at"], datetime(1970, 1, 1, 1, 0, 0, tzinfo=timezone.utc))
-
-
-class TestEnrichLeaseIPSortKey(TestCase):
-    """F1: _enrich_lease() must inject _ip_sort_key for numeric IP sort in tables."""
-
-    def _now(self):
-        return datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
-
-    def test_adds_ip_sort_key_for_ipv4(self):
-        """IPv4 lease gets _ip_sort_key equal to the integer representation of the address."""
-        import ipaddress
-
-        lease = {"ip-address": "10.0.0.101"}
-        result = _enrich_lease(self._now(), lease)
-        self.assertIn("_ip_sort_key", result)
-        self.assertEqual(result["_ip_sort_key"], int(ipaddress.ip_address("10.0.0.101")))
-
-    def test_adds_ip_sort_key_for_ipv6(self):
-        """IPv6 lease gets _ip_sort_key equal to the integer representation of the address."""
-        import ipaddress
-
-        lease = {"ip-address": "2001:db8::1"}
-        result = _enrich_lease(self._now(), lease)
-        self.assertIn("_ip_sort_key", result)
-        self.assertEqual(result["_ip_sort_key"], int(ipaddress.ip_address("2001:db8::1")))
-
-    def test_ip_sort_key_absent_when_no_ip_address(self):
-        """Lease with no ip-address field must not have _ip_sort_key injected."""
-        lease = {"cltt": 0, "valid_lft": 3600}
-        result = _enrich_lease(self._now(), lease)
-        self.assertNotIn("_ip_sort_key", result)
-
-
-class TestFormatLeasesNumericIPSort(TestCase):
-    """F1: output of format_leases() has _ip_sort_key giving correct numeric order."""
+    def test_an_infinite_lifetime_has_no_expiration(self):
+        row = _row(valid_lft=0xFFFFFFFF)
+        self.assertEqual((row["expires_at"], row["expires_in"], row["expiry_class"]), (None, None, ""))
 
     def test_numeric_sort_by_ip(self):
         """IPs that sort lexicographically wrong must sort correctly by _ip_sort_key."""
-        leases = [
-            {"ip-address": "10.0.0.101"},
-            {"ip-address": "10.0.0.90"},
-            {"ip-address": "10.0.0.9"},
-        ]
-        result = format_leases(leases)
-        sorted_result = sorted(result, key=lambda r: r["_ip_sort_key"])
-        ips = [r["ip_address"] for r in sorted_result]
+        rows = [_row(address) for address in ("10.0.0.101", "10.0.0.90", "10.0.0.9")]
+        ips = [row["ip_address"] for row in sorted(rows, key=lambda row: row["_ip_sort_key"])]
         self.assertEqual(ips, ["10.0.0.9", "10.0.0.90", "10.0.0.101"])
 
-
-class TestEnrichLeaseExpiryClass(TestCase):
-    """F10: _enrich_lease() must inject expiry_class for visual lease state indicators."""
-
-    def _now(self):
-        return datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
-
-    def test_expired_lease_has_danger_class(self):
-        """Lease whose expiry is in the past gets 'text-danger'."""
-        # cltt=0, valid_lft=1 → expires at epoch+1, long before 2024
-        lease = {"cltt": 0, "valid_lft": 1}
-        result = _enrich_lease(self._now(), lease)
-        self.assertEqual(result["expiry_class"], "text-danger")
-
-    def test_soon_expiring_lease_has_warning_class(self):
-        """Lease expiring in < 300 seconds gets 'text-warning'."""
-        now = self._now()
-        now_ts = int(now.timestamp())
-        # Set up: expires_in will be 250 seconds (< 300 threshold)
-        lease = {"cltt": now_ts - 3600 + 250, "valid_lft": 3600}
-        result = _enrich_lease(now, lease)
-        self.assertEqual(result["expiry_class"], "text-warning")
-
-    def test_lease_at_300_seconds_has_empty_class(self):
-        """Lease expiring at exactly 300 seconds gets empty class (boundary is strict '<')."""
-        now = self._now()
-        now_ts = int(now.timestamp())
-        # expires_in will be exactly 300 seconds (not < 300, so no warning)
-        lease = {"cltt": now_ts - 3600 + 300, "valid_lft": 3600}
-        result = _enrich_lease(now, lease)
-        self.assertEqual(result["expiry_class"], "")
-
-    def test_active_lease_has_empty_class(self):
-        """Lease with plenty of time remaining gets empty string (no CSS class)."""
-        now = self._now()
-        now_ts = int(now.timestamp())
-        # expires_in will be 1000 seconds (> 300 threshold)
-        lease = {"cltt": now_ts - 3600 + 1000, "valid_lft": 3600}
-        result = _enrich_lease(now, lease)
-        self.assertEqual(result["expiry_class"], "")
-
-    def test_no_expiry_data_has_empty_class(self):
-        """Lease without cltt/valid_lft must still have expiry_class = ''."""
-        lease = {"ip-address": "10.0.0.1"}
-        result = _enrich_lease(self._now(), lease)
-        self.assertIn("expiry_class", result)
-        self.assertEqual(result["expiry_class"], "")
+    def test_expiry_class_marks_expired_and_soon_expiring_leases(self):
+        cases = ((_NOW_TS - 3601, "text-danger"), (_NOW_TS - 3600 + 250, "text-warning"), (_NOW_TS - 3600 + 300, ""))
+        for cltt, expected in cases:
+            with self.subTest(cltt=cltt):
+                self.assertEqual(_row(cltt=cltt, valid_lft=3600)["expiry_class"], expected)
 
 
 class TestIsHexString(TestCase):
@@ -619,54 +525,6 @@ class TestKeaErrorHint(TestCase):
 
 
 # ---------------------------------------------------------------------------
-# TestLeaseStateEnrich
-# ---------------------------------------------------------------------------
-
-
-class TestLeaseStateEnrich(TestCase):
-    """Tests that _enrich_lease populates state_label correctly."""
-
-    def _enrich(self, state_value):
-        from netbox_kea.utilities import format_leases
-
-        lease = {
-            "ip-address": "10.0.0.1",
-            "cltt": 1700000000,
-            "valid-lft": 3600,
-            "state": state_value,
-        }
-        return format_leases([lease])[0]
-
-    def test_state_0_is_active(self):
-        """State 0 maps to 'Active'."""
-        lease = self._enrich(0)
-        self.assertEqual(lease["state_label"], "Active")
-
-    def test_state_1_is_declined(self):
-        """State 1 maps to 'Declined'."""
-        lease = self._enrich(1)
-        self.assertEqual(lease["state_label"], "Declined")
-
-    def test_state_2_is_expired(self):
-        """State 2 maps to 'Expired'."""
-        lease = self._enrich(2)
-        self.assertEqual(lease["state_label"], "Expired")
-
-    def test_unknown_state_is_unknown(self):
-        """Unmapped state code falls back to 'Unknown'."""
-        lease = self._enrich(99)
-        self.assertEqual(lease["state_label"], "Unknown")
-
-    def test_missing_state_is_unknown(self):
-        """Lease with no state field falls back to 'Unknown'."""
-        from netbox_kea.utilities import format_leases
-
-        lease = {"ip-address": "10.0.0.2", "cltt": 1700000000, "valid-lft": 3600}
-        result = format_leases([lease])[0]
-        self.assertEqual(result.get("state_label"), "Unknown")
-
-
-# ---------------------------------------------------------------------------
 # TestParseLeaseCsv
 # ---------------------------------------------------------------------------
 
@@ -885,43 +743,6 @@ class TestOptionalViewTab(TestCase):
 # ─────────────────────────────────────────────────────────────────────────────
 # Additional coverage tests — lines missed in earlier batches
 # ─────────────────────────────────────────────────────────────────────────────
-
-
-class TestEnrichLeaseInvalidIp(TestCase):
-    """_enrich_lease: invalid ip_address must not add _ip_sort_key."""
-
-    def test_invalid_ip_no_ip_sort_key(self):
-        from datetime import datetime, timezone
-
-        from netbox_kea.utilities import _enrich_lease
-
-        lease = {"ip-address": "not-an-ip", "state": 0}
-        result = _enrich_lease(datetime(2024, 1, 1, tzinfo=timezone.utc), lease)
-        self.assertNotIn("_ip_sort_key", result)
-
-
-class TestEnrichLeaseNonIntCltt(TestCase):
-    """_enrich_lease: non-integer cltt/valid_lft must warn and return early."""
-
-    def test_non_int_cltt_returns_without_expires(self):
-        from datetime import datetime, timezone
-
-        from netbox_kea.utilities import _enrich_lease
-
-        lease = {"ip-address": "10.0.0.1", "cltt": "not-an-int", "valid_lft": 3600, "state": 0}
-        result = _enrich_lease(datetime(2024, 1, 1, tzinfo=timezone.utc), lease)
-        self.assertNotIn("expires_at", result)
-        self.assertNotIn("expires_in", result)
-
-    def test_non_int_valid_lft_returns_without_expires(self):
-        from datetime import datetime, timezone
-
-        from netbox_kea.utilities import _enrich_lease
-
-        lease = {"ip-address": "10.0.0.1", "cltt": 1000, "valid_lft": "bad", "state": 0}
-        result = _enrich_lease(datetime(2024, 1, 1, tzinfo=timezone.utc), lease)
-        self.assertNotIn("expires_at", result)
-        self.assertNotIn("expires_in", result)
 
 
 class TestParseSubnetStatsMissingCoverage(TestCase):

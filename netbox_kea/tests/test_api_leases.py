@@ -20,22 +20,24 @@ from rest_framework.test import APIClient
 
 from netbox_kea.models import Server
 
-from .kea_stub import stub_kea
+from .kea_stub import complete_lease, stub_kea
 from .utils import plugins_config
 
 # A single DHCPv6 lease (result 0) returned by lease6-get.
 _LEASE6_RESPONSE = [
     {
         "result": 0,
-        "arguments": {
-            "ip-address": "2001:db8::1",
-            "duid": "00:01:02:03",
-            "iaid": 12345,
-            "subnet-id": 10,
-            "valid-lft": 3600,
-            "cltt": 1700000000,
-            "state": 0,
-        },
+        "arguments": complete_lease(
+            {
+                "ip-address": "2001:db8::1",
+                "duid": "00:01:02:03",
+                "iaid": 12345,
+                "subnet-id": 10,
+                "valid-lft": 3600,
+                "cltt": 1700000000,
+                "state": 0,
+            }
+        ),
     }
 ]
 
@@ -46,34 +48,24 @@ _PLUGINS_CONFIG = plugins_config(lease_query_max_unpaged_leases=0)
 _LEASE4_RESPONSE = [
     {
         "result": 0,
-        "arguments": {
-            "ip-address": "10.0.0.100",
-            "hw-address": "aa:bb:cc:dd:ee:ff",
-            "subnet-id": 1,
-            "hostname": "host.example.com",
-            "valid-lft": 3600,
-            "cltt": 1700000000,
-            "state": 0,
-        },
+        "arguments": complete_lease(
+            {
+                "ip-address": "10.0.0.100",
+                "hw-address": "aa:bb:cc:dd:ee:ff",
+                "subnet-id": 1,
+                "hostname": "host.example.com",
+                "valid-lft": 3600,
+                "cltt": 1700000000,
+                "state": 0,
+            }
+        ),
     }
 ]
 
 _LEASE4_LIST_RESPONSE = [
     {
         "result": 0,
-        "arguments": {
-            "leases": [
-                {
-                    "ip-address": "10.0.0.100",
-                    "hw-address": "aa:bb:cc:dd:ee:ff",
-                    "subnet-id": 1,
-                    "hostname": "host.example.com",
-                    "valid-lft": 3600,
-                    "cltt": 1700000000,
-                    "state": 0,
-                }
-            ]
-        },
+        "arguments": {"leases": [_LEASE4_RESPONSE[0]["arguments"]]},
     }
 ]
 
@@ -82,19 +74,7 @@ _LEASE4_NOT_FOUND = [{"result": 3, "text": "Lease not found."}]
 _LEASE6_LIST_RESPONSE = [
     {
         "result": 0,
-        "arguments": {
-            "leases": [
-                {
-                    "ip-address": "2001:db8::1",
-                    "duid": "00:01:02:03",
-                    "iaid": 12345,
-                    "subnet-id": 10,
-                    "valid-lft": 3600,
-                    "cltt": 1700000000,
-                    "state": 0,
-                }
-            ]
-        },
+        "arguments": {"leases": [_LEASE6_RESPONSE[0]["arguments"]]},
     }
 ]
 
@@ -250,11 +230,12 @@ class TestLease4API(_APITestBase):
         self.assertEqual(plain.status_code, 200)
         self.assertEqual(suffixed.status_code, 200)
         self.assertEqual(suffixed["Content-Type"], "application/json")
-        self.assertEqual(suffixed.json(), plain.json())
+        # Each read has its own evaluation time.
+        self.assertEqual({**suffixed.json(), "evaluated_at": None}, {**plain.json(), "evaluated_at": None})
         self.assertEqual(suffixed.json()["count"], 1)
-        self.assertEqual(suffixed.json()["results"][0]["ip_address"], "198.18.0.100")
-        self.assertEqual(suffixed.json()["results"][0]["hw_address"], "aa:bb:cc:dd:ee:ff")
-        self.assertEqual(suffixed.json()["results"][0]["state_label"], "Active")
+        self.assertEqual(suffixed.json()["results"][0]["address"], "198.18.0.100")
+        self.assertEqual(suffixed.json()["results"][0]["binding"]["hw_address"], "aa:bb:cc:dd:ee:ff")
+        self.assertEqual(suffixed.json()["results"][0]["state"], "assigned")
         self.assertEqual(kea.commands(), ["lease4-get", "lease4-get"])
 
     def test_get_by_ip_address_results_in_response(self):
@@ -368,11 +349,12 @@ class TestLease6API(_APITestBase):
         self.assertEqual(plain.status_code, 200)
         self.assertEqual(suffixed.status_code, 200)
         self.assertEqual(suffixed["Content-Type"], "application/json")
-        self.assertEqual(suffixed.json(), plain.json())
+        # Each read has its own evaluation time.
+        self.assertEqual({**suffixed.json(), "evaluated_at": None}, {**plain.json(), "evaluated_at": None})
         self.assertEqual(suffixed.json()["count"], 1)
-        self.assertEqual(suffixed.json()["results"][0]["ip_address"], "2001:db8::1")
-        self.assertEqual(suffixed.json()["results"][0]["duid"], "00:01:02:03")
-        self.assertEqual(suffixed.json()["results"][0]["state_label"], "Active")
+        self.assertEqual(suffixed.json()["results"][0]["address"], "2001:db8::1")
+        self.assertEqual(suffixed.json()["results"][0]["binding"]["duid"], "00:01:02:03")
+        self.assertEqual(suffixed.json()["results"][0]["state"], "assigned")
         self.assertEqual(kea.commands(), ["lease6-get", "lease6-get"])
 
     def test_get_by_duid_returns_200(self):

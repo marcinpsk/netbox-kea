@@ -3,7 +3,7 @@
 from django.test import override_settings
 from django.urls import reverse
 
-from .kea_stub import _catalogue_responses_for_subnets, stub_kea
+from .kea_stub import _catalogue_responses_for_subnets, complete_lease, stub_kea
 from .utils import _PLUGINS_CONFIG, _ViewTestBase
 
 
@@ -11,14 +11,16 @@ from .utils import _PLUGINS_CONFIG, _ViewTestBase
 class TestLeaseSearchPagination(_ViewTestBase):
     def test_hostname_second_page_renders_and_enriches_only_remaining_leases(self):
         leases = [
-            {
-                "ip-address": f"198.18.0.{number}",
-                "hw-address": "aa:bb:cc:dd:ee:ff",
-                "hostname": "search-host",
-                "subnet-id": 1,
-                "valid-lft": 3600,
-                "cltt": 1_700_000_000,
-            }
+            complete_lease(
+                {
+                    "ip-address": f"198.18.0.{number}",
+                    "hw-address": "aa:bb:cc:dd:ee:ff",
+                    "hostname": "search-host",
+                    "subnet-id": 1,
+                    "valid-lft": 3600,
+                    "cltt": 1_700_000_000,
+                }
+            )
             for number in range(1, 61)
         ]
         responses = {

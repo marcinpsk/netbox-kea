@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-FileCopyrightText: 2023 Devon Mar <devon-mar@users.noreply.github.com>
 # SPDX-License-Identifier: Apache-2.0
+import ipaddress
 import logging
 from typing import cast
 
@@ -14,6 +15,7 @@ from .. import constants, filtersets, models
 from ..constants import Family
 from ..decimal_text import parse_decimal
 from ..kea import KeaException, LeaseQueryGuardError, lease_query_guard_message
+from ..leases import LeaseSnapshot, MalformedLeaseResponse, lease_record_data
 from ..reservations import (
     GlobalReservationScope,
     InSubnetReservationScope,
@@ -27,7 +29,6 @@ from ..reservations import (
 )
 from ..subnet_catalogue import VerifiedSubnet
 from ..subnet_catalogue import display as subnet_catalogue
-from ..utilities import format_leases
 from .serializers import ServerSerializer
 
 logger = logging.getLogger(__name__)
@@ -72,6 +73,29 @@ def _reservation_snapshot_data(snapshot: ReservationSnapshot) -> dict:
     }
 
 
+def _lease_snapshot_data(snapshot: LeaseSnapshot) -> dict:
+    """Return one normalized Lease observation without raw Kea values or display labels."""
+    return {
+        "count": len(snapshot.records),
+        "results": [lease_record_data(lease, evaluated_at=snapshot.evaluated_at) for lease in snapshot.records],
+        "diagnostics": [
+            {
+                "code": diagnostic.code,
+                "field": diagnostic.field,
+                "message": diagnostic.message,
+                "source_position": diagnostic.source_position,
+                "kinds": list(diagnostic.kinds),
+            }
+            for diagnostic in snapshot.diagnostics
+        ],
+        "complete": snapshot.complete,
+        "next_cursor": None if snapshot.next_cursor is None else str(snapshot.next_cursor),
+        "query": snapshot.query.model_dump(),
+        "coverage": snapshot.coverage,
+        "evaluated_at": snapshot.evaluated_at.isoformat(),
+    }
+
+
 def _single_reservation_response(version: int, reservation: Reservation | None) -> Response:
     if version not in (4, 6):
         raise ValueError(f"version must be 4 or 6, got {version!r}")
@@ -100,6 +124,35 @@ def _parse_subnet_lease_state(raw_state, selector) -> tuple[int | None, str | No
     return state, None
 
 
+def _lease_parameter_error(params, version: int) -> str | None:
+    """Return why the lease search parameters are invalid, or ``None``."""
+    ip_address = params.get("ip_address")
+    subnet_id = params.get("subnet_id")
+    if not any(params.get(name) for name in ("ip_address", "hw_address", "hostname", "subnet_id", "duid")):
+        return "At least one filter parameter is required: ip_address, hw_address, hostname, subnet_id" + (
+            ", duid" if version == 6 else ""
+        )
+    if params.get("duid") and version != 6:
+        return "duid is only supported for DHCPv6."
+    if params.get("hw_address") and version != 4:
+        return "hw_address is only supported for DHCPv4."
+    if ip_address:
+        try:
+            parsed_address = ipaddress.ip_address(ip_address)
+        except ValueError:
+            return "ip_address must be an IP address."
+        if parsed_address.version != version:
+            return f"ip_address must be an IPv{version} address."
+    if subnet_id:
+        try:
+            parsed_subnet_id = int(subnet_id)
+        except ValueError:
+            return "subnet_id must be an integer."
+        if parsed_subnet_id < 1:
+            return "subnet_id must be positive."
+    return None
+
+
 class ServerViewSet(NetBoxModelViewSet):
     """DRF viewset providing CRUD endpoints for Server objects."""
 
@@ -121,6 +174,8 @@ class ServerViewSet(NetBoxModelViewSet):
         - ``hostname``: lookup by hostname (requires lease_cmds hook)
         - ``subnet_id``: lookup all leases in a subnet (requires lease_cmds hook)
         - ``state``: narrow a subnet lookup to Active (0) or Declined (1)
+
+        The response is one normalized Lease observation with its query scope and coverage.
         """
         return self._lease_search(request, version=4)
 
@@ -134,11 +189,13 @@ class ServerViewSet(NetBoxModelViewSet):
         - ``hostname``: lookup by hostname (requires lease_cmds hook)
         - ``subnet_id``: lookup all leases in a subnet (requires lease_cmds hook)
         - ``state``: narrow a subnet lookup to Active (0) or Declined (1)
+
+        The response is one normalized Lease observation with its query scope and coverage.
         """
         return self._lease_search(request, version=6)
 
     def _lease_search(self, request, version: int) -> Response:
-        """Dispatch a lease search to Kea and return JSON results."""
+        """Dispatch a lease search to Kea and return its normalized Lease Snapshot."""
         server = self.get_object()
         params = request.query_params
 
@@ -149,29 +206,8 @@ class ServerViewSet(NetBoxModelViewSet):
         raw_state = params.get("state")
         duid = params.get("duid")  # v6 only
 
-        if not any([ip_address, hw_address, hostname, subnet_id, duid]):
-            return Response(
-                {
-                    "detail": (
-                        "At least one filter parameter is required: "
-                        "ip_address, hw_address, hostname, subnet_id" + (", duid" if version == 6 else "")
-                    )
-                },
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        if duid and version != 6:
-            return Response({"detail": "duid is only supported for DHCPv6."}, status=status.HTTP_400_BAD_REQUEST)
-        if hw_address and version != 4:
-            return Response({"detail": "hw_address is only supported for DHCPv4."}, status=status.HTTP_400_BAD_REQUEST)
-
-        if subnet_id:
-            try:
-                parsed_subnet_id = parse_decimal(subnet_id)
-            except ValueError:
-                return Response({"detail": "subnet_id must be an integer."}, status=status.HTTP_400_BAD_REQUEST)
-            if parsed_subnet_id < 1:
-                return Response({"detail": "subnet_id must be positive."}, status=status.HTTP_400_BAD_REQUEST)
+        if (error := _lease_parameter_error(params, version)) is not None:
+            return Response({"detail": error}, status=status.HTTP_400_BAD_REQUEST)
 
         queries = (
             (constants.BY_IP, ip_address),
@@ -187,7 +223,7 @@ class ServerViewSet(NetBoxModelViewSet):
 
         try:
             client = server.get_client(version=version)
-            leases = client.lease_search(version, selector, value, state=lease_state)
+            snapshot = client.lease_search(version, selector, value, state=lease_state, server_id=server.pk)
         except LeaseQueryGuardError as exc:
             logger.info("Rejected unsafe Subnet lease API query on server %s", server.name)
             return Response(
@@ -200,6 +236,9 @@ class ServerViewSet(NetBoxModelViewSet):
         except KeaException:
             logger.exception("Kea error on server %s", server.name)
             return Response({"detail": "An internal error occurred"}, status=status.HTTP_502_BAD_GATEWAY)
+        except MalformedLeaseResponse:
+            logger.exception("Malformed Kea lease response on server %s", server.name)
+            return Response({"detail": "An internal error occurred"}, status=status.HTTP_502_BAD_GATEWAY)
         except ValueError:
             logger.exception("Configuration error for server %s", server.name)
             return Response({"detail": "Server configuration error."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -207,8 +246,7 @@ class ServerViewSet(NetBoxModelViewSet):
             logger.exception("Unexpected error fetching leases from %s", server.name)
             return Response({"detail": "An internal error occurred"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        enriched = format_leases(leases)
-        return Response({"count": len(enriched), "results": enriched})
+        return Response(_lease_snapshot_data(snapshot))
 
     # ─────────────────────────────────────────────────────────────────────
     # Reservation search actions

@@ -765,7 +765,7 @@ def test_query_selectors_and_state_filters_match_lease_search():
                 LeaseQuery(family=family, selector=selector, value=value)
             except ValidationError:
                 with pytest.raises(ValueError, match="not supported"):
-                    client.lease_search(family, selector, value)
+                    client.lease_search(family, selector, value, server_id=1)
             else:
                 assert selector in leases._QUERY_SELECTORS[family]
     assert leases._QUERY_SELECTORS[4] - {leases.ALL_LEASES} == {

@@ -21,18 +21,20 @@ from netbox import context as tracking_context
 
 from netbox_kea.jobs import KeaIpamSyncJob
 from netbox_kea.models import SyncConfig
-from netbox_kea.tests.kea_stub import _catalogue_responses_for_subnets, queued
+from netbox_kea.tests.kea_stub import _catalogue_responses_for_subnets, complete_lease, queued
 from netbox_kea.tests.test_jobs import _lease_page, _patch_kea
 from netbox_kea.tests.utils import DISPATCHED_EVENTS, _make_db_server, plugins_config
 
 _SUBNETS = [{"id": 1, "subnet": "198.18.0.0/24"}]
-_LEASE = {
-    "ip-address": "198.18.0.42",
-    "hostname": "phone.example.invalid",
-    "subnet-id": 1,
-    "valid-lft": 3600,
-    "state": 0,
-}
+_LEASE = complete_lease(
+    {
+        "ip-address": "198.18.0.42",
+        "hostname": "phone.example.invalid",
+        "subnet-id": 1,
+        "valid-lft": 3600,
+        "state": 0,
+    }
+)
 _EVENTS_RECORDER = "netbox_kea.tests.utils.record_dispatched_events"
 
 

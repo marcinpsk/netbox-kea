@@ -35,7 +35,8 @@ from .ipam_marker import (
     rewrite_marker,
     status_kind,
 )
-from .kea import KeaException, lease_fields
+from .kea import KeaException
+from .leases import LEASE_VARIANTS, Lease
 from .models import IPAMOwnershipLink, IPAMOwnershipSource, Server, SyncConfig, next_confirmation_number
 from .plugin_settings import plugin_setting
 from .pools import Pool
@@ -78,16 +79,6 @@ def _ip_fields(status: str, hostname: str, description: str) -> dict[str, str]:
     if hostname:
         fields["dns_name"] = hostname
     return fields
-
-
-def _record_hostname(record: dict) -> str:
-    """Validate a raw Kea record's optional hostname before synchronization."""
-    hostname = record.get("hostname")
-    if hostname is None:
-        return ""
-    if not isinstance(hostname, str):
-        raise RuntimeError("Kea record hostname must be a string or null.")
-    return hostname
 
 
 class DuplicateNetBoxRowsError(Exception):
@@ -582,7 +573,7 @@ class ClaimResult:
 def claim(
     server: Server,
     family: Family,
-    records: Sequence[dict[str, Any]] | Sequence[Reservation] | Sequence[SubnetClaim] | Sequence[PoolClaim],
+    records: Sequence[Lease] | Sequence[Reservation] | Sequence[SubnetClaim] | Sequence[PoolClaim],
     force: bool,
 ) -> ClaimResult:
     """Claim one source's records in the Server's VRF, with per-address outcomes and no stale cleanup.
@@ -599,9 +590,9 @@ def claim(
         return _claim_network_records(server, family, records, force=force)
     if any(isinstance(record, (SubnetClaim, PoolClaim)) for record in records):
         raise ValueError("A claim takes one homogeneous source")
-    address_records = cast("Sequence[dict[str, Any] | Reservation]", records)
-    lease_records = isinstance(records[0], dict)
-    if any(isinstance(record, dict) != lease_records for record in records):
+    address_records = cast("Sequence[Lease | Reservation]", records)
+    lease_records = isinstance(records[0], LEASE_VARIANTS)
+    if any(isinstance(record, LEASE_VARIANTS) != lease_records for record in records):
         raise ValueError("A claim takes one source: leases or Reservations, not both")
     source = LEASE if lease_records else RESERVATION
     subnet_prefix_lengths = {}
@@ -639,13 +630,13 @@ def claim(
 def _claim_reports(
     server: Server,
     family: Family,
-    records: Sequence[dict[str, Any] | Reservation],
+    records: Sequence[Lease | Reservation],
     subnet_prefix_lengths: Mapping[int, int],
 ) -> dict[str, _Report]:
     """Validate and aggregate one call before acquiring locks or changing objects."""
     reports: dict[str, _Report] = {}
     for record in records:
-        if isinstance(record, dict):
+        if isinstance(record, LEASE_VARIANTS):
             _add_report(reports, _lease_report(server, family, record, subnet_prefix_lengths))
         else:
             if record.family != family:
@@ -662,25 +653,19 @@ def _claim_reports(
 
 
 def _lease_report(
-    server: Server, family: Family, lease: dict[str, Any], subnet_prefix_lengths: Mapping[int, int] | None
+    server: Server, family: Family, lease: Lease, subnet_prefix_lengths: Mapping[int, int] | None
 ) -> _Report:
-    """Resolve lease facts from Kea, or the job's explicit unavailable-catalogue fallback."""
-    fields = lease_fields(lease)
-    address = ipaddress.ip_address(fields.address)
-    if address.version != family:
+    """Resolve lease facts from Kea, or the job's explicit unavailable-catalogue fallback.
+
+    A delegated prefix reports its base address, as the lease source always has.
+    """
+    if lease.family != family:
         raise ValueError("The lease address does not match the claim family")
-    subnet_id = fields.subnet_id
-    if (
-        isinstance(subnet_id, bool)
-        or not isinstance(subnet_id, int)
-        or not subnet_catalogue.MIN_SUBNET_ID <= subnet_id <= subnet_catalogue.MAX_SUBNET_ID
-    ):
-        raise ValueError("The lease Subnet ID must be an integer in the Kea Subnet ID range")
-    hostname = _record_hostname(lease)
+    address = lease.identity.address
     if subnet_prefix_lengths is not None:
-        if subnet_id not in subnet_prefix_lengths:
+        if lease.subnet_id not in subnet_prefix_lengths:
             raise ValueError("The lease Subnet ID is absent from the Subnet Catalogue")
-        prefix_length = subnet_prefix_lengths[subnet_id]
+        prefix_length = subnet_prefix_lengths[lease.subnet_id]
     else:
         prefix = (
             Prefix.objects.filter(vrf_id=server.sync_vrf_id, prefix__net_contains_or_equals=str(address))
@@ -688,8 +673,8 @@ def _lease_report(
             .first()
         )
         prefix_length = prefix.prefix.prefixlen if prefix is not None else address.max_prefixlen
-    mac_addresses = ((fields.hw_address, hostname),) if fields.hw_address else ()
-    return _Report(str(address), _Facts(hostname, prefix_length), mac_addresses)
+    mac_addresses = ((lease.hw_address, lease.hostname),) if lease.hw_address else ()
+    return _Report(str(address), _Facts(lease.hostname, prefix_length), mac_addresses)
 
 
 def reconcile(server: Server, family: Family, phases: Sequence[Phase]) -> SyncReport:
@@ -788,16 +773,20 @@ def _run_phase(server: Server, family: Family, phase: Phase, report: SyncReport)
 
 
 def _lease_reports(server: Server, family: Family, phase: LeasePhase, report: SyncReport) -> dict[str, _Report]:
-    """Read the lease snapshot and group its valid records by canonical address."""
+    """Read the lease Snapshot and group its valid records by canonical address.
+
+    A Snapshot that reached its cap or excluded a record leaves the phase incomplete, so it removes no stale link.
+    """
+    what = f"Server {server.name} (v{family}): the lease snapshot"
     try:
         client = server.get_client(version=family)
-        collection = client.lease_get_all(version=family, max_leases=phase.max_leases)
+        snapshot = client.lease_get_all(version=family, max_leases=phase.max_leases, server_id=server.pk)
     # OSError covers each requests error, KeaTLSFileError included.
     except (KeaException, OSError, ValueError, RuntimeError) as exc:
-        report.fail_snapshot(LEASE, f"Server {server.name} (v{family}): the lease snapshot", exc)
+        report.fail_snapshot(LEASE, what, exc)
         return {}
-    logger.info("Server %s (v%s): fetched %d leases", server.name, family, len(collection.leases))
-    if collection.truncated:
+    logger.info("Server %s (v%s): fetched %d leases", server.name, family, len(snapshot.records))
+    if snapshot.coverage != "exhaustive":
         logger.warning(
             "Server %s (v%s): lease fetch truncated at %d: increase sync_max_leases_per_server",
             server.name,
@@ -805,16 +794,17 @@ def _lease_reports(server: Server, family: Family, phase: LeasePhase, report: Sy
             phase.max_leases,
         )
         report.incomplete.add(LEASE)
+    if snapshot.diagnostics:
+        report.errors += len(snapshot.diagnostics)
+        report.incomplete.add(LEASE)
+        logger.warning("%s is incomplete: %d excluded lease record(s)", what, len(snapshot.diagnostics))
 
     reports: dict[str, _Report] = {}
-    for lease in collection.leases:
-        fields = lease_fields(lease)
-        # The snapshot already validated each address.
-        address = str(ipaddress.ip_address(fields.address))
+    for lease in snapshot.records:
         try:
             row = _lease_report(server, family, lease, phase.subnet_prefix_lengths)
         except (ValueError, RuntimeError) as exc:
-            report.fail_row(LEASE, f"lease {address}", exc)
+            report.fail_row(LEASE, f"lease {lease.identity.address}", exc)
             continue
         _add_report(reports, row)
     return reports
@@ -1501,7 +1491,7 @@ def _network_result(server: Server, source: str, row: _NetworkReport, outcome: _
 def _claim_network_records(
     server: Server,
     family: Family,
-    records: Sequence[dict[str, Any] | Reservation | SubnetClaim | PoolClaim],
+    records: Sequence[Lease | Reservation | SubnetClaim | PoolClaim],
     *,
     force: bool,
 ) -> ClaimResult:

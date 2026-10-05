@@ -58,7 +58,7 @@ from netbox_kea.models import Server
 from netbox_kea.reservations import ReservationSnapshot
 from netbox_kea.views.combined import _fetch_reservations_from_server
 
-from .kea_stub import _res_get, _res_page, _reservation_mutation_commands, queued, stub_kea
+from .kea_stub import _res_get, _res_page, _reservation_mutation_commands, complete_lease, queued, stub_kea
 from .utils import _PLUGINS_CONFIG, User, _make_db_server
 
 # ---------------------------------------------------------------------------
@@ -79,24 +79,28 @@ _MOCK_RESERVATION_V6 = {
     "hostname": "host-v6",
 }
 
-_MOCK_LEASE_V4 = {
-    "ip-address": "10.0.0.1",
-    "hw-address": "aa:bb:cc:dd:ee:ff",
-    "hostname": "lease-host-v4",
-    "subnet-id": 1,
-    "valid-lft": 3600,
-    "cltt": 1_234_567_890,
-}
+_MOCK_LEASE_V4 = complete_lease(
+    {
+        "ip-address": "10.0.0.1",
+        "hw-address": "aa:bb:cc:dd:ee:ff",
+        "hostname": "lease-host-v4",
+        "subnet-id": 1,
+        "valid-lft": 3600,
+        "cltt": 1_234_567_890,
+    }
+)
 
-_MOCK_LEASE_V6 = {
-    "ip-address": "2001:db8::1",
-    "duid": "00:01:aa:bb",
-    "hostname": "lease-host-v6",
-    "subnet-id": 1,
-    "valid-lft": 3600,
-    "cltt": 1_234_567_890,
-    "preferred-lft": 1800,
-}
+_MOCK_LEASE_V6 = complete_lease(
+    {
+        "ip-address": "2001:db8::1",
+        "duid": "00:01:aa:bb",
+        "hostname": "lease-host-v6",
+        "subnet-id": 1,
+        "valid-lft": 3600,
+        "cltt": 1_234_567_890,
+        "preferred-lft": 1800,
+    }
+)
 
 _MOCK_CONFIG_V4 = [
     {
@@ -1007,15 +1011,16 @@ class TestCombinedSubnets6View(_CombinedViewBase):
         self.assertNotContains(response, "fd00::/8")
 
 
-_MOCK_LEASE_V4_ENRICHMENT = {
-    "ip-address": "10.0.0.5",
-    "hw-address": "aa:bb:cc:dd:ee:01",
-    "subnet-id": 1,
-    "hostname": "enriched-host",
-    "valid-lft": 3600,
-    "cltt": 0,
-    "state": 0,
-}
+_MOCK_LEASE_V4_ENRICHMENT = complete_lease(
+    {
+        "ip-address": "10.0.0.5",
+        "hw-address": "aa:bb:cc:dd:ee:01",
+        "subnet-id": 1,
+        "hostname": "enriched-host",
+        "valid-lft": 3600,
+        "state": 0,
+    }
+)
 
 _MOCK_RESERVATION_ENRICHED = {
     "subnet-id": 1,
@@ -1098,7 +1103,7 @@ class TestCombinedReservations4Enrichment(_CombinedViewBase):
             4,
             {
                 "reservation-get-page": _res_page([dict(_MOCK_RESERVATION_ENRICHED)]),
-                "lease4-get-by-state": _leases([{"ip-address": "10.0.0.5", "state": 0}]),
+                "lease4-get-by-state": _leases([complete_lease({"ip-address": "10.0.0.5", "state": 0})]),
             },
         ):
             response = self.client.get(self._url())
@@ -1168,16 +1173,17 @@ class TestCombinedReservations4Enrichment(_CombinedViewBase):
 # Badge enrichment parity: DHCPv6 combined views  (issue #10)
 # ---------------------------------------------------------------------------
 
-_MOCK_LEASE_V6_ENRICHMENT = {
-    "ip-address": "2001:db8::5",
-    "duid": "00:01:aa:bb",
-    "subnet-id": 1,
-    "hostname": "enriched-host-v6",
-    "valid-lft": 3600,
-    "cltt": 0,
-    "state": 0,
-    "preferred-lft": 1800,
-}
+_MOCK_LEASE_V6_ENRICHMENT = complete_lease(
+    {
+        "ip-address": "2001:db8::5",
+        "duid": "00:01:aa:bb",
+        "subnet-id": 1,
+        "hostname": "enriched-host-v6",
+        "valid-lft": 3600,
+        "state": 0,
+        "preferred-lft": 1800,
+    }
+)
 
 _MOCK_RESERVATION_V6_ENRICHED = {
     "subnet-id": 1,
@@ -1251,7 +1257,7 @@ class TestCombinedReservations6Enrichment(_CombinedViewBase):
             6,
             {
                 "reservation-get-page": _res_page([dict(_MOCK_RESERVATION_V6_ENRICHED)]),
-                "lease6-get-by-state": _leases([{"ip-address": "2001:db8::5", "state": 0}]),
+                "lease6-get-all": _leases([complete_lease({"ip-address": "2001:db8::5", "state": 0})]),
             },
         ):
             response = self.client.get(self._url())
@@ -1264,7 +1270,7 @@ class TestCombinedReservations6Enrichment(_CombinedViewBase):
             6,
             {
                 "reservation-get-page": _res_page([dict(_MOCK_RESERVATION_V6_ENRICHED)]),
-                "lease6-get-by-state": _leases([]),
+                "lease6-get-all": _leases([]),
             },
         ):
             response = self.client.get(self._url())
@@ -1277,7 +1283,7 @@ class TestCombinedReservations6Enrichment(_CombinedViewBase):
             6,
             {
                 "reservation-get-page": _res_page([dict(_MOCK_RESERVATION_V6_ENRICHED)]),
-                "lease6-get-by-state": _leases([]),
+                "lease6-get-all": _leases([]),
             },
         ):
             response = self.client.get(self._url())
@@ -1295,24 +1301,28 @@ class TestCombinedReservations6Enrichment(_CombinedViewBase):
 class TestCombinedLeasesStateFilter(_CombinedViewBase):
     """State filter in combined leases view must narrow results after merging."""
 
-    _ACTIVE_LEASE = {
-        "ip-address": "10.0.0.1",
-        "hostname": "active-host",
-        "subnet-id": 1,
-        "state": 0,
-        "valid-lft": 3600,
-        "cltt": 1_234_567_890,
-        "hw-address": "aa:bb:cc:dd:ee:ff",
-    }
-    _DECLINED_LEASE = {
-        "ip-address": "10.0.0.2",
-        "hostname": "declined-host",
-        "subnet-id": 1,
-        "state": 1,
-        "valid-lft": 3600,
-        "cltt": 1_234_567_890,
-        "hw-address": "aa:bb:cc:dd:ee:00",
-    }
+    _ACTIVE_LEASE = complete_lease(
+        {
+            "ip-address": "10.0.0.1",
+            "hostname": "active-host",
+            "subnet-id": 1,
+            "state": 0,
+            "valid-lft": 3600,
+            "cltt": 1_234_567_890,
+            "hw-address": "aa:bb:cc:dd:ee:ff",
+        }
+    )
+    _DECLINED_LEASE = complete_lease(
+        {
+            "ip-address": "10.0.0.2",
+            "hostname": "declined-host",
+            "subnet-id": 1,
+            "state": 1,
+            "valid-lft": 3600,
+            "cltt": 1_234_567_890,
+            "hw-address": "aa:bb:cc:dd:ee:00",
+        }
+    )
 
     def test_state_filter_excludes_other_states(self):
         """state=1 (Declined) must exclude Active leases from merged results."""

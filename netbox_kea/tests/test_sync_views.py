@@ -39,7 +39,14 @@ from ipam.models import IPAddress as NbIP
 from netbox_kea.models import IPAMOwnershipLink, Server, next_confirmation_number
 from netbox_kea.views.reservations import _RESERVATION_PAGE_SIZE
 
-from .kea_stub import _catalogue_responses, _res_page, _reservation_mutation_commands, queued, stub_kea
+from .kea_stub import (
+    _catalogue_responses,
+    _res_page,
+    _reservation_mutation_commands,
+    complete_lease,
+    queued,
+    stub_kea,
+)
 from .utils import _PLUGINS_CONFIG
 
 User = get_user_model()
@@ -55,7 +62,10 @@ def _lease_get(hostname, **extra):
 
     def _resp(body):
         ip = body["arguments"]["ip-address"]
-        return {"result": 0, "arguments": {"ip-address": ip, "hostname": hostname, "subnet-id": 1, **extra}}
+        return {
+            "result": 0,
+            "arguments": complete_lease({"ip-address": ip, "hostname": hostname, "subnet-id": 1, **extra}),
+        }
 
     return _resp
 
