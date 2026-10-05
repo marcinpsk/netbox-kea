@@ -13,6 +13,275 @@ forked, and predate its conventional-commit history.
 
 <!-- version list -->
 
+## v1.13.0 (2026-10-05)
+
+### Bug Fixes
+
+- A legacy marker kind ends at a word boundary
+  ([`0a0eeec`](https://github.com/marcinpsk/netbox-kea/commit/0a0eeec461b1384071793a0ee04bc33462d70c32))
+
+- A plain OSError from a sync snapshot fails only that phase
+  ([`b127f39`](https://github.com/marcinpsk/netbox-kea/commit/b127f398cd627bf41351d6b7a3c7124fb63976f4))
+
+- Align ownership routing and sync VRF guidance
+  ([`3c0c93c`](https://github.com/marcinpsk/netbox-kea/commit/3c0c93cbb3d8e3c341a63cf678fe52cb6951063e))
+
+- An unknown stale_ip_cleanup mode fails the old cleanup like the reconciliation
+  ([`41cd92d`](https://github.com/marcinpsk/netbox-kea/commit/41cd92d5303b785357b325bb4a2feb92ca427377))
+
+- Claim IPAM ownership for per-row sync and lease add
+  ([`4530703`](https://github.com/marcinpsk/netbox-kea/commit/453070392f2ecd49392e022aa3b335f06dc55403))
+
+- Clean expired leases when Reservation sync is disabled
+  ([`3fcf7d6`](https://github.com/marcinpsk/netbox-kea/commit/3fcf7d67e4514495a1fac86279563e75e04bb22d))
+
+- Cleanup gives an object the hostname of its remaining links
+  ([`a37afb3`](https://github.com/marcinpsk/netbox-kea/commit/a37afb381d1c5a9cb3bb233892106a0b3f9ccbf8))
+
+- Drop the per-Server unowned count from sync summaries
+  ([`1432d09`](https://github.com/marcinpsk/netbox-kea/commit/1432d095c80cd0fd5477c02c77a9dcd9f4eb55c7))
+
+- Freeze adoption policy only for final-link cleanup
+  ([`9264a0c`](https://github.com/marcinpsk/netbox-kea/commit/9264a0cb8e1b60aa10507f86e090f2203f7d8685))
+
+- Handle malformed lease claims and cover reconciliation boundaries
+  ([`9d2c0f5`](https://github.com/marcinpsk/netbox-kea/commit/9d2c0f504958def17b6f4110e30cdb8b3df54b43))
+
+- Isolate MAC synchronization writes in a savepoint
+  ([`f77c1d6`](https://github.com/marcinpsk/netbox-kea/commit/f77c1d66f6fd8c3319731e4e85132330c26f5e4e))
+
+- KeaClient takes timeout and max_unpaged_leases with no default
+  ([`7057edb`](https://github.com/marcinpsk/netbox-kea/commit/7057edb18f69637e2e5b87ed6f1e2c36f2123cd4))
+
+- Keep Server receipts on a forced update
+  ([`e6b7b4e`](https://github.com/marcinpsk/netbox-kea/commit/e6b7b4e43467f1041a1c014c4b0aa80c467fb13a))
+
+- Lock ownership links before adoption policy
+  ([`f5825b1`](https://github.com/marcinpsk/netbox-kea/commit/f5825b185289669c2a7a984e6a7b9402f9927f40))
+
+- NetBox refuses to start with an unknown stale_ip_cleanup value
+  ([`52a1cbd`](https://github.com/marcinpsk/netbox-kea/commit/52a1cbd00fddca89ef464d8a43474e9a387a15ae))
+
+- NetBox validates every netbox_kea setting at startup
+  ([`4c0f3d6`](https://github.com/marcinpsk/netbox-kea/commit/4c0f3d6a88c8191cb5d3e926913f89d3c80ef33e))
+
+- NetBox validates sync_enabled at startup too
+  ([`928f3b2`](https://github.com/marcinpsk/netbox-kea/commit/928f3b29921d7ac83c0ffd0292b99a9ae03a3c6b))
+
+- One phase compares its own reports with the owner hostname rule
+  ([`a7df8f2`](https://github.com/marcinpsk/netbox-kea/commit/a7df8f2efb78ea216c89f22c174321245673c729))
+
+- Permit ownership checks during receipt completion
+  ([`f920215`](https://github.com/marcinpsk/netbox-kea/commit/f920215ca3000bf1e86355c000d9e3ee6db966fc))
+
+- Preserve branch refusals and assert cleanup outcomes
+  ([`17fe719`](https://github.com/marcinpsk/netbox-kea/commit/17fe7193a7858da3efa3efe538cc1028c6f4e2c3))
+
+- Preserve IPAM upgrade receipts and scoped summaries
+  ([`5b9a323`](https://github.com/marcinpsk/netbox-kea/commit/5b9a323c7c2ec1143508e9e5359c960bb4344641))
+
+- Preserve network import completion with invalid global options
+  ([`1b2a98e`](https://github.com/marcinpsk/netbox-kea/commit/1b2a98ec1e70a06998bbca245098d06a4335c8c0))
+
+- Preserve operator notes when claiming IP addresses
+  ([`eca1ade`](https://github.com/marcinpsk/netbox-kea/commit/eca1ade62d12a8ed62d24ccb335c48b07747daee))
+
+- Preserve prechange data for plugin updates
+  ([#233](https://github.com/marcinpsk/netbox-kea/pull/233),
+  [`3c43fc2`](https://github.com/marcinpsk/netbox-kea/commit/3c43fc2600e12774175a0f60ee2e7e2a96c99594))
+
+- Preserve shared prefix markers and claimed MAC results
+  ([`9290c28`](https://github.com/marcinpsk/netbox-kea/commit/9290c28bb0482447382b8661bcdb7491709694e4))
+
+- Record IPAM sync changes in the changelog
+  ([#234](https://github.com/marcinpsk/netbox-kea/pull/234),
+  [`33dd3e4`](https://github.com/marcinpsk/netbox-kea/commit/33dd3e4fb0584bd6a382584f744ffb71036f04b1))
+
+- Refuse busy cleanup identities in outer transactions
+  ([`792046b`](https://github.com/marcinpsk/netbox-kea/commit/792046b5450d95a42d1a4e8a5c2b10995b40b4cd))
+
+- Refuse busy ownership rows during cleanup
+  ([`0ee7ad3`](https://github.com/marcinpsk/netbox-kea/commit/0ee7ad395b3cba21c6d1fb516d95e981897e0287))
+
+- Reject malformed lease subnet IDs before reconciliation
+  ([`9ebd9d3`](https://github.com/marcinpsk/netbox-kea/commit/9ebd9d313cbd1b5018393908584afdc5cedef7f1))
+
+- Release deprecated IP ownership after operator edits
+  ([`88674c5`](https://github.com/marcinpsk/netbox-kea/commit/88674c517f36c60092d742445d6eb633a3ed69ab))
+
+- Remove obsolete lease mask resolver import
+  ([`147d12f`](https://github.com/marcinpsk/netbox-kea/commit/147d12fc23995218721051125db5ebaf8a5e9e58))
+
+- Resolve lease ownership facts from the Kea catalogue
+  ([`c7a91b7`](https://github.com/marcinpsk/netbox-kea/commit/c7a91b75ca61c55f0a09ae3139b99303a311b61e))
+
+- Retain delegated-prefix failure diagnostics
+  ([`7b41592`](https://github.com/marcinpsk/netbox-kea/commit/7b4159291ccd83abda360abb8cd75d03cc27174f))
+
+- Retain every commit's release guidance in changelog
+  ([`c724167`](https://github.com/marcinpsk/netbox-kea/commit/c72416775b11d0152192f8e571a9e99666fc773d))
+
+- Serialize adoption cleanup with policy changes
+  ([`58b5a94`](https://github.com/marcinpsk/netbox-kea/commit/58b5a9488124669ca9063be7e501ab79d390241f))
+
+- Sync manually added leases without explicit Subnet IDs
+  ([`d892bfa`](https://github.com/marcinpsk/netbox-kea/commit/d892bfad54c4564e45cec284f69c3530216a2efc))
+
+- The MAC address sync does not write the MAC address to the log
+  ([`efe1584`](https://github.com/marcinpsk/netbox-kea/commit/efe1584901e3b0aedd52eb6135b7ebb11e0e8584))
+
+- The MAC address sync logs only the exception type
+  ([`c640a61`](https://github.com/marcinpsk/netbox-kea/commit/c640a613877bdea8e0879b72b342c79632200a8e))
+
+- The old stale cleanup decides each row under the identity lock
+  ([`2ed6c39`](https://github.com/marcinpsk/netbox-kea/commit/2ed6c39eba840b6b6c82224a0caa11fc3e6090fe))
+
+- The old sync paths leave an object unchanged when the marker does not fit
+  ([`7a34f07`](https://github.com/marcinpsk/netbox-kea/commit/7a34f0767325c4803b3b0ba253e4fff36f4a90ab))
+
+### Chores
+
+- Drop the upstream author from the pyproject authors
+  ([`becd5d1`](https://github.com/marcinpsk/netbox-kea/commit/becd5d106b3947c5ffe55a0d5163565106e5a704))
+
+- Put SPDX copyright headers in each file, with the holders from git blame
+  ([`284ecb2`](https://github.com/marcinpsk/netbox-kea/commit/284ecb2fc5b4770e134286242fc10b3d00a3d613))
+
+- **deps**: Bump the github-actions group with 2 updates
+  ([`6ed2548`](https://github.com/marcinpsk/netbox-kea/commit/6ed25481a14dc5d75790587ed5d79fdefbfde55f))
+
+- **deps**: Bump virtualenv
+  ([`059edae`](https://github.com/marcinpsk/netbox-kea/commit/059edae798e32ea71cfdb26fbdeb6d23a6248987))
+
+- **deps-dev**: Bump ruff from 0.16.8 to 0.16.9
+  ([`c048769`](https://github.com/marcinpsk/netbox-kea/commit/c04876986102acec5c5a71ec3aa704702fc2daa3))
+
+- **opengrep**: The IPAM sync job catches OSError, not RequestException
+  ([`bd38c9f`](https://github.com/marcinpsk/netbox-kea/commit/bd38c9f7800057f219d89d53630905d65d0120dc))
+
+### Code Style
+
+- Drop em-dashes from the truncation log and the job summary list
+  ([`3368d49`](https://github.com/marcinpsk/netbox-kea/commit/3368d498c8e3fc19181d0c3843235becdd24cb3f))
+
+### Continuous Integration
+
+- Codecov waits for both coverage uploads before it reports
+  ([`da527e2`](https://github.com/marcinpsk/netbox-kea/commit/da527e2606c099d069366303c7ceb7f6d79f1fe6))
+
+### Documentation
+
+- A branch delete of an object that a Kea server owns is refused
+  ([`2723979`](https://github.com/marcinpsk/netbox-kea/commit/2723979f6e3f921e9518e3ed543325e8732e6efd))
+
+- ADR 0006, README and AGENTS.md describe the Reservation phase
+  ([`b2d0e72`](https://github.com/marcinpsk/netbox-kea/commit/b2d0e72442d240415c5917b7b6a643cb46f274c6))
+
+- ADR 0006, README and CONTEXT describe the marker and owner rules as built
+  ([`025964b`](https://github.com/marcinpsk/netbox-kea/commit/025964b5899a287ebcb4eb970fd20698df17da24))
+
+- Generate IPAM ownership upgrade notes
+  ([`0dfe335`](https://github.com/marcinpsk/netbox-kea/commit/0dfe335e7b17ab9ce11b9eef48bfa76b91451ecf))
+
+- IPAM Ownership links stay in main, and a branch delete that reaches one is refused
+  ([`2d42645`](https://github.com/marcinpsk/netbox-kea/commit/2d42645038dd9b66b2c09dd3117fcd96aef3de93))
+
+- Lease IP addresses use the Sync VRF, and the summary counts owner disagreements
+  ([`6996b6b`](https://github.com/marcinpsk/netbox-kea/commit/6996b6bd31c03c6129dfc2fd3b1e8ccf4e080dc1))
+
+- Refresh generated upgrade notes after develop rebase
+  ([`41b50d7`](https://github.com/marcinpsk/netbox-kea/commit/41b50d72f66798c4170d05f8025c54599f866810))
+
+- Regenerate complete IPAM upgrade guidance
+  ([`e6ee457`](https://github.com/marcinpsk/netbox-kea/commit/e6ee4570d18e8e6831a2d37799be94c28affcf6e))
+
+- Scope the two-phase last-link rule to IP addresses
+  ([`f93902f`](https://github.com/marcinpsk/netbox-kea/commit/f93902fcbb73872556fa538d50762c3bcb9b2d6e))
+
+### Features
+
+- Add the IPAM ownership link model and the confirmation sequence
+  ([`2adedde`](https://github.com/marcinpsk/netbox-kea/commit/2adedde4ab0c0824e56a8ee3c4f42993d9ba785e))
+
+- Reconcile Prefixes and IP Ranges with optional deprecation
+  ([`c2428c4`](https://github.com/marcinpsk/netbox-kea/commit/c2428c400047f8afb36a071ea4c57bd9fbf7eff2))
+
+- Refuse a branch delete that reaches an IPAM ownership link through NetBox's AbortRequest
+  ([`976c15d`](https://github.com/marcinpsk/netbox-kea/commit/976c15d94370e9f54cc9fae268945c0f5cf3ad99))
+
+- The job's lease phase runs through reconcile() and owns its rows through links
+  ([`fceb54e`](https://github.com/marcinpsk/netbox-kea/commit/fceb54ef0cd8b2c56ac1dfbadee6e0075a1cf717))
+
+- The job's Reservation phase runs through reconcile()
+  ([`1464be7`](https://github.com/marcinpsk/netbox-kea/commit/1464be7330d5c2354eab5af0046b5e2e00481697))
+
+- The old stale cleanup never touches an IP address with an ownership link
+  ([`51559a9`](https://github.com/marcinpsk/netbox-kea/commit/51559a900e4e6e4947d8e080f03617d0a62324ca))
+
+- The sync marker is a block that keeps the operator note after it
+  ([`9bdd4dd`](https://github.com/marcinpsk/netbox-kea/commit/9bdd4dd66b1ee949ab99f7f29d777e1abed3cb17))
+
+### Performance Improvements
+
+- Skip snapshots for unchanged sync objects
+  ([`027b8c9`](https://github.com/marcinpsk/netbox-kea/commit/027b8c9afdfb5c4415910deaf6abe5dd62b687d1))
+
+### Refactoring
+
+- A failed lease snapshot goes through SyncReport.fail_snapshot
+  ([`b095fe0`](https://github.com/marcinpsk/netbox-kea/commit/b095fe065f741db052adb678b069e559fd251c52))
+
+- A stale link records the cutoff number of its mark
+  ([`a50241b`](https://github.com/marcinpsk/netbox-kea/commit/a50241bf0983d2f4d1ab6e8e2f051bdfeedc3240))
+
+- Adopt IPAM rows and remove legacy sync paths
+  ([`aece546`](https://github.com/marcinpsk/netbox-kea/commit/aece546d5ae622b404407a17920a851d9c7580e9))
+
+- Claim DHCP import IPAM ownership
+  ([`31ea5dc`](https://github.com/marcinpsk/netbox-kea/commit/31ea5dcdf783b8ab2585dd4930831ad8890f724f))
+
+- Drop Marker.note, which only tests read
+  ([`251b033`](https://github.com/marcinpsk/netbox-kea/commit/251b0333a9998bcf9b878644c2820373d0e2acac))
+
+- Remove obsolete claim guards and verify upgrade states
+  ([`8b1d9b9`](https://github.com/marcinpsk/netbox-kea/commit/8b1d9b970e29b40a3b3aa5dbf76167f9c60404e4))
+
+- Run bulk Reservation Sync through reconciliation
+  ([`afddbfa`](https://github.com/marcinpsk/netbox-kea/commit/afddbfac0dd69f9924ddb53d1894aee74a5aba62))
+
+- The old sync paths drop the two-pass status mode
+  ([`c1b885f`](https://github.com/marcinpsk/netbox-kea/commit/c1b885f294a8335d0a1faeec9984c1c427d9bbca))
+
+### Testing
+
+- An incomplete Reservation snapshot keeps a Reservation link that is not the last
+  ([`d65f461`](https://github.com/marcinpsk/netbox-kea/commit/d65f461fb48c608f834c34d7eff17c4df39cfbb7))
+
+- Concurrent lease phases, row locks and operator edits on separate connections
+  ([`4d6ba2f`](https://github.com/marcinpsk/netbox-kea/commit/4d6ba2f549d55835e32af08422ed9c8dc2c6d0b2))
+
+- Guard 2 pins the relations that a delete in a branch reaches
+  ([`66245fb`](https://github.com/marcinpsk/netbox-kea/commit/66245fbc3a90640a49070870f9cdc743da0d9a14))
+
+- IPAM ownership links stay in main through branch sync, discard, merge and revert
+  ([`534ba21`](https://github.com/marcinpsk/netbox-kea/commit/534ba21172609db963144de056004780f95b6e00))
+
+- **ui**: The browser cleanup finds its NetBox IP by the sync marker
+  ([`f8c5d09`](https://github.com/marcinpsk/netbox-kea/commit/f8c5d091b160660191ef636cb3537f899eeaec99))
+
+### Additional Release Information
+
+- `stale_ip_cleanup = "remove"` now removes expired leases, deleted Reservations and hostless leases
+  after their last ownership link becomes stale. On upgrade, it removes only lease rows that expire
+  after adoption. Rows already stale get no owner and stay unowned and counted.
+
+- When every configured Server uses the same non-global sync_vrf, an unowned global marker address
+  moves into it with its primary key and changelog intact. An existing owner or destination
+  collision prevents the move. Mixed VRFs keep the global row. The read-only
+  Server.ipam_first_complete_at field records initial completion across enabled job and DHCP import
+  observations.
+
+
 ## Unreleased
 
 ### Bug Fixes
