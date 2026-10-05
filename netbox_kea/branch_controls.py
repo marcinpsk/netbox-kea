@@ -28,8 +28,15 @@ class _Targets:
     def __init__(self, request: HttpRequest):
         self.base = request.build_absolute_uri()
         self.origin = urlsplit(self.base)
+        self.cache: dict[tuple[str, str, bool], bool] = {}
 
     def refused(self, target: str, method: str = "GET", *, navigation: bool = False) -> bool:
+        key = (target, method.upper(), navigation)
+        if key not in self.cache:
+            self.cache[key] = self._refused(*key)
+        return self.cache[key]
+
+    def _refused(self, target: str, method: str, navigation: bool) -> bool:
         url = urlsplit(urljoin(self.base, target))
         if (url.scheme, url.netloc) != (self.origin.scheme, self.origin.netloc):
             return False
@@ -53,8 +60,6 @@ def _disable(soup: BeautifulSoup, control: Tag, reason: str, identifier: str) ->
         "div" if control.name in {"div", "form"} else "span", attrs={"class": "kea-branch-control", "tabindex": "0"}
     )
     tooltip_id = f"kea-branch-reason-{identifier}"
-    while soup.find(id=tooltip_id) is not None:
-        tooltip_id += "-reason"
     wrapper["aria-describedby"] = tooltip_id
     tooltip = soup.new_tag("span", attrs={"id": tooltip_id, "class": "kea-branch-tooltip", "role": "tooltip"})
     tooltip.string = reason

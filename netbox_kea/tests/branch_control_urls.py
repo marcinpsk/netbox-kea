@@ -56,6 +56,10 @@ HTML = """
 <a id="modal" href="#" hx-get="/kea-controls/change/">Delete</a>
 <button id="htmx-read" hx-get="/kea-controls/read/">Refresh</button>
 """
+REPEATED_HTML = (
+    '<a href="/kea-controls/change/">Edit</a><button hx-patch="/kea-controls/read/">Patch</button>'
+    '<div data-hx-post="/kea-controls/read/"><button>Inherited</button></div>'
+) * 25
 
 
 def read(request):
@@ -65,6 +69,8 @@ def read(request):
         return JsonResponse({"html": HTML})
     if mode == "stream":
         return StreamingHttpResponse([HTML.encode()])
+    if mode == "repeated":
+        return HttpResponse(REPEATED_HTML)
     if mode == "encoded":
         response = HttpResponse(gzip.compress(HTML.encode()))
         response["Content-Encoding"] = "gzip"
