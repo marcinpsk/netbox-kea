@@ -2,8 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """Server submissions validate changed connections without blocking metadata edits."""
 
+import os
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 import requests
 from core.models import Job, ObjectChange, ObjectType
@@ -134,6 +136,18 @@ class ServerSubmissionConnectivityTest(_ViewTestBase):
                     self.assertIn(message, errors[0])
                     self.assertNotIn("private diagnostic", errors[0])
                     self.assertEqual(len(kea.requests), 1)
+        self.assertFalse(Server.objects.filter(name="submitted-server").exists())
+
+    def test_create_with_a_missing_ca_bundle_reports_a_field_error(self):
+        payload = self._payload(ca_url="https://127.0.0.1:9/", ca_file_path="/nonexistent/kea-ca.pem")
+        # Requests prefers these variables over the session CA bundle.
+        with patch.dict(os.environ), self.assertLogs("netbox_kea.server_connection", "ERROR") as logs:
+            os.environ.pop("REQUESTS_CA_BUNDLE", None)
+            os.environ.pop("CURL_CA_BUNDLE", None)
+            response = self.client.post(reverse("plugins:netbox_kea:server_add"), payload)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["form"].errors["dhcp4"], ["Unable to reach the Kea DHCPv4 service."])
+        self.assertIn("suitable TLS CA certificate bundle", "\n".join(logs.output))
         self.assertFalse(Server.objects.filter(name="submitted-server").exists())
 
     def test_create_preserves_enabled_families_and_direct_or_control_agent_routing(self):
