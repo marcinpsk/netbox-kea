@@ -423,45 +423,33 @@ rules:
           - pattern: subprocess.check_output(...)
       - pattern-not: subprocess.$FUNCTION(..., timeout=$SECONDS, ...)
 
-  - id: kea-sync-except-request-exception-not-oserror
+  - id: kea-http-call-outside-client
     languages: [python]
     severity: ERROR
     message: >-
-      Catch OSError, not requests.RequestException, at a Kea call in the IPAM sync job or in Server
-      submission validation. A missing TLS file raises a plain OSError that is not a RequestException;
-      it stops the sync of the whole Server, or makes a Server submission fail with HTTP 500.
-      RequestException is an OSError subclass, so OSError covers both.
+      Send Kea HTTP requests through KeaClient.command(). It applies the TLS settings of the Server on
+      each request and reports a missing TLS file as KeaTLSFileError, a RequestException. A request sent
+      outside it lets the environment CA bundle replace those settings, and a missing TLS file escapes
+      the RequestException handlers of the views as a plain OSError.
     metadata:
       category: correctness
       confidence: HIGH
     paths:
       include:
-        - "netbox_kea/ipam_reconciliation.py"
-        - "netbox_kea/jobs.py"
-        - "netbox_kea/sync.py"
-        - "netbox_kea/server_connection.py"
-        - "kea-sync-except-request-exception-not-oserror.py"
+        - "netbox_kea/**"
+        - "kea-http-call-outside-client.py"
+      exclude:
+        - "netbox_kea/kea.py"
+        - "netbox_kea/tests/**"
     pattern-either:
-      - pattern: |
-          try:
-              ...
-          except requests.RequestException:
-              ...
-      - pattern: |
-          try:
-              ...
-          except requests.RequestException as $E:
-              ...
-      - pattern: |
-          try:
-              ...
-          except (..., requests.RequestException, ...):
-              ...
-      - pattern: |
-          try:
-              ...
-          except (..., requests.RequestException, ...) as $E:
-              ...
+      - pattern: requests.Session(...)
+      - pattern: requests.get(...)
+      - pattern: requests.post(...)
+      - pattern: requests.put(...)
+      - pattern: requests.patch(...)
+      - pattern: requests.delete(...)
+      - pattern: requests.head(...)
+      - pattern: requests.request(...)
 
   - id: kea-mac-sync-write-without-savepoint
     languages: [python]
