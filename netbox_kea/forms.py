@@ -514,7 +514,7 @@ class BaseLeasesSarchForm(forms.Form):
         elif by == constants.BY_SUBNET_ID:
             try:
                 i = int(q)
-                if i <= 0:
+                if not MIN_SUBNET_ID <= i <= MAX_SUBNET_ID:
                     raise ValidationError({"q": "Invalid subnet ID."})
                 cleaned_data["q"] = i
             except ValueError as e:
