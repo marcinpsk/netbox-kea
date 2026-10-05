@@ -199,7 +199,10 @@ URL request
   keyword argument: `Server.get_client()` passes the branch binding, and unit tests build clients
   through `kea_stub.kea_client()`, which passes it too. Responses are
   `list[KeaResponse]`; `check_response()` raises `KeaException` if any result code is not in
-  `check`. `.clone()` creates a thread-safe copy (fresh `requests.Session`) for
+  `check`. `command()` passes the TLS settings (`verify`, `cert`) on each request, so the
+  `REQUESTS_CA_BUNDLE` environment variable cannot replace a CA file or `ssl_verify=False`. A TLS file
+  that requests cannot find raises `KeaTLSFileError`, a `requests.RequestException`, so each
+  handler of request errors also handles it. `.clone()` creates a thread-safe copy (fresh `requests.Session`) for
   concurrent lookups. **`send_service`**: `command()` sends the target as the `service`
   argument only when the server is fronted by a Control Agent
   (`send_service = has_control_agent`); a direct daemon drops it, because Kea 3.2.0+
