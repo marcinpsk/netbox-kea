@@ -6,7 +6,6 @@ import json
 import logging
 from typing import TYPE_CHECKING
 
-import requests
 from django.core.exceptions import ValidationError
 
 from .constants import Family
@@ -56,6 +55,6 @@ def validate_connection_change(server: "Server", before: ConnectionValues | None
         except json.JSONDecodeError as exc:
             logger.exception("Malformed response during DHCPv%s connectivity check", family)
             raise ValidationError({field: "An internal error occurred."}) from exc
-        except (KeaException, requests.RequestException, ValueError) as exc:
+        except (KeaException, OSError, ValueError) as exc:
             logger.exception("DHCPv%s connectivity check failed during Server submission", family)
             raise ValidationError({field: f"Unable to reach the Kea DHCPv{family} service."}) from exc
