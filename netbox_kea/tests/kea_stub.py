@@ -31,6 +31,7 @@ from typing import Any, cast
 from unittest.mock import patch
 
 import requests
+from requests.adapters import HTTPAdapter
 
 from netbox_kea import branching
 from netbox_kea.constants import Family
@@ -66,6 +67,34 @@ def _http_response(payload: Any, status: int = 200, url: str = "") -> requests.R
     response.headers["Content-Type"] = "application/json"
     response._content = json.dumps(payload).encode(response.encoding)
     return response
+
+
+class RecordingAdapter(HTTPAdapter):
+    """A transport adapter that records the TLS settings that reach it and answers with one canned Kea reply.
+
+    Mount it with :func:`record_transport`. The real ``Session`` pipeline runs up to ``send``, so the recorded
+    ``verify`` and ``cert`` are the values after requests merged the environment into them.
+    """
+
+    def __init__(self, reply: list[dict[str, Any]]) -> None:
+        super().__init__()
+        self._reply = reply
+        self.sent: list[dict[str, Any]] = []
+
+    def send(self, request: requests.PreparedRequest, *args: Any, **kwargs: Any) -> requests.Response:
+        """Record ``verify`` and ``cert``, and return the canned reply without a connection."""
+        self.sent.append({"verify": kwargs["verify"], "cert": kwargs["cert"]})
+        response = _http_response(self._reply, url=request.url or "")
+        response.request = request
+        return response
+
+
+def record_transport(client: KeaClient, reply: list[dict[str, Any]]) -> RecordingAdapter:
+    """Mount a :class:`RecordingAdapter` on the session of *client* for HTTP and HTTPS, and return it."""
+    adapter = RecordingAdapter(reply)
+    for prefix in ("http://", "https://"):
+        client._session.mount(prefix, adapter)
+    return adapter
 
 
 def _is_exc(obj: Any) -> bool:

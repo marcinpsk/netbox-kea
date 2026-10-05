@@ -791,7 +791,7 @@ def _lease_reports(server: Server, family: Family, phase: LeasePhase, report: Sy
     try:
         client = server.get_client(version=family)
         collection = client.lease_get_all(version=family, max_leases=phase.max_leases)
-    # requests errors are OSError subclasses; a missing TLS file raises a plain OSError.
+    # OSError covers each requests error, KeaTLSFileError included.
     except (KeaException, OSError, ValueError, RuntimeError) as exc:
         report.fail_snapshot(LEASE, f"Server {server.name} (v{family}): the lease snapshot", exc)
         return {}
