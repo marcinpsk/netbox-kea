@@ -91,6 +91,29 @@ NetBox plugin for the [Kea DHCP](https://www.isc.org/kea/) server. Manage your D
 - Add and edit individual leases
 - Bulk import leases from CSV
 
+**Lease observations**
+- The plugin validates each lease record that Kea returns. A malformed record is left out and the
+  page shows a safe reason for it (a code, the Kea field and the record position, never the rejected value).
+  The other leases stay visible. A malformed record never counts as "no lease".
+- Only a Current Lease is live evidence: an assigned address or delegated prefix, or a registered
+  DHCPv6 address, whose valid lifetime has not ended. An infinite lifetime never ends. The
+  Reservation **Lease** column shows *No Lease* only when the lease query of that Reservation is
+  complete; otherwise it shows *Lease Unknown* with the reason.
+- The lease REST actions (`/api/plugins/kea/servers/<pk>/leases4/` and `leases6/`) return one
+  normalized observation: `count`, `results`, `diagnostics`, `complete`, `next_cursor`, `query`
+  (`family`, `selector`, `value`, `state`), `coverage` (`exhaustive` or `page`) and `evaluated_at`.
+  Each result has `family`, `kind` (`address` or `delegated-prefix`), `address`, `prefix_length`,
+  `subnet_id`, `state` (the Kea state name), `current`, `binding`, `hostname`, `valid_lifetime`,
+  `last_transaction` and `expiration` (`infinite`, `expires_at`). Each diagnostic has `code`, `field`,
+  `message`, `source_position` and `kinds`. The response contains no Kea extension values, such as
+  `user-context`, and no display labels. A search covers its own query scope only, so `complete`
+  never means that the daemon has no other leases.
+- Lease CSV exports have the columns of the lease table, with `Family`, `Kind` (`address` or
+  `delegated-prefix`) and `Prefix Length`. *Export All Leases* and *All Data* refuse an incomplete
+  observation (a malformed record, or more leases than the export limit) and show the reason.
+  *Current View (limited coverage)* exports the readable leases of the search as
+  `leases_limited_coverage.csv`. An infinite valid lifetime exports as `infinite`.
+
 ---
 
 ## Requirements
