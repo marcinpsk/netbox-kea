@@ -44,7 +44,6 @@ netbox_kea/models.py:0: error: Need type annotation for "object_type"  [var-anno
 netbox_kea/models.py:0: error: Need type annotation for "object_id"  [var-annotated]
 netbox_kea/models.py:0: error: Need type annotation for "created"  [var-annotated]
 netbox_kea/models.py:0: error: Need type annotation for "last_synced"  [var-annotated]
-netbox_kea/utilities.py:0: error: Argument 1 to "get" of "dict" has incompatible type "Any | None"; expected "int"  [arg-type]
 netbox_kea/subnet_catalogue.py:0: error: Argument 2 to "_is_quarantined" has incompatible type "frozenset[int]"; expected "set[int]"  [arg-type]
 netbox_kea/subnet_catalogue.py:0: error: Argument 3 to "_is_quarantined" has incompatible type "frozenset[IPv4Network | IPv6Network]"; expected "set[IPv4Network | IPv6Network]"  [arg-type]
 netbox_kea/subnet_catalogue.py:0: error: Argument 2 to "_is_quarantined" has incompatible type "frozenset[int]"; expected "set[int]"  [arg-type]
@@ -55,15 +54,11 @@ netbox_kea/tables.py:0: note: Superclass:
 netbox_kea/tables.py:0: note: def render(self, value: int) -> Any
 netbox_kea/tables.py:0: note: Subclass:
 netbox_kea/tables.py:0: note: def render(self, value: int, record: dict[Any, Any]) -> Any
-netbox_kea/tables.py:0: error: Incompatible types in assignment (expression has type "tuple[str, str, ... <11 more items>]", base class "Meta" defined the type as "tuple[str, str, ... <10 more items>]")  [assignment]
-netbox_kea/tables.py:0: error: Incompatible types in assignment (expression has type "tuple[str, str, ... <13 more items>]", base class "Meta" defined the type as "tuple[str, str, ... <10 more items>]")  [assignment]
 netbox_kea/tables.py:0: error: Incompatible types in assignment (expression has type "tuple[str, str, ... <9 more items>]", base class "Meta" defined the type as "tuple[str, str, str, str, str, str, str, str, str, str]")  [assignment]
 netbox_kea/tables.py:0: error: Incompatible types in assignment (expression has type "tuple[str, str, str, str, str, str, str, str, str]", base class "Meta" defined the type as "tuple[str, str, str, str, str, str, str, str]")  [assignment]
 netbox_kea/tables.py:0: error: Incompatible types in assignment (expression has type "tuple[str, str, ... <10 more items>]", base class "Meta" defined the type as "tuple[str, str, ... <9 more items>]")  [assignment]
 netbox_kea/tables.py:0: error: Incompatible types in assignment (expression has type "tuple[str, str, str, str, str, str, str, str, str, str]", base class "Meta" defined the type as "tuple[str, str, str, str, str, str, str, str, str]")  [assignment]
-netbox_kea/tables.py:0: error: Incompatible types in assignment (expression has type "tuple[str, str, ... <12 more items>]", base class "Meta" defined the type as "tuple[str, str, ... <11 more items>]")  [assignment]
 netbox_kea/tables.py:0: error: Incompatible types in assignment (expression has type "tuple[str, str, str, str, str, str, str, str]", base class "Meta" defined the type as "tuple[str, str, str, str, str]")  [assignment]
-netbox_kea/tables.py:0: error: Incompatible types in assignment (expression has type "tuple[str, str, ... <14 more items>]", base class "Meta" defined the type as "tuple[str, str, ... <13 more items>]")  [assignment]
 netbox_kea/tables.py:0: error: Incompatible types in assignment (expression has type "tuple[str, str, str, str, str, str, str, str]", base class "Meta" defined the type as "tuple[str, str, str, str, str]")  [assignment]
 netbox_kea/tables.py:0: error: Incompatible types in assignment (expression has type "tuple[str, str, str, str, str, str, str, str]", base class "Meta" defined the type as "tuple[str, str, str, str, str, str, str]")  [assignment]
 netbox_kea/tables.py:0: error: Incompatible types in assignment (expression has type "tuple[str, str, str, str, str, str, str]", base class "Meta" defined the type as "tuple[str, str, str, str, str, str]")  [assignment]

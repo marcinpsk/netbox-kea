@@ -8,7 +8,7 @@ import logging
 
 from django.test import TestCase, override_settings
 
-from .kea_stub import _catalogue_responses_for_subnets, _typed_reservation, stub_kea
+from .kea_stub import _catalogue_responses_for_subnets, _typed_reservation, complete_lease, stub_kea, typed_lease
 from .utils import _make_db_server, plugins_config
 
 
@@ -371,7 +371,7 @@ class TestOwnershipClaimBehavior(TestCase):
             "hw-address": "aa:bb:cc:dd:ee:ff",
         }
         with stub_kea(_catalogue_responses_for_subnets(4, [{"id": 1, "subnet": "198.18.0.0/24"}])):
-            return claim(self.server, 4, [record], force=force).addresses["198.18.0.20"]
+            return claim(self.server, 4, [typed_lease(complete_lease(record))], force=force).addresses["198.18.0.20"]
 
     def _reservation(self, *, force=False):
         from netbox_kea.ipam_reconciliation import claim

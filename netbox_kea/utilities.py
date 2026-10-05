@@ -2,14 +2,13 @@
 # SPDX-FileCopyrightText: 2023-2024 Devon Mar <devon-mar@users.noreply.github.com>
 # SPDX-FileCopyrightText: 2026 Andrew Backeby <andrew@backeby.eu>
 # SPDX-License-Identifier: Apache-2.0
-import contextlib
 import csv
 import io
 import ipaddress
 import logging
 import re
-from collections.abc import Callable
-from datetime import datetime, timezone
+from collections.abc import Callable, Iterable
+from datetime import datetime
 from typing import Any
 
 from django.http import HttpResponse
@@ -20,6 +19,7 @@ from utilities.views import ViewTab
 
 from . import constants
 from .constants import Family
+from .leases import DHCPv4AddressLease, Lease
 from .models import Server
 
 logger = logging.getLogger(__name__)
@@ -34,49 +34,45 @@ def format_duration(s: int | None) -> str | None:
     return f"{hours:02}:{minutes:02}:{seconds:02}"
 
 
-def _enrich_lease(now: datetime, lease: dict[str, Any]) -> dict[str, Any]:
-    """Add expires at, expires in, state_label, _ip_sort_key, and expiry_class to a lease."""
-    # Need to replace "-" so we can access the values in a template
-    lease = {k.replace("-", "_"): v for k, v in lease.items()}
+def lease_rows(leases: Iterable[Lease], *, evaluated_at: datetime) -> list[dict[str, Any]]:
+    """Return the presentation rows of typed Leases, evaluated at the aware time *evaluated_at*.
 
-    # Human-readable state label — map Kea state int to text.
-    lease["state_label"] = constants.LEASE_STATE_LABELS.get(lease.get("state"), "Unknown")
-
-    # F1: inject numeric sort key so django-tables2 sorts IPs as integers, not strings.
-    if ip_str := lease.get("ip_address"):
-        with contextlib.suppress(ValueError):
-            lease["_ip_sort_key"] = int(ipaddress.ip_address(ip_str))
-
-    # F10: default expiry CSS class; updated below once we know the expiry time.
-    lease["expiry_class"] = ""
-
-    if "cltt" not in lease or "valid_lft" not in lease:
-        return lease
-
-    # https://kea.readthedocs.io/en/kea-2.2.0/arm/hooks.html?highlight=cltt#the-lease4-get-lease6-get-commands
-    cltt = lease["cltt"]
-    valid_lft = lease["valid_lft"]
-    if not isinstance(cltt, int) or not isinstance(valid_lft, int):
-        logger.warning("Unexpected non-integer cltt/valid_lft in lease: %s", lease.get("ip_address", "?"))
-        return lease
-    expires_at = datetime.fromtimestamp(cltt + valid_lft, tz=timezone.utc)
-    lease["expires_at"] = expires_at
-    lease["expires_in"] = max(0, int((expires_at - now).total_seconds()))
-    lease["cltt"] = datetime.fromtimestamp(cltt, tz=timezone.utc)
-
-    # F10: set expiry_class based on how close the lease is to expiring.
-    if expires_at < now:
-        lease["expiry_class"] = "text-danger"
-    elif lease["expires_in"] < 300:
-        lease["expiry_class"] = "text-warning"
-
-    return lease
+    Each row keeps its typed Lease under ``lease``; the other keys are display values only.
+    """
+    return [_lease_row(lease, evaluated_at) for lease in leases]
 
 
-def format_leases(leases: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Enrich a list of raw Kea lease dicts with expiry metadata."""
-    now = datetime.now(tz=timezone.utc)
-    return [_enrich_lease(now, ls) for ls in leases]
+def _lease_row(lease: Lease, now: datetime) -> dict[str, Any]:
+    address = lease.identity.address
+    expires_at = lease.expires_at
+    expires_in = None if expires_at is None else max(0, int((expires_at - now).total_seconds()))
+    expiry_class = ""
+    if expires_at is not None and expires_at < now:
+        expiry_class = "text-danger"
+    elif expires_in is not None and expires_in < 300:
+        expiry_class = "text-warning"
+    row: dict[str, Any] = {
+        "lease": lease,
+        "ip_address": str(address),
+        "_ip_sort_key": int(address),
+        "family": lease.family,
+        "kind": lease.kind,
+        "prefix_length": lease.prefix_length,
+        "subnet_id": lease.subnet_id,
+        "hostname": lease.hostname,
+        "hw_address": lease.hw_address,
+        "state_label": constants.LEASE_STATE_LABELS[lease.state],
+        "valid_lft": lease.valid_lifetime,
+        "cltt": lease.last_transaction,
+        "expires_at": expires_at,
+        "expires_in": expires_in,
+        "expiry_class": expiry_class,
+    }
+    if isinstance(lease, DHCPv4AddressLease):
+        row["client_id"] = lease.client_id
+    else:
+        row.update({"duid": lease.duid, "iaid": lease.iaid, "preferred_lft": lease.preferred_lifetime})
+    return row
 
 
 def export_table(

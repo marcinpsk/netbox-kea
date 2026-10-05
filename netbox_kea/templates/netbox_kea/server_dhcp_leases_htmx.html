@@ -87,6 +87,15 @@
   </div>
 
   {% if not is_embedded and form.is_valid %}
+    {% if lease_diagnostics %}
+    <div class="alert alert-warning" role="alert">
+      <strong>Kea returned {{ lease_diagnostics|length }} lease record{{ lease_diagnostics|length|pluralize }} that could not be read.</strong>
+      The table shows the other leases. A complete export is refused.
+      <ul class="mb-0 mt-1">
+        {% for line in lease_diagnostics %}<li>{{ line }}</li>{% endfor %}
+      </ul>
+    </div>
+    {% endif %}
     {% include "inc/table_controls_htmx.html" with table_modal="LeasesTable_config" %}
     {% with preferences|get_key:"pagination.placement" as paginator_placement %}
       <form method="post" action="{{ delete_action }}" id="lease-delete-form">
@@ -113,7 +122,7 @@
               <i class="mdi mdi-download"></i> Export
             </button>
             <ul class="dropdown-menu dropdown-menu-end">
-              <li><a class="dropdown-item" href="{% querystring export="table" %}">Current View</a></li>
+              <li><a class="dropdown-item" href="{% querystring export="table" %}">Current View (limited coverage)</a></li>
               <li><a class="dropdown-item" href="{% querystring export="" %}">All Data (CSV)</a></li>
               <li><hr class="dropdown-divider"></li>
               <li><a class="dropdown-item" href="?export_all=1">Export All Leases (CSV)</a></li>

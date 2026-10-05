@@ -40,9 +40,13 @@ from .kea_stub import (
     _catalogue_responses_for_subnets,
     _subnet_list,
     _subnet_stats,
+    complete_lease,
     kea_client,
+    lease_pages,
+    lease_record,
     queued,
     stub_kea,
+    typed_lease,
 )
 from .utils import _PLUGINS_CONFIG, _make_db_server, _ViewTestBase, plugins_config
 
@@ -223,14 +227,16 @@ class TestReservedBadgeOnLeases(_ViewTestBase):
     to the reservation from the lease table.
     """
 
-    _LEASE4 = {
-        "ip-address": "192.168.1.100",
-        "hw-address": "aa:bb:cc:dd:ee:ff",
-        "subnet-id": 1,
-        "cltt": 1700000000,
-        "valid-lft": 86400,
-        "hostname": "testhost",
-    }
+    _LEASE4 = complete_lease(
+        {
+            "ip-address": "192.168.1.100",
+            "hw-address": "aa:bb:cc:dd:ee:ff",
+            "subnet-id": 1,
+            "cltt": 1700000000,
+            "valid-lft": 86400,
+            "hostname": "testhost",
+        }
+    )
     _RESERVATION4 = {
         "ip-address": "192.168.1.100",
         "hw-address": "aa:bb:cc:dd:ee:ff",
@@ -333,15 +339,17 @@ class TestLeaseSearchPaths(_ViewTestBase):
     quick-select) → ``lease{v}-get…`` → per-lease ``reservation-get`` enrichment.
     """
 
-    _LEASE4 = {
-        "ip-address": "10.0.0.5",
-        "hw-address": "aa:bb:cc:dd:ee:ff",
-        "client-id": "01:aa:bb:cc:dd:ee:ff",
-        "hostname": "search-host",
-        "subnet-id": 1,
-        "valid-lft": 3600,
-        "cltt": 1_700_000_000,
-    }
+    _LEASE4 = complete_lease(
+        {
+            "ip-address": "10.0.0.5",
+            "hw-address": "aa:bb:cc:dd:ee:ff",
+            "client-id": "01:aa:bb:cc:dd:ee:ff",
+            "hostname": "search-host",
+            "subnet-id": 1,
+            "valid-lft": 3600,
+            "cltt": 1_700_000_000,
+        }
+    )
     # The lease-search page fetches the subnet suggestions via subnet{v}-list first.
     _SUBNETS4 = _subnet_list(4, [{"id": 1, "subnet": "10.0.0.0/24"}])
     _SUBNETS6 = _subnet_list(6, [{"id": 1, "subnet": "2001:db8::/64"}])
@@ -728,14 +736,16 @@ class TestLeaseSearchPaths(_ViewTestBase):
 class TestLeaseExport(_ViewTestBase):
     """GET /plugins/kea/servers/<pk>/leases4/?export=all must return a CSV file."""
 
-    _LEASE4 = {
-        "ip-address": "10.0.0.5",
-        "hw-address": "aa:bb:cc:dd:ee:ff",
-        "hostname": "export-host",
-        "subnet-id": 1,
-        "valid-lft": 3600,
-        "cltt": 1_700_000_000,
-    }
+    _LEASE4 = complete_lease(
+        {
+            "ip-address": "10.0.0.5",
+            "hw-address": "aa:bb:cc:dd:ee:ff",
+            "hostname": "export-host",
+            "subnet-id": 1,
+            "valid-lft": 3600,
+            "cltt": 1_700_000_000,
+        }
+    )
     # The export path builds the search form, which fetches the subnet quick-select.
     _SUBNETS4 = _subnet_list(4, [{"id": 1, "subnet": "10.0.0.0/24"}])
 
@@ -771,14 +781,16 @@ class TestLeaseExport(_ViewTestBase):
     def test_export_by_subnet_uses_the_guarded_subnet_query(self):
         """A Subnet export must not rely on global lease-page ordering."""
         leases = [
-            {
-                "ip-address": f"10.0.0.{i}",
-                "hw-address": "aa:bb:cc:dd:ee:ff",
-                "hostname": f"h{i}",
-                "subnet-id": 1,
-                "valid-lft": 3600,
-                "cltt": 1_700_000_000,
-            }
+            complete_lease(
+                {
+                    "ip-address": f"10.0.0.{i}",
+                    "hw-address": "aa:bb:cc:dd:ee:ff",
+                    "hostname": f"h{i}",
+                    "subnet-id": 1,
+                    "valid-lft": 3600,
+                    "cltt": 1_700_000_000,
+                }
+            )
             for i in range(1, 4)
         ]
         with _lease_stub(
@@ -865,14 +877,16 @@ class TestLeaseDeleteFullFlow(_ViewTestBase):
 class TestEnrichLeasesErrorPaths(_ViewTestBase):
     """_enrich_leases_with_badges must degrade gracefully on unexpected errors."""
 
-    _LEASE4 = {
-        "ip-address": "10.0.0.5",
-        "hw-address": "aa:bb:cc:dd:ee:ff",
-        "hostname": "enrich-host",
-        "subnet-id": 1,
-        "valid-lft": 3600,
-        "cltt": 1_700_000_000,
-    }
+    _LEASE4 = complete_lease(
+        {
+            "ip-address": "10.0.0.5",
+            "hw-address": "aa:bb:cc:dd:ee:ff",
+            "hostname": "enrich-host",
+            "subnet-id": 1,
+            "valid-lft": 3600,
+            "cltt": 1_700_000_000,
+        }
+    )
     _SUBNETS4 = _subnet_list(4, [{"id": 1, "subnet": "10.0.0.0/24"}])
 
     def _htmx_get(self, url, data):
@@ -908,14 +922,8 @@ class TestEnrichLeasesErrorPaths(_ViewTestBase):
             response = self._htmx_get(url, {"by": "ip", "q": "10.0.0.5"})
         self.assertEqual(response.status_code, 200)
 
-    def test_non_integer_subnet_ids_do_not_resolve_to_an_integer_catalogue_id(self):
+    def test_a_non_integer_subnet_id_excludes_the_lease_with_a_safe_diagnostic(self):
         url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
-        reservation = {
-            "ip-address": "10.0.0.5",
-            "hw-address": "aa:bb:cc:dd:ee:ff",
-            "subnet-id": 1,
-        }
-
         for subnet_id in (1.0, True):
             lease = {**self._LEASE4, "subnet-id": subnet_id}
             with self.subTest(subnet_id=subnet_id):
@@ -924,17 +932,17 @@ class TestEnrichLeasesErrorPaths(_ViewTestBase):
                     {
                         "subnet4-list": self._SUBNETS4,
                         "lease4-get": {"result": 0, "arguments": lease},
-                        "reservation-get": {"result": 0, "arguments": reservation},
                     },
                 ) as kea:
                     response = self._htmx_get(url, {"by": "ip", "q": "10.0.0.5"})
 
                 self.assertEqual(response.status_code, 200)
                 self.assertNotIn("reservation-get", kea.commands())
-                row = next(iter(response.context["table"].rows)).record
-                self.assertFalse(row["is_reserved"])
-                self.assertIsNone(row["create_reservation_url"])
-                self.assertIsNone(row.get("sync_url"))
+                self.assertEqual(list(response.context["table"].rows), [])
+                self.assertEqual(
+                    response.context["lease_diagnostics"], ["arguments (subnet-id): A lease field has the wrong type."]
+                )
+                self.assertContains(response, "1 lease record that could not be read")
 
     def test_unknown_subnet_id_keeps_reservation_dependent_actions_unavailable(self):
         url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
@@ -997,14 +1005,16 @@ class TestEnrichLeasesErrorPaths(_ViewTestBase):
 class TestStaleMacBadgeEnrichment(_ViewTestBase):
     """_enrich_leases_with_badges must store MAC strings and delete URL on stale-MAC leases."""
 
-    _LEASE4 = {
-        "ip-address": "10.0.0.5",
-        "hw-address": "aa:bb:cc:dd:ee:01",
-        "hostname": "stale-host",
-        "subnet-id": 7,
-        "valid-lft": 3600,
-        "cltt": 1_700_000_000,
-    }
+    _LEASE4 = complete_lease(
+        {
+            "ip-address": "10.0.0.5",
+            "hw-address": "aa:bb:cc:dd:ee:01",
+            "hostname": "stale-host",
+            "subnet-id": 7,
+            "valid-lft": 3600,
+            "cltt": 1_700_000_000,
+        }
+    )
     _RESERVATION = {
         "ip-address": "10.0.0.5",
         "hw-address": "aa:bb:cc:dd:ee:99",  # different MAC → stale
@@ -1087,14 +1097,16 @@ class TestStaleMacBadgeEnrichment(_ViewTestBase):
 class TestLeaseExportAll(_ViewTestBase):
     """GET /plugins/kea/servers/<pk>/leases4/?export_all=1 must return a full CSV."""
 
-    _LEASE = {
-        "ip-address": "10.0.0.1",
-        "hw-address": "aa:bb:cc:dd:ee:ff",
-        "hostname": "export-host",
-        "subnet-id": 1,
-        "valid-lft": 3600,
-        "cltt": 1_700_000_000,
-    }
+    _LEASE = complete_lease(
+        {
+            "ip-address": "10.0.0.1",
+            "hw-address": "aa:bb:cc:dd:ee:ff",
+            "hostname": "export-host",
+            "subnet-id": 1,
+            "valid-lft": 3600,
+            "cltt": 1_700_000_000,
+        }
+    )
 
     def _url4(self):
         return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
@@ -1127,14 +1139,16 @@ class TestLeaseExportAll(_ViewTestBase):
         # The view uses per_page=1000. Report count==1000 on the first page so the
         # view sees a full page and issues a second request; page 2 returns result=3.
         page1 = [
-            {
-                "ip-address": f"198.18.{i // 256}.{i % 256}",
-                "hw-address": "aa:bb:cc:dd:ee:ff",
-                "hostname": f"h{i}",
-                "subnet-id": 1,
-                "valid-lft": 3600,
-                "cltt": 1_700_000_000,
-            }
+            complete_lease(
+                {
+                    "ip-address": f"198.18.{i // 256}.{i % 256}",
+                    "hw-address": "aa:bb:cc:dd:ee:ff",
+                    "hostname": f"h{i}",
+                    "subnet-id": 1,
+                    "valid-lft": 3600,
+                    "cltt": 1_700_000_000,
+                }
+            )
             for i in range(1000)
         ]
         with _lease_stub(
@@ -1175,15 +1189,17 @@ class TestLeaseExportAll(_ViewTestBase):
 _LEASE4_GET_RESP = [
     {
         "result": 0,
-        "arguments": {
-            "ip-address": "10.0.0.100",
-            "hw-address": "aa:bb:cc:dd:ee:ff",
-            "hostname": "host1.example.com",
-            "subnet-id": 1,
-            "cltt": 1700000000,
-            "valid-lft": 3600,
-            "state": 0,
-        },
+        "arguments": complete_lease(
+            {
+                "ip-address": "10.0.0.100",
+                "hw-address": "aa:bb:cc:dd:ee:ff",
+                "hostname": "host1.example.com",
+                "subnet-id": 1,
+                "cltt": 1700000000,
+                "valid-lft": 3600,
+                "state": 0,
+            }
+        ),
     }
 ]
 
@@ -1281,33 +1297,39 @@ _STATE_LEASES_RESP = [
         "result": 0,
         "arguments": {
             "leases": [
-                {
-                    "ip-address": "10.0.0.1",
-                    "hw-address": "aa:bb:cc:dd:ee:01",
-                    "hostname": "active-host",
-                    "subnet-id": 1,
-                    "valid-lft": 3600,
-                    "cltt": 1_700_000_000,
-                    "state": 0,
-                },
-                {
-                    "ip-address": "10.0.0.2",
-                    "hw-address": "aa:bb:cc:dd:ee:02",
-                    "hostname": "declined-host",
-                    "subnet-id": 1,
-                    "valid-lft": 3600,
-                    "cltt": 1_700_000_000,
-                    "state": 1,
-                },
-                {
-                    "ip-address": "10.0.0.3",
-                    "hw-address": "aa:bb:cc:dd:ee:03",
-                    "hostname": "expired-host",
-                    "subnet-id": 1,
-                    "valid-lft": 3600,
-                    "cltt": 1_700_000_000,
-                    "state": 2,
-                },
+                complete_lease(
+                    {
+                        "ip-address": "10.0.0.1",
+                        "hw-address": "aa:bb:cc:dd:ee:01",
+                        "hostname": "active-host",
+                        "subnet-id": 1,
+                        "valid-lft": 3600,
+                        "cltt": 1_700_000_000,
+                        "state": 0,
+                    }
+                ),
+                complete_lease(
+                    {
+                        "ip-address": "10.0.0.2",
+                        "hw-address": "aa:bb:cc:dd:ee:02",
+                        "hostname": "declined-host",
+                        "subnet-id": 1,
+                        "valid-lft": 3600,
+                        "cltt": 1_700_000_000,
+                        "state": 1,
+                    }
+                ),
+                complete_lease(
+                    {
+                        "ip-address": "10.0.0.3",
+                        "hw-address": "aa:bb:cc:dd:ee:03",
+                        "hostname": "expired-host",
+                        "subnet-id": 1,
+                        "valid-lft": 3600,
+                        "cltt": 1_700_000_000,
+                        "state": 2,
+                    }
+                ),
             ]
         },
     }
@@ -1319,24 +1341,28 @@ _PAGE_LEASES_RESP = [
         "arguments": {
             "count": 2,
             "leases": [
-                {
-                    "ip-address": "10.0.0.10",
-                    "hw-address": "aa:bb:cc:dd:ee:10",
-                    "hostname": "page-active",
-                    "subnet-id": 1,
-                    "valid-lft": 3600,
-                    "cltt": 1_700_000_000,
-                    "state": 0,
-                },
-                {
-                    "ip-address": "10.0.0.11",
-                    "hw-address": "aa:bb:cc:dd:ee:11",
-                    "hostname": "page-declined",
-                    "subnet-id": 1,
-                    "valid-lft": 3600,
-                    "cltt": 1_700_000_000,
-                    "state": 1,
-                },
+                complete_lease(
+                    {
+                        "ip-address": "10.0.0.10",
+                        "hw-address": "aa:bb:cc:dd:ee:10",
+                        "hostname": "page-active",
+                        "subnet-id": 1,
+                        "valid-lft": 3600,
+                        "cltt": 1_700_000_000,
+                        "state": 0,
+                    }
+                ),
+                complete_lease(
+                    {
+                        "ip-address": "10.0.0.11",
+                        "hw-address": "aa:bb:cc:dd:ee:11",
+                        "hostname": "page-declined",
+                        "subnet-id": 1,
+                        "valid-lft": 3600,
+                        "cltt": 1_700_000_000,
+                        "state": 1,
+                    }
+                ),
             ],
         },
     }
@@ -1640,6 +1666,12 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
     # A followed redirect lands on the leases page, which fetches the subnet quick-select.
     _SUBNETS4 = _subnet_list(4, [{"id": 1, "subnet": "10.0.0.0/24"}])
 
+    @staticmethod
+    def _readback(address="10.0.0.200", **fields):
+        """The ``lease4-get`` reply that observes the created lease; the claim reads Kea's facts, not the form."""
+        observed = {"hostname": "newlease.example.com", "hw-address": "aa:bb:cc:dd:ee:ff", "subnet-id": 1, **fields}
+        return {"result": 0, "arguments": complete_lease({"ip-address": address, **observed})}
+
     def test_lease4_add_form_has_sync_to_netbox_field(self):
         """GET lease4 add page renders a sync_to_netbox checkbox."""
         response = self.client.get(self._url(version=4))
@@ -1649,9 +1681,10 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
     def test_post_lease4_add_with_sync_links_the_created_ip(self):
         from netbox_kea.models import IPAMOwnershipLink
 
-        with _lease_stub({"lease4-add": {"result": 0}, "subnet4-list": self._SUBNETS4}) as kea:
+        responses = {"lease4-add": {"result": 0}, "lease4-get": self._readback(), "subnet4-list": self._SUBNETS4}
+        with _lease_stub(responses) as kea:
             response = self.client.post(self._url(version=4), self._post4(sync=True))
-        self.assertNotIn("lease4-get", kea.commands())
+        self.assertEqual(kea.commands().count("lease4-get"), 1)
         self.assertEqual(response.status_code, 302)
         ip = NbIP.objects.get(address__net_host="10.0.0.200")
         link = IPAMOwnershipLink.objects.get(ip_address=ip)
@@ -1687,6 +1720,7 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
         with _lease_stub(
             {
                 "lease4-add": {"result": 0},
+                "lease4-get": self._readback("198.18.0.22", hostname="same.example.invalid"),
                 "subnet4-list": _subnet_list(4, [{"id": 1, "subnet": "198.18.0.0/24"}]),
             }
         ) as kea:
@@ -1714,7 +1748,7 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
         data = {"ip_address": "198.18.0.42", "hw_address": "aa:bb:cc:dd:ee:ff", "sync_to_netbox": "on"}
         responses = {
             "lease4-add": {"result": 0},
-            "lease4-get": {"result": 0, "arguments": {"ip-address": "198.18.0.42", "subnet-id": 7}},
+            "lease4-get": self._readback("198.18.0.42", **{"subnet-id": 7}),
             "subnet4-list": _subnet_list(
                 4, [{"id": 7, "subnet": "198.18.0.0/24"}, {"id": 8, "subnet": "198.18.0.0/25"}]
             ),
@@ -1743,7 +1777,7 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
             "lease6-add": {"result": 0},
             "lease6-get": {
                 "result": 0,
-                "arguments": {"ip-address": "2001:0db8:0000:0000:0000:0000:0000:0042", "subnet-id": 7},
+                "arguments": complete_lease({"ip-address": "2001:0db8:0000:0000:0000:0000:0000:0042", "subnet-id": 7}),
             },
             "subnet6-list": _subnet_list(
                 6, [{"id": 7, "subnet": "2001:db8::/64"}, {"id": 8, "subnet": "2001:db8::/80"}]
@@ -1827,7 +1861,12 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
         from netbox_kea.models import IPAMOwnershipLink
 
         with _lease_stub(
-            {"lease4-add": {"result": 0}, "subnet4-list": {"result": 1}, "config-get": {"result": 1}}
+            {
+                "lease4-add": {"result": 0},
+                "lease4-get": self._readback(),
+                "subnet4-list": {"result": 1},
+                "config-get": {"result": 1},
+            }
         ) as kea:
             response = self.client.post(self._url(version=4), self._post4(sync=True))
         self.assertEqual(response.status_code, 302)
@@ -1852,10 +1891,11 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
         other = Server.objects.create(name="other-owner", ca_url="https://other.example.com")
         with _lease_stub({"subnet4-list": self._SUBNETS4}):
             existing = claim(
-                other, 4, [{"ip-address": "10.0.0.200", "hostname": "other.example.com", "subnet-id": 1}], force=False
+                other, 4, [typed_lease(self._readback(hostname="other.example.com")["arguments"])], force=False
             )
         before = NbIP.objects.values().get(pk=existing.primary.pk)
-        with _lease_stub({"lease4-add": {"result": 0}, "subnet4-list": self._SUBNETS4}):
+        responses = {"lease4-add": {"result": 0}, "lease4-get": self._readback(), "subnet4-list": self._SUBNETS4}
+        with _lease_stub(responses):
             response = self.client.post(self._url(version=4), self._post4(sync=True), follow=True)
         self.assertEqual(response.status_code, 200)
         self.assertTrue(any("owners disagree" in str(message) for message in response.context["messages"]))
@@ -1870,7 +1910,8 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
                 "ALTER TABLE ipam_ipaddress ADD CONSTRAINT reject_claim CHECK (host(address) != '10.0.0.200')"
             )
         try:
-            with _lease_stub({"lease4-add": {"result": 0}, "subnet4-list": self._SUBNETS4}) as kea:
+            responses = {"lease4-add": {"result": 0}, "lease4-get": self._readback(), "subnet4-list": self._SUBNETS4}
+            with _lease_stub(responses) as kea:
                 response = self.client.post(self._url(version=4), self._post4(sync=True), follow=True)
             self.assertEqual(response.status_code, 200)
             self.assertEqual(kea.commands().count("lease4-add"), 1)
@@ -1911,7 +1952,8 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
 
         # self.client is the superuser (has IPAM perms) → reaches the real sync.
         IPAddress.objects.create(address="10.0.0.200/24", status="active", description="Router loopback")
-        with _lease_stub({"lease4-add": {"result": 0}, "subnet4-list": self._SUBNETS4}):
+        responses = {"lease4-add": {"result": 0}, "lease4-get": self._readback(), "subnet4-list": self._SUBNETS4}
+        with _lease_stub(responses):
             response = self.client.post(self._url(version=4), self._post4(sync=True), follow=True)
         self.assertEqual(response.status_code, 200)
         msgs = [m.message for m in response.context["messages"]]
@@ -1929,7 +1971,8 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
         from ipam.models import IPAddress
 
         # No pre-existing row → the real sync creates it, no conflict → success message.
-        with _lease_stub({"lease4-add": {"result": 0}, "subnet4-list": self._SUBNETS4}):
+        responses = {"lease4-add": {"result": 0}, "lease4-get": self._readback(), "subnet4-list": self._SUBNETS4}
+        with _lease_stub(responses):
             response = self.client.post(self._url(version=4), self._post4(sync=True), follow=True)
         self.assertEqual(response.status_code, 200)
         msgs = [m.message for m in response.context["messages"]]
@@ -2273,12 +2316,14 @@ class TestLeaseEditGet(_ViewTestBase):
             {
                 "lease6-get": {
                     "result": 0,
-                    "arguments": {
-                        "ip-address": "2001:db8::1",
-                        "duid": "00:01:00:01",
-                        "hostname": "v6host",
-                        "valid-lft": 3600,
-                    },
+                    "arguments": complete_lease(
+                        {
+                            "ip-address": "2001:db8::1",
+                            "duid": "00:01:00:01",
+                            "hostname": "v6host",
+                            "valid-lft": 3600,
+                        }
+                    ),
                 }
             }
         ):
@@ -2347,7 +2392,12 @@ class TestFetchLeasesFromServer(_ViewTestBase):
 
         if resp is None:
             address = "10.0.0.1" if version == 4 else "2001:db8::1"
-            resp = [{"result": 0, "arguments": {"leases": [{"ip-address": address, "valid-lft": 3600, "state": 0}]}}]
+            resp = [
+                {
+                    "result": 0,
+                    "arguments": {"leases": [complete_lease({"ip-address": address, "valid-lft": 3600, "state": 0})]},
+                }
+            ]
         payload = resp[0] if isinstance(resp, list) else resp
         # _fetch_leases_from_server picks the command from `by`; register every
         # lease-get variant of the family to the same payload so whichever it issues is covered.
@@ -2364,26 +2414,26 @@ class TestFetchLeasesFromServer(_ViewTestBase):
     def test_by_hw_address(self):
         from netbox_kea import constants
 
-        leases = self._call(constants.BY_HW_ADDRESS, q="aa:bb:cc:dd:ee:ff")
-        self.assertIsInstance(leases, list)
+        snapshot = self._call(constants.BY_HW_ADDRESS, q="aa:bb:cc:dd:ee:ff")
+        self.assertEqual(len(snapshot.records), 1)
 
     def test_by_hostname(self):
         from netbox_kea import constants
 
-        leases = self._call(constants.BY_HOSTNAME, q="myhost")
-        self.assertIsInstance(leases, list)
+        snapshot = self._call(constants.BY_HOSTNAME, q="myhost")
+        self.assertEqual(len(snapshot.records), 1)
 
     def test_by_client_id(self):
         from netbox_kea import constants
 
-        leases = self._call(constants.BY_CLIENT_ID, q="01:aa:bb:cc:dd:ee:ff")
-        self.assertIsInstance(leases, list)
+        snapshot = self._call(constants.BY_CLIENT_ID, q="01:aa:bb:cc:dd:ee:ff")
+        self.assertEqual(len(snapshot.records), 1)
 
     def test_by_duid(self):
         from netbox_kea import constants
 
-        leases = self._call(constants.BY_DUID, q="00:01:00:01:12:34", version=6)
-        self.assertIsInstance(leases, list)
+        snapshot = self._call(constants.BY_DUID, q="00:01:00:01:12:34", version=6)
+        self.assertEqual(len(snapshot.records), 1)
 
     def test_unknown_by_is_rejected(self):
         with self.assertRaises(ValueError):
@@ -2392,8 +2442,8 @@ class TestFetchLeasesFromServer(_ViewTestBase):
     def test_result_3_returns_empty(self):
         from netbox_kea import constants
 
-        leases = self._call(constants.BY_HOSTNAME, q="ghost", resp=[{"result": 3, "arguments": None}])
-        self.assertEqual(leases, [])
+        snapshot = self._call(constants.BY_HOSTNAME, q="ghost", resp=[{"result": 3, "arguments": None}])
+        self.assertEqual((snapshot.records, snapshot.complete), ((), True))
 
     def test_null_args_raises_runtime_error(self):
         from netbox_kea import constants
@@ -2407,9 +2457,14 @@ class TestFetchLeasesFromServer(_ViewTestBase):
         """The BY_SUBNET_ID selector fetches the leases of one Subnet."""
         from netbox_kea import constants
 
-        resp = [{"result": 0, "arguments": {"leases": [{"ip-address": "10.0.0.1", "valid-lft": 3600, "state": 0}]}}]
-        leases = self._call(constants.BY_SUBNET_ID, q="1", resp=resp)
-        self.assertIsInstance(leases, list)
+        resp = [
+            {
+                "result": 0,
+                "arguments": {"leases": [complete_lease({"ip-address": "10.0.0.1", "valid-lft": 3600, "state": 0})]},
+            }
+        ]
+        snapshot = self._call(constants.BY_SUBNET_ID, q="1", resp=resp)
+        self.assertEqual(len(snapshot.records), 1)
 
     @override_settings(PLUGINS_CONFIG=plugins_config(lease_query_max_unpaged_leases=100))
     def test_subnet_state_is_applied_by_kea(self):
@@ -2419,10 +2474,10 @@ class TestFetchLeasesFromServer(_ViewTestBase):
         stats = _subnet_stats(4, 1, assigned=501, declined=1)
         response = {
             "result": 0,
-            "arguments": {"leases": [{"ip-address": "198.18.0.1", "valid-lft": 3600, "state": 1}]},
+            "arguments": {"leases": [complete_lease({"ip-address": "198.18.0.1", "valid-lft": 3600, "state": 1})]},
         }
         with _lease_stub({"stat-lease4-get": stats, "lease4-get-by-state": response}) as kea:
-            leases = _fetch_leases_from_server(
+            snapshot = _fetch_leases_from_server(
                 self.server,
                 1,
                 constants.BY_SUBNET_ID,
@@ -2430,7 +2485,7 @@ class TestFetchLeasesFromServer(_ViewTestBase):
                 state=1,
             )
 
-        self.assertEqual(len(leases), 1)
+        self.assertEqual(len(snapshot.records), 1)
         self.assertEqual(
             kea.bodies("lease4-get-by-state")[0]["arguments"],
             {"subnet-id": 1, "state": 1},
@@ -2444,69 +2499,32 @@ class TestFetchLeasesFromServer(_ViewTestBase):
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestFetchAllLeasesFromServer(_ViewTestBase):
-    """_fetch_all_leases_from_server pagination and truncation, through KeaClient.lease_get_all."""
+    """_fetch_all_leases_from_server reads every page through KeaClient.lease_get_all, up to its cap."""
 
-    def _run(self, responses, max_leases=1000):
+    def _run(self, page, max_leases=1000):
         from netbox_kea.views.combined import _fetch_all_leases_from_server
 
-        # Each element of *responses* is a one-service Kea reply list; unwrap to the
-        # single dict and feed them as a FIFO on lease4-get-page (the last repeats).
-        page_responses = [r[0] for r in responses]
-        with _lease_stub({"lease4-get-page": queued(*page_responses)}):
+        with _lease_stub({"lease4-get-page": page}):
             return _fetch_all_leases_from_server(self.server, version=4, max_leases=max_leases)
 
-    def test_result_3_stops_loop(self):
-        """result=3 breaks the pagination loop."""
-        leases, truncated = self._run([[{"result": 3, "arguments": None}]])
-        self.assertEqual(leases, [])
-        self.assertFalse(truncated)
+    def test_an_empty_daemon_is_exhaustive(self):
+        snapshot = self._run({"result": 3, "arguments": None})
+        self.assertEqual((snapshot.records, snapshot.coverage), ((), "exhaustive"))
 
     def test_null_args_raises_runtime_error(self):
-        """Null arguments from lease-get-page raises RuntimeError."""
+        """Null arguments from lease-get-page fail the read."""
         with self.assertRaises(RuntimeError):
-            self._run([[{"result": 0, "arguments": None}]])
+            self._run({"result": 0, "arguments": None})
 
-    def test_truncation_at_max(self):
-        """Truncates when max_leases is exceeded."""
-        page = [
-            {
-                "result": 0,
-                "arguments": {
-                    "leases": [
-                        {"ip-address": "10.0.0.1", "valid-lft": 3600, "state": 0},
-                        {"ip-address": "10.0.0.2", "valid-lft": 3600, "state": 0},
-                    ],
-                    "count": 2,
-                },
-            }
-        ]
-        leases, truncated = self._run([page], max_leases=1)
-        self.assertTrue(truncated)
-        self.assertEqual(len(leases), 1)
+    def test_reaching_the_cap_before_the_end_is_page_coverage(self):
+        records = [lease_record("10.0.0.1"), lease_record("10.0.0.2")]
+        snapshot = self._run(lease_pages(records), max_leases=1)
+        self.assertEqual((len(snapshot.records), snapshot.coverage), (1, "page"))
 
-    def test_final_page_no_cursor_update(self):
-        """count < per_page → loop ends without updating cursor."""
-        page = [
-            {
-                "result": 0,
-                "arguments": {"leases": [{"ip-address": "10.0.0.1", "valid-lft": 3600, "state": 0}], "count": 1},
-            }
-        ]
-        leases, truncated = self._run([page])
-        self.assertFalse(truncated)
-        self.assertEqual(len(leases), 1)
-
-    def test_multi_page_cursor_updated(self):
-        """Cursor advances when count == per_page (250)."""
-        big_page = [{"ip-address": f"10.0.{i // 256}.{i % 256}", "valid-lft": 3600, "state": 0} for i in range(250)]
-        last_page = [{"ip-address": "10.3.255.1", "valid-lft": 3600, "state": 0}]
-        responses = [
-            [{"result": 0, "arguments": {"leases": big_page, "count": 250}}],
-            [{"result": 0, "arguments": {"leases": last_page, "count": 1}}],
-        ]
-        leases, truncated = self._run(responses)
-        self.assertFalse(truncated)
-        self.assertEqual(len(leases), 251)
+    def test_pages_continue_until_a_short_page(self):
+        records = [lease_record(f"10.0.{index // 256}.{index % 256}") for index in range(1, 252)]
+        snapshot = self._run(lease_pages(records))
+        self.assertEqual((len(snapshot.records), snapshot.coverage), (251, "exhaustive"))
 
 
 # ---------------------------------------------------------------------------
@@ -2645,7 +2663,7 @@ class TestGetLeasesCoverage(_ViewTestBase):
         view = ServerLeases4View()
         client = kea_client(url="https://kea.example.com")
         with self.assertRaises(ValueError):
-            view.get_leases(client, "test_query", "not_a_valid_by")
+            view.get_leases(client, self.server, "test_query", "not_a_valid_by")
 
     def test_null_args_from_lease_get_raises_runtime_error(self):
         """lease-get returns arguments=None → RuntimeError (caught by HTMX handler)."""
@@ -2725,7 +2743,10 @@ class TestLease6EditDuid(_ViewTestBase):
             args=[self.server.pk, "2001:db8::1"],
         )
         # lease_update reads the current lease (lease6-get) then writes lease6-update.
-        current = {"result": 0, "arguments": {"ip-address": "2001:db8::1", "duid": "00:00", "valid-lft": 3600}}
+        current = {
+            "result": 0,
+            "arguments": complete_lease({"ip-address": "2001:db8::1", "duid": "00:00", "valid-lft": 3600}),
+        }
         with _lease_stub({"lease6-get": current, "lease6-update": {"result": 0}}) as kea:
             response = self.client.post(
                 url,
@@ -2757,7 +2778,9 @@ class TestFetchOneEmptyLease(_ViewTestBase):
         # (an empty registry for reservation-get would raise if it were called).
         lease = {
             "result": 0,
-            "arguments": {"ip-address": "10.0.0.1", "valid-lft": 3600, "state": 0, "hostname": "testhost"},
+            "arguments": complete_lease(
+                {"ip-address": "10.0.0.1", "valid-lft": 3600, "state": 0, "hostname": "testhost"}
+            ),
         }
         url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
         with _lease_stub({"subnet4-list": subnets, "lease4-get": lease}):
@@ -2772,26 +2795,16 @@ class TestFetchOneEmptyLease(_ViewTestBase):
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestCombinedLeasesTruncated(_ViewTestBase):
-    """_fetch_all_leases_from_server returns truncated=True → server name added."""
+    """A server with more leases than the combined cap is named as truncated."""
 
-    @patch("netbox_kea.views.combined._fetch_all_leases_from_server", autospec=True)
-    def test_truncated_server_name_in_context(self, mock_fetch_all):
-        """was_truncated=True → server.name appended to truncated_servers."""
-        from netbox_kea.utilities import format_leases
-
-        # Return a non-empty leases list with truncated=True, tagged with server info
-        server_pk = self.server.pk
-        server_name = self.server.name
-        leases = [
-            {**lease, "server_pk": server_pk, "server_name": server_name}
-            for lease in format_leases([{"ip-address": "10.0.0.1", "valid-lft": 3600, "state": 0}])
-        ]
-        mock_fetch_all.return_value = (leases, True)
+    def test_truncated_server_name_in_context(self):
+        records = [lease_record(f"10.0.{index // 256}.{index % 256}") for index in range(1, 1002)]
         url = reverse("plugins:netbox_kea:combined_leases4") + f"?state=0&server={self.server.pk}"
-        response = self.client.get(url)
+        with _lease_stub({"lease4-get-page": lease_pages(records)}):
+            response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
-        truncated = response.context.get("truncated_servers", [])
-        self.assertIn(self.server.name, truncated)
+        self.assertEqual(response.context["truncated_servers"], [self.server.name])
+        self.assertEqual(len(response.context["table"].data), 1000)
 
 
 # ---------------------------------------------------------------------------
@@ -2892,15 +2905,17 @@ class TestLeaseExportStateFilter(_ViewTestBase):
     @override_settings(PLUGINS_CONFIG=_UNGUARDED_PLUGINS_CONFIG)
     def test_state_filter_applied_to_export(self):
         """Exported CSV must contain only leases matching the requested state."""
-        declined = {
-            "ip-address": "10.0.0.2",
-            "hw-address": "aa:bb:cc:00:00:02",
-            "subnet-id": 1,
-            "cltt": 1700000000,
-            "valid-lft": 86400,
-            "hostname": "",
-            "state": 1,
-        }
+        declined = complete_lease(
+            {
+                "ip-address": "10.0.0.2",
+                "hw-address": "aa:bb:cc:00:00:02",
+                "subnet-id": 1,
+                "cltt": 1700000000,
+                "valid-lft": 86400,
+                "hostname": "",
+                "state": 1,
+            }
+        )
         with _lease_stub(
             {
                 **_catalogue_responses(4, 1, "10.0.0.0/24"),
@@ -3363,13 +3378,17 @@ class TestGetLeasesPageDefensiveChecks(_ViewTestBase):
             response = self.client.get(self._url(), {"by": ""}, HTTP_HX_REQUEST="true")
         self.assertEqual(response.status_code, 200)
 
-    def test_malformed_item_on_partial_page_renders_error(self):
-        """A lease without an IP address makes the page indeterminate."""
+    def test_a_lease_without_an_address_on_a_partial_page_is_a_diagnostic(self):
+        """The record is excluded with a safe reason; the page itself still renders."""
         page = {"result": 0, "arguments": {"leases": [{"no-ip": "bad"}], "count": 1}}
         with _lease_stub({"subnet4-list": self._SUBNETS4, "lease4-get-page": page}):
             response = self.client.get(self._url(), {"by": ""}, HTTP_HX_REQUEST="true")
         self.assertEqual(response.status_code, 200)
-        _assert_rendered_error_template(self, response)
+        _assert_no_error_template(self, response)
+        self.assertIn(
+            "leases[0] (ip-address): A required lease field is missing.", response.context["lease_diagnostics"]
+        )
+        self.assertNotContains(response, "bad")
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
@@ -3402,19 +3421,11 @@ class TestExportAllDefensiveChecks(_ViewTestBase):
         self.assertEqual(response.status_code, 302)
 
     def test_export_limit_refuses_a_partial_csv_and_reports_the_limit(self):
-        leases = [
-            {
-                "ip-address": f"198.18.0.{index}",
-                "hw-address": "aa:bb:cc:dd:ee:ff",
-                "subnet-id": 1,
-            }
-            for index in range(1, 4)
-        ]
-        page = {"result": 0, "arguments": {"leases": leases, "count": len(leases)}}
+        leases = [lease_record(f"198.18.0.{index}") for index in range(1, 4)]
 
         with (
             patch("netbox_kea.views.leases._LEASE_EXPORT_MAX_LEASES", new=2),
-            stub_kea({"lease4-get-page": page}),
+            stub_kea({"lease4-get-page": lease_pages(leases)}),
         ):
             response = self.client.get(self._url(), {"export_all": "1"})
 
@@ -3513,23 +3524,26 @@ class TestGetLeasesSingleResultValidation(_ViewTestBase):
 
     _SUBNETS4 = _subnet_list(4, [])
 
-    def test_single_result_missing_ip_address_renders_error(self):
-        """Single-result response without 'ip-address' key must trigger RuntimeError."""
-        # Single result mode (by ip), but response args lack 'ip-address'.
+    def test_an_exact_result_without_an_address_is_a_diagnostic_not_absence(self):
         resp = {"result": 0, "arguments": {"hw-address": "aa:bb:cc:dd:ee:ff", "subnet-id": 1}}
         with _lease_stub({"subnet4-list": self._SUBNETS4, "lease4-get": resp}):
             response = self._htmx_get(self._url(), {"by": "ip", "q": "10.0.0.5"})
         self.assertEqual(response.status_code, 200)
-        _assert_rendered_error_template(self, response)
+        _assert_no_error_template(self, response)
+        self.assertIn(
+            "arguments (ip-address): A required lease field is missing.", response.context["lease_diagnostics"]
+        )
 
-    def test_multiple_result_all_non_dict_renders_error(self):
-        """Multiple-result with non-dict entries must trigger RuntimeError."""
-        # by=hw returns multiple mode. Each entry must be a lease object.
+    def test_records_that_are_not_objects_are_diagnostics(self):
         resp = {"result": 0, "arguments": {"leases": ["bad", 123, None], "count": 3}}
         with _lease_stub({"subnet4-list": self._SUBNETS4, "lease4-get-by-hw-address": resp}):
             response = self._htmx_get(self._url(), {"by": "hw", "q": "aa:bb:cc:dd:ee:ff"})
         self.assertEqual(response.status_code, 200)
-        _assert_rendered_error_template(self, response)
+        _assert_no_error_template(self, response)
+        self.assertEqual(
+            response.context["lease_diagnostics"],
+            [f"leases[{index}] (record): Kea returned a lease that is not an object." for index in range(3)],
+        )
 
     def test_multiple_result_none_arguments_renders_error(self):
         """Multiple-result with None arguments must trigger RuntimeError."""
@@ -3693,14 +3707,16 @@ class TestFetchOneMacValueError(_ViewTestBase):
         """Lease with non-numeric subnet-id must not crash during MAC reservation lookup."""
         # A non-int subnet-id makes enrichment mark the IP indeterminate without any
         # reservation-get, so no reservation command is registered.
-        lease = {
-            "ip-address": "10.0.0.5",
-            "hw-address": "aa:bb:cc:dd:ee:ff",
-            "hostname": "test",
-            "subnet-id": "not-a-number",
-            "valid-lft": 3600,
-            "cltt": 1_700_000_000,
-        }
+        lease = complete_lease(
+            {
+                "ip-address": "10.0.0.5",
+                "hw-address": "aa:bb:cc:dd:ee:ff",
+                "hostname": "test",
+                "subnet-id": "not-a-number",
+                "valid-lft": 3600,
+                "cltt": 1_700_000_000,
+            }
+        )
         url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
         with _lease_stub({"subnet4-list": self._SUBNETS4, "lease4-get": {"result": 0, "arguments": lease}}):
             response = self._htmx_get(url, {"by": "ip", "q": "10.0.0.5"})
@@ -3709,13 +3725,15 @@ class TestFetchOneMacValueError(_ViewTestBase):
 
     def test_none_subnet_id_does_not_crash(self):
         """Lease with subnet-id=None must not crash during MAC reservation lookup."""
-        lease = {
-            "ip-address": "10.0.0.6",
-            "hw-address": "aa:bb:cc:dd:ee:01",
-            "hostname": "test2",
-            "valid-lft": 3600,
-            "cltt": 1_700_000_000,
-        }
+        lease = complete_lease(
+            {
+                "ip-address": "10.0.0.6",
+                "hw-address": "aa:bb:cc:dd:ee:01",
+                "hostname": "test2",
+                "valid-lft": 3600,
+                "cltt": 1_700_000_000,
+            }
+        )
         url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
         with _lease_stub({"subnet4-list": self._SUBNETS4, "lease4-get": {"result": 0, "arguments": lease}}):
             response = self._htmx_get(url, {"by": "ip", "q": "10.0.0.6"})
@@ -3749,22 +3767,26 @@ class TestGetLeasesPageGlobalEdgeCases(_ViewTestBase):
             "result": 0,
             "arguments": {
                 "leases": [
-                    {
-                        "ip-address": "10.0.0.5",
-                        "hw-address": "aa:bb:cc:dd:ee:ff",
-                        "hostname": "in-subnet",
-                        "subnet-id": 1,
-                        "valid-lft": 3600,
-                        "cltt": 1_700_000_000,
-                    },
-                    {
-                        "ip-address": "10.0.1.5",
-                        "hw-address": "aa:bb:cc:dd:ee:01",
-                        "hostname": "out-of-subnet",
-                        "subnet-id": 1,
-                        "valid-lft": 3600,
-                        "cltt": 1_700_000_000,
-                    },
+                    complete_lease(
+                        {
+                            "ip-address": "10.0.0.5",
+                            "hw-address": "aa:bb:cc:dd:ee:ff",
+                            "hostname": "in-subnet",
+                            "subnet-id": 1,
+                            "valid-lft": 3600,
+                            "cltt": 1_700_000_000,
+                        }
+                    ),
+                    complete_lease(
+                        {
+                            "ip-address": "10.0.1.5",
+                            "hw-address": "aa:bb:cc:dd:ee:01",
+                            "hostname": "out-of-subnet",
+                            "subnet-id": 1,
+                            "valid-lft": 3600,
+                            "cltt": 1_700_000_000,
+                        }
+                    ),
                 ],
                 "count": 2,
             },

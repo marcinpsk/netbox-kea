@@ -313,6 +313,8 @@ class DHCPv6PrefixLease(_DHCPv6Lease):
 Lease: TypeAlias = Annotated[
     DHCPv4AddressLease | DHCPv6AddressLease | DHCPv6PrefixLease, Field(discriminator="variant")
 ]
+#: The Lease variant classes, for an ``isinstance`` check.
+LEASE_VARIANTS = (DHCPv4AddressLease, DHCPv6AddressLease, DHCPv6PrefixLease)
 
 
 class LeaseDiagnostic(_Value):

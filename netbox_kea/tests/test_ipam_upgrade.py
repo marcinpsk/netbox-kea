@@ -14,6 +14,7 @@ from rest_framework.test import APIClient
 
 from netbox_kea.ipam_reconciliation import claim, upgrade_counts
 from netbox_kea.models import IPAMOwnershipLink, Server
+from netbox_kea.tests.kea_stub import typed_lease
 from netbox_kea.tests.test_ipam_reconciliation import _kea, _lease, _reconcile, _run_job, _server
 from netbox_kea.tests.utils import plugins_config
 
@@ -210,7 +211,7 @@ class UpgradeAdoptionTest(TestCase):
         _server("second", sync_vrf=vrf)
         existing = IPAddress.objects.create(address="10.0.0.5/32", description="Synced from Kea DHCP lease note")
         with _kea():
-            result = claim(server, 4, [_lease()], force=False)
+            result = claim(server, 4, [typed_lease(_lease())], force=False)
         self.assertEqual(result.primary.pk, existing.pk)
         existing.refresh_from_db()
         self.assertEqual(existing.vrf_id, vrf.pk)
@@ -270,7 +271,7 @@ class UpgradeAdoptionTest(TestCase):
         legacy = IPAddress.objects.create(address="10.0.0.5/32", description="[kea-sync: lease]")
         blank = IPAddress.objects.create(address="10.0.0.6/32", description="")
         with _kea():
-            result = claim(server, 4, [_lease(), _lease("10.0.0.6")], force=False)
+            result = claim(server, 4, [typed_lease(_lease()), typed_lease(_lease("10.0.0.6"))], force=False)
         self.assertEqual(result.addresses["10.0.0.5"].ip.pk, legacy.pk)
         self.assertTrue(IPAMOwnershipLink.objects.get(ip_address=legacy).adopted)
         self.assertEqual(result.addresses["10.0.0.6"].outcome, "conflict")
@@ -285,7 +286,7 @@ class UpgradeAdoptionTest(TestCase):
             legacy = IPAddress.objects.create(address=f"{address}/32", description="[kea-sync: lease]")
             for server in order:
                 with _kea():
-                    claim(server, 4, [_lease(address)], force=False)
+                    claim(server, 4, [typed_lease(_lease(address))], force=False)
             legacy.refresh_from_db()
             self.assertIsNone(legacy.vrf_id)
             self.assertFalse(IPAMOwnershipLink.objects.filter(ip_address=legacy).exists())
@@ -295,7 +296,7 @@ class UpgradeAdoptionTest(TestCase):
             )
             for server in order:
                 with _kea():
-                    result = claim(server, 4, [_lease(address)], force=False)
+                    result = claim(server, 4, [typed_lease(_lease(address))], force=False)
                 self.assertEqual(
                     result.addresses[address].ip.pk,
                     IPAMOwnershipLink.objects.get(server=server, ip_address__address__net_host=address).ip_address_id,
@@ -339,7 +340,7 @@ class UpgradeAdoptionTest(TestCase):
             server.sync_vrf = vrf
             server.save()
         with _kea():
-            result = claim(second, 4, [_lease()], force=False)
+            result = claim(second, 4, [typed_lease(_lease())], force=False)
         legacy.refresh_from_db()
         self.assertIsNone(legacy.vrf_id)
         self.assertNotEqual(result.primary.pk, legacy.pk)
