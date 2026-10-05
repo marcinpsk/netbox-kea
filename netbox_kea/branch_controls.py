@@ -50,7 +50,8 @@ class _Targets:
 def _disable(soup: BeautifulSoup, control: Tag, reason: str, identifier: str) -> None:
     control["aria-disabled"] = "true"
     control["tabindex"] = "-1"
-    control["class"] = " ".join([*control.get_attribute_list("class"), "disabled"])
+    # Beautiful Soup 4.12 returns [None] for a missing attribute.
+    control["class"] = " ".join([*filter(None, control.get_attribute_list("class")), "disabled"])
     if control.name in {"button", "input", "select", "textarea"}:
         control["disabled"] = ""
     for attr in list(control.attrs):

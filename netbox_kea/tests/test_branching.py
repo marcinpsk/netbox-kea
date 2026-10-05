@@ -2082,6 +2082,15 @@ class RenderedSubmissionControlsTest(TransactionTestCase):
         self.branch = _provisioned_branch(self, "submission controls")
         self.client.cookies[COOKIE_NAME] = self.branch.schema_id
 
+    def test_classless_controls_gain_only_the_disabled_class(self):
+        from bs4 import BeautifulSoup
+
+        response = self.client.get("/kea-controls/read/")
+        page = BeautifulSoup(response.content, "html.parser")
+        for name in ("edit", "save"):
+            with self.subTest(control=name):
+                self.assertEqual(page.find(id=name)["class"], ["disabled"])
+
     def test_real_forms_and_overrides_refuse_writes_but_preserve_safe_controls(self):
         from bs4 import BeautifulSoup
 
