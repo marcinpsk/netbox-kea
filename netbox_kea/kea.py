@@ -37,13 +37,16 @@ from .leases import (
     LeaseDiagnostic,
     LeaseFound,
     LeaseIdentity,
+    LeaseLookupFailed,
     LeaseQuery,
     LeaseRead,
     LeaseSnapshot,
-    _lookup_arguments,
+    allocation_identities,
+    lookup_arguments,
     read_exact_lease,
     read_lease_collection,
     read_lease_page,
+    read_lease_page_count,
 )
 from .pools import parse_pool
 from .reservations import (
@@ -338,8 +341,15 @@ class LeaseQueryPreflightUnavailable(LeaseQueryGuardError):
         super().__init__(reason)
 
 
+class LeaseQueryUnknownSubnet(LeaseQueryGuardError):
+    """Raised when a Subnet CIDR query names no configured Subnet, so no Subnet ID scopes the read."""
+
+
 def lease_query_guard_message(exc: LeaseQueryGuardError, state: int | None) -> str:
     """Return safe, actionable guidance for one rejected lease query."""
+    if isinstance(exc, LeaseQueryUnknownSubnet):
+        # Kea can hold leases under a Subnet ID that its configuration no longer has.
+        return "This Subnet CIDR is not configured on the Kea server. Search by Subnet ID instead."
     if isinstance(exc, LeaseQueryNotMeasurable):
         return "Kea cannot safely measure this lease state. Use an exact IP or client identifier search."
     if isinstance(exc, LeaseQueryPreflightUnavailable):
@@ -1779,7 +1789,7 @@ class KeaClient:
 
         """
         response = self.command(
-            LEASE_GET[identity.family], identity.family, arguments=_lookup_arguments(identity), check=(0, 3)
+            LEASE_GET[identity.family], identity.family, arguments=lookup_arguments(identity), check=(0, 3)
         )
         return read_exact_lease(response, identity)
 
@@ -1823,8 +1833,7 @@ class KeaClient:
                 query = self._lease_query(version, selector, value, state)
                 subnet_id = self.configured_subnet_id_from_cidr(version, value)
                 if subnet_id is None:
-                    read = LeaseRead(family=version, records=(), diagnostics=(), raw_count=0, next_cursor=None)
-                    return _lease_snapshot(server_id, query, started, read, coverage="exhaustive")
+                    raise LeaseQueryUnknownSubnet
             else:
                 subnet_id = _subnet_id_value(value)
                 query = self._lease_query(version, selector, subnet_id, state)
@@ -1840,6 +1849,10 @@ class KeaClient:
 
         response = self._lease_search_response(version, command, arguments)
         read = read_lease_collection(response, family=version)
+        # Kea's statistics do not count every state, so the measured size can be smaller than the reply.
+        subnet_query = query.selector in (constants.BY_SUBNET, constants.BY_SUBNET_ID)
+        if subnet_query and self.max_unpaged_leases is not None and read.raw_count > self.max_unpaged_leases:
+            raise LeaseQueryTooBroad(read.raw_count, self.max_unpaged_leases)
         return _lease_snapshot(server_id, query, started, read, coverage="exhaustive")
 
     @staticmethod
@@ -1852,18 +1865,25 @@ class KeaClient:
         )
 
     def _exact_lease_snapshot(self, version: Family, value: Any, *, started: datetime, server_id: int) -> LeaseSnapshot:
-        """Return the Snapshot of one exact address query; a malformed record is a diagnostic, not absence."""
+        """Return the Snapshot of every allocation at one address: each kind is read on its own.
+
+        A malformed record is a diagnostic, so absence is complete only when Kea confirms it for every kind.
+        """
         if not isinstance(value, str) or not value:
             raise ValueError("ip must be a non-empty string.")
-        identity = LeaseIdentity(family=version, kind="address", address=ipaddress.ip_address(value))
-        result = self.lease_get(identity)
-        records = (result.lease,) if isinstance(result, LeaseFound) else ()
-        diagnostics = () if isinstance(result, (LeaseFound, LeaseAbsent)) else result.diagnostics
-        raw_count = 0 if isinstance(result, LeaseAbsent) else 1
+        results = [self.lease_get(identity) for identity in allocation_identities(version, value)]
+        records = tuple(result.lease for result in results if isinstance(result, LeaseFound))
+        diagnostics = tuple(
+            diagnostic
+            for result in results
+            if isinstance(result, LeaseLookupFailed)
+            for diagnostic in result.diagnostics
+        )
+        raw_count = sum(not isinstance(result, LeaseAbsent) for result in results)
         read = LeaseRead(
             family=version, records=records, diagnostics=diagnostics, raw_count=raw_count, next_cursor=None
         )
-        query = LeaseQuery(family=version, selector=constants.BY_IP, value=str(identity.address))
+        query = LeaseQuery(family=version, selector=constants.BY_IP, value=str(ipaddress.ip_address(value)))
         return _lease_snapshot(server_id, query, started, read, coverage="exhaustive")
 
     def _lease_search_response(
@@ -1995,6 +2015,13 @@ class KeaClient:
         )
         return read_lease_page(response, family=version, limit=limit, after=after)
 
+    def _lease_page_count(self, version: Family, *, after: IPAddressValue) -> int:
+        """Return how many raw records follow *after*, at most one; a record counts whatever its shape."""
+        response = self.command(
+            LEASE_GET_PAGE[version], version, arguments={"from": str(after), "limit": 1}, check=(0, 3)
+        )
+        return read_lease_page_count(response, limit=1)
+
     def lease_get_all(
         self, version: Family, *, per_page: int = 250, max_leases: int | None = None, server_id: int
     ) -> LeaseSnapshot:
@@ -2035,7 +2062,7 @@ class KeaClient:
             cursor = read.next_cursor
             if cursor is not None and max_leases is not None and raw_count >= max_leases:
                 # The cap is reached: one more raw record decides whether the end is proven.
-                if self._lease_page(version, limit=1, after=cursor).raw_count == 0:
+                if self._lease_page_count(version, after=cursor) == 0:
                     cursor = None
                 break
             if cursor is None:

@@ -355,7 +355,8 @@ class TestLease6API(_APITestBase):
         self.assertEqual(suffixed.json()["results"][0]["address"], "2001:db8::1")
         self.assertEqual(suffixed.json()["results"][0]["binding"]["duid"], "00:01:02:03")
         self.assertEqual(suffixed.json()["results"][0]["state"], "assigned")
-        self.assertEqual(kea.commands(), ["lease6-get", "lease6-get"])
+        # Each DHCPv6 address search reads the address and the delegated prefix at that address.
+        self.assertEqual(kea.commands(), ["lease6-get"] * 4)
 
     def test_get_by_duid_returns_200(self):
         """?duid=00:01:02:03 returns 200 with v6 lease list."""

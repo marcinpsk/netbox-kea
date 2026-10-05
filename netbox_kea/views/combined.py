@@ -6,6 +6,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
+import requests
 from django.http import HttpResponse
 from django.http.request import HttpRequest
 from django.shortcuts import render
@@ -14,15 +15,16 @@ from django.views import View
 from .. import constants, forms, server_configuration, tables
 from ..constants import Family
 from ..decimal_text import parse_decimal
-from ..kea import LeaseQueryGuardError, lease_query_guard_message
+from ..kea import KeaException, LeaseQueryGuardError, lease_query_guard_message
 from ..leases import LeaseSnapshot
 from ..models import Server
 from ..reservation_transfer import export_reservation_document
 from ..reservations import ReservationCapabilities, ReservationDiagnostic, ReservationSnapshot
 from ..subnet_catalogue import CatalogueSnapshot, display
 from ..utilities import (
+    diagnostic_reasons,
     export_table,
-    lease_rows,
+    snapshot_rows,
 )
 from ._base import ConditionalLoginRequiredMixin, _catalogue_subnet_row, _enrich_subnet_statistics, _shared_network_row
 from .leases import _enrich_leases_with_badges
@@ -61,10 +63,7 @@ def _fetch_all_leases_from_server(server: "Server", version: Family, max_leases:
 
 def _server_lease_rows(server: Server, snapshot: LeaseSnapshot, state_filter: int | None) -> list[dict[str, Any]]:
     """Return the presentation rows of one server's Snapshot, tagged with the server."""
-    records = snapshot.records
-    if state_filter is not None:
-        records = tuple(lease for lease in records if constants.LEASE_STATE_CODES[lease.state] == state_filter)
-    rows = lease_rows(records, evaluated_at=snapshot.evaluated_at)
+    rows = snapshot_rows(snapshot, state_filter)
     for row in rows:
         row["server_name"] = server.name
         row["server_pk"] = server.pk
@@ -84,7 +83,7 @@ class _CombinedLeaseRead:
         """Add the valid Leases of one server, and its excluded records as a safe reason."""
         self.rows.extend(_server_lease_rows(server, snapshot, state_filter))
         if snapshot.diagnostics:
-            reasons = "; ".join(dict.fromkeys(diagnostic.message for diagnostic in snapshot.diagnostics))
+            reasons = diagnostic_reasons(snapshot.diagnostics)
             self.incomplete_servers.append(
                 (server.name, f"{len(snapshot.diagnostics)} record(s) could not be read: {reasons}")
             )
@@ -112,7 +111,8 @@ def _read_combined_leases(
                 read.add(server, future.result(), None if subnet_search else state_filter)
             except LeaseQueryGuardError as exc:
                 read.errors.append((server.name, lease_query_guard_message(exc, state_filter)))
-            except Exception:
+            # MalformedLeaseResponse is a RuntimeError; a configuration or argument error is a ValueError.
+            except (KeaException, requests.RequestException, RuntimeError, ValueError):
                 logger.exception("Failed to query server %s", server.name)
                 read.errors.append((server.name, "Failed to query server"))
     return read

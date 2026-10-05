@@ -964,10 +964,10 @@ def test_dhcp_lease_all_columns(
             6,
             True,
             (
-                ("IP Address", "ip-address"),
-                ("Hardware Address", "hw-address"),
-                ("DUID", "duid"),
-                ("IAID", "iaid"),
+                ("address", "ip-address"),
+                ("hw_address", "hw-address"),
+                ("duid", "duid"),
+                ("iaid", "iaid"),
             ),
         ),
         (
@@ -983,10 +983,10 @@ def test_dhcp_lease_all_columns(
             4,
             True,
             (
-                ("IP Address", "ip-address"),
-                ("Hardware Address", "hw-address"),
-                ("Client ID", "client-id"),
-                ("Hostname", "hostname"),
+                ("address", "ip-address"),
+                ("hw_address", "hw-address"),
+                ("client_id", "client-id"),
+                ("hostname", "hostname"),
             ),
         ),
         (
@@ -1028,7 +1028,8 @@ def test_dhcp_export_csv_all(
 
     with open(dl.path()) as f:
         r = csv.DictReader(f)
-        have_rows = sorted(r, key=lambda x: x["IP Address"])
+        # The complete export has the documented Kea columns; Current View follows the table.
+        have_rows = sorted(r, key=lambda x: x["address" if all_data else "IP Address"])
 
     want_rows = sorted(leases, key=lambda x: x["ip-address"])
 

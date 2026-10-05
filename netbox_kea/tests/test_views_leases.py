@@ -24,6 +24,7 @@ connectivity checks.
 
 import re
 import threading
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 import requests
@@ -34,6 +35,7 @@ from ipam.models import IPAddress as NbIP
 
 from netbox_kea.kea import KeaClient, KeaException
 from netbox_kea.models import Server
+from netbox_kea.utilities import lease_rows
 
 from .kea_stub import (
     _catalogue_responses,
@@ -642,7 +644,10 @@ class TestLeaseSearchPaths(_ViewTestBase):
             patch.object(KeaClient, "close", autospec=True, side_effect=close_client),
             _reservation_stub(4, {"subnet4-list": self._SUBNETS4}),
         ):
-            _enrich_leases_with_badges([{"ip_address": "", "subnet_id": 1}], self.server, 4)
+            # Subnet 99 is not in the Catalogue, so no worker needs a client of its own.
+            lease = typed_lease(complete_lease({"ip-address": "10.0.0.5", "subnet-id": 99}))
+            rows = lease_rows([lease], evaluated_at=datetime.now(tz=timezone.utc))
+            _enrich_leases_with_badges(rows, self.server, 4)
 
         self.assertEqual(len(closed_clients), 1)
 

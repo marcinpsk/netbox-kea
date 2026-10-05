@@ -69,24 +69,35 @@ class _CurrentLeaseFacts:
 
     addresses: frozenset[str]
     identities: frozenset[ReservationIdentity]
-    complete: bool
+    #: Why the observation cannot attest that a Reservation has no Lease; empty when it can.
+    unknown_reason: str
 
 
 #: A lookup that Kea could not answer. Distinct from a confirmed empty result.
 _INDETERMINATE = object()
 #: The lease hook is absent, so no Reservation on this Server has an observable lease.
 _HOOK_UNAVAILABLE = object()
-#: Why a partial lease observation cannot attest that a Reservation has no Lease.
+#: Why a lease observation cannot attest that a Reservation has no Lease.
 _PARTIAL_LEASE_REASON = "Kea returned lease records that could not be read, so a missing Lease cannot be confirmed."
+_FOREIGN_IDENTIFIER_REASON = (
+    "A current lease carries a client identifier that no Reservation can hold, so a missing Lease cannot be confirmed."
+)
 
 
 def _current_lease_facts(snapshot: LeaseSnapshot) -> _CurrentLeaseFacts:
     """Return the Current Leases of *snapshot*; only they are live evidence of a relationship."""
     current = snapshot.current_records
+    identities: set[ReservationIdentity] = set()
+    unknown_reason = "" if snapshot.complete else _PARTIAL_LEASE_REASON
+    for lease in current:
+        carried = lease_identities(lease)
+        identities.update(carried.identities)
+        if carried.foreign:
+            unknown_reason = unknown_reason or _FOREIGN_IDENTIFIER_REASON
     return _CurrentLeaseFacts(
         addresses=frozenset(str(lease.identity.address) for lease in current if lease.kind == "address"),
-        identities=frozenset(identity for lease in current for identity in lease_identities(lease)),
-        complete=snapshot.complete,
+        identities=frozenset(identities),
+        unknown_reason=unknown_reason,
     )
 
 
@@ -201,10 +212,10 @@ def _enrich_reservations_with_lease_status(
 
 def _set_negative_relationship(row: dict[str, Any], facts: _CurrentLeaseFacts) -> None:
     """Report "no Lease" only from a complete observation; a partial one stays unknown with its reason."""
-    if facts.complete:
-        row["has_active_lease"] = False
+    if facts.unknown_reason:
+        row["lease_status_reason"] = facts.unknown_reason
     else:
-        row["lease_status_reason"] = _PARTIAL_LEASE_REASON
+        row["has_active_lease"] = False
 
 
 def _lease_search_url(

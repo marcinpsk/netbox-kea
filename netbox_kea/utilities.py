@@ -19,7 +19,7 @@ from utilities.views import ViewTab
 
 from . import constants
 from .constants import Family
-from .leases import DHCPv4AddressLease, Lease
+from .leases import DHCPv4AddressLease, Lease, LeaseDiagnostic, LeaseSnapshot, lease_record_data
 from .models import Server
 
 logger = logging.getLogger(__name__)
@@ -32,6 +32,68 @@ def format_duration(s: int | None) -> str | None:
     hours, rest = divmod(s, 3600)
     minutes, seconds = divmod(rest, 60)
     return f"{hours:02}:{minutes:02}:{seconds:02}"
+
+
+def snapshot_leases(snapshot: LeaseSnapshot, state_filter: int | None) -> tuple[Lease, ...]:
+    """Return the valid Leases of *snapshot*, or only those with the Kea state code *state_filter*."""
+    if state_filter is None:
+        return snapshot.records
+    return tuple(lease for lease in snapshot.records if constants.LEASE_STATE_CODES[lease.state] == state_filter)
+
+
+def snapshot_rows(snapshot: LeaseSnapshot, state_filter: int | None) -> list[dict[str, Any]]:
+    """Return the presentation rows of :func:`snapshot_leases`."""
+    return lease_rows(snapshot_leases(snapshot, state_filter), evaluated_at=snapshot.evaluated_at)
+
+
+def diagnostic_reasons(diagnostics: Iterable[LeaseDiagnostic]) -> str:
+    """Return each distinct safe reason of *diagnostics* once, in order."""
+    return "; ".join(dict.fromkeys(diagnostic.message for diagnostic in diagnostics))
+
+
+#: The columns of a complete Lease CSV export, by family. The README documents them.
+LEASE_CSV_COLUMNS: dict[int, tuple[str, ...]] = {
+    family: (
+        "family",
+        "kind",
+        "address",
+        "prefix_length",
+        "subnet_id",
+        "state",
+        "current",
+        "hostname",
+        "valid_lifetime",
+        "last_transaction",
+        "infinite",
+        "expires_at",
+        *extra,
+    )
+    for family, extra in ((4, ("hw_address", "client_id")), (6, ("duid", "iaid", "hw_address", "preferred_lifetime")))
+}
+
+
+def _csv_value(value: Any) -> Any:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return "" if value is None else value
+
+
+def lease_csv_response(
+    leases: Iterable[Lease], *, family: Family, evaluated_at: datetime, filename: str
+) -> HttpResponse:
+    """Return a complete Lease export: the public Lease facts, with no display label or rounding."""
+    response = HttpResponse(content_type="text/csv; charset=utf-8")
+    response["Content-Disposition"] = f'attachment; filename="{filename}"'
+    writer = csv.writer(response)
+    columns = LEASE_CSV_COLUMNS[family]
+    writer.writerow(columns)
+    for lease in leases:
+        data = lease_record_data(lease, evaluated_at=evaluated_at)
+        values = {**data, **data["binding"], **data["expiration"], "hw_address": lease.hw_address}
+        if not isinstance(lease, DHCPv4AddressLease):
+            values["preferred_lifetime"] = lease.preferred_lifetime
+        writer.writerow([_csv_value(values[column]) for column in columns])
+    return response
 
 
 def lease_rows(leases: Iterable[Lease], *, evaluated_at: datetime) -> list[dict[str, Any]]:

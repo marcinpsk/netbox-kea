@@ -2048,6 +2048,15 @@ class TestLeaseGetAllPagination(TestCase):
         self.assertEqual((snapshot.coverage, snapshot.next_cursor, snapshot.complete), ("exhaustive", None, True))
         self.assertEqual(requests_sent[1], {"from": "10.0.0.2", "limit": 1})
 
+    def test_a_probe_record_without_a_usable_address_still_reports_the_cap(self):
+        records = [lease_record("10.0.0.1"), lease_record("10.0.0.2")]
+        probe = lease_page({**lease_record("10.0.0.3"), "ip-address": "not-an-address"})
+        with stub_kea({"lease4-get-page": queued(lease_page(*records), probe)}):
+            snapshot = self.client.lease_get_all(version=4, per_page=2, max_leases=2, server_id=1)
+
+        self.assertEqual(snapshot.records, _typed(*records))
+        self.assertEqual((snapshot.coverage, str(snapshot.next_cursor)), ("page", "10.0.0.2"))
+
     def test_invalid_bounds_raise_before_any_request(self):
         for kwargs, name in (
             ({"per_page": 0}, "per_page"),

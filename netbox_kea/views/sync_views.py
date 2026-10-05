@@ -1,7 +1,6 @@
 # SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
 import csv
-import ipaddress
 import logging
 from typing import Any
 
@@ -21,7 +20,7 @@ from .. import forms
 from ..constants import Family
 from ..ipam_reconciliation import ReservationPhase, reconcile
 from ..kea import KeaException
-from ..leases import ExactLeaseResult, LeaseFound, LeaseIdentity, LeaseLookupFailed
+from ..leases import ExactLeaseResult, LeaseFound, LeaseLookupFailed, address_identity
 from ..models import Server
 from ..reservation_transfer import (
     ReservationTransferDiagnostic,
@@ -87,7 +86,7 @@ class _BaseSyncView(ConditionalLoginRequiredMixin, View):
         """Read the live address Lease of *ip_str* from Kea, or ``None`` when the read fails."""
         try:
             client = server.get_client(version=self.dhcp_version)
-            identity = LeaseIdentity(family=self.dhcp_version, kind="address", address=ipaddress.ip_address(ip_str))
+            identity = address_identity(self.dhcp_version, ip_str)
             return client.lease_get(identity)
         except (KeaException, requests.RequestException, RuntimeError, ValueError):
             logger.exception("Failed to fetch live lease%s data for %s", self.dhcp_version, ip_str)
