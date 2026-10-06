@@ -142,6 +142,13 @@ class TestReservationIdentity(SimpleTestCase):
         self.assertEqual(ReservationIdentity("duid", "00010203").value, "00:01:02:03")
         self.assertEqual(ReservationIdentity("client-id", "01.AA.BB").value, "01:aa:bb")
 
+    def test_reads_each_separated_group_as_one_octet_like_kea(self):
+        self.assertEqual(ReservationIdentity("hw-address", "a:b:c:d:e:f").value, "0a:0b:0c:0d:0e:0f")
+        self.assertEqual(ReservationIdentity("hw-address", "0-1B-2-3-4-5").value, "00:1b:02:03:04:05")
+        for value in ("aabb:ccdd:eeff", "aa::bb:cc", "aa:bb:", ":aa:bb", "aa:bbb:cc", "aa-b-ccc"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                ReservationIdentity("client-id", value)
+
     def test_preserves_opaque_identifiers_exactly(self):
         self.assertEqual(ReservationIdentity("circuit-id", " Circuit/A ").value, " Circuit/A ")
         self.assertEqual(ReservationIdentity("flex-id", "Relay:Class-A").value, "Relay:Class-A")

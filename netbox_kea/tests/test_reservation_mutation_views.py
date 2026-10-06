@@ -224,6 +224,35 @@ class TestReservationMutationViews(_ViewTestBase):
         ]
         self.assertFalse(any("pool overlap check did not run" in warning for warning in warnings), warnings)
 
+    def test_create_reads_each_separated_group_as_one_octet_like_kea(self):
+        responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
+        raw = {"subnet-id": 20, "hw-address": "0a:0b:0c:0d:0e:0f"}
+        responses.update({"reservation-add": {"result": 0}, "reservation-get": _res_get(raw)})
+
+        with stub_kea(responses) as kea:
+            response = self.client.post(
+                reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk]),
+                {"subnet_cidr": "198.18.0.0/24", "identifier_type": "hw-address", "identifier": "a:b:c:d:e:f"},
+            )
+
+        self.assertEqual(response.status_code, 302)
+        sent = kea.bodies("reservation-add")[0]["arguments"]["reservation"]
+        self.assertEqual(sent["hw-address"], "0a:0b:0c:0d:0e:0f")
+
+    def test_create_refuses_a_separated_group_that_kea_refuses(self):
+        for identifier in ("aabb:ccdd:eeff", "aa::bb:cc:dd:ee", "aa:bb:cc:dd:ee:fff", "aa-bbb-cc-dd-ee-ff"):
+            with self.subTest(identifier=identifier):
+                responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
+                responses["reservation-add"] = {"result": 0}
+                with stub_kea(responses) as kea:
+                    response = self.client.post(
+                        reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk]),
+                        {"subnet_cidr": "198.18.0.0/24", "identifier_type": "hw-address", "identifier": identifier},
+                    )
+
+                self.assertEqual(response.status_code, 200)
+                self.assertNotIn("reservation-add", kea.commands())
+
     def test_create_uses_the_typed_operation_and_emits_one_typed_signal(self):
         responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
         raw = {
