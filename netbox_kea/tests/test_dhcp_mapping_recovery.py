@@ -3462,7 +3462,7 @@ class DhcpMappingLockScopeTest(TransactionTestCase):
             connections.close_all()
         return None
 
-    def test_unrelated_http_deletes_complete_during_import(self):
+    def test_unrelated_http_deletes_and_tag_edit_complete_during_import(self):
         from dcim.models import Device, Site
         from extras.models import Tag
         from ipam.models import IPAddress, Prefix
@@ -3473,6 +3473,7 @@ class DhcpMappingLockScopeTest(TransactionTestCase):
         assigned = IPAddress.objects.create(address="203.0.113.10/24", assigned_object=interface)
         loose = IPAddress.objects.create(address="203.0.113.20/24")
         prefix = Prefix.objects.create(prefix="203.0.113.0/24")
+        tag = Tag.objects.create(name="lock-scope-unrelated", slug="lock-scope-unrelated")
         doomed = Tag.objects.create(name="lock-scope-doomed", slug="lock-scope-doomed")
         self.client.force_login(self.user)
         with self._during_import("unrelated-http"):
@@ -3490,6 +3491,12 @@ class DhcpMappingLockScopeTest(TransactionTestCase):
                         type(obj).objects.filter(pk=obj.pk).exists(),
                         [str(message) for message in get_messages(response.wsgi_request)],
                     )
+            response = self.client.post(
+                reverse("extras:tag_edit", args=[tag.pk]),
+                {"name": "lock-scope-renamed", "slug": tag.slug, "color": "112233", "weight": 0, "description": ""},
+            )
+            self.assertEqual(response.status_code, 302, response.content[:500])
+            self.assertEqual(Tag.objects.get(pk=tag.pk).name, "lock-scope-renamed")
         self.assertFalse(IPAddress.objects.filter(pk=assigned.pk).exists())
 
     def test_ip_delete_whose_only_dhcp_effect_is_an_empty_set_null_update_completes_during_import(self):
@@ -3635,6 +3642,60 @@ class DhcpMappingLockScopeTest(TransactionTestCase):
         self.assertFalse(type(prefix).objects.filter(pk=prefix.pk).exists())
         self.assertFalse(type(target).objects.filter(pk=target.pk).exists())
         self.assertFalse(KeaDhcpLink.objects.filter(pk=link.pk).exists())
+
+    def test_tag_rename_before_replay_validation_refuses_the_merge(self):
+        from extras.models import Tag
+
+        _, _, _, target, link = self._imported("subnet", 4, "tag-before-replay")
+        tag = Tag.objects.create(name="lock-scope-tag", slug="lock-scope-tag")
+        target.tags.add(tag)
+        branch = _provisioned_branch(self, "lock-scope-tag-before-replay")
+        branch.merge_strategy = "squash"
+        branch.save(provision=False)
+        self._delete(branch, target)
+        renamed, release = Event(), Event()
+        rename_pid, merge_pid, outcome = [], [], []
+
+        def rename():
+            try:
+                with transaction.atomic():
+                    self._backend_pid(rename_pid)
+                    changed = Tag.objects.get(pk=tag.pk)
+                    changed.name = "lock-scope-tag-renamed"
+                    changed.save()
+                    renamed.set()
+                    release.wait(20)
+            finally:
+                connections.close_all()
+
+        def merge():
+            try:
+                self._backend_pid(merge_pid)
+                Branch.objects.get(pk=branch.pk).merge(user=self.user)
+            except AbortRequest as error:
+                outcome.append(error.message)
+            finally:
+                connections.close_all()
+
+        workers = self._workers()
+        renaming = workers.submit(rename)
+        try:
+            self.assertTrue(renamed.wait(20), "The Tag rename did not run")
+            merging = workers.submit(merge)
+            blocked = self._blocked_by(merge_pid, rename_pid, merging)
+        finally:
+            release.set()
+        renaming.result(timeout=20)
+        merging.result(timeout=30)
+        self.assertTrue(blocked, "Replay validation did not wait on the open Tag rename")
+        self.assertEqual(len(outcome), 1, outcome)
+        self.assertIn("Main Tag data has changed", outcome[0])
+        branch.refresh_from_db()
+        self.assertEqual(branch.status, "ready")
+        self.assertFalse(branch.applied_changes.exists())
+        self.assertTrue(type(target).objects.filter(pk=target.pk).exists())
+        self.assertTrue(KeaDhcpLink.objects.filter(pk=link.pk).exists())
+        self.assertEqual(Tag.objects.get(pk=tag.pk).name, "lock-scope-tag-renamed")
 
     def test_deadlock_in_an_uncoordinated_deletion_maps_to_the_retry_refusal(self):
         from ipam.models import IPAddress

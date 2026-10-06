@@ -76,6 +76,10 @@ variant on its actual write alias. Contention raises a clear retry refusal. It c
 an unknown caller's row locks, including locks on another alias. Reentrant acquisition succeeds inside
 the same transaction. This preserves ordinary main autocommit saves and avoids row-lock inversion.
 
+Amendment: `dhcp-import-mapping-lock-scope.md` (ratified r6) changes who takes this lock. A closure
+deletion whose native effect reaches no target or mapping takes no lock and runs under a row fence. A Tag
+write takes no lock; replay reads the Tags it validates `FOR KEY SHARE` instead.
+
 Bounded model adapters delegate the original Subnet, HostReservation and named semantic relation endpoint
 save and save_base methods. The installed named endpoint is Tag. Native target history stores tag names,
 so a scalar tag rename must coordinate as well as a tag relation mutation. Ordinary relations store PKs

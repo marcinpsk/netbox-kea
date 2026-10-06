@@ -247,12 +247,6 @@ def protected_models() -> tuple:
 
 
 @cache
-def metadata_writer_models() -> set:
-    """Include endpoints whose names form serialized target relation state."""
-    return {*protected_models(), *named_endpoint_models()}
-
-
-@cache
 def named_endpoint_models() -> set:
     """Derive the existing endpoints whose names form serialized target relations."""
     return {
@@ -390,9 +384,17 @@ def _copied_named_endpoints(branch, target_history, protected) -> dict:
 
 def _validate_named_identities(endpoints) -> None:
     for model, pk, name, generation in endpoints:
-        current = model._base_manager.using("default").filter(pk=pk).first()
-        if current is None or current.name != name or current.created != generation:
+        if _key_share_identity(model, pk) != (name, generation):
             raise AbortRequest(f"Main Tag data has changed or its identity is missing. {_TAG_INSTRUCTION}")
+
+
+def _key_share_identity(model, pk):
+    """Read a named endpoint FOR KEY SHARE, so a rename of it waits until the replay commits."""
+    query = model._base_manager.using("default").filter(pk=pk).values_list("name", "created").query
+    sql, params = query.get_compiler(using="default").as_sql()
+    with connections["default"].cursor() as cursor:
+        cursor.execute(f"{sql} FOR KEY SHARE", params)
+        return cursor.fetchone()
 
 
 def _validate_named_write(instance, using: str) -> None:
@@ -1178,6 +1180,26 @@ def _guard_queryset_write(original):
     return guarded
 
 
+def _guard_endpoint_write(original, using_position: int):
+    """Map the lock errors of a named endpoint write, such as a Tag rename that waits for replay."""
+
+    @wraps(original)
+    def guarded(self, *args, **kwargs):
+        with _lock_boundary(_write_alias(self, args, kwargs, using_position)):
+            return original(self, *args, **kwargs)
+
+    return guarded
+
+
+def _guard_endpoint_queryset_write(original):
+    @wraps(original)
+    def guarded(self, *args, **kwargs):
+        with _lock_boundary(_queryset_alias(self)):
+            return original(self, *args, **kwargs)
+
+    return guarded
+
+
 def coordinated_import(original):
     """Enter the main writer transaction before importer selection or ownership locks."""
 
@@ -1263,10 +1285,14 @@ def _boundary_queryset(queryset, model):
     if key in _queryset_types:
         return _queryset_types[key]
     protected = model in protected_models()
+    writes = ("create", "get_or_create", "update_or_create", "update", "bulk_create", "bulk_update")
     methods = {}
-    if model in metadata_writer_models():
-        for name in ("create", "get_or_create", "update_or_create", "update", "bulk_create", "bulk_update"):
+    if protected:
+        for name in writes:
             methods[name] = _guard_queryset_write(getattr(queryset, name))
+    elif model in named_endpoint_models():
+        for name in writes:
+            methods[name] = _guard_endpoint_queryset_write(getattr(queryset, name))
     if model is KeaDhcpLink:
         for name in ("_fetch_all", "exists", "count", "aggregate"):
             methods[name] = _guard_mapping_read(getattr(queryset, name))
@@ -1480,8 +1506,8 @@ def register() -> None:
     if not targets:
         return
     protected = protected_models()
+    endpoints = named_endpoint_models()
     roots = delete_effect_models()
-    writers = metadata_writer_models()
     post_save.connect(_late_mapping_save_guard, sender=KeaDhcpLink, dispatch_uid="netbox_kea.mapping_saved_destination")
     for model in roots:
         if model.__dict__.get("_kea_mapping_boundaries", False):
@@ -1490,13 +1516,14 @@ def register() -> None:
         if model in protected:
             model.serialize_object = _precise_serialization(model.serialize_object)
             model.to_objectchange = _complete_history(model.to_objectchange)
-        if model in writers:
             model.save = _guard_model_write(model.save, 2)
             model.save_base = _guard_model_write(model.save_base, 3)
-        if model in protected:
             pre_save.connect(
                 _late_save_guard, sender=model, dispatch_uid=f"netbox_kea.mapping_save.{model._meta.label}"
             )
+        elif model in endpoints:
+            model.save = _guard_endpoint_write(model.save, 2)
+            model.save_base = _guard_endpoint_write(model.save_base, 3)
         model.delete = (_guard_target_delete if model in protected else _guard_parent_delete)(model.delete)
         pre_delete.connect(
             _late_delete_guard, sender=model, dispatch_uid=f"netbox_kea.mapping_delete.{model._meta.label}"

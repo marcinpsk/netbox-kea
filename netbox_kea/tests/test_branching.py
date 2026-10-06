@@ -1897,11 +1897,8 @@ class TagWriterRecoveryTest(TransactionTestCase):
                     deadline = timezone.now() + timedelta(seconds=20)
                     while not writer_done.is_set() and timezone.now() < deadline:
                         with connection.cursor() as cursor:
-                            cursor.execute(
-                                "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE pid = %s "
-                                "AND locktype = 'advisory' AND NOT granted)",
-                                writer_pid,
-                            )
+                            # The rename waits on the row lock that replay validation holds, not on the mapping key.
+                            cursor.execute("SELECT %s = ANY(pg_blocking_pids(%s))", [*replay_pid, *writer_pid])
                             blocked = cursor.fetchone()[0]
                         if blocked:
                             break
