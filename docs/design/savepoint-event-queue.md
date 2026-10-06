@@ -5,7 +5,8 @@ SPDX-License-Identifier: Apache-2.0
 
 # Savepoint rollback and the NetBox event queue
 
-Status: **r9 RATIFIED** (r7 rework, round 3, 2026-10-06), for #302. Sections 17-25 are the current design.
+Status: **r9 RATIFIED** (r7 rework, round 3, 2026-10-06), for #302. Sections 17-25 are the current design;
+section 26 records the implementation and its one deviation (units need NetBox 4.7).
 r6 (sections 0 and 2-16) was ratified, implemented locally, and then superseded by the operator constraint in
 section 17: the plugin must not depend on NetBox event internals. Those sections stay as history.
 
@@ -848,3 +849,30 @@ Unverified by the reviewer, owed by implementation: PostgreSQL integration, real
 6. A measured bound for 10^4 units (EventRule lookups and wall time) is stated in a test or benchmark.
 7. CI runs the event-rollback test module on a NetBox 4.3 unit-test leg as well as 4.7.
 8. User documentation lists the accepted limits and the per-unit dispatch consequences.
+
+## 26. Implementation of the first increment (2026-10-06)
+
+**Deviation: units need NetBox 4.7.** r8 (6) assumed that `event_tracking` nests on 4.3 and differs only in its
+unconditional flush. It does not. On 4.3.0 through 4.6.6, `event_tracking` ends with `current_request.set(None)`
+and `events_queue.set({})`, not a token reset, and has no `finally`. A nested unit therefore drops the caller's
+queued events, and every later write in the same request or job records no ObjectChange and queues no event,
+because `current_request` is None. Executed on NetBox 4.3.7 with the gate removed:
+`test_a_unit_keeps_the_callers_request_queue_and_change_logging` fails with `None is not <WSGIRequest ...>`, and
+the caller's event is lost. 4.7.0 is the first release that resets by token in a `finally`. So `atomic()` selects
+a unit only when `settings.RELEASE` is 4.7 or later. On 4.3 to 4.6 every block is plain, and the accepted limits
+of section 24 (4) apply to top-level blocks as well. This also loses, on those releases, the whole-family
+discard that `_events_follow_rollback` gave the DHCP import before. The 4.3 CI leg runs `test_event_scope.py`
+with these expectations; it passed locally on NetBox 4.3.7 (12 passed, 8 skipped).
+
+**Measured bound (acceptance 6).** 10^4 units that each update one Site: 10^4 EventRule lookups and 151.0 s of
+wall time. The same 10^4 saves in one transaction: 1 lookup and 127.2 s. `UnitCostTest` asserts one lookup per
+unit flush in every run, and repeats the 10^4 measurement with `NETBOX_KEA_BENCHMARK=1`.
+
+**Guards.** `kea-dispatch-error-swallowed` is lexical, so it cannot see the per-Server handler at `jobs.py:377`,
+whose `try` calls `_sync_one_server`. No allow-list entry is needed; the README of the ruleset names that
+handler as the reviewed one. The rule does not check the handler order, and it does not see a tuple that names
+`Exception` or a `try` with `finally`.
+
+**MAC pre-check.** The refusal for a hardware address that is not EUI-48 or EUI-64 now precedes `_claim`. A
+Reservation row whose `_claim` outcome would be a conflict is now refused for such an address, where before it
+was reported as a conflict and its MAC was not synchronized.

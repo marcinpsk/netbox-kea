@@ -487,6 +487,10 @@ resort, reserved for true external boundaries you cannot run locally.
   (reservation only), or `active` (both). `reconcile()` claims all phase reports
   before it removes stale ownership links for complete phases. An incomplete phase
   keeps its links. `claim()` handles selected records without stale cleanup.
+- **Transactions**: open every transaction with `event_scope.atomic()`, never `transaction.atomic`
+  (opengrep `kea-raw-atomic`). At the top level of a tracked request on NetBox 4.7 it is a unit, whose events
+  dispatch after its COMMIT or not at all. Put `except event_scope.EventDispatchError: raise` before a broad
+  `except`. Read `docs/design/savepoint-event-queue.md` (sections 22 and 24) before you change it.
 - **Kea option aliases**: DNS options can be `domain-name-servers` or `dns-servers`;
   NTP can be `ntp-servers` or `sntp-servers`. Search both alias tuples.
 - **Forms**: lease search forms inherit `BaseLeasesSarchForm` (the typo is
