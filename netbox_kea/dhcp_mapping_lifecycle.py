@@ -725,6 +725,15 @@ def _validate_target_associations(branch, mappings, target_changes, affected, de
     return protected, expected_mappings, copied_associations
 
 
+def _deletion_query(queryset):
+    """Prepare a probe clone as ``QuerySet.delete()`` prepares its collector query, without row locks."""
+    queryset._for_write = True
+    queryset.query.select_for_update = False
+    queryset.query.select_related = False
+    queryset.query.clear_ordering(force=True)
+    return queryset
+
+
 def _delete_effect_targets(subject, using: str = "default", *, deleted=None, updates=None) -> set:
     """Use the native collector to inspect cascades, relation changes and mappings without mutation."""
     deleted, updates = deleted or {}, updates or {}
@@ -750,7 +759,7 @@ def _delete_effect_targets(subject, using: str = "default", *, deleted=None, upd
             return queryset.exclude(moved)
 
     collector = FootprintCollector(using=using)
-    collector.collect(subject.using(using) if isinstance(subject, models.QuerySet) else [subject])
+    collector.collect(_deletion_query(subject.using(using)) if isinstance(subject, models.QuerySet) else [subject])
     selected = {model: {obj.pk for obj in objects} for model, objects in collector.data.items()}
     affected = {(model, pk) for model in protected_models() for pk in selected.get(model, ())}
     for target in target_models():

@@ -3927,6 +3927,29 @@ class DhcpMappingLockScopeTest(TransactionTestCase):
             with self.subTest(model=model, pk=pk, event_type=event["event_type"]):
                 self.assertTrue(model.objects.filter(pk=pk).exists(), "An event names a row that never committed")
 
+    def test_select_for_update_queryset_delete_in_autocommit_keeps_the_native_behavior(self):
+        from ipam.models import IPAddress
+        from netbox_dhcp.models import DHCPServer, HostReservation
+
+        unrelated = IPAddress.objects.create(address="203.0.113.71/24")
+        relevant = IPAddress.objects.create(address="203.0.113.72/24")
+        reservation = HostReservation.objects.create(
+            name="lock-scope-for-update",
+            dhcp_server=DHCPServer.objects.create(name="lock-scope-for-update"),
+            ipv4_address=relevant,
+        )
+        self.assertTrue(connection.get_autocommit())
+        results = {}
+        for name, address in (("unrelated", unrelated), ("relevant", relevant)):
+            with self.subTest(name), CaptureQueriesContext(connection) as captured:
+                results[name] = IPAddress.objects.filter(pk=address.pk).select_for_update().delete()
+                self.assertFalse(IPAddress.objects.filter(pk=address.pk).exists())
+                coordinated = any("pg_advisory_xact_lock" in query["sql"] for query in captured.captured_queries)
+                self.assertEqual(coordinated, name == "relevant")
+        self.assertEqual(results["unrelated"], (1, {"ipam.IPAddress": 1}))
+        self.assertEqual(results["relevant"], (1, {"ipam.IPAddress": 1}))
+        self.assertIsNone(HostReservation.objects.get(pk=reservation.pk).ipv4_address_id)
+
     def test_import_view_shows_the_retry_refusal(self):
         from netbox_kea.dhcp_mapping_lifecycle import _METADATA_LOCK
 
