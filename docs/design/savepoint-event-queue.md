@@ -6,7 +6,7 @@ SPDX-License-Identifier: Apache-2.0
 # Savepoint rollback and the NetBox event queue
 
 Status: **r9 RATIFIED** (r7 rework, round 3, 2026-10-06), for #302. Sections 17-25 are the current design;
-section 26 records the implementation and its one deviation (units need NetBox 4.7).
+section 26 records the implementation and its one deviation (units need NetBox 4.6.9).
 r6 (sections 0 and 2-16) was ratified, implemented locally, and then superseded by the operator constraint in
 section 17: the plugin must not depend on NetBox event internals. Those sections stay as history.
 
@@ -14,7 +14,7 @@ section 17: the plugin must not depend on NetBox event internals. Those sections
 
 `netbox_kea/event_scope.py` `atomic(using=None)` replaces every `transaction.atomic` in the plugin. When a
 request is being tracked and no connection holds a transaction, it runs the block as a **unit** inside its own
-`event_tracking`: on NetBox 4.7 the unit's events dispatch after its COMMIT, or not at all when its exception
+`event_tracking`: on NetBox 4.6.9 and later the unit's events dispatch after its COMMIT, or not at all when its exception
 leaves the block. Inside a transaction it is a plain savepoint, and the plugin orders its refusals before its
 event-producing writes; what remains there is NetBox's limit and is documented. No `events_queue`,
 `EventContext` or `enqueue_event` use. Details: section 24 (with section 22), verdict in section 25.
@@ -852,7 +852,7 @@ Unverified by the reviewer, owed by implementation: PostgreSQL integration, real
 
 ## 26. Implementation of the first increment (2026-10-06)
 
-**Deviation: units need NetBox 4.7.** r8 (6) assumed that `event_tracking` nests on 4.3 and differs only in its
+**Deviation: units need NetBox 4.7 (corrected to 4.6.9 at the end of this section).** r8 (6) assumed that `event_tracking` nests on 4.3 and differs only in its
 unconditional flush. It does not. On 4.3.0 through 4.6.6, `event_tracking` ends with `current_request.set(None)`
 and `events_queue.set({})`, not a token reset, and has no `finally`. A nested unit therefore drops the caller's
 queued events, and every later write in the same request or job records no ObjectChange and queues no event,
