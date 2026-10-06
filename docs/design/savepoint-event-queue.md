@@ -873,9 +873,12 @@ whose `try` calls `_sync_one_server`. No allow-list entry is needed; the README 
 handler as the reviewed one. The rule does not check the handler order, and it does not see a tuple that names
 `Exception` or a `try` with `finally`.
 
-**MAC pre-check.** The refusal for a hardware address that is not EUI-48 or EUI-64 now precedes `_claim`. A
-Reservation row whose `_claim` outcome would be a conflict is now refused for such an address, where before it
-was reported as a conflict and its MAC was not synchronized.
+**MAC pre-check.** The check runs immediately before the first event-producing IP address write in `_claim`
+(the legacy VRF move, the create, or the changed save in `_apply_claim`), not before `_claim`. Operator
+decision 2026-10-06: a conflict stays a conflict. A Reservation row whose outcome is a conflict writes no IP
+address, so it is reported as a conflict whatever its MAC is, and its MAC is not synchronized. A row with
+outcome `unchanged` or `disagreement` writes no IP address either; `_sync_row_macs` still refuses it afterwards
+when its MAC does not resolve, and that refusal follows only link writes, which queue no events.
 
 **Correction to the boundary (review of the increment).** The nestable `event_tracking` arrived in NetBox
 **4.6.9** (#22923), not 4.7.0: upstream v4.6.9 `netbox/netbox/context_managers.py` resets the request, queue and

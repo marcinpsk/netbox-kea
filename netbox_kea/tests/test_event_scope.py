@@ -346,6 +346,25 @@ class SavepointLimitTest(_Recorded, TestCase):
         self.assertEqual(result.addresses[host["ip-address"]].outcome, "error")
         self.assertEqual(self.dispatched(), [])
 
+    def _claim_curated(self, host: dict) -> str:
+        server = _make_db_server(dhcp6=False)
+        IPAddress.objects.create(address=f"{host['ip-address']}/24", vrf_id=server.sync_vrf_id, description="curated")
+        with event_tracking(self.request), transaction.atomic():
+            result = claim(server, 4, _reservations(host), force=False)
+        return result.addresses[host["ip-address"]].outcome
+
+    def test_a_conflict_with_a_duplicate_mac_stays_a_conflict(self):
+        host = _host(91)
+        MACAddress.objects.create(mac_address=host["hw-address"])
+        MACAddress.objects.create(mac_address=host["hw-address"])
+        self.assertEqual(self._claim_curated(host), "conflict")
+        self.assertEqual(self.dispatched(), [])
+
+    def test_a_conflict_with_an_unparseable_mac_stays_a_conflict(self):
+        host = {**_host(92), "hw-address": "02:00:00:00:00:00:00:00:00:52"}
+        self.assertEqual(self._claim_curated(host), "conflict")
+        self.assertEqual(self.dispatched(), [])
+
 
 @override_settings(EVENTS_PIPELINE=[_RECORDER])
 class DhcpImportEventTest(_Recorded, TransactionTestCase):

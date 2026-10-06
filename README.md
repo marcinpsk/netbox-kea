@@ -486,8 +486,9 @@ family then sends no event for the changes that it reverted. This has these cons
 - When the dispatch fails after a COMMIT (for example, the events pipeline cannot reach Redis), the operation
   stops with an error and the committed rows stay. The IPAM sync job logs the error for that server and counts it.
 
-The sync refuses a Reservation row before it writes anything when the hardware address is not an EUI-48 or
-EUI-64 address, or when NetBox has more than one MAC address row for it.
+The sync refuses a Reservation row before it writes the IP address when the hardware address is not an EUI-48
+or EUI-64 address, or when NetBox has more than one MAC address row for it. A row whose address is a conflict
+writes no IP address, so the sync reports it as a conflict.
 
 Known limits. NetBox gives a plugin no public way to remove one event from its queue, so these remain:
 

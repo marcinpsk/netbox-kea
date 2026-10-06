@@ -604,9 +604,8 @@ def claim(
     conflicts: set[str] = set()
 
     def apply(row: _Report) -> AddressClaim:
-        if source == RESERVATION:
-            _require_one_mac_each(row)
-        outcome = _claim(server, family, source, row, force=force, conflicts=conflicts)
+        before_write = (lambda: _require_one_mac_each(row)) if source == RESERVATION else None
+        outcome = _claim(server, family, source, row, force=force, conflicts=conflicts, before_write=before_write)
         ip = IPAddress.objects.filter(vrf_id=server.sync_vrf_id, address__net_host=row.address).first()
         resolved_macs = {} if outcome == "conflict" else _sync_row_macs(row, required=source == RESERVATION)
         if row.facts is None and not row.disagreement and outcome == "unchanged":
@@ -622,7 +621,7 @@ def claim(
 
 
 def _require_one_mac_each(row: _Report) -> None:
-    """Refuse a Reservation row before its first write when a hardware address cannot resolve to one MAC row."""
+    """Refuse a Reservation row before its IP address write when a hardware address cannot resolve to one MAC row."""
     for hardware, _hostname in row.mac_addresses:
         try:
             mac = normalized_mac(hardware)
@@ -943,8 +942,12 @@ def _claim(
     *,
     force: bool = False,
     conflicts: set[str] | None = None,
+    before_write: Callable[[], None] | None = None,
 ) -> _Outcome:
-    """Link one reported address under its identity lock, and apply the report when no owner disagrees."""
+    """Link one reported address under its identity lock, and apply the report when no owner disagrees.
+
+    *before_write* runs immediately before the IP address write, so a conflict row stays a conflict.
+    """
     vrf_id = server.sync_vrf_id
     _lock_identity(None, report.address)
     if vrf_id is not None:
@@ -972,6 +975,9 @@ def _claim(
         elif eligible and report.facts is not None:
             legacy[0].snapshot()
             legacy[0].vrf_id = vrf_id
+            if before_write is not None:
+                before_write()
+                before_write = None  # The row passed; a later write in this call does not check again.
             legacy[0].save()
             rows = legacy
     facts = report.facts
@@ -987,6 +993,8 @@ def _claim(
             dns_name=facts.hostname,
             description=render_marker(status_kind(status)),
         )
+        if before_write is not None:
+            before_write()
         ip.save()
         _store_link(None, server, family, source, ip, facts.stored(), stale_mark=None)
         return "created"
@@ -1002,7 +1010,7 @@ def _claim(
             # A Global Reservation does not change an object that it never linked.
             return "unchanged" if facts is None and not links else "conflict"
         links = []
-    return _apply_claim(server, family, source, report, ip, links)
+    return _apply_claim(server, family, source, report, ip, links, before_write)
 
 
 def _apply_claim(
@@ -1012,6 +1020,7 @@ def _apply_claim(
     report: _Report,
     ip: IPAddress,
     links: list[IPAMOwnershipLink],
+    before_write: Callable[[], None] | None = None,
 ) -> _Outcome:
     """Compare owners before applying facts or an explicit takeover to the locked row."""
     facts = report.facts
@@ -1042,6 +1051,8 @@ def _apply_claim(
     fields["address"] = f"{report.address}/{applied.prefix_length}"
     changed = any(str(getattr(ip, name)) != value for name, value in fields.items())
     if changed:
+        if before_write is not None:
+            before_write()
         ip.snapshot()
         for name, value in fields.items():
             setattr(ip, name, value)
