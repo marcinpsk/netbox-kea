@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from contextvars import ContextVar
-from copy import deepcopy
+from copy import copy, deepcopy
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from datetime import datetime
@@ -1210,6 +1210,29 @@ def _guard_endpoint_queryset_write(original):
     return guarded
 
 
+@contextmanager
+def _events_follow_rollback(opened: bool):
+    """Restore the request event queue when the transaction that this scope opened rolls back."""
+    if not opened:
+        yield
+        return
+    from netbox.context import events_queue
+
+    queued = {key: _event_copy(event) for key, event in events_queue.get().items()}
+    try:
+        yield
+    except BaseException:
+        events_queue.set(queued)
+        raise
+
+
+def _event_copy(event):
+    # NetBox coalesces a repeated object into its queued event and changes its snapshots in place.
+    copied = copy(event)
+    copied["snapshots"] = dict(event["snapshots"])
+    return copied
+
+
 def coordinated_import(original):
     """Enter the main writer transaction before importer selection or ownership locks."""
 
@@ -1219,7 +1242,7 @@ def coordinated_import(original):
         opened = not connections["default"].in_atomic_block
         summary = None
         try:
-            with metadata_scope():
+            with _events_follow_rollback(opened), metadata_scope():
                 summary = original(server, config, *args, **kwargs)
         except IntegrityError as error:
             # Only the COMMIT that this scope opened checks deferred references after the import returned.

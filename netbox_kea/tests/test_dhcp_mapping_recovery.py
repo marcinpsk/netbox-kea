@@ -47,8 +47,15 @@ from utilities.exceptions import AbortRequest
 from netbox_kea.integrations.dhcp_plugin import import_server_config
 from netbox_kea.mappers.kea_to_dhcp import parse_dhcp_config
 from netbox_kea.models import KeaDhcpLink
-from netbox_kea.tests.kea_stub import stub_kea
-from netbox_kea.tests.test_branching import _change_request, _device_with_interface, _provisioned_branch, _recorded_kea
+from netbox_kea.tests.kea_stub import _res_page, stub_kea
+from netbox_kea.tests.test_branching import (
+    _KEA_OBJECTS,
+    _change_request,
+    _device_with_interface,
+    _family,
+    _provisioned_branch,
+    _recorded_kea,
+)
 from netbox_kea.tests.test_integration_dhcp_plugin import _reservation_snapshot
 from netbox_kea.tests.test_ipam_reconciliation import _lease, _reconcile, _row
 from netbox_kea.tests.utils import DISPATCHED_EVENTS, _make_db_server
@@ -3871,6 +3878,54 @@ class DhcpMappingLockScopeTest(TransactionTestCase):
         self.assertFalse(MACAddress.objects.filter(pk=mac.pk).exists())
         self.assertFalse(HostReservation.objects.filter(name__startswith=server.name).exists())
         self.assertFalse(KeaDhcpLink.objects.filter(server=server).exists())
+
+    @override_settings(EVENTS_PIPELINE=[_EVENTS_RECORDER])
+    def test_import_view_commit_failure_dispatches_only_the_committed_family_events(self):
+        from dcim.models import MACAddress
+        from netbox_dhcp.models import HostReservation
+
+        server = _make_db_server(
+            name="lock-scope-two-family", ca_url="https://kea.example.invalid", sync_dhcp_plugin_enabled=True
+        )
+        mac = MACAddress.objects.create(mac_address="02:00:00:00:00:41")
+        hosts = {
+            4: _KEA_OBJECTS[4].reservation,
+            6: {"subnet-id": 10, "hw-address": "02:00:00:00:00:41", "ip-addresses": ["2001:db8:1::16"]},
+        }
+        kea = _recorded_kea() | {"reservation-get-page": lambda body: _res_page([hosts[_family(body)]])}
+        workers = self._workers()
+        deleted, doomed = [], []
+
+        def delete_the_referenced_mac(sender, instance, created, **kwargs):
+            # Only the DHCPv6 reservation references this MAC, so the DHCPv4 import commits first.
+            if created and instance.hw_address_id == mac.pk and not deleted:
+                doomed.append(instance.pk)
+                deleted.append(workers.submit(self._delete_in_transaction, mac).result(timeout=20))
+
+        self.client.force_login(self.user)
+        DISPATCHED_EVENTS.clear()
+        post_save.connect(delete_the_referenced_mac, sender=HostReservation, weak=False)
+        try:
+            with stub_kea(kea):
+                response = self.client.post(reverse("plugins:netbox_kea:server_dhcp_plugin_sync", args=[server.pk]))
+        finally:
+            post_save.disconnect(delete_the_referenced_mac, sender=HostReservation)
+        self.assertEqual(deleted, [None])
+        self.assertEqual(response.status_code, 302)
+        refusal = "The DHCPv6 import referenced an object that no longer exists. Nothing changed for DHCPv6. "
+        self.assertEqual(
+            [str(message) for message in get_messages(response.wsgi_request)], [f"{refusal}Run the import again."]
+        )
+        self.assertFalse(KeaDhcpLink.objects.filter(server=server, family=6).exists())
+        committed = list(KeaDhcpLink.objects.filter(server=server, family=4))
+        self.assertTrue(committed)
+        dispatched = {(event["object_type"].model_class(), event["object_id"]) for event in DISPATCHED_EVENTS}
+        self.assertTrue({(type(link.sys4_object), link.object_id) for link in committed} <= dispatched, dispatched)
+        self.assertNotIn((HostReservation, doomed[0]), dispatched)
+        for event in DISPATCHED_EVENTS:
+            model, pk = event["object_type"].model_class(), event["object_id"]
+            with self.subTest(model=model, pk=pk, event_type=event["event_type"]):
+                self.assertTrue(model.objects.filter(pk=pk).exists(), "An event names a row that never committed")
 
     def test_import_view_shows_the_retry_refusal(self):
         from netbox_kea.dhcp_mapping_lifecycle import _METADATA_LOCK
