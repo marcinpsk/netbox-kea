@@ -17,12 +17,12 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypeVar, cast
 
-from django.db import DatabaseError, connection, transaction
+from django.db import DatabaseError, connection
 from django.utils import timezone
 from ipam.models import IPAddress, IPRange, Prefix
 from netaddr import IPNetwork
 
-from . import subnet_catalogue
+from . import event_scope, subnet_catalogue
 from .constants import IP_RANGE_MAX_SIZE, Family, IPNetworkValue, StaleCleanupMode
 from .dhcp_mapping_lifecycle import MetadataBusy
 from .integrations import dhcp_plugin
@@ -396,7 +396,7 @@ def complete_import_observation(server: Server, reports: Mapping[Family, SyncRep
 
 
 def _complete_observation(server: Server, workflow: Workflow, observed: SourceScope) -> None:
-    with transaction.atomic():
+    with event_scope.atomic():
         current = Server.objects.select_for_update(no_key=True).get(pk=server.pk)
         required = effective_sources(current)
         if not required[workflow] or not required[workflow] <= observed:
@@ -735,7 +735,7 @@ def _each_row(
     """Run *work* for each row in its own transaction or savepoint; a database error or refusal fails only that row."""
     for row in rows:
         try:
-            with transaction.atomic():
+            with event_scope.atomic():
                 outcome = work(row)
         except (DatabaseError, _RowRefused, DuplicateNetBoxRowsError, MetadataBusy) as exc:
             report.fail_row(source, name(row), exc)

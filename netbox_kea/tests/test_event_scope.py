@@ -18,28 +18,37 @@ from contextlib import contextmanager, nullcontext, suppress
 from typing import Any
 
 from core.models import ObjectChange, ObjectType
-from dcim.models import Site
+from dcim.models import MACAddress, Site
 from django.apps import apps
 from django.contrib.auth import get_user_model
 from django.contrib.messages import get_messages
-from django.db import connection, transaction
-from django.db.models.signals import post_save
-from django.test import RequestFactory, SimpleTestCase, TransactionTestCase, override_settings
+from django.db import OperationalError, connection, transaction
+from django.db.models.signals import post_save, pre_save
+from django.test import RequestFactory, SimpleTestCase, TestCase, TransactionTestCase, override_settings
 from django.urls import reverse
-from ipam.models import Prefix
+from ipam.models import IPAddress, Prefix
 from netbox.context import current_request
 from netbox.context_managers import event_tracking
 from netbox.settings import VERSION
 
+from netbox_kea.ipam_reconciliation import claim
 from netbox_kea.tests.kea_stub import stub_kea
+from netbox_kea.tests.test_integration_dhcp_plugin import _reservation_snapshot
 from netbox_kea.tests.utils import DISPATCHED_EVENTS, _make_db_server
 
 User: Any = get_user_model()
 _RECORDER = "netbox_kea.tests.utils.record_dispatched_events"
+_FAILING_PIPELINE = "netbox_kea.tests.test_event_scope.fail_dispatch"
 # NetBox 4.7 made event_tracking nestable: it restores the caller's context and dispatches nothing on an exception.
 NESTED_TRACKING = tuple(int(part) for part in VERSION.split("-", 1)[0].split(".")[:2]) >= (4, 7)
 # 2026-10-06, development host: 10^4 units took 151.0 s; the same saves in one transaction took 127.2 s.
 MEASURED_UNIT_SECONDS = 151.0
+_SUBNET = {"subnet4": [{"id": 1, "subnet": "10.77.0.0/24"}]}
+
+
+def fail_dispatch(events: list) -> None:
+    """Stand in for an events pipeline that fails, such as a Redis outage while the RQ jobs are queued."""
+    raise RuntimeError("The events pipeline is down")
 
 
 def _request(user) -> Any:
@@ -58,6 +67,19 @@ def _key(event: dict) -> tuple[Any, Any]:
     return event["object_type"].model_class(), event["object_id"]
 
 
+def _host(index: int) -> dict:
+    return {
+        "subnet-id": 1,
+        "hw-address": f"02:00:00:00:77:{index:02x}",
+        "ip-address": f"10.77.0.{index}",
+        "hostname": f"host-{index}",
+    }
+
+
+def _reservations(*hosts: dict) -> list:
+    return list(_reservation_snapshot(_SUBNET, 4, list(hosts)).snapshot.records)
+
+
 @contextmanager
 def _receiver(signal, sender, function):
     signal.connect(function, sender=sender, weak=False)
@@ -65,6 +87,16 @@ def _receiver(signal, sender, function):
         yield
     finally:
         signal.disconnect(function, sender=sender)
+
+
+def _mac_write_fails(hardware: str):
+    """Fail each MACAddress write of *hardware* with a database error, before NetBox queues its event."""
+
+    def refuse(sender, instance, **kwargs):
+        if str(instance.mac_address).lower() == hardware:
+            raise OperationalError("simulated database failure of the MAC address write")
+
+    return _receiver(pre_save, MACAddress, refuse)
 
 
 class _Recorded(SimpleTestCase):
@@ -109,6 +141,33 @@ class UnitEventTest(_Recorded, TransactionTestCase):
         else:
             # Accepted limit: without nestable tracking, the request flush also sends the reverted write's event.
             self.assertEqual(self.dispatched(), [(Site, kept.pk), (Site, failed.pk)])
+
+    def test_a_refused_reservation_row_dispatches_nothing_while_its_sibling_dispatches(self):
+        failed, healthy = _host(11), _host(12)
+        server = _make_db_server(dhcp6=False)
+        with _mac_write_fails(failed["hw-address"]), event_tracking(self.request):
+            result = claim(server, 4, _reservations(failed, healthy), force=False)
+        self.assertEqual(result.addresses[failed["ip-address"]].outcome, "error")
+        self.assertFalse(IPAddress.objects.filter(address__net_host=failed["ip-address"]).exists())
+        sibling = IPAddress.objects.get(address__net_host=healthy["ip-address"])
+        self.assertIn((IPAddress, sibling.pk), self.dispatched())
+        if NESTED_TRACKING:
+            self.assert_every_event_names_a_committed_row()
+        else:
+            self.assertEqual(sum(model is IPAddress for model, _ in self.dispatched()), 2)
+
+    @unittest.skipUnless(NESTED_TRACKING, "Units need the nestable event_tracking of NetBox 4.7")
+    def test_a_flush_failure_leaves_the_row_loop_and_keeps_the_row_committed(self):
+        from netbox_kea.event_scope import EventDispatchError
+
+        host = _host(21)
+        server = _make_db_server(dhcp6=False)
+        with override_settings(EVENTS_PIPELINE=[_FAILING_PIPELINE]), event_tracking(self.request):
+            with self.assertRaises(RuntimeError) as raised:
+                claim(server, 4, _reservations(host), force=False)
+        self.assertIsInstance(raised.exception, EventDispatchError)
+        self.assertEqual(str(raised.exception.__cause__), "The events pipeline is down")
+        self.assertTrue(IPAddress.objects.filter(address__net_host=host["ip-address"]).exists())
 
     def test_an_open_transaction_selects_plain_mode(self):
         from netbox_kea import event_scope
@@ -191,6 +250,21 @@ class UnitEventTest(_Recorded, TransactionTestCase):
 
 
 @override_settings(EVENTS_PIPELINE=[_RECORDER])
+class SavepointLimitTest(_Recorded, TestCase):
+    """Inside a caller's transaction a plugin block is a plain savepoint. These pin the limits that remain there."""
+
+    def test_limit_a_database_failure_after_the_ip_write_dispatches_the_reverted_ip(self):
+        failed, healthy = _host(51), _host(52)
+        server = _make_db_server(dhcp6=False)
+        with _mac_write_fails(failed["hw-address"]), event_tracking(self.request), transaction.atomic():
+            result = claim(server, 4, _reservations(failed, healthy), force=False)
+        self.assertEqual(result.addresses[failed["ip-address"]].outcome, "error")
+        self.assertFalse(IPAddress.objects.filter(address__net_host=failed["ip-address"]).exists())
+        reverted = [pk for model, pk in self.reverted() if model is IPAddress]
+        self.assertEqual(len(reverted), 1, "NetBox now discards a savepoint's events: remove this accepted limit")
+
+
+@override_settings(EVENTS_PIPELINE=[_RECORDER])
 class DhcpImportEventTest(_Recorded, TransactionTestCase):
     """Each family import is a unit of its own, and an import inside a caller's transaction is plain."""
 
@@ -232,6 +306,35 @@ class DhcpImportEventTest(_Recorded, TransactionTestCase):
             self.assert_every_event_names_a_committed_row()
         else:
             self.assertIn(Prefix, [model for model, _ in self.reverted()])
+
+    def test_a_refused_import_receipt_dispatches_no_reverted_server_event(self):
+        from netbox_kea.models import Server
+
+        server = _make_db_server(name=f"kea-receipt-{uuid.uuid4()}", sync_dhcp_plugin_enabled=True, dhcp6=False)
+        refused = []
+
+        def refuse_the_receipt(sender, instance, update_fields=None, **kwargs):
+            if update_fields and "ipam_initial_observations" in update_fields:
+                refused.append(instance.pk)
+                raise RuntimeError("refused after NetBox queued the event")
+
+        conf = {4: {"subnet4": [{"id": 1, "subnet": "10.88.0.0/24", "pools": [{"pool": "10.88.0.10-10.88.0.99"}]}]}}
+        with _receiver(post_save, Server, refuse_the_receipt):
+            response = self._post_import(server, conf)
+        self.assertEqual((response.status_code, refused), (302, [server.pk]))
+        server.refresh_from_db()
+        self.assertEqual((server.ipam_initial_observations, server.ipam_first_complete_at), ({}, None))
+        subnet = apps.get_model("netbox_dhcp", "Subnet").objects.get(prefix__prefix="10.88.0.0/24")
+        self.assertIn((type(subnet), subnet.pk), self.dispatched())
+        receipts = [
+            event["snapshots"]["postchange"]["ipam_initial_observations"]
+            for event in DISPATCHED_EVENTS
+            if _key(event) == (Server, server.pk)
+        ]
+        if NESTED_TRACKING:
+            self.assertEqual([receipt for receipt in receipts if receipt], [])
+        else:
+            self.assertTrue(any(receipts), "NetBox now discards a savepoint's events: remove this accepted limit")
 
     def test_an_import_inside_a_caller_transaction_is_plain_mode(self):
         from netbox_dhcp.models import DHCPServer
