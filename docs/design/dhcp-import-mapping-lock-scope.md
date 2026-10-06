@@ -76,6 +76,10 @@ divergence table and every round, and they are the evidence for each rule below.
   transaction. No constraint-mode change and no 23503 classification at adapters.
 - When `coordinated_import` opened the transaction, a 23503 `IntegrityError` from its COMMIT becomes
   the importer COMMIT refusal.
+- An exception that leaves `coordinated_import` restores the request event queue to its state at
+  entry. At that point the import's transaction, or its savepoint inside a caller transaction, has
+  rolled back. A nested import that returns leaves its events queued, and the caller owns them
+  together with its transaction.
 - `views/dhcp_plugin_sync.py` catches `MetadataBusy` before `except Exception` and shows its message.
 - The IPAM sync job's `_each_row` treats `MetadataBusy` as a row failure; the next run retries.
 - `BranchRefusalMiddleware.process_exception`: a request that entered lifecycle coordination carries

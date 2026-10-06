@@ -1220,11 +1220,8 @@ def _guard_endpoint_queryset_write(original):
 
 
 @contextmanager
-def _events_follow_rollback(opened: bool):
-    """Restore the request event queue when the transaction that this scope opened rolls back."""
-    if not opened:
-        yield
-        return
+def _events_follow_rollback():
+    """Restore the request event queue when an exception rolls back the import's transaction or savepoint."""
     from netbox.context import events_queue
 
     queued = {key: _event_copy(event) for key, event in events_queue.get().items()}
@@ -1251,7 +1248,7 @@ def coordinated_import(original):
         opened = not connections["default"].in_atomic_block
         summary = None
         try:
-            with _events_follow_rollback(opened), metadata_scope():
+            with _events_follow_rollback(), metadata_scope():
                 summary = original(server, config, *args, **kwargs)
         except IntegrityError as error:
             # Only the COMMIT that this scope opened checks deferred references after the import returned.
