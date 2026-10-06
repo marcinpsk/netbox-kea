@@ -882,3 +882,9 @@ was reported as a conflict and its MAC was not synchronized.
 query cache by token in a `finally` and flushes only after the block completes, and v4.6.8 still ends with
 `current_request.set(None)`. So `atomic()` selects a unit on 4.6.9 and later. The 4.3 CI leg (v4.3.7) keeps its
 plain-mode expectations.
+
+**Red-first evidence (implementation review).** Section 25 (3) asks for each test to be red before the change.
+Three are regression guards instead, because the base already behaved that way: the failed-family test (the
+deleted `_events_follow_rollback` gave the same result) and the two plain-mode tests. They stay as guards for the
+new code path. `UnitGateTest` derives the expected gate from the NetBox version, independently of `event_scope`,
+and pins the 4.6.8/4.6.9 boundary; it fails with the gate at 4.7.
