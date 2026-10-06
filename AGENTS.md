@@ -319,8 +319,9 @@ When a rule below has a matching opengrep rule, a violation fails the local hook
   `resp[0]["arguments"]`; check nested keys (`"leases"`, `"subnet4"`, …) are lists
   before indexing. Malformed payloads should raise `RuntimeError` to hit existing
   handlers.
-- **Catch `(KeaException, requests.RequestException, ValueError)` consistently** in
-  mutation handlers. Split `KeaException` when you need `kea_error_hint(exc)` for
+- **Catch `(KeaException, requests.RequestException, RuntimeError, ValueError)`
+  consistently** in user-facing handlers. `check_response()` raises `RuntimeError` for a
+  malformed reply entry. Split `KeaException` when you need `kea_error_hint(exc)` for
   hook-related errors (result=2). A Configuration Change goes through `_run_config_change`
   instead (see "Exception hierarchy").
 - **Use `kea_error_hint(exc)` for user-facing Kea error messages** — it maps result
