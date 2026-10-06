@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """A plugin transaction and NetBox's events: a unit dispatches after its COMMIT, or nothing when it fails.
 
-On NetBox 4.7 and later, a block of ``event_scope.atomic()`` that runs in a tracked request with no open transaction
+On NetBox 4.6.9 and later, a block of ``event_scope.atomic()`` that runs in a tracked request with no open transaction
 is a unit with its own nested ``event_tracking``. Inside a transaction, and on NetBox releases whose
 ``event_tracking`` cannot nest, it is a plain transaction or savepoint, and the limits that NetBox's design leaves
 are pinned here. The module imports no fixture of netbox-branching, so the NetBox 4.3 CI leg can collect it.
@@ -29,8 +29,8 @@ from django.urls import reverse
 from ipam.models import IPAddress, Prefix
 from netbox.context import current_request
 from netbox.context_managers import event_tracking
-from netbox.settings import VERSION
 
+from netbox_kea import event_scope
 from netbox_kea.ipam_reconciliation import claim
 from netbox_kea.sync import sync_mac_address
 from netbox_kea.tests.kea_stub import stub_kea
@@ -40,8 +40,7 @@ from netbox_kea.tests.utils import DISPATCHED_EVENTS, _make_db_server
 User: Any = get_user_model()
 _RECORDER = "netbox_kea.tests.utils.record_dispatched_events"
 _FAILING_PIPELINE = "netbox_kea.tests.test_event_scope.fail_dispatch"
-# NetBox 4.7 made event_tracking nestable: it restores the caller's context and dispatches nothing on an exception.
-NESTED_TRACKING = tuple(int(part) for part in VERSION.split("-", 1)[0].split(".")[:2]) >= (4, 7)
+NESTED_TRACKING = event_scope._NESTED_TRACKING
 # 2026-10-06, development host: 10^4 units took 151.0 s; the same saves in one transaction took 127.2 s.
 MEASURED_UNIT_SECONDS = 151.0
 _SUBNET = {"subnet4": [{"id": 1, "subnet": "10.77.0.0/24"}]}
@@ -157,7 +156,7 @@ class UnitEventTest(_Recorded, TransactionTestCase):
         else:
             self.assertEqual(sum(model is IPAddress for model, _ in self.dispatched()), 2)
 
-    @unittest.skipUnless(NESTED_TRACKING, "Units need the nestable event_tracking of NetBox 4.7")
+    @unittest.skipUnless(NESTED_TRACKING, "Units need the nestable event_tracking of NetBox 4.6.9")
     def test_a_flush_failure_leaves_the_row_loop_and_keeps_the_row_committed(self):
         from netbox_kea.event_scope import EventDispatchError
 
@@ -170,7 +169,7 @@ class UnitEventTest(_Recorded, TransactionTestCase):
         self.assertEqual(str(raised.exception.__cause__), "The events pipeline is down")
         self.assertTrue(IPAddress.objects.filter(address__net_host=host["ip-address"]).exists())
 
-    @unittest.skipUnless(NESTED_TRACKING, "Units need the nestable event_tracking of NetBox 4.7")
+    @unittest.skipUnless(NESTED_TRACKING, "Units need the nestable event_tracking of NetBox 4.6.9")
     def test_a_flush_failure_leaves_the_mac_sync(self):
         from netbox_kea.event_scope import EventDispatchError
 
@@ -256,7 +255,7 @@ class UnitEventTest(_Recorded, TransactionTestCase):
                 site = Site.objects.create(name="hooked", slug="hooked")
                 transaction.on_commit(fail)
         self.assertTrue(Site.objects.filter(pk=site.pk).exists())
-        # Accepted limit on NetBox 4.7: the committed write's event is dropped. Without units the caller sends it.
+        # Accepted limit with units: the committed write's event is dropped. Without units the caller sends it.
         self.assertEqual(self.dispatched(), [] if NESTED_TRACKING else [(Site, site.pk)])
 
 
@@ -457,7 +456,7 @@ class DhcpImportMacTest(_Recorded, TestCase):
 
 
 @override_settings(EVENTS_PIPELINE=["extras.events.process_event_queue"])
-@unittest.skipUnless(NESTED_TRACKING, "Units need the nestable event_tracking of NetBox 4.7")
+@unittest.skipUnless(NESTED_TRACKING, "Units need the nestable event_tracking of NetBox 4.6.9")
 class UnitCostTest(TransactionTestCase):
     """Each unit flush costs one EventRule lookup per distinct event type and object type, so cost is linear."""
 

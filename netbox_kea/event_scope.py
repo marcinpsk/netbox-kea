@@ -23,9 +23,9 @@ class EventDispatchError(RuntimeError):
 
 
 def _nested_tracking() -> bool:
-    # On exit, NetBox 4.3 to 4.6 set the request to None and the queue to empty instead of the caller's values.
-    major, minor = settings.RELEASE.version.split("-", 1)[0].split(".")[:2]
-    return (int(major), int(minor)) >= (4, 7)
+    # Before NetBox 4.6.9 (#22923), event_tracking ends by setting the request to None and the queue to empty.
+    release = tuple(int(part) for part in settings.RELEASE.version.split("-", 1)[0].split(".")[:3])
+    return release >= (4, 6, 9)
 
 
 _NESTED_TRACKING = _nested_tracking()
