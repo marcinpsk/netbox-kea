@@ -476,6 +476,196 @@ rules:
           with event_scope.atomic(...):
               ...
 
+  - id: kea-no-event-queue-internals
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Do not use NetBox's event queue internals (events_queue, EventContext, enqueue_event).
+      Open the transaction with event_scope.atomic(): NetBox then dispatches a unit's events
+      after its COMMIT, and none when it rolls back.
+      Limit: the rule matches the names as text, so a comment that names them also matches.
+    metadata:
+      category: correctness
+      confidence: HIGH
+    paths:
+      include:
+        - "netbox_kea/**"
+        - "kea-no-event-queue-internals.py"
+      exclude:
+        - "**/tests/**"
+    pattern-regex: \b(events_queue|EventContext|enqueue_event)\b
+
+  - id: kea-raw-atomic
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Open the transaction with event_scope.atomic(), not django.db.transaction.atomic.
+      The owner decides whether the block is a unit that dispatches its events only after its COMMIT.
+    metadata:
+      category: correctness
+      confidence: HIGH
+    paths:
+      include:
+        - "netbox_kea/**"
+        - "kea-raw-atomic.py"
+      exclude:
+        - "netbox_kea/event_scope.py"
+        - "**/tests/**"
+    pattern-either:
+      - pattern: django.db.transaction.atomic
+      - pattern: import django.db.transaction.atomic
+
+  - id: kea-refusal-after-event-write
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Raise the refusal before the first event-producing write of a caught event_scope.atomic() block.
+      Inside a transaction the block is a savepoint, and NetBox dispatches the event of a write that it rolled back.
+      Limit: writes and raises inside called helpers and callbacks are not seen.
+    metadata:
+      category: correctness
+      confidence: MEDIUM
+    paths:
+      exclude:
+        - "**/tests/**"
+        - "**/migrations/**"
+    patterns:
+      - pattern-inside: |
+          try:
+              ...
+          except ...:
+              ...
+      - pattern-inside: |
+          with event_scope.atomic(...):
+              ...
+      - pattern-either:
+          - pattern-inside: |
+              $X.save(...)
+              ...
+          - pattern-inside: |
+              $X.delete(...)
+              ...
+          - pattern-inside: |
+              $Q.create(...)
+              ...
+          - pattern-inside: |
+              $Q.get_or_create(...)
+              ...
+          - pattern-inside: |
+              $Q.update_or_create(...)
+              ...
+          - pattern-inside: |
+              $M.set(...)
+              ...
+          - pattern-inside: |
+              $M.add(...)
+              ...
+          - pattern-inside: |
+              $M.remove(...)
+              ...
+          - pattern-inside: |
+              $M.clear()
+              ...
+      - pattern: raise ...
+
+  - id: kea-dispatch-error-swallowed
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Add "except event_scope.EventDispatchError: raise" before the broad handler of this try.
+      The unit committed and its events did not dispatch, so the run must fail, not report a failed row.
+      Limits: the handler order is not checked; a tuple that names Exception, a try with finally, and
+      handlers in the callers of this function are not seen.
+    metadata:
+      category: correctness
+      confidence: HIGH
+    paths:
+      exclude:
+        - "**/tests/**"
+        - "**/migrations/**"
+    patterns:
+      - pattern-either:
+          - pattern-inside: |
+              try:
+                  ...
+              except Exception:
+                  ...
+          - pattern-inside: |
+              try:
+                  ...
+              except Exception:
+                  ...
+              else:
+                  ...
+          - pattern-inside: |
+              try:
+                  ...
+              except Exception as $ERR:
+                  ...
+          - pattern-inside: |
+              try:
+                  ...
+              except Exception as $ERR:
+                  ...
+              else:
+                  ...
+          - pattern-inside: |
+              try:
+                  ...
+              except BaseException:
+                  ...
+          - pattern-inside: |
+              try:
+                  ...
+              except BaseException:
+                  ...
+              else:
+                  ...
+          - pattern-inside: |
+              try:
+                  ...
+              except BaseException as $ERR:
+                  ...
+          - pattern-inside: |
+              try:
+                  ...
+              except BaseException as $ERR:
+                  ...
+              else:
+                  ...
+          - pattern-inside: |
+              try:
+                  ...
+              except:
+                  ...
+          - pattern-inside: |
+              try:
+                  ...
+              except:
+                  ...
+              else:
+                  ...
+      - pattern-not-inside: |
+          try:
+              ...
+          except event_scope.EventDispatchError:
+              raise
+      - pattern-not-inside: |
+          try:
+              ...
+          except event_scope.EventDispatchError:
+              raise
+          else:
+              ...
+      - pattern-not-inside: |
+          try:
+              ...
+          except event_scope.EventDispatchError:
+              raise
+          finally:
+              ...
+      - pattern: event_scope.atomic(...)
+
   - id: netbox-ipam-mutation-outside-reconciliation
     languages: [python]
     severity: ERROR
