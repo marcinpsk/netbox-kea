@@ -50,7 +50,8 @@ from netbox_kea.models import KeaDhcpLink
 from netbox_kea.tests.kea_stub import stub_kea
 from netbox_kea.tests.test_branching import _change_request, _device_with_interface, _provisioned_branch, _recorded_kea
 from netbox_kea.tests.test_integration_dhcp_plugin import _reservation_snapshot
-from netbox_kea.tests.utils import _make_db_server
+from netbox_kea.tests.test_ipam_reconciliation import _lease, _reconcile, _row
+from netbox_kea.tests.utils import DISPATCHED_EVENTS, _make_db_server
 
 
 class DhcpMappingRecoveryTest(TransactionTestCase):
@@ -3368,6 +3369,7 @@ _RETRY = "Nothing changed. Retry this operation."
 _CONTENTION = f"DHCP mapping metadata is changing in another transaction. {_RETRY}"
 _STALE_GATE = f"This deletion now reaches an imported DHCP target or its mapping. {_RETRY}"
 _LOCK_CONFLICT = f"A database lock conflict stopped this change. {_RETRY}"
+_EVENTS_RECORDER = "netbox_kea.tests.utils.record_dispatched_events"
 
 
 class _PausedImport:
@@ -3434,6 +3436,10 @@ class DhcpMappingLockScopeTest(TransactionTestCase):
         yield paused
         paused.finish()
 
+    def _stale_ip_cleanup(self):
+        kea = {**settings.PLUGINS_CONFIG.get("netbox_kea", {}), "stale_ip_cleanup": "remove"}
+        return override_settings(PLUGINS_CONFIG={**settings.PLUGINS_CONFIG, "netbox_kea": kea})
+
     def _backend_pid(self, pids):
         with connections["default"].cursor() as cursor:
             cursor.execute("SELECT pg_backend_pid()")
@@ -3498,6 +3504,57 @@ class DhcpMappingLockScopeTest(TransactionTestCase):
             self.assertEqual(response.status_code, 302, response.content[:500])
             self.assertEqual(Tag.objects.get(pk=tag.pk).name, "lock-scope-renamed")
         self.assertFalse(IPAddress.objects.filter(pk=assigned.pk).exists())
+
+    def test_stale_ip_delete_completes_during_import(self):
+        from ipam.models import IPAddress
+
+        server = _make_db_server(name="lock-scope-stale", ca_url="https://stale.example.invalid", dhcp6=False)
+        with self._stale_ip_cleanup():
+            _reconcile(server, [_lease()])
+            stale = _row()
+            with self._during_import("stale-ip"):
+                report = _reconcile(server, [])
+        self.assertEqual((report.removed, report.errors), (1, 0))
+        self.assertFalse(IPAddress.objects.filter(pk=stale.pk).exists())
+
+    def test_relevant_stale_ip_delete_is_a_row_failure_during_import(self):
+        from ipam.models import IPAddress
+        from netbox_dhcp.models import DHCPServer, HostReservation
+
+        server = _make_db_server(name="lock-scope-relevant-stale", ca_url="https://stale.example.invalid", dhcp6=False)
+        dhcp_server = DHCPServer.objects.create(name="lock-scope-relevant-stale")
+        paused = _PausedImport(self, "relevant-stale")
+        workers = self._workers()
+        main, referenced = get_ident(), []
+
+        def reserve(address):
+            try:
+                HostReservation.objects.create(name="lock-scope-late", dhcp_server=dhcp_server, ipv4_address=address)
+            finally:
+                connections.close_all()
+
+        def reference_the_other_address(sender, instance, **kwargs):
+            # The first stale delete commits a reference to the second address, then an import takes the key.
+            if get_ident() != main or referenced:
+                return
+            other = next(address for address in addresses if address.pk != instance.pk)
+            referenced.append(other)
+            workers.submit(reserve, other).result(timeout=20)
+            paused.start()
+
+        with self._stale_ip_cleanup():
+            _reconcile(server, [_lease("10.0.0.5"), _lease("10.0.0.6")])
+            addresses = [_row("10.0.0.5"), _row("10.0.0.6")]
+            pre_delete.connect(reference_the_other_address, sender=IPAddress, weak=False)
+            try:
+                report = _reconcile(server, [])
+            finally:
+                pre_delete.disconnect(reference_the_other_address, sender=IPAddress)
+        paused.finish()
+        self.assertEqual((report.removed, report.errors), (1, 1))
+        self.assertIn("lease", report.incomplete)
+        self.assertTrue(IPAddress.objects.filter(pk=referenced[0].pk).exists())
+        self.assertTrue(HostReservation.objects.filter(ipv4_address=referenced[0]).exists())
 
     def test_ip_delete_whose_only_dhcp_effect_is_an_empty_set_null_update_completes_during_import(self):
         from ipam.models import IPAddress
@@ -3697,6 +3754,48 @@ class DhcpMappingLockScopeTest(TransactionTestCase):
         self.assertTrue(KeaDhcpLink.objects.filter(pk=link.pk).exists())
         self.assertEqual(Tag.objects.get(pk=tag.pk).name, "lock-scope-tag-renamed")
 
+    @override_settings(EVENTS_PIPELINE=[_EVENTS_RECORDER])
+    def test_lock_error_at_a_coordinated_view_commit_returns_the_refusal(self):
+        self.client.force_login(self.user)
+        self.client.get(reverse("home"))
+        for api in (False, True):
+            with self.subTest(api=api):
+                _, _, _, target, link = self._imported("subnet", 4, f"commit-lock-{api}")
+                route = "plugins-api:netbox_dhcp-api:subnet-detail" if api else "plugins:netbox_dhcp:subnet_delete"
+                url = reverse(route, args=[target.pk])
+                referer = f"http://testserver{reverse('plugins:netbox_dhcp:subnet_list')}"
+                holder = connection.Database.connect(**connection.get_connection_params())
+                DISPATCHED_EVENTS.clear()
+                try:
+                    # The view's COMMIT checks the ObjectChange user reference while another transaction locks it.
+                    with holder.cursor() as cursor:
+                        cursor.execute("SELECT 1 FROM users_user WHERE id = %s FOR UPDATE", [self.user.pk])
+                    with connection.cursor() as cursor:
+                        cursor.execute("SET lock_timeout = '300ms'")
+                    if api:
+                        response = self.client.delete(url)
+                    else:
+                        response = self.client.post(url, {"confirm": True}, headers={"referer": referer})
+                finally:
+                    with connection.cursor() as cursor:
+                        cursor.execute("RESET lock_timeout")
+                    holder.rollback()
+                    holder.close()
+                if api:
+                    self.assertEqual(response.status_code, 400, response.content[:500])
+                    self.assertEqual(response.json(), {"detail": _LOCK_CONFLICT})
+                else:
+                    self.assertEqual((response.status_code, response.url), (302, referer))
+                    self.assertIn(_LOCK_CONFLICT, [str(message) for message in get_messages(response.wsgi_request)])
+                self.assertEqual(DISPATCHED_EVENTS, [])
+                self.assertTrue(type(target).objects.filter(pk=target.pk).exists())
+                self.assertTrue(KeaDhcpLink.objects.filter(pk=link.pk).exists())
+                # The recorder sees the same delete once nothing holds the lock, so the empty list above means something.
+                response = self.client.delete(url) if api else self.client.post(url, {"confirm": True})
+                self.assertIn(response.status_code, (204, 302))
+                self.assertFalse(type(target).objects.filter(pk=target.pk).exists())
+                self.assertTrue(DISPATCHED_EVENTS)
+
     def test_deadlock_in_an_uncoordinated_deletion_maps_to_the_retry_refusal(self):
         from ipam.models import IPAddress
 
@@ -3739,3 +3838,55 @@ class DhcpMappingLockScopeTest(TransactionTestCase):
         self.assertEqual(outcome[0].message, _LOCK_CONFLICT)
         self.assertIsInstance(outcome[0].__cause__, OperationalError)
         self.assertEqual(IPAddress.objects.filter(pk__in=[first.pk, second.pk]).count(), 2)
+
+    def test_import_commit_fk_failure_maps_to_the_importer_refusal(self):
+        from dcim.models import MACAddress
+        from netbox_dhcp.models import HostReservation
+
+        server = _make_db_server(name="lock-scope-commit", ca_url="https://kea.example.invalid", dhcp6=False)
+        mac = MACAddress.objects.create(mac_address="02:00:00:00:00:31")
+        config = {"subnet4": []}
+        observation = _reservation_snapshot(config, 4, [{"subnet-id": 0, "hw-address": "02:00:00:00:00:31"}])
+        intent = parse_dhcp_config(config, 4)
+        workers = self._workers()
+        deleted = []
+
+        def delete_the_referenced_mac(sender, instance, created, **kwargs):
+            if created and instance.hw_address_id == mac.pk and not deleted:
+                deleted.append(workers.submit(self._delete_in_transaction, mac).result(timeout=20))
+
+        post_save.connect(delete_the_referenced_mac, sender=HostReservation, weak=False)
+        try:
+            with self.assertRaises(AbortRequest) as refused, event_tracking(_change_request(self.user)):
+                import_server_config(server, intent, observation)
+        finally:
+            post_save.disconnect(delete_the_referenced_mac, sender=HostReservation)
+        self.assertEqual(deleted, [None])
+        self.assertEqual(
+            refused.exception.message,
+            "The DHCPv4 import referenced an object that no longer exists. Nothing changed for DHCPv4. "
+            "Run the import again.",
+        )
+        self.assertIsInstance(refused.exception.__cause__, IntegrityError)
+        self.assertFalse(MACAddress.objects.filter(pk=mac.pk).exists())
+        self.assertFalse(HostReservation.objects.filter(name__startswith=server.name).exists())
+        self.assertFalse(KeaDhcpLink.objects.filter(server=server).exists())
+
+    def test_import_view_shows_the_retry_refusal(self):
+        from netbox_kea.dhcp_mapping_lifecycle import _METADATA_LOCK
+
+        server = _make_db_server(
+            name="lock-scope-view", ca_url="https://kea.example.invalid", dhcp6=False, sync_dhcp_plugin_enabled=True
+        )
+        self.client.force_login(self.user)
+        holder = connection.Database.connect(**connection.get_connection_params())
+        try:
+            with holder.cursor() as cursor:
+                cursor.execute("SELECT pg_advisory_lock(%s, %s)", _METADATA_LOCK)
+            with stub_kea(_recorded_kea()), transaction.atomic():
+                response = self.client.post(reverse("plugins:netbox_kea:server_dhcp_plugin_sync", args=[server.pk]))
+        finally:
+            holder.close()
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual([str(message) for message in get_messages(response.wsgi_request)], [_CONTENTION])
+        self.assertFalse(KeaDhcpLink.objects.filter(server=server).exists())

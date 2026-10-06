@@ -14,7 +14,7 @@ from functools import cache, wraps
 
 from asgiref.sync import sync_to_async
 from django.apps import apps
-from django.db import OperationalError, connections, models, router, transaction
+from django.db import IntegrityError, OperationalError, connections, models, router, transaction
 from django.db.models.deletion import Collector, ProtectedError, RestrictedError
 from django.db.models.signals import m2m_changed, post_save, pre_delete, pre_save
 from django.utils import timezone
@@ -33,6 +33,7 @@ _RETRY = "Nothing changed. Retry this operation."
 _CONTENTION = f"DHCP mapping metadata is changing in another transaction. {_RETRY}"
 _STALE_GATE = f"This deletion now reaches an imported DHCP target or its mapping. {_RETRY}"
 LOCK_CONFLICT = f"A database lock conflict stopped this change. {_RETRY}"
+_COORDINATED_REQUEST = "_netbox_kea_mapping_coordination"
 
 
 class MetadataBusy(AbortRequest):
@@ -88,9 +89,18 @@ def is_lock_error(error: BaseException) -> bool:
     return isinstance(error, OperationalError) and getattr(error.__cause__, "sqlstate", None) in _LOCK_ERRORS
 
 
+def coordinated_lock_error(request, error: BaseException) -> bool:
+    """Return whether a request that entered mapping coordination failed on a deadlock or lock timeout."""
+    return getattr(request, _COORDINATED_REQUEST, False) and is_lock_error(error)
+
+
 @contextmanager
 def _lock_boundary(using: str):
     """Map a deadlock or lock timeout to the retry refusal after the boundary's savepoint rolls back."""
+    from netbox.context import current_request
+
+    if (request := current_request.get()) is not None:
+        setattr(request, _COORDINATED_REQUEST, True)
     try:
         with transaction.atomic(using=using):
             yield
@@ -1204,10 +1214,22 @@ def coordinated_import(original):
     """Enter the main writer transaction before importer selection or ownership locks."""
 
     @wraps(original)
-    def importing(*args, **kwargs):
+    def importing(server, config, *args, **kwargs):
         branching.refuse_in_branch("A DHCP-plugin import")
-        with metadata_scope():
-            return original(*args, **kwargs)
+        opened = not connections["default"].in_atomic_block
+        summary = None
+        try:
+            with metadata_scope():
+                summary = original(server, config, *args, **kwargs)
+        except IntegrityError as error:
+            # Only the COMMIT that this scope opened checks deferred references after the import returned.
+            if opened and summary is not None and getattr(error.__cause__, "sqlstate", None) == "23503":
+                raise MetadataBusy(
+                    f"The DHCPv{config.family} import referenced an object that no longer exists. "
+                    f"Nothing changed for DHCPv{config.family}. Run the import again."
+                ) from error
+            raise
+        return summary
 
     return importing
 

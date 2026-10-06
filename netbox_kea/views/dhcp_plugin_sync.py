@@ -22,6 +22,7 @@ from utilities.views import register_model_view
 
 from .. import server_configuration
 from ..constants import Family
+from ..dhcp_mapping_lifecycle import MetadataBusy
 from ..integrations import dhcp_plugin
 from ..ipam_reconciliation import complete_import_observation
 from ..kea import KeaCommand, KeaException
@@ -289,6 +290,9 @@ class ServerDhcpPluginSyncNowView(View):
 
         try:
             results = run_dhcp_plugin_import(server)
+        except MetadataBusy as error:
+            messages.error(request, error.message)
+            return redirect
         except (KeaException, requests.RequestException, ValueError):
             # Expected external-boundary failures (Kea read / validation).
             logger.exception("DHCP-plugin import failed for server %s (Kea read/validation)", server.name)

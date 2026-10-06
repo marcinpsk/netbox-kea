@@ -24,6 +24,7 @@ from netaddr import IPNetwork
 
 from . import subnet_catalogue
 from .constants import IP_RANGE_MAX_SIZE, Family, IPNetworkValue, StaleCleanupMode
+from .dhcp_mapping_lifecycle import MetadataBusy
 from .integrations import dhcp_plugin
 from .ipam_marker import (
     Marker,
@@ -746,12 +747,12 @@ def _lock_key(identity: str, *, nowait: bool) -> None:
 def _each_row(
     rows: Iterable[T], report: SyncReport, source: str, work: Callable[[T], R], name: Callable[[T], str]
 ) -> Iterator[tuple[T, R]]:
-    """Run *work* for each row in its own transaction or savepoint; a database error fails only that row."""
+    """Run *work* for each row in its own transaction or savepoint; a database error or refusal fails only that row."""
     for row in rows:
         try:
             with transaction.atomic():
                 outcome = work(row)
-        except (DatabaseError, _RowRefused, DuplicateNetBoxRowsError) as exc:
+        except (DatabaseError, _RowRefused, DuplicateNetBoxRowsError, MetadataBusy) as exc:
             report.fail_row(source, name(row), exc)
             continue
         yield row, outcome

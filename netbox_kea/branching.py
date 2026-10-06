@@ -21,11 +21,12 @@ from django.contrib import messages
 from django.core.exceptions import ImproperlyConfigured, ObjectDoesNotExist
 from django.db import connections, models
 from django.db.models.signals import pre_delete, pre_save
-from django.http import HttpRequest, HttpResponse, JsonResponse
+from django.http import HttpRequest, HttpResponse, HttpResponseRedirect, JsonResponse
 from django.middleware.gzip import GZipMiddleware
 from django.shortcuts import render
 from django.urls import reverse
 from django.utils.html import escape
+from django.utils.http import url_has_allowed_host_and_scheme
 from django.utils.module_loading import import_string
 from django_htmx.http import HttpResponseClientRedirect, HttpResponseClientRefresh
 from rest_framework.permissions import SAFE_METHODS
@@ -441,6 +442,21 @@ def refuse_unusable_selection(request: HttpRequest) -> HttpResponse:
     return _refusal(request, _UNUSABLE_TEXT, BRANCH_SELECTION_UNUSABLE, htmx)
 
 
+def refuse_lock_conflict(request: HttpRequest, text: str) -> HttpResponse:
+    """Answer a request that a lock conflict rolled back: REST 400 as for AbortRequest, else the referring page."""
+    from utilities.api import is_api_request
+
+    if is_api_request(request):
+        return JsonResponse({"detail": text}, status=HTTPStatus.BAD_REQUEST)
+    messages.error(request, text)
+    referer = request.headers.get("referer", "")
+    safe = url_has_allowed_host_and_scheme(
+        referer, allowed_hosts={request.get_host()}, require_https=request.is_secure()
+    )
+    target = referer if safe else request.get_full_path()
+    return HttpResponseClientRedirect(target) if request.htmx else HttpResponseRedirect(target)  # type: ignore[attr-defined]
+
+
 def _validate_response_middleware() -> None:
     if not installed():
         return
@@ -518,9 +534,17 @@ class BranchRefusalMiddleware:
         return None
 
     def process_exception(self, request: HttpRequest, exception: Exception) -> HttpResponse | None:
-        """Render BranchActive from any view as the same 409."""
-        if not isinstance(exception, BranchActive):
+        """Render BranchActive as the same 409, and a lock error of a coordinated request as the retry refusal."""
+        if isinstance(exception, BranchActive):
+            if isinstance(exception.branch, HttpResponse):
+                return exception.branch
+            return refuse_active_branch(request, exception.branch)
+        from .dhcp_mapping_lifecycle import LOCK_CONFLICT, coordinated_lock_error
+
+        if not coordinated_lock_error(request, exception):
             return None
-        if isinstance(exception.branch, HttpResponse):
-            return exception.branch
-        return refuse_active_branch(request, exception.branch)
+        from core.signals import clear_events
+
+        # Django rolled the transaction back; NetBox would still flush the events that it queued.
+        clear_events.send(sender=None)
+        return refuse_lock_conflict(request, LOCK_CONFLICT)
