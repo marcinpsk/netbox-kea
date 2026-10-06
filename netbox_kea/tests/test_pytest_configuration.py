@@ -659,6 +659,7 @@ def test_database_jobs_use_the_shared_ci_configuration_writer():
     unit_test_job = re.sub(r"[ \t]*\\\n[ \t]*", " ", _workflow_job(workflow, "unit-test"))
     dhcp_plugin_job = re.sub(r"[ \t]*\\\n[ \t]*", " ", _workflow_job(workflow, "dhcp-plugin-test"))
     branching_job = re.sub(r"[ \t]*\\\n[ \t]*", " ", _workflow_job(workflow, "branching-test"))
+    floor_job = re.sub(r"[ \t]*\\\n[ \t]*", " ", _workflow_job(workflow, "event-rollback-test-netbox-4-3"))
     writer = 'python "${{ github.workspace }}/scripts/write_netbox_ci_configuration.py"'
 
     for anchor in (
@@ -671,8 +672,11 @@ def test_database_jobs_use_the_shared_ci_configuration_writer():
         assert f"&{anchor}" in unit_test_job, anchor
         assert f"*{anchor}" in dhcp_plugin_job, anchor
         assert f"*{anchor}" in branching_job, anchor
+    for anchor in ("netbox-test-services", "checkout-repository", "setup-uv"):
+        assert f"*{anchor}" in floor_job, anchor
 
-    assert workflow.count(writer) == 4
+    assert workflow.count(writer) == 5
+    assert f"{writer} --output netbox/configuration.py --plugin netbox_kea\n" in floor_job
     assert f"{writer} --output netbox/configuration.py --plugin netbox_kea\n" in unit_test_job
     assert f"{writer} --output netbox/configuration.py --plugin netbox_kea --plugin netbox_dhcp\n" in dhcp_plugin_job
     assert (
@@ -1260,17 +1264,21 @@ def test_ci_pins_the_netbox_release_the_query_counts_describe():
 
     workflow = yaml.safe_load((REPOSITORY_ROOT / ".github" / "workflows" / "ci.yml").read_text())
     # Every job that checks NetBox out, so a bump cannot leave one job on an older release.
-    checkouts = [
-        step["with"]
-        for job in workflow["jobs"].values()
+    checkouts = {
+        (name, step["with"]["ref"])
+        for name, job in workflow["jobs"].items()
         for step in job["steps"]
         if step.get("with", {}).get("repository") == "netbox-community/netbox"
-    ]
+    }
+    # The floor job runs only test_event_scope.py, which asserts no query count.
+    floor = ("event-rollback-test-netbox-4-3", "${{ env.NETBOX_FLOOR_RELEASE }}")
 
     assert workflow["env"]["NETBOX_RELEASE"] == f"v{QUERY_COUNT_NETBOX_VERSION}"
-    assert checkouts, "No job checks NetBox out; this guard would pass without reading anything."
-    for checkout in checkouts:
-        assert checkout["ref"] == "${{ env.NETBOX_RELEASE }}", checkout
+    assert workflow["env"]["NETBOX_FLOOR_RELEASE"].startswith("v4.3.")
+    assert floor in checkouts
+    assert len(checkouts) > 1, "No other job checks NetBox out; this guard would pass without reading anything."
+    for name, ref in checkouts - {floor}:
+        assert ref == "${{ env.NETBOX_RELEASE }}", name
 
 
 def test_query_count_assertion_sites_still_exist():

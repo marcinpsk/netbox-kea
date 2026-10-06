@@ -116,6 +116,8 @@ makes it fail instead.
   `netbox_kea/tests/query_counts.json` describes that release only (see "Query-count
   baselines"). Bump the constant, `NETBOX_RELEASE` in the workflow `env`, and the baselines in one
   change.
+- **Event-rollback job (NetBox 4.3)**: runs `test_event_scope.py` on the supported floor, where
+  `event_scope.atomic()` is always a plain transaction. Keep that module free of netbox-branching fixtures.
 - **Branching job**: the unit-test NetBox release with netbox-branching 1.2.1 and netbox-plugin-dhcp 0.2.0.
   It runs `test_branching.py` and `test_dhcp_mapping_recovery.py` with
   `NETBOX_KEA_REQUIRE_BRANCHING=1`, so these modules fail
