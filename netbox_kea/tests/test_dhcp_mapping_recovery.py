@@ -5,7 +5,7 @@
 import os
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from copy import deepcopy
 from datetime import timedelta
 from io import StringIO
@@ -25,12 +25,14 @@ from core.models import Job, ObjectChange
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
+from django.contrib.messages import get_messages
 from django.core.management import call_command
 from django.core.serializers.json import DjangoJSONEncoder
 from django.core.signals import request_finished
-from django.db import connection, connections, transaction
+from django.db import IntegrityError, OperationalError, connection, connections, transaction
 from django.db.models.signals import m2m_changed, post_delete, post_save, pre_delete, pre_save
 from django.test import TransactionTestCase, override_settings
+from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 from django.utils import timezone
 from ipam.models import VRF
@@ -3360,3 +3362,319 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
             self.assertTrue(KeaDhcpLink.objects.filter(pk=link.pk).exists())
         finally:
             request_finished.send(sender=type(self))
+
+
+_RETRY = "Nothing changed. Retry this operation."
+_CONTENTION = f"DHCP mapping metadata is changing in another transaction. {_RETRY}"
+_STALE_GATE = f"This deletion now reaches an imported DHCP target or its mapping. {_RETRY}"
+_LOCK_CONFLICT = f"A database lock conflict stopped this change. {_RETRY}"
+
+
+class _PausedImport:
+    """A real import that holds the mapping key while it waits in its first Subnet save."""
+
+    def __init__(self, test, suffix):
+        from netbox_dhcp.models import Subnet
+
+        self.test, self.subnet = test, Subnet
+        self.server = _make_db_server(name=f"paused-{suffix}", ca_url="https://kea.example.invalid", dhcp6=False)
+        self.intent = parse_dhcp_config({"subnet4": [{"id": 9, "subnet": "198.19.0.0/24"}]}, 4)
+        self.paused, self.release = Event(), Event()
+        self.thread, self.summaries = [], []
+        self.pool = ThreadPoolExecutor(1)
+        self.future = None
+        pre_save.connect(self._pause, sender=Subnet, weak=False)
+        test.addCleanup(self._cleanup)
+
+    def _pause(self, sender, instance, **kwargs):
+        if get_ident() in self.thread and not self.paused.is_set():
+            self.paused.set()
+            self.release.wait(30)
+
+    def _import(self):
+        self.thread.append(get_ident())
+        try:
+            with event_tracking(_change_request(self.test.user)):
+                self.summaries.append(import_server_config(self.server, self.intent, None))
+        finally:
+            connections.close_all()
+
+    def start(self):
+        self.future = self.pool.submit(self._import)
+        self.test.assertTrue(self.paused.wait(20), "The import did not reach its first Subnet save")
+
+    def finish(self):
+        self.release.set()
+        self.future.result(timeout=30)
+        self.test.assertEqual(self.summaries[0].errors, 0, self.summaries[0].warnings)
+        self.test.assertTrue(KeaDhcpLink.objects.filter(server=self.server, family=4).exists())
+
+    def _cleanup(self):
+        self.release.set()
+        self.pool.shutdown(wait=True)
+        pre_save.disconnect(self._pause, sender=self.subnet)
+
+
+class DhcpMappingLockScopeTest(TransactionTestCase):
+    """Only operations whose effect reaches a DHCP target or mapping take the mapping lock."""
+
+    setUp = DhcpMappingRecoveryTest.setUp
+    _imported = DhcpMappingRecoveryTest._imported
+    _delete = DhcpMappingRecoveryTest._delete
+
+    def _workers(self):
+        pool = ThreadPoolExecutor(2)
+        self.addCleanup(pool.shutdown, wait=True)
+        return pool
+
+    @contextmanager
+    def _during_import(self, suffix):
+        paused = _PausedImport(self, suffix)
+        paused.start()
+        yield paused
+        paused.finish()
+
+    def _backend_pid(self, pids):
+        with connections["default"].cursor() as cursor:
+            cursor.execute("SELECT pg_backend_pid()")
+            pids.append(cursor.fetchone()[0])
+
+    def _blocked_by(self, waiter, holder, done):
+        """Return whether PostgreSQL reports the *waiter* backend blocked by the *holder* backend."""
+        deadline = timezone.now() + timedelta(seconds=20)
+        while not done.done() and timezone.now() < deadline:
+            if waiter and holder:
+                with connection.cursor() as cursor:
+                    cursor.execute("SELECT %s = ANY(pg_blocking_pids(%s))", [holder[0], waiter[0]])
+                    if cursor.fetchone()[0]:
+                        return True
+            Event().wait(0.02)
+        return False
+
+    def _delete_in_transaction(self, obj):
+        """Delete *obj* in its own transaction, as a NetBox view does, and return the refusal message or None."""
+        try:
+            with transaction.atomic():
+                type(obj).objects.get(pk=obj.pk).delete()
+        except AbortRequest as error:
+            return error.message
+        finally:
+            connections.close_all()
+        return None
+
+    def test_unrelated_http_deletes_complete_during_import(self):
+        from dcim.models import Device, Site
+        from extras.models import Tag
+        from ipam.models import IPAddress, Prefix
+
+        interface = _device_with_interface("lock-scope-unrelated")
+        device = Device.objects.get(pk=interface.device_id)
+        site = Site.objects.get(pk=device.site_id)
+        assigned = IPAddress.objects.create(address="203.0.113.10/24", assigned_object=interface)
+        loose = IPAddress.objects.create(address="203.0.113.20/24")
+        prefix = Prefix.objects.create(prefix="203.0.113.0/24")
+        doomed = Tag.objects.create(name="lock-scope-doomed", slug="lock-scope-doomed")
+        self.client.force_login(self.user)
+        with self._during_import("unrelated-http"):
+            for route, obj in (
+                ("ipam:ipaddress_delete", loose),
+                ("ipam:prefix_delete", prefix),
+                ("dcim:device_delete", device),
+                ("dcim:site_delete", site),
+                ("extras:tag_delete", doomed),
+            ):
+                with self.subTest(route=route):
+                    response = self.client.post(reverse(route, args=[obj.pk]), {"confirm": True})
+                    self.assertEqual(response.status_code, 302)
+                    self.assertFalse(
+                        type(obj).objects.filter(pk=obj.pk).exists(),
+                        [str(message) for message in get_messages(response.wsgi_request)],
+                    )
+        self.assertFalse(IPAddress.objects.filter(pk=assigned.pk).exists())
+
+    def test_ip_delete_whose_only_dhcp_effect_is_an_empty_set_null_update_completes_during_import(self):
+        from ipam.models import IPAddress
+
+        address = IPAddress.objects.create(address="203.0.113.30/24")
+        with self._during_import("empty-set-null"), CaptureQueriesContext(connection) as captured:
+            with transaction.atomic():
+                IPAddress.objects.get(pk=address.pk).delete()
+        self.assertFalse(IPAddress.objects.filter(pk=address.pk).exists())
+        update = 'UPDATE "netbox_dhcp_hostreservation" SET "ipv4_address_id" = NULL'
+        self.assertTrue(
+            any(query["sql"].startswith(update) for query in captured.captured_queries),
+            "The native collector did not schedule the empty SET_NULL update",
+        )
+
+    def test_relevant_device_delete_refuses_during_import_and_completes_after_it(self):
+        from dcim.models import Device
+        from ipam.models import IPAddress
+        from netbox_dhcp.models import DHCPServer, HostReservation
+
+        interface = _device_with_interface("lock-scope-relevant")
+        address = IPAddress.objects.create(address="203.0.113.40/24", assigned_object=interface)
+        reservation = HostReservation.objects.create(
+            name="lock-scope-relevant",
+            dhcp_server=DHCPServer.objects.create(name="lock-scope-relevant"),
+            ipv4_address=address,
+        )
+        url = reverse("dcim:device_delete", args=[interface.device_id])
+        self.client.force_login(self.user)
+        with self._during_import("relevant-device"):
+            response = self.client.post(url, {"confirm": True}, follow=True)
+            self.assertContains(response, _CONTENTION)
+            self.assertTrue(Device.objects.filter(pk=interface.device_id).exists())
+            self.assertEqual(HostReservation.objects.get(pk=reservation.pk).ipv4_address_id, address.pk)
+        response = self.client.post(url, {"confirm": True})
+        self.assertEqual(response.status_code, 302)
+        self.assertFalse(Device.objects.filter(pk=interface.device_id).exists())
+        self.assertIsNone(HostReservation.objects.get(pk=reservation.pk).ipv4_address_id)
+
+    def _deletion_raced_by_a_writer(self, deleted, paused_at, target, change):
+        paused, release, outcome = Event(), Event(), []
+
+        def pause(execute, sql, params, many, context):
+            if not paused.is_set() and paused_at(sql):
+                paused.set()
+                release.wait(20)
+            return execute(sql, params, many, context)
+
+        def delete():
+            try:
+                with connections["default"].execute_wrapper(pause):
+                    outcome.append(self._delete_in_transaction(deleted))
+            finally:
+                connections.close_all()
+
+        def write():
+            try:
+                current = type(target).objects.get(pk=target.pk)
+                for field, value in change.items():
+                    setattr(current, field, value)
+                current.save()
+            finally:
+                connections.close_all()
+
+        workers = self._workers()
+        deleting = workers.submit(delete)
+        try:
+            self.assertTrue(paused.wait(20), "The deletion did not reach the paused statement")
+            workers.submit(write).result(timeout=20)
+        finally:
+            release.set()
+        deleting.result(timeout=20)
+        return outcome
+
+    def test_a_deletion_made_relevant_after_its_probe_refuses_before_any_change(self):
+        from ipam.models import IPAddress
+        from netbox_dhcp.models import DHCPServer
+
+        _, _, _, target, link = self._imported("reservation", 4, "made-relevant")
+        empty = DHCPServer.objects.create(name="lock-scope-empty")
+        loose = IPAddress.objects.create(address="203.0.113.50/24")
+        cases = (
+            # A writer moves the mapped reservation under the probed DHCP server before the native collection.
+            ("collection", empty, lambda sql: sql.startswith("SAVEPOINT"), {"dhcp_server": empty}),
+            # A writer commits a reference to the probed address before the row fence.
+            ("fence", loose, lambda sql: sql.endswith("FOR UPDATE"), {"ipv4_address": loose}),
+        )
+        for name, deleted, paused_at, change in cases:
+            with self.subTest(name):
+                outcome = self._deletion_raced_by_a_writer(deleted, paused_at, target, change)
+                self.assertEqual(outcome, [_STALE_GATE])
+                self.assertTrue(type(deleted).objects.filter(pk=deleted.pk).exists())
+                current = type(target).objects.get(pk=target.pk)
+                for field, value in change.items():
+                    self.assertEqual(getattr(current, f"{field}_id"), value.pk)
+                self.assertTrue(KeaDhcpLink.objects.filter(pk=link.pk, object_id=target.pk).exists())
+
+    def test_dependency_delete_during_replay_rolls_back_the_whole_revert(self):
+        _, _, _, target, link = self._imported("subnet", 4, "dependency-replay")
+        prefix = target.prefix
+        branch = _provisioned_branch(self, "lock-scope-dependency-replay")
+        branch.merge_strategy = "squash"
+        branch.save(provision=False)
+        self._delete(branch, target)
+        branch.merge(user=self.user)
+        branch.refresh_from_db()
+        applied = branch.applied_changes.count()
+        paused, release, replay_thread, outcome = Event(), Event(), [], []
+
+        def pause_restore(sender, instance, **kwargs):
+            if get_ident() in replay_thread and instance.pk == target.pk:
+                paused.set()
+                release.wait(20)
+
+        def revert():
+            replay_thread.append(get_ident())
+            try:
+                Branch.objects.get(pk=branch.pk).revert(user=self.user)
+            except Exception as error:  # noqa: BLE001 - the test asserts the native failure type
+                outcome.append(error)
+            finally:
+                connections.close_all()
+
+        workers = self._workers()
+        pre_save.connect(pause_restore, sender=type(target), weak=False)
+        try:
+            replay = workers.submit(revert)
+            try:
+                self.assertTrue(paused.wait(20), "Native revert did not reach the target restoration")
+                deleted = workers.submit(self._delete_in_transaction, prefix).result(timeout=20)
+            finally:
+                release.set()
+            replay.result(timeout=30)
+        finally:
+            pre_save.disconnect(pause_restore, sender=type(target))
+        self.assertIsNone(deleted)
+        self.assertEqual(len(outcome), 1)
+        self.assertIsInstance(outcome[0], IntegrityError)
+        branch.refresh_from_db()
+        self.assertEqual(branch.status, "merged")
+        self.assertEqual(branch.applied_changes.count(), applied)
+        self.assertFalse(type(prefix).objects.filter(pk=prefix.pk).exists())
+        self.assertFalse(type(target).objects.filter(pk=target.pk).exists())
+        self.assertFalse(KeaDhcpLink.objects.filter(pk=link.pk).exists())
+
+    def test_deadlock_in_an_uncoordinated_deletion_maps_to_the_retry_refusal(self):
+        from ipam.models import IPAddress
+
+        first = IPAddress.objects.create(address="203.0.113.61/24")
+        second = IPAddress.objects.create(address="203.0.113.62/24")
+        holder = connection.Database.connect(**connection.get_connection_params())
+        deleter_pid, holder_pid, outcome = [], [], []
+
+        def delete():
+            try:
+                self._backend_pid(deleter_pid)
+                with transaction.atomic():
+                    IPAddress.objects.filter(pk__in=[first.pk, second.pk]).delete()
+            except Exception as error:  # noqa: BLE001 - the test asserts the refusal type
+                outcome.append(error)
+            finally:
+                connections.close_all()
+
+        def cross():
+            with holder.cursor() as cursor:
+                cursor.execute("SELECT 1 FROM ipam_ipaddress WHERE id = %s FOR UPDATE", [first.pk])
+
+        workers = self._workers()
+        try:
+            with holder.cursor() as cursor:
+                cursor.execute("SELECT pg_backend_pid()")
+                holder_pid.append(cursor.fetchone()[0])
+                cursor.execute("SELECT 1 FROM ipam_ipaddress WHERE id = %s FOR UPDATE", [second.pk])
+            deleting = workers.submit(delete)
+            blocked = self._blocked_by(deleter_pid, holder_pid, deleting)
+            crossing = workers.submit(cross)
+            deleting.result(timeout=20)
+            crossing.result(timeout=20)
+        finally:
+            holder.rollback()
+            holder.close()
+        self.assertTrue(blocked, "The deletion did not wait on the second address")
+        self.assertEqual(len(outcome), 1)
+        self.assertIsInstance(outcome[0], AbortRequest, repr(outcome[0]))
+        self.assertEqual(outcome[0].message, _LOCK_CONFLICT)
+        self.assertIsInstance(outcome[0].__cause__, OperationalError)
+        self.assertEqual(IPAddress.objects.filter(pk__in=[first.pk, second.pk]).count(), 2)

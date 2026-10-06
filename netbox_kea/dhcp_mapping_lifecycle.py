@@ -14,8 +14,8 @@ from functools import cache, wraps
 
 from asgiref.sync import sync_to_async
 from django.apps import apps
-from django.db import connections, models, router, transaction
-from django.db.models.deletion import Collector
+from django.db import OperationalError, connections, models, router, transaction
+from django.db.models.deletion import Collector, ProtectedError, RestrictedError
 from django.db.models.signals import m2m_changed, post_save, pre_delete, pre_save
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
@@ -28,6 +28,15 @@ _METADATA_LOCK = (0x4B4541, 0x44484350)
 _TAG_INSTRUCTION = (
     "Apply Tag changes separately on main or in a Tag-only branch. Create a fresh branch for DHCP changes."
 )
+_LOCK_ERRORS = frozenset({"40P01", "55P03"})
+_RETRY = "Nothing changed. Retry this operation."
+_CONTENTION = f"DHCP mapping metadata is changing in another transaction. {_RETRY}"
+_STALE_GATE = f"This deletion now reaches an imported DHCP target or its mapping. {_RETRY}"
+LOCK_CONFLICT = f"A database lock conflict stopped this change. {_RETRY}"
+
+
+class MetadataBusy(AbortRequest):
+    """The retry refusal of DHCP mapping coordination: the operation changed nothing and can run again."""
 
 
 @dataclass(frozen=True)
@@ -69,6 +78,26 @@ class RestorationBirth:
 
 
 _replay_operation: ContextVar[ReplayOperation | None] = ContextVar("kea_mapping_replay_operation", default=None)
+# The aliases whose transaction holds the key inside an active scope, and the aliases of an uncoordinated deletion.
+_held: ContextVar[frozenset[str]] = ContextVar("kea_mapping_held", default=frozenset())
+_uncoordinated: ContextVar[frozenset[str]] = ContextVar("kea_mapping_uncoordinated", default=frozenset())
+
+
+def is_lock_error(error: BaseException) -> bool:
+    """Return whether *error* is a PostgreSQL deadlock or lock timeout."""
+    return isinstance(error, OperationalError) and getattr(error.__cause__, "sqlstate", None) in _LOCK_ERRORS
+
+
+@contextmanager
+def _lock_boundary(using: str):
+    """Map a deadlock or lock timeout to the retry refusal after the boundary's savepoint rolls back."""
+    try:
+        with transaction.atomic(using=using):
+            yield
+    except OperationalError as error:
+        if is_lock_error(error):
+            raise MetadataBusy(LOCK_CONFLICT) from error
+        raise
 
 
 @contextmanager
@@ -79,13 +108,65 @@ def metadata_scope(using: str = "default"):
         connection.connection is not None and (connection.in_atomic_block or not connection.get_autocommit())
         for connection in (connections[alias] for alias in aliases)
     )
-    with transaction.atomic(using=using):
+    with _lock_boundary(using):
         with connections[using].cursor() as cursor:
             function = "pg_try_advisory_xact_lock" if transactional else "pg_advisory_xact_lock"
             cursor.execute(f"SELECT {function}(%s, %s)", _METADATA_LOCK)
             if transactional and not cursor.fetchone()[0]:
-                raise AbortRequest("DHCP mapping metadata is changing in another transaction. Retry this operation.")
-        yield
+                raise MetadataBusy(_CONTENTION)
+        token = _held.set(_held.get() | {using})
+        try:
+            yield
+        finally:
+            _held.reset(token)
+
+
+@contextmanager
+def deletion_scope(subject, using: str):
+    """Coordinate a closure deletion only when its native effect reaches a target or mapping."""
+    if using in _held.get() or _holds_key(using) or _protected_effect(subject, using):
+        with metadata_scope(using):
+            yield
+        return
+    token = _uncoordinated.set(_uncoordinated.get() | {using})
+    try:
+        with _lock_boundary(using):
+            yield
+    finally:
+        _uncoordinated.reset(token)
+
+
+def _holds_key(using: str) -> bool:
+    connection = connections[using]
+    if connection.connection is None or (connection.get_autocommit() and not connection.in_atomic_block):
+        return False
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND pid = pg_backend_pid() "
+            "AND granted AND classid = %s AND objid = %s AND objsubid = 2)",
+            _METADATA_LOCK,
+        )
+        return cursor.fetchone()[0]
+
+
+def _protected_effect(subject, using: str) -> bool:
+    try:
+        return bool(_delete_effect_targets(subject, using))
+    except (ProtectedError, RestrictedError):
+        return True
+
+
+def _uncoordinated_at(using: str) -> bool:
+    return using in _uncoordinated.get() and using not in _held.get()
+
+
+def _unaffected(using: str, write):
+    """Run a protected write that an uncoordinated deletion schedules, and refuse it when it changes a row."""
+    with _lock_boundary(using):
+        result = write()
+        if result[0] if isinstance(result, tuple) else result:
+            raise MetadataBusy(_STALE_GATE)
+    return result
 
 
 @contextmanager
@@ -158,11 +239,17 @@ def target_models():
 
 
 @cache
-def metadata_writer_models() -> set:
-    """Include endpoints whose names form serialized target relation state."""
+def protected_models() -> tuple:
+    """Return the targets and the mapping: the rows that coordinated operations write."""
     from .models import KeaDhcpLink
 
-    return {*target_models(), KeaDhcpLink, *named_endpoint_models()}
+    return (*target_models(), KeaDhcpLink)
+
+
+@cache
+def metadata_writer_models() -> set:
+    """Include endpoints whose names form serialized target relation state."""
+    return {*protected_models(), *named_endpoint_models()}
 
 
 @cache
@@ -561,14 +648,18 @@ def _replay_target_footprint(collapsed, operation: str):
             updates.setdefault(change.model_class, {})[change.key[1]] = change.generate_object_change().get_merge_data(
                 reverse=operation == "revert"
             )
-    effects = set()
+    effects: set[tuple] = set()
     for change in collapsed.values():
         if change.model_class in delete_effect_models() and change.final_action == (
             "delete" if operation == "merge" else "create"
         ):
             current = change.model_class._base_manager.using("default").filter(pk=change.key[1]).first()
             if current is not None:
-                effects.update(_delete_effect_targets(current, deleted, updates))
+                effects.update(
+                    key
+                    for key in _delete_effect_targets(current, deleted=deleted, updates=updates)
+                    if key[0] in target_models()
+                )
     affected = effects | set(target_changes)
     destructive = {
         key
@@ -622,8 +713,9 @@ def _validate_target_associations(branch, mappings, target_changes, affected, de
     return protected, expected_mappings, copied_associations
 
 
-def _delete_effect_targets(instance, deleted, updates) -> set:
-    """Use the native collector to inspect cascades and relation changes without mutation."""
+def _delete_effect_targets(subject, using: str = "default", *, deleted=None, updates=None) -> set:
+    """Use the native collector to inspect cascades, relation changes and mappings without mutation."""
+    deleted, updates = deleted or {}, updates or {}
 
     class FootprintCollector(Collector):
         """Inspect relations after the replay's separately validated deletions and FK changes."""
@@ -645,16 +737,16 @@ def _delete_effect_targets(instance, deleted, updates) -> set:
                     moved |= condition
             return queryset.exclude(moved)
 
-    collector = FootprintCollector(using="default")
-    collector.collect([instance])
+    collector = FootprintCollector(using=using)
+    collector.collect(subject.using(using) if isinstance(subject, models.QuerySet) else [subject])
     selected = {model: {obj.pk for obj in objects} for model, objects in collector.data.items()}
-    affected = {(model, pk) for model in target_models() for pk in selected.get(model, ())}
+    affected = {(model, pk) for model in protected_models() for pk in selected.get(model, ())}
     for target in target_models():
         for field in (*target._meta.concrete_fields, *target._meta.many_to_many):
             remote = getattr(field, "remote_field", None)
             if remote is None or remote.model not in selected:
                 continue
-            queryset = target._base_manager.using("default").filter(**{f"{field.name}__in": selected[remote.model]})
+            queryset = target._base_manager.using(using).filter(**{f"{field.name}__in": selected[remote.model]})
             affected.update((target, pk) for pk in queryset.values_list("pk", flat=True))
     return affected
 
@@ -1016,15 +1108,28 @@ def _guard_mapping_async_iterator(original):
     return guarded
 
 
+def _queryset_alias(queryset) -> str:
+    return queryset._db or router.db_for_write(queryset.model, **queryset._hints)
+
+
+def _write_alias(instance, args, kwargs, using_position: int) -> str:
+    using = kwargs.get("using") or (args[using_position] if len(args) > using_position else None)
+    return using or router.db_for_write(type(instance), instance=instance)
+
+
+def _delete_alias(subject, args, kwargs) -> str:
+    return _queryset_alias(subject) if isinstance(subject, models.QuerySet) else _write_alias(subject, args, kwargs, 0)
+
+
 def _guard_target_delete(original):
     @wraps(original)
     def guarded(self, *args, **kwargs):
-        using = (
-            self._db or router.db_for_write(self.model, **self._hints)
-            if isinstance(self, models.QuerySet)
-            else (kwargs.get("using") or (args[0] if args else None) or router.db_for_write(type(self), instance=self))
-        )
+        using = _delete_alias(self, args, kwargs)
         require_branch_mappings(self.model if isinstance(self, models.QuerySet) else type(self), using=using)
+        if _uncoordinated_at(using):
+            if not isinstance(self, models.QuerySet):
+                raise MetadataBusy(_STALE_GATE)
+            return _unaffected(using, lambda: original(self, *args, **kwargs))
         with metadata_scope(using):
             _require_delete_sources(self, using)
             return original(self, *args, **kwargs)
@@ -1037,10 +1142,11 @@ def _guard_model_write(original, using_position: int):
     def guarded(self, *args, **kwargs):
         from .models import KeaDhcpLink
 
-        using = kwargs.get("using") or (args[using_position] if len(args) > using_position else None)
-        using = using or router.db_for_write(type(self), instance=self)
+        using = _write_alias(self, args, kwargs, using_position)
         if isinstance(self, KeaDhcpLink):
             require_branch_mappings(using=using)
+        if _uncoordinated_at(using):
+            raise MetadataBusy(_STALE_GATE)
         with metadata_scope(using):
             if self.pk is not None:
                 persisted = type(self)._base_manager.using(using).filter(pk=self.pk).first()
@@ -1053,13 +1159,19 @@ def _guard_model_write(original, using_position: int):
 
 
 def _guard_queryset_write(original):
+    counted = original.__name__ in {"update", "bulk_update"}
+
     @wraps(original)
     def guarded(self, *args, **kwargs):
         from .models import KeaDhcpLink
 
-        using = self._db or router.db_for_write(self.model, **self._hints)
+        using = _queryset_alias(self)
         if self.model is KeaDhcpLink:
             require_branch_mappings(using=using)
+        if _uncoordinated_at(using):
+            if not counted:
+                raise MetadataBusy(_STALE_GATE)
+            return _unaffected(using, lambda: original(self, *args, **kwargs))
         with metadata_scope(using):
             return original(self, *args, **kwargs)
 
@@ -1112,15 +1224,29 @@ def delete_effect_models() -> set:
     return roots
 
 
+@cache
+def fence_models() -> dict:
+    """Map each model that a target or mapping references to the protected relations that point at it."""
+    relations: dict = {}
+    for model in protected_models():
+        for field in (*model._meta.concrete_fields, *model._meta.many_to_many):
+            if field.is_relation:
+                relations.setdefault(field.related_model, []).append((model, field.name))
+    return relations
+
+
+def _fence(model, instance, using: str) -> None:
+    """Take the row lock of the native DELETE before it runs, then refuse a committed protected reference."""
+    model._base_manager.using(using).select_for_update().filter(pk=instance.pk).exists()
+    for protected, name in fence_models()[model]:
+        if protected._base_manager.using(using).filter(**{f"{name}__pk": instance.pk}).exists():
+            raise MetadataBusy(_STALE_GATE)
+
+
 def _guard_parent_delete(original):
     @wraps(original)
     def guarded(self, *args, **kwargs):
-        using = (
-            self._db or router.db_for_write(self.model, **self._hints)
-            if isinstance(self, models.QuerySet)
-            else (kwargs.get("using") or (args[0] if args else None) or router.db_for_write(type(self), instance=self))
-        )
-        with metadata_scope(using):
+        with deletion_scope(self, _delete_alias(self, args, kwargs)):
             return original(self, *args, **kwargs)
 
     return guarded
@@ -1136,7 +1262,7 @@ def _boundary_queryset(queryset, model):
     key = (queryset, model)
     if key in _queryset_types:
         return _queryset_types[key]
-    protected = model in (*target_models(), KeaDhcpLink)
+    protected = model in protected_models()
     methods = {}
     if model in metadata_writer_models():
         for name in ("create", "get_or_create", "update_or_create", "update", "bulk_create", "bulk_update"):
@@ -1157,6 +1283,8 @@ def _guard_relation_write(original):
     @wraps(original)
     def guarded(self, *args, **kwargs):
         using = self._db or router.db_for_write(getattr(self, "through", self.model), instance=self.instance)
+        if _uncoordinated_at(using):
+            raise MetadataBusy(_STALE_GATE)
         with metadata_scope(using):
             if self.model in named_endpoint_models():
                 _validate_named_write(self.instance, using)
@@ -1233,13 +1361,21 @@ def _late_relation_guard(sender, instance, action, using, model, **kwargs):
     if not action.startswith("pre_"):
         return
     if instance._meta.label_lower == "extras.tag" or isinstance(instance, target_models()) or model in target_models():
+        if _uncoordinated_at(using):
+            raise MetadataBusy(_STALE_GATE)
         with metadata_scope(using):
             _validate_named_write(instance, using)
 
 
 def _late_delete_guard(sender, instance, using, **kwargs):
+    if _uncoordinated_at(using):
+        if sender in protected_models():
+            raise MetadataBusy(_STALE_GATE)
+        if sender in fence_models():
+            _fence(sender, instance, using)
+        return
     with metadata_scope(using):
-        if sender in target_models() or sender._meta.label_lower == "netbox_kea.keadhcplink":
+        if sender in protected_models():
             _validate_named_write(instance, using)
             require_branch_mappings(sender, using=using)
             _require_delete_sources(instance, using)
@@ -1343,7 +1479,7 @@ def register() -> None:
     targets = target_models()
     if not targets:
         return
-    protected = (*targets, KeaDhcpLink)
+    protected = protected_models()
     roots = delete_effect_models()
     writers = metadata_writer_models()
     post_save.connect(_late_mapping_save_guard, sender=KeaDhcpLink, dispatch_uid="netbox_kea.mapping_saved_destination")
