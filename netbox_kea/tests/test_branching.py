@@ -1643,6 +1643,7 @@ def _recorded_kea() -> dict:
             f"network{family}-get": network_get,
             f"lease{family}-get-page": lease_page,
             f"lease{family}-get": lease_get,
+            f"lease{family}-get-all": _leases_per_subnet({objects.subnet_id: [objects.lease]}),
             f"lease{family}-get-by-state": _leases_per_subnet({objects.subnet_id: [objects.lease]}),
             f"stat-lease{family}-get": _subnet_stats(family, objects.subnet_id),
         }
@@ -1767,6 +1768,11 @@ class UrlTreeBuilderTest(SimpleTestCase):
 
     def _route(self, name: str, pattern: str, parameters: tuple[str, ...]) -> _Route:
         return _Route(f"plugins:netbox_kea:{name}", pattern, parameters, callback=None)
+
+    def test_the_recorded_kea_answers_only_read_commands(self):
+        writes = [name for name in _recorded_kea() if KeaCommand(name).is_write]
+
+        self.assertEqual(writes, [], "guard 1 takes each command that the stub answers as a read")
 
     def test_an_unknown_parameter_fails_by_name(self):
         route = self._route("server_widget", "servers/<int:pk>/widgets/<int:widget_id>/", ("pk", "widget_id"))
