@@ -83,7 +83,14 @@ from netbox_kea import server_configuration  # noqa: E402
 from netbox_kea.jobs import KeaIpamSyncJob  # noqa: E402
 from netbox_kea.kea import KeaCommand, KeaException  # noqa: E402
 from netbox_kea.models import IPAMOwnershipLink, KeaDhcpLink, Server, SyncConfig, next_confirmation_number  # noqa: E402
-from netbox_kea.tests.kea_stub import _leases_per_subnet, _res_get, _res_page, _subnet_stats, stub_kea  # noqa: E402
+from netbox_kea.tests.kea_stub import (  # noqa: E402
+    _leases_per_subnet,
+    _res_get,
+    _res_page,
+    _subnet_stats,
+    complete_lease,
+    stub_kea,
+)
 from netbox_kea.tests.utils import (  # noqa: E402
     _WRITE_VERBS,
     DISPATCHED_EVENTS,
@@ -1533,15 +1540,17 @@ _KEA_OBJECTS = {
         network_name="office",
         option_code=224,
         option_space="dhcp4",
-        lease={
-            "ip-address": "192.0.2.15",
-            "hw-address": "aa:bb:cc:dd:ee:01",
-            "subnet-id": 10,
-            "hostname": "lease4.example.com",
-            "cltt": 1_700_000_000,
-            "valid-lft": 4000,
-            "state": 0,
-        },
+        lease=complete_lease(
+            {
+                "ip-address": "192.0.2.15",
+                "hw-address": "aa:bb:cc:dd:ee:01",
+                "subnet-id": 10,
+                "hostname": "lease4.example.com",
+                "cltt": 1_700_000_000,
+                "valid-lft": 4000,
+                "state": 0,
+            }
+        ),
         reservation={"subnet-id": 10, "hw-address": "aa:bb:cc:dd:ee:02", "ip-address": "192.0.2.16", "hostname": "r4"},
     ),
     6: _KeaObjects(
@@ -1550,19 +1559,21 @@ _KEA_OBJECTS = {
         network_name="office",
         option_code=1000,
         option_space="dhcp6",
-        lease={
-            "ip-address": "2001:db8:1::15",
-            "duid": "00:01:02:03:04:05",
-            "iaid": 1,
-            "type": "IA_NA",
-            "prefix-len": 128,
-            "subnet-id": 10,
-            "hostname": "lease6.example.com",
-            "cltt": 1_700_000_000,
-            "valid-lft": 4000,
-            "preferred-lft": 3000,
-            "state": 0,
-        },
+        lease=complete_lease(
+            {
+                "ip-address": "2001:db8:1::15",
+                "duid": "00:01:02:03:04:05",
+                "iaid": 1,
+                "type": "IA_NA",
+                "prefix-len": 128,
+                "subnet-id": 10,
+                "hostname": "lease6.example.com",
+                "cltt": 1_700_000_000,
+                "valid-lft": 4000,
+                "preferred-lft": 3000,
+                "state": 0,
+            }
+        ),
         reservation={
             "subnet-id": 10,
             "duid": "00:01:02:03:04:06",
