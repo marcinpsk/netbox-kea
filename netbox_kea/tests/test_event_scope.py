@@ -15,6 +15,7 @@ import time
 import unittest
 import uuid
 from contextlib import contextmanager, nullcontext, suppress
+from types import SimpleNamespace
 from typing import Any
 
 from core.models import ObjectChange, ObjectType
@@ -29,6 +30,7 @@ from django.urls import reverse
 from ipam.models import IPAddress, Prefix
 from netbox.context import current_request
 from netbox.context_managers import event_tracking
+from netbox.settings import VERSION
 
 from netbox_kea import event_scope
 from netbox_kea.ipam_reconciliation import claim
@@ -40,7 +42,8 @@ from netbox_kea.tests.utils import DISPATCHED_EVENTS, _make_db_server
 User: Any = get_user_model()
 _RECORDER = "netbox_kea.tests.utils.record_dispatched_events"
 _FAILING_PIPELINE = "netbox_kea.tests.test_event_scope.fail_dispatch"
-NESTED_TRACKING = event_scope._NESTED_TRACKING
+# NetBox 4.6.9 (#22923) made event_tracking nestable. Derived here, not read from event_scope, so a wrong gate fails.
+NESTED_TRACKING = tuple(int(part) for part in VERSION.split("-", 1)[0].split(".")[:3]) >= (4, 6, 9)
 # 2026-10-06, development host: 10^4 units took 151.0 s; the same saves in one transaction took 127.2 s.
 MEASURED_UNIT_SECONDS = 151.0
 _SUBNET = {"subnet4": [{"id": 1, "subnet": "10.77.0.0/24"}]}
@@ -97,6 +100,24 @@ def _mac_write_fails(hardware: str):
             raise OperationalError("simulated database failure of the MAC address write")
 
     return _receiver(pre_save, MACAddress, refuse)
+
+
+class UnitGateTest(SimpleTestCase):
+    """Units need the nestable event_tracking, which arrived in NetBox 4.6.9."""
+
+    def test_the_gate_matches_this_netbox_release(self):
+        self.assertIs(event_scope._NESTED_TRACKING, NESTED_TRACKING)
+
+    def test_the_gate_opens_at_netbox_4_6_9(self):
+        for version, nested in (
+            ("4.3.7", False),
+            ("4.6.8", False),
+            ("4.6.9", True),
+            ("4.7.0", True),
+            ("4.8.0-dev", True),
+        ):
+            with self.subTest(version=version), override_settings(RELEASE=SimpleNamespace(version=version)):
+                self.assertIs(event_scope._nested_tracking(), nested)
 
 
 class _Recorded(SimpleTestCase):
