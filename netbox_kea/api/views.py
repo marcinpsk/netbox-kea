@@ -145,7 +145,7 @@ def _lease_parameter_error(params, version: int) -> str | None:
             return f"ip_address must be an IPv{version} address."
     if subnet_id:
         try:
-            parsed_subnet_id = int(subnet_id)
+            parsed_subnet_id = parse_decimal(subnet_id)
         except ValueError:
             return "subnet_id must be an integer."
         if not constants.MIN_SUBNET_ID <= parsed_subnet_id <= constants.MAX_SUBNET_ID:

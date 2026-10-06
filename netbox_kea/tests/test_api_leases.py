@@ -143,6 +143,17 @@ class TestLeaseAPISubnetIdBounds(_APITestBase):
                     self.assertEqual(response.json(), {"detail": f"subnet_id must be from 1 to {MAX_SUBNET_ID}."})
                     self.assertEqual(kea.commands(), [])
 
+    def test_subnet_ids_that_are_not_ascii_decimal_text_are_refused_without_kea_requests(self):
+        for family in (4, 6):
+            for subnet_id in ("\u0661\u0662", " 12", "12 "):
+                with self.subTest(family=family, subnet_id=subnet_id), stub_kea({}) as kea:
+                    url = reverse(f"plugins-api:netbox_kea-api:server-leases{family}", args=[self.server.pk])
+                    response = self.api_client.get(url, {"subnet_id": subnet_id})
+
+                    self.assertEqual(response.status_code, 400)
+                    self.assertEqual(response.json(), {"detail": "subnet_id must be an integer."})
+                    self.assertEqual(kea.commands(), [])
+
 
 class TestLeaseAPIFormatSuffix(_APITestBase):
     def test_invalid_selectors_have_the_same_response_on_both_routes(self):

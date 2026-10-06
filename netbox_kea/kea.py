@@ -398,7 +398,7 @@ def _subnet_id_value(value: Any) -> int:
     if isinstance(value, bool) or not isinstance(value, (int, str)):
         raise ValueError("subnet_id must be a positive integer.")
     try:
-        subnet_id = int(value)
+        subnet_id = value if isinstance(value, int) else parse_decimal(value)
     except ValueError as exc:
         raise ValueError("subnet_id must be a positive integer.") from exc
     if not constants.MIN_SUBNET_ID <= subnet_id <= constants.MAX_SUBNET_ID:
