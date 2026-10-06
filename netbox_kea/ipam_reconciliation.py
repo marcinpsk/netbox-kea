@@ -621,7 +621,7 @@ def claim(
 
 
 def _require_one_mac_each(row: _Report) -> None:
-    """Refuse a Reservation row before its IP address write when a hardware address cannot resolve to one MAC row."""
+    """Refuse a Reservation row before its first IP or MAC write when a hardware address cannot resolve to one MAC row."""
     for hardware, _hostname in row.mac_addresses:
         try:
             mac = normalized_mac(hardware)
@@ -633,6 +633,8 @@ def _require_one_mac_each(row: _Report) -> None:
 
 def _sync_row_macs(row: _Report, *, required: bool) -> dict[tuple[str, str], MACAddress]:
     """Synchronize the MAC rows of *row*; a required one that does not resolve refuses the row."""
+    if required:
+        _require_one_mac_each(row)
     resolved = {}
     for hardware, hostname in row.mac_addresses:
         mac = sync_mac_address(hardware, hostname)
@@ -946,7 +948,7 @@ def _claim(
 ) -> _Outcome:
     """Link one reported address under its identity lock, and apply the report when no owner disagrees.
 
-    *before_write* runs immediately before the IP address write, so a conflict row stays a conflict.
+    *before_write* runs immediately before the first IP address write; a row that writes no IP address skips it.
     """
     vrf_id = server.sync_vrf_id
     _lock_identity(None, report.address)

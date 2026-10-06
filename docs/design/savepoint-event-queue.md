@@ -874,11 +874,15 @@ handler as the reviewed one. The rule does not check the handler order, and it d
 `Exception` or a `try` with `finally`.
 
 **MAC pre-check.** The check runs immediately before the first event-producing IP address write in `_claim`
-(the legacy VRF move, the create, or the changed save in `_apply_claim`), not before `_claim`. Operator
-decision 2026-10-06: a conflict stays a conflict. A Reservation row whose outcome is a conflict writes no IP
-address, so it is reported as a conflict whatever its MAC is, and its MAC is not synchronized. A row with
-outcome `unchanged` or `disagreement` writes no IP address either; `_sync_row_macs` still refuses it afterwards
-when its MAC does not resolve, and that refusal follows only link writes, which queue no events.
+(the legacy VRF move, the create, or the changed save in `_apply_claim`), not before `_claim`. For a required
+row it also runs at the start of `_sync_row_macs`, before the first MAC write: a row aggregates the MACs of all
+Reservations of its address, so without it a valid first MAC could be created (an event) before a bad second
+MAC refuses the row. A refusal there follows only link writes, which queue no events. Operator decision
+2026-10-06: a conflict stays a conflict. A Reservation row whose outcome is a conflict writes no IP address and
+does not reach `_sync_row_macs`, so it is reported as a conflict whatever its MAC is. One exception is a stated
+limit (coordinator decision, because moving the check would change legacy adoption): an eligible global-table
+address passes the check before its VRF move, and `_apply_claim` can only then find that its description cannot
+fit. With a bad MAC, that row is refused, not reported as a conflict.
 
 **Correction to the boundary (review of the increment).** The nestable `event_tracking` arrived in NetBox
 **4.6.9** (#22923), not 4.7.0: upstream v4.6.9 `netbox/netbox/context_managers.py` resets the request, queue and
