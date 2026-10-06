@@ -134,6 +134,8 @@ makes it fail instead.
   squash merge and revert. `dhcp_mapping_lifecycle.py` owns their history and writer boundaries.
   Before changing mapping writes, target deletion or branch replay, read ADR 0008 and
   `docs/design/dhcp-import-mapping-transactions.md` for the recovery contract and lock order.
+  Read `docs/design/dhcp-import-mapping-lock-scope.md` before changing which writes, deletions or
+  imports take the mapping lock, or how a lock error maps to a refusal.
 - **Compatibility matrix**: runs the integration suite (`test_setup.sh`) against
   NetBox v4.3 (floor), v4.7 (ceiling), and the dev snapshot (allowed to fail).
 - **Branching browser job**: the integration steps on the netbox-branching variant of the
