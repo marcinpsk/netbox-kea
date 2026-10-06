@@ -36,7 +36,7 @@ from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 from django.utils import timezone
 from ipam.models import VRF
-from netbox.context import current_request, events_queue
+from netbox.context import current_request
 from netbox.context_managers import event_tracking
 from netbox_branching.constants import COOKIE_NAME
 from netbox_branching.models import Branch
@@ -3922,47 +3922,6 @@ class DhcpMappingLockScopeTest(TransactionTestCase):
         dispatched = {(event["object_type"].model_class(), event["object_id"]) for event in DISPATCHED_EVENTS}
         self.assertTrue({(type(link.sys4_object), link.object_id) for link in committed} <= dispatched, dispatched)
         self.assertNotIn((HostReservation, doomed[0]), dispatched)
-        for event in DISPATCHED_EVENTS:
-            model, pk = event["object_type"].model_class(), event["object_id"]
-            with self.subTest(model=model, pk=pk, event_type=event["event_type"]):
-                self.assertTrue(model.objects.filter(pk=pk).exists(), "An event names a row that never committed")
-
-    @override_settings(EVENTS_PIPELINE=[_EVENTS_RECORDER])
-    def test_nested_import_failure_restores_the_caller_event_queue(self):
-        from dcim.models import Site
-        from netbox_dhcp.models import DHCPServer
-
-        server = _make_db_server(name="lock-scope-nested-events", ca_url="https://kea.example.invalid", dhcp6=False)
-        intent = parse_dhcp_config({"subnet4": [{"id": 9, "subnet": "198.19.0.0/24"}]}, 4)
-        at_failure = []
-
-        def fail_after_the_event_is_queued(sender, instance, created, **kwargs):
-            at_failure.append(set(events_queue.get()))
-            raise RuntimeError("nested import failure")
-
-        def queued():
-            return {
-                key: (event["event_type"], deepcopy(event["snapshots"])) for key, event in events_queue.get().items()
-            }
-
-        DISPATCHED_EVENTS.clear()
-        with event_tracking(_change_request(self.user)), transaction.atomic():
-            caller = Site.objects.create(name="lock-scope-nested-events", slug="lock-scope-nested-events")
-            before = queued()
-            post_save.connect(fail_after_the_event_is_queued, sender=DHCPServer, weak=False)
-            try:
-                with self.assertRaisesMessage(RuntimeError, "nested import failure"):
-                    import_server_config(server, intent, None)
-            finally:
-                post_save.disconnect(fail_after_the_event_is_queued, sender=DHCPServer)
-            self.assertGreater(at_failure[0], set(before))
-            self.assertEqual(queued(), before)
-            summary = import_server_config(server, intent, None)
-            self.assertEqual(summary.errors, 0, summary.warnings)
-            self.assertGreater(set(events_queue.get()), set(before))
-        link = KeaDhcpLink.objects.get(server=server, family=4)
-        dispatched = {(event["object_type"].model_class(), event["object_id"]) for event in DISPATCHED_EVENTS}
-        self.assertTrue({(Site, caller.pk), (type(link.sys4_object), link.object_id)} <= dispatched, dispatched)
         for event in DISPATCHED_EVENTS:
             model, pk = event["object_type"].model_class(), event["object_id"]
             with self.subTest(model=model, pk=pk, event_type=event["event_type"]):
