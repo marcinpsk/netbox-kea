@@ -870,8 +870,8 @@ unit flush in every run, and repeats the 10^4 measurement with `NETBOX_KEA_BENCH
 
 **Guards.** `kea-dispatch-error-swallowed` is lexical, so it cannot see the per-Server handler at `jobs.py:377`,
 whose `try` calls `_sync_one_server`. No allow-list entry is needed; the README of the ruleset names that
-handler as the reviewed one. The rule does not check the handler order, and it does not see a tuple that names
-`Exception` or a `try` with `finally`.
+handler as the reviewed one. The rule does not check the handler order, and it does not see a `try` with `finally`
+(tuple handlers were added after review).
 
 **MAC pre-check.** The check runs immediately before the first event-producing IP address write in `_claim`
 (the legacy VRF move, the create, or the changed save in `_apply_claim`), not before `_claim`. For a required
