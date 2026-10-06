@@ -242,14 +242,20 @@ class ServerDhcpPluginView(generic.ObjectView):
 
     def get_extra_context(self, request, instance):
         """Return drift context for the template (live, read-only Kea read)."""
-        from ..dhcp_mapping_lifecycle import mapping_unavailable_reason
+        from ..dhcp_mapping_lifecycle import MappingUnavailable
 
         available = dhcp_plugin.is_available()
-        unavailable = mapping_unavailable_reason() if available else None
+        unavailable = None
+        drift = None
+        if available:
+            try:
+                drift = compute_drift(instance)
+            except MappingUnavailable as error:
+                unavailable = str(error)
         return {
             "plugin_available": available,
             "mapping_unavailable": unavailable,
-            "drift": compute_drift(instance) if available and unavailable is None else None,
+            "drift": drift,
             "can_sync": _user_can_sync(request.user, instance),
         }
 

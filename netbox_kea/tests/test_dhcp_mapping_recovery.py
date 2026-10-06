@@ -863,6 +863,23 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
             response = self.client.get(reverse("plugins:netbox_kea:server_list"))
         self.assertEqual(response.status_code, 200)
 
+    def test_fresh_branch_tab_checks_the_mapping_schema_once(self):
+        from django.test.utils import CaptureQueriesContext
+
+        from netbox_kea.dhcp_mapping_lifecycle import target_models
+
+        server, _, _, _, _ = self._imported("subnet", 4, "fresh-tab")
+        branch = _provisioned_branch(self, "mapping-fresh-tab")
+        self.client.force_login(self.user)
+        self.client.cookies[COOKIE_NAME] = branch.schema_id
+        with stub_kea(_recorded_kea()), CaptureQueriesContext(connections["default"]) as queries:
+            response = self.client.get(reverse("plugins:netbox_kea:server_dhcp_plugin", args=[server.pk]))
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, "Create a fresh branch")
+        catalog = [query for query in queries.captured_queries if "pg_attribute" in query["sql"]]
+        # compute_drift, the guarded KeaDhcpLink query of each family, and the sources header: one round each.
+        self.assertEqual(len(catalog), 4 * (1 + len(target_models())))
+
     def test_affected_iterative_merge_refuses_before_mutation(self):
         _, _, _, target, link = self._imported("subnet", 4, "iterative")
         branch = _provisioned_branch(self, "mapping-iterative")
