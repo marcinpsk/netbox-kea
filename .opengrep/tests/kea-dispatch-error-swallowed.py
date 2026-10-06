@@ -86,3 +86,44 @@ def reraised_with_else(obj):
     else:
         return obj
     return None
+
+
+def broad_in_a_tuple(obj):
+    try:
+        # ruleid: kea-dispatch-error-swallowed
+        with event_scope.atomic():
+            obj.save()
+    except (Exception, OSError):
+        pass
+
+
+def broad_last_in_a_tuple(obj):
+    try:
+        # ruleid: kea-dispatch-error-swallowed
+        with event_scope.atomic():
+            obj.save()
+    except (OSError, Exception) as exc:
+        print(type(exc))
+    else:
+        return obj
+    return None
+
+
+def base_in_a_tuple(obj):
+    try:
+        # ruleid: kea-dispatch-error-swallowed
+        with event_scope.atomic():
+            obj.save()
+    except (KeyboardInterrupt, BaseException) as exc:
+        print(type(exc))
+
+
+def reraised_before_a_tuple(obj):
+    try:
+        # ok: kea-dispatch-error-swallowed
+        with event_scope.atomic():
+            obj.save()
+    except event_scope.EventDispatchError:
+        raise
+    except (Exception, OSError):
+        pass
