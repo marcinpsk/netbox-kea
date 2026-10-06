@@ -3659,6 +3659,57 @@ class DhcpMappingLockScopeTest(TransactionTestCase):
                     self.assertEqual(getattr(current, f"{field}_id"), value.pk)
                 self.assertTrue(KeaDhcpLink.objects.filter(pk=link.pk, object_id=target.pk).exists())
 
+    @override_settings(EVENTS_PIPELINE=[_EVENTS_RECORDER])
+    def test_limit_c_a_caught_late_delete_guard_inside_a_transaction_dispatches_the_reverted_delete(self):
+        from netbox_dhcp.models import DHCPServer
+
+        _, _, _, target, link = self._imported("reservation", 4, "late-guard-events")
+        empty = DHCPServer.objects.create(name="lock-scope-late-guard-events")
+        paused, release, outcome = Event(), Event(), []
+        DISPATCHED_EVENTS.clear()
+        self.addCleanup(DISPATCHED_EVENTS.clear)
+
+        def pause(execute, sql, params, many, context):
+            if not paused.is_set() and sql.startswith("SAVEPOINT"):
+                paused.set()
+                release.wait(20)
+            return execute(sql, params, many, context)
+
+        def delete_in_a_caller_transaction():
+            # A caller that catches the refusal and commits, as a plugin row loop inside a transaction would.
+            try:
+                with event_tracking(_change_request(self.user)), transaction.atomic():
+                    with connections["default"].execute_wrapper(pause):
+                        try:
+                            DHCPServer.objects.get(pk=empty.pk).delete()
+                        except AbortRequest as error:
+                            outcome.append(error.message)
+            finally:
+                connections.close_all()
+
+        def move_the_reservation():
+            try:
+                current = type(target).objects.get(pk=target.pk)
+                current.dhcp_server = empty
+                current.save()
+            finally:
+                connections.close_all()
+
+        workers = self._workers()
+        deleting = workers.submit(delete_in_a_caller_transaction)
+        try:
+            self.assertTrue(paused.wait(20), "The deletion did not reach its savepoint")
+            workers.submit(move_the_reservation).result(timeout=20)
+        finally:
+            release.set()
+        deleting.result(timeout=20)
+        self.assertEqual(outcome, [_STALE_GATE])
+        self.assertTrue(type(target).objects.filter(pk=target.pk).exists())
+        self.assertTrue(KeaDhcpLink.objects.filter(pk=link.pk).exists())
+        # Accepted limit (#302): NetBox queued the delete event before the guard refused, and the caller committed.
+        dispatched = [(e["object_type"].model_class(), e["object_id"], e["event_type"]) for e in DISPATCHED_EVENTS]
+        self.assertIn((type(target), target.pk, "object_deleted"), dispatched)
+
     def test_dependency_delete_during_replay_rolls_back_the_whole_revert(self):
         _, _, _, target, link = self._imported("subnet", 4, "dependency-replay")
         prefix = target.prefix

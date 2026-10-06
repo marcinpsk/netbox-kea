@@ -53,7 +53,7 @@ from django.db.migrations.loader import MigrationLoader  # noqa: E402
 from django.db.migrations.operations.base import Operation  # noqa: E402
 from django.db.migrations.operations.models import ModelOperation  # noqa: E402
 from django.db.models import ProtectedError  # noqa: E402
-from django.db.models.signals import pre_delete, pre_save  # noqa: E402
+from django.db.models.signals import post_save, pre_delete, pre_save  # noqa: E402
 from django.test import Client, RequestFactory, SimpleTestCase, TransactionTestCase, override_settings  # noqa: E402
 from django.test.utils import CaptureQueriesContext, isolate_apps  # noqa: E402
 from django.urls import (  # noqa: E402
@@ -490,6 +490,39 @@ class OptionalMappingReplayTest(TransactionTestCase):
                         self.assertEqual(vrf.description, "original")
                 finally:
                     holder.close()
+
+
+@override_settings(EVENTS_PIPELINE=["netbox_kea.tests.utils.record_dispatched_events"])
+class NativeMergeEventsTest(TransactionTestCase):
+    """Accepted limit (#302): netbox-branching tracks each merged change on its own, inside the merge transaction."""
+
+    def test_a_merge_that_fails_late_dispatches_the_events_of_its_reverted_earlier_changes(self):
+        user = get_user_model().objects.create_superuser("merge-events-admin")
+        branch = _provisioned_branch(self, "merge events")
+        branch.merge_strategy = "iterative"
+        branch.save(provision=False)
+        with activate_branch(branch), event_tracking(_change_request(user)):
+            first = Site.objects.create(name="merge-events-first", slug="merge-events-first")
+            Site.objects.create(name="merge-events-second", slug="merge-events-second")
+
+        def refuse_the_second(sender, instance, using, **kwargs):
+            if using == "default" and instance.slug == "merge-events-second":
+                raise RuntimeError("the second merged change fails")
+
+        DISPATCHED_EVENTS.clear()
+        self.addCleanup(DISPATCHED_EVENTS.clear)
+        post_save.connect(refuse_the_second, sender=Site, weak=False)
+        try:
+            with self.assertRaisesMessage(RuntimeError, "the second merged change fails"):
+                branch.merge(user=user)
+        finally:
+            post_save.disconnect(refuse_the_second, sender=Site)
+        self.assertFalse(Site.objects.filter(slug__startswith="merge-events-").exists())
+        self.assertIn(
+            (first.pk, "object_created"),
+            [(event["object_id"], event["event_type"]) for event in DISPATCHED_EVENTS],
+            "netbox-branching no longer dispatches per merged change: remove this accepted limit",
+        )
 
 
 class ProvisionedBranchTest(TransactionTestCase):
