@@ -12,6 +12,7 @@ from rest_framework.response import Response
 
 from .. import constants, filtersets, models
 from ..constants import Family
+from ..decimal_text import parse_decimal
 from ..kea import KeaException, LeaseQueryGuardError, lease_query_guard_message
 from ..reservations import (
     GlobalReservationScope,
@@ -91,7 +92,7 @@ def _parse_subnet_lease_state(raw_state, selector) -> tuple[int | None, str | No
     if selector != constants.BY_SUBNET_ID:
         return None, "state requires subnet_id as the selected filter."
     try:
-        state = int(raw_state)
+        state = parse_decimal(raw_state)
     except (TypeError, ValueError):
         return None, "A Subnet query supports only the Active or Declined state."
     if state not in constants.LEASE_QUERY_STATE_CODES:
@@ -166,7 +167,7 @@ class ServerViewSet(NetBoxModelViewSet):
 
         if subnet_id:
             try:
-                parsed_subnet_id = int(subnet_id)
+                parsed_subnet_id = parse_decimal(subnet_id)
             except ValueError:
                 return Response({"detail": "subnet_id must be an integer."}, status=status.HTTP_400_BAD_REQUEST)
             if parsed_subnet_id < 1:
@@ -263,7 +264,7 @@ class ServerViewSet(NetBoxModelViewSet):
         # already ignores one, so the reader must ignore it too instead of failing.
         raw_limit = params.get("limit", "")
         try:
-            limit = int(raw_limit) if raw_limit else 100
+            limit = parse_decimal(raw_limit) if raw_limit else 100
         except (TypeError, ValueError):
             return Response({"detail": "limit must be an integer."}, status=status.HTTP_400_BAD_REQUEST)
         if not 1 <= limit <= 500:
@@ -314,7 +315,7 @@ class ServerViewSet(NetBoxModelViewSet):
                     raise ValueError("A Global Reservation query cannot select a Subnet.")
                 subnet_id = None
             elif scope_name == "in-subnet":
-                subnet_id = int(params.get("subnet_id", ""))
+                subnet_id = parse_decimal(params.get("subnet_id", ""))
             else:
                 raise ValueError("scope must be global or in-subnet.")
             identity = ReservationIdentity(identifier_type, identifier)
@@ -351,7 +352,7 @@ class ServerViewSet(NetBoxModelViewSet):
     def _reservation_address_response(self, server, params, version: int) -> Response:
         """Resolve one In-Subnet address to its canonical Reservation."""
         try:
-            subnet_id = int(params.get("subnet_id", ""))
+            subnet_id = parse_decimal(params.get("subnet_id", ""))
             client = _reservation_client(server, version)
             catalogue = subnet_catalogue(server, version)
             subnet = catalogue.find_by_id(subnet_id)

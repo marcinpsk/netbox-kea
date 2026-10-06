@@ -167,6 +167,20 @@ class TestLeaseAPIFormatSuffix(_APITestBase):
                 self.assertEqual(suffixed.json(), plain.json())
                 self.assertEqual(kea.commands(), [])
 
+    def test_subnet_id_and_state_must_be_ascii_decimal_text(self):
+        url = reverse("plugins-api:netbox_kea-api:server-leases4", args=[self.server.pk])
+        cases = (
+            ({"subnet_id": "\u0661\u0662"}, "subnet_id must be an integer."),
+            ({"subnet_id": " 12"}, "subnet_id must be an integer."),
+            ({"subnet_id": "12", "state": "\u0661"}, "A Subnet query supports only the Active or Declined state."),
+        )
+        for params, message in cases:
+            with self.subTest(params=params), stub_kea({}) as kea:
+                response = self.api_client.get(url, params)
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(response.json(), {"detail": message})
+                self.assertEqual(kea.commands(), [])
+
     def test_permission_denial_has_the_same_response_without_kea_requests(self):
         denied_user = User.objects.create_user(username="denied_lease_reader")
         self.api_client.force_authenticate(user=denied_user)

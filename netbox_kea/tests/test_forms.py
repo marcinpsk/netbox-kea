@@ -112,6 +112,11 @@ class TestLeases4SearchFormValidation(SimpleTestCase):
         form = self._form("subnet_id", "abc")
         self.assertFalse(form.is_valid())
 
+    def test_subnet_id_must_be_ascii_decimal_text(self):
+        form = self._form("subnet_id", "\u0661\u0662")
+        self.assertFalse(form.is_valid())
+        self.assertEqual(form.errors["q"], ["Subnet ID must be an integer."])
+
     def test_valid_client_id(self):
         form = self._form("client_id", "aabb")
         self.assertTrue(form.is_valid(), form.errors)
@@ -134,7 +139,7 @@ class TestLeases4SearchFormValidation(SimpleTestCase):
         self.assertEqual(form.cleaned_data["page"], 2)
 
     def test_hostname_page_must_be_a_positive_integer(self):
-        for page in ("198.18.0.2", "0", "-1", "1.5"):
+        for page in ("198.18.0.2", "0", "-1", "1.5", "\u0662"):
             with self.subTest(page=page):
                 form = self._form("hostname", "search-host", page=page)
                 self.assertFalse(form.is_valid())

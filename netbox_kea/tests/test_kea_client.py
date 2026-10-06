@@ -1176,6 +1176,8 @@ class TestLeaseSearch(TestCase):
             (4, "subnet_id", True, None, "positive integer"),
             (4, "subnet_id", 1.5, None, "positive integer"),
             (4, "subnet_id", object(), None, "positive integer"),
+            (4, "subnet_id", "\u0661\u0662", None, "positive integer"),
+            (4, "subnet_id", " 12", None, "positive integer"),
         )
 
         for version, selector, value, state, message in cases:

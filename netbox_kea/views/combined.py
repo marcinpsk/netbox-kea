@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
 import concurrent.futures
+import contextlib
 import logging
 from typing import Any
 
@@ -11,6 +12,7 @@ from django.views import View
 
 from .. import constants, forms, server_configuration, tables
 from ..constants import Family
+from ..decimal_text import parse_decimal
 from ..kea import LeaseQueryGuardError, lease_query_guard_message
 from ..models import Server
 from ..reservation_transfer import export_reservation_document
@@ -82,6 +84,15 @@ def _fetch_all_leases_from_server(
     return all_leases, collection.truncated
 
 
+def _selected_server_pks(request: HttpRequest) -> set[int]:
+    """Return the Server primary keys that the ``server`` query parameters select."""
+    selected = set()
+    for text in request.GET.getlist("server"):
+        with contextlib.suppress(ValueError):
+            selected.add(parse_decimal(text))
+    return selected
+
+
 class _CombinedViewMixin(ConditionalLoginRequiredMixin, View):
     """Shared mixin for all combined multi-server views.
 
@@ -96,8 +107,7 @@ class _CombinedViewMixin(ConditionalLoginRequiredMixin, View):
     def _combined_context(self, request: HttpRequest) -> dict[str, Any]:
         """Build context vars shared by every combined view."""
         all_servers = list(Server.objects.restrict(request.user, "view").order_by("name"))
-        server_id_strs = request.GET.getlist("server")
-        selected_server_pks = {int(pk) for pk in server_id_strs if pk.isdigit()}
+        selected_server_pks = _selected_server_pks(request)
         server_qs = "&".join(f"server={pk}" for pk in sorted(selected_server_pks))
         return {
             "all_servers": all_servers,
@@ -109,8 +119,7 @@ class _CombinedViewMixin(ConditionalLoginRequiredMixin, View):
     def _get_servers(self, request: HttpRequest, dhcp_version: Family) -> list["Server"]:
         """Return servers to query: selected ones if ?server= provided, else all dhcp-flagged."""
         dhcp_kwarg = f"dhcp{dhcp_version}"
-        server_id_strs = request.GET.getlist("server")
-        selected_pks = {int(pk) for pk in server_id_strs if pk.isdigit()}
+        selected_pks = _selected_server_pks(request)
         base_qs = Server.objects.restrict(request.user, "view").filter(**{dhcp_kwarg: True})
         if selected_pks:
             return list(base_qs.filter(pk__in=selected_pks))

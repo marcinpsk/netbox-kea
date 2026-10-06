@@ -18,6 +18,7 @@ from utilities.forms.rendering import FieldSet
 from . import constants
 from .config_write import SUBNET_LIST_UNCONFIRMED, subnet_changed
 from .constants import Family, IPNetworkValue
+from .decimal_text import parse_decimal
 from .dhcp_options import InvalidAddress, address_list, parse_dhcp_option
 from .kea import SharedNetworkEdit, SubnetEdit, SubnetFields, description_as_shown, subnet_network
 from .models import Server
@@ -493,7 +494,7 @@ class BaseLeasesSarchForm(forms.Form):
         """Validate and normalise search fields according to the selected search type."""
         ip_version = self.Meta.ip_version
         cleaned_data = super().clean()
-        q = cleaned_data.get("q")
+        q = cleaned_data.get("q") or ""
         by = cleaned_data.get("by")
 
         if q and not by:
@@ -513,7 +514,7 @@ class BaseLeasesSarchForm(forms.Form):
                 raise ValidationError({"q": f"Invalid IPv{ip_version} subnet."}) from e
         elif by == constants.BY_SUBNET_ID:
             try:
-                i = int(q)
+                i = parse_decimal(q)
                 if not MIN_SUBNET_ID <= i <= MAX_SUBNET_ID:
                     raise ValidationError({"q": "Invalid subnet ID."})
                 cleaned_data["q"] = i
@@ -541,7 +542,7 @@ class BaseLeasesSarchForm(forms.Form):
 
         # Convert state to int or None for the view to use.
         state_str = cleaned_data.get("state", "")
-        cleaned_data["state"] = int(state_str) if state_str != "" else None
+        cleaned_data["state"] = parse_decimal(state_str) if state_str != "" else None
 
         page = cleaned_data["page"]
         if page:
@@ -553,7 +554,7 @@ class BaseLeasesSarchForm(forms.Form):
                     raise ValidationError({"page": "Invalid IP."}) from e
             else:
                 try:
-                    page_number = int(page)
+                    page_number = parse_decimal(page)
                 except (TypeError, ValueError) as e:
                     raise ValidationError({"page": "Page must be a positive integer."}) from e
                 if page_number < 1:

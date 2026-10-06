@@ -531,3 +531,43 @@ rules:
                     - pattern: ipam.models.IPAddress
                     - pattern: ipam.models.Prefix
                     - pattern: ipam.models.IPRange
+
+  - id: kea-request-number-without-ascii-check
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Parse a number from request text with parse_decimal() from netbox_kea.decimal_text.
+      int(), str.isdigit() and a regex \d also accept other Unicode digits, and int() also
+      accepts surrounding whitespace.
+    paths:
+      exclude:
+        - "**/tests/**"
+        - "**/migrations/**"
+    pattern-either:
+      - pattern: $TEXT.isdigit()
+      - pattern: $TEXT.isdecimal()
+      - pattern: $TEXT.isnumeric()
+      - patterns:
+          - pattern-either:
+              - pattern: re.$FUNCTION("$REGEX", ...)
+              - pattern: re.$FUNCTION(r"$REGEX", ...)
+          - metavariable-regex:
+              metavariable: $REGEX
+              regex: \\d
+      - patterns:
+          - pattern-either:
+              - pattern: int($PARAMS.get(...))
+              - pattern: int($PARAMS[...])
+              - pattern: int(<... $PARAMS.getlist(...) ...>)
+              - patterns:
+                  - pattern-either:
+                      - pattern-inside: |
+                          $VALUE = $PARAMS.get(...)
+                          ...
+                      - pattern-inside: |
+                          $VALUE = $PARAMS[...]
+                          ...
+                  - pattern: int($VALUE)
+          - metavariable-regex:
+              metavariable: $PARAMS
+              regex: ^((self\.)?request\.(GET|POST|query_params|data)|params|query_params|(self\.)?cleaned_data)$

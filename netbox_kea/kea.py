@@ -16,6 +16,7 @@ from requests.models import HTTPBasicAuth
 
 from . import constants
 from .constants import Family, IPNetworkValue, Persistence
+from .decimal_text import parse_decimal
 from .dhcp_options import (
     DHCPOption,
     InvalidAddress,
@@ -1869,7 +1870,7 @@ class KeaClient:
         if isinstance(value, bool) or not isinstance(value, (int, str)):
             raise ValueError("subnet_id must be a positive integer.")
         try:
-            subnet_id = int(value)
+            subnet_id = value if isinstance(value, int) else parse_decimal(value)
         except (TypeError, ValueError) as exc:
             raise ValueError("subnet_id must be a positive integer.") from exc
         if subnet_id < 1:

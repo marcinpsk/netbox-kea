@@ -217,6 +217,20 @@ class TestReservation4API(_APITestBase):
         response = self.api_client.get(self._url(pk=99999), {"page": "1"})
         self.assertEqual(response.status_code, 404)
 
+    def test_subnet_selectors_must_be_ascii_decimal_text(self):
+        identity = {"scope": "in-subnet", "identifier_type": "hw-address", "identifier": "aa:bb:cc:dd:ee:ff"}
+        cases = (
+            ({**identity, "subnet_id": "\u0662\u0660"}, "Invalid Reservation identity selector."),
+            ({**identity, "subnet_id": " 20"}, "Invalid Reservation identity selector."),
+            ({"subnet_id": "\u0662\u0660", "ip_address": "198.18.0.20"}, "Invalid scoped address selector."),
+        )
+        for params, message in cases:
+            with self.subTest(params=params), stub_kea(_catalogue_responses(4, 20, "198.18.0.0/24")) as kea:
+                response = self.api_client.get(self._url(), params)
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(response.json(), {"detail": message})
+                self.assertNotIn("reservation-get", kea.commands())
+
     def test_incomplete_tls_configuration_returns_server_error_for_every_query_mode(self):
         """A stored Server configuration failure is not a malformed API selector."""
         self.server.client_cert_path = "/certs/client.pem"
@@ -381,7 +395,7 @@ class TestReservation4API(_APITestBase):
 
     def test_page_rejects_invalid_limits_without_a_kea_request(self):
         with stub_kea({}) as kea:
-            for limit in ("not-an-integer", "0", "501"):
+            for limit in ("not-an-integer", "0", "501", "\u0661\u0660", " 10"):
                 with self.subTest(limit=limit):
                     response = self.api_client.get(self._url(), {"page": "1", "limit": limit})
                     self.assertEqual(response.status_code, 400)
