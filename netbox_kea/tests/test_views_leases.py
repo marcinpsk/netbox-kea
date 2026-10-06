@@ -2768,23 +2768,19 @@ class TestLease6EditDuid(_ViewTestBase):
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestFetchOneEmptyLease(_ViewTestBase):
-    """_reservation_for_lease_worker returns early when the lease has no subnet_id."""
+    """A lease reply without the required subnet-id is rejected before enrichment."""
 
-    def test_lease_without_subnet_id_skips_reservation_lookup(self):
-        """Lease without subnet-id → no reservation lookup is sent to Kea."""
+    def test_lease_without_subnet_id_is_rejected_before_reservation_lookup(self):
+        """A missing subnet-id is diagnosed, and no reservation lookup is sent to Kea."""
         subnets = _subnet_list(4, [])
-        # A lease with ip-address but NO subnet-id → enrichment issues no reservation-get
-        # (an empty registry for reservation-get would raise if it were called).
-        lease = {
-            "result": 0,
-            "arguments": complete_lease(
-                {"ip-address": "10.0.0.1", "valid-lft": 3600, "state": 0, "hostname": "testhost"}
-            ),
-        }
+        arguments = complete_lease({"ip-address": "10.0.0.1", "valid-lft": 3600, "state": 0, "hostname": "testhost"})
+        del arguments["subnet-id"]
         url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
-        with _lease_stub({"subnet4-list": subnets, "lease4-get": lease}):
+        with _lease_stub({"subnet4-list": subnets, "lease4-get": {"result": 0, "arguments": arguments}}) as kea:
             response = self.client.get(url, {"by": "ip", "q": "10.0.0.1"}, HTTP_HX_REQUEST="true")
         self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.context["lease_diagnostics"])
+        self.assertNotIn("reservation-get", kea.commands())
 
 
 # ---------------------------------------------------------------------------
@@ -3722,21 +3718,24 @@ class TestFetchOneMacValueError(_ViewTestBase):
         # Must render OK, not 500
         self.assertEqual(response.status_code, 200)
 
-    def test_none_subnet_id_does_not_crash(self):
-        """Lease with subnet-id=None must not crash during MAC reservation lookup."""
+    def test_null_subnet_id_is_rejected_before_reservation_lookup(self):
+        """A null subnet-id is diagnosed, and no MAC reservation lookup is sent to Kea."""
         lease = complete_lease(
             {
                 "ip-address": "10.0.0.6",
                 "hw-address": "aa:bb:cc:dd:ee:01",
                 "hostname": "test2",
+                "subnet-id": None,
                 "valid-lft": 3600,
                 "cltt": 1_700_000_000,
             }
         )
         url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
-        with _lease_stub({"subnet4-list": self._SUBNETS4, "lease4-get": {"result": 0, "arguments": lease}}):
+        with _lease_stub({"subnet4-list": self._SUBNETS4, "lease4-get": {"result": 0, "arguments": lease}}) as kea:
             response = self._htmx_get(url, {"by": "ip", "q": "10.0.0.6"})
         self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.context["lease_diagnostics"])
+        self.assertNotIn("reservation-get", kea.commands())
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
