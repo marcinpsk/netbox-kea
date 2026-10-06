@@ -52,7 +52,7 @@ def validate_connection_change(server: "Server", before: ConnectionValues | None
             continue
         try:
             server.get_client(version=family).command(KeaCommand.VERSION_GET, family)
-        except json.JSONDecodeError as exc:
+        except (json.JSONDecodeError, RuntimeError) as exc:
             logger.exception("Malformed response during DHCPv%s connectivity check", family)
             raise ValidationError({field: "An internal error occurred."}) from exc
         except (KeaException, OSError, ValueError) as exc:

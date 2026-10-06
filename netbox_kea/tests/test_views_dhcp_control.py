@@ -91,6 +91,14 @@ class TestServerDHCP4EnableView(_ViewTestBase):
         self.assertNotIn("kea_secret_transport_marker", response.content.decode())
         self.assertIn("An internal error occurred.", response.content.decode())
 
+    def test_post_on_malformed_reply_shows_error_and_redirects(self):
+        """A reply entry without a result must flash the generic error, not return 500."""
+        with _control_stub(**{"dhcp-enable": ["kea_secret_reply_marker"]}):
+            response = self.client.post(self._url(), follow=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("kea_secret_reply_marker", response.content.decode())
+        self.assertIn("An internal error occurred.", response.content.decode())
+
     def test_get_requires_login(self):
         """Unauthenticated GET must redirect to login."""
         self.client.logout()
@@ -193,6 +201,14 @@ class TestServerDHCP4DisableView(_ViewTestBase):
             response = self.client.post(self._url(), {"confirm": "1"}, follow=True)
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("kea_secret_transport_marker", response.content.decode())
+        self.assertIn("An internal error occurred.", response.content.decode())
+
+    def test_post_on_malformed_reply_shows_error_and_redirects(self):
+        """A reply entry without a result must flash the generic error, not return 500."""
+        with _control_stub(**{"dhcp-disable": ["kea_secret_reply_marker"]}):
+            response = self.client.post(self._url(), {"confirm": "1"}, follow=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("kea_secret_reply_marker", response.content.decode())
         self.assertIn("An internal error occurred.", response.content.decode())
 
     def test_get_requires_login(self):

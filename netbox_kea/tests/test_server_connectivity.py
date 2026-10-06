@@ -125,6 +125,7 @@ class ServerSubmissionConnectivityTest(_ViewTestBase):
             (ValueError("private diagnostic"), "Unable to reach"),
             ({"result": 1, "text": "private diagnostic"}, "Unable to reach"),
             (requests.exceptions.JSONDecodeError("private diagnostic", "", 0), "An internal error occurred."),
+            (["private diagnostic"], "An internal error occurred."),
         )
         url = reverse("plugins:netbox_kea:server_add")
         for family in (4, 6):
@@ -206,6 +207,18 @@ class ServerAPIConnectivityTest(_ViewTestBase):
             )
         self.assertEqual(response.status_code, 400, response.data)
         self.assertEqual(response.data["dhcp4"], ["Unable to reach the Kea DHCPv4 service."])
+        self.assertEqual(len(kea.requests), 1)
+        self.assertFalse(Server.objects.filter(name="api-new").exists())
+
+    def test_create_reports_a_malformed_reply_entry_as_a_field_error(self):
+        with stub_kea({"version-get": ["ok"]}) as kea:
+            response = self.api.post(
+                self.collection,
+                {"name": "api-new", "ca_url": "https://new.example.invalid", "dhcp4": True, "dhcp6": False},
+                format="json",
+            )
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertEqual(response.data["dhcp4"], ["An internal error occurred."])
         self.assertEqual(len(kea.requests), 1)
         self.assertFalse(Server.objects.filter(name="api-new").exists())
 

@@ -583,7 +583,7 @@ class BaseServerLeasesDeleteView(GetReturnURLMixin, generic.ObjectView, metaclas
             except KeaException as exc:  # noqa: PERF203
                 logger.exception("Kea error deleting lease %s on server %s", ip, instance.pk)
                 messages.error(request, f"Error deleting lease {ip}: {kea_error_hint(exc)}")
-            except (requests.RequestException, ValueError):
+            except (requests.RequestException, RuntimeError, ValueError):
                 logger.exception("Error deleting lease %s on server %s", ip, instance.pk)
                 messages.error(request, f"Error deleting lease {ip}: see server logs for details.")
 
@@ -730,7 +730,7 @@ class _BaseLeaseEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
         except KeaException as exc:
             logger.exception("Error updating lease %s", ip_address)
             messages.error(request, kea_error_hint(exc))
-        except (requests.RequestException, ValueError):
+        except (requests.RequestException, RuntimeError, ValueError):
             logger.exception("Error updating lease %s (transport/parse error)", ip_address)
             messages.error(request, "Failed to update lease: see server logs for details.")
         return redirect(self._leases_url(server))
@@ -843,7 +843,7 @@ class _BaseLeaseAddView(_KeaChangeMixin, generic.ObjectView):
                         "tab": self._active_tab,
                     },
                 )
-            except ValueError:
+            except (RuntimeError, ValueError):
                 logger.exception(
                     "Failed to create DHCPv%s lease for %s (parse error)", self.dhcp_version, cd.get("ip_address")
                 )

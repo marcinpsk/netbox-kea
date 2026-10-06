@@ -330,7 +330,7 @@ class CombinedServerStatusBadgeView(ConditionalLoginRequiredMixin, View):
                 client = server.get_client(version=version)
                 client.command(KeaCommand.VERSION_GET, version)
                 online = True
-            except (KeaException, requests.RequestException, OSError, ValueError):
+            except (KeaException, requests.RequestException, OSError, RuntimeError, ValueError):
                 online = False
             statuses.append({"version": version, "online": online})
 
