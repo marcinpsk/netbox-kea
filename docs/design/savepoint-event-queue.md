@@ -876,3 +876,9 @@ handler as the reviewed one. The rule does not check the handler order, and it d
 **MAC pre-check.** The refusal for a hardware address that is not EUI-48 or EUI-64 now precedes `_claim`. A
 Reservation row whose `_claim` outcome would be a conflict is now refused for such an address, where before it
 was reported as a conflict and its MAC was not synchronized.
+
+**Correction to the boundary (review of the increment).** The nestable `event_tracking` arrived in NetBox
+**4.6.9** (#22923), not 4.7.0: upstream v4.6.9 `netbox/netbox/context_managers.py` resets the request, queue and
+query cache by token in a `finally` and flushes only after the block completes, and v4.6.8 still ends with
+`current_request.set(None)`. So `atomic()` selects a unit on 4.6.9 and later. The 4.3 CI leg (v4.3.7) keeps its
+plain-mode expectations.

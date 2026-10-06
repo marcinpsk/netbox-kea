@@ -471,7 +471,7 @@ To change the sync interval, edit it on the **Sync Jobs** page. You do not need 
 
 NetBox queues an event for each change and sends the queue to event rules and webhooks when the request or
 job ends. The plugin writes each sync row, each DHCP-plugin import family and each import receipt in its own
-transaction. On NetBox 4.7, when such a transaction starts with no other transaction open in a request or in the
+transaction. On NetBox 4.6.9 and later, when such a transaction starts with no other transaction open in a request or in the
 IPAM sync job, NetBox dispatches its events right after its COMMIT, and none when it rolls back. A failed row or
 family then sends no event for the changes that it reverted. This has these consequences:
 
@@ -497,8 +497,8 @@ Known limits. NetBox gives a plugin no public way to remove one event from its q
   duplicated during the row fails it after a change. It also applies to a DHCP-plugin import that a caller
   runs in its own transaction, and to a deletion that the DHCP mapping guard refuses after NetBox queued the
   delete event.
-- On NetBox 4.3 to 4.6, `event_tracking` cannot be nested, so every plugin transaction is plain and the events of
-  a failed row dispatch with the request. On NetBox 4.3, a failed request also dispatches its events.
+- On NetBox 4.3 to 4.6.8, `event_tracking` cannot be nested, so every plugin transaction is plain and the events
+  of a failed row dispatch with the request. On these releases a failed request also dispatches its events.
 - An `on_commit` hook of another app that raises after a COMMIT drops the events of that transaction.
 - A netbox-branching merge or revert dispatches the events of each change inside its own transaction. When a
   later change fails, the merge rolls back, but the events of the earlier changes have already dispatched.
