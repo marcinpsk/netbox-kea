@@ -17,10 +17,11 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypeVar, cast
 
+from dcim.models import MACAddress
 from django.db import DatabaseError, connection
 from django.utils import timezone
 from ipam.models import IPAddress, IPRange, Prefix
-from netaddr import IPNetwork
+from netaddr import AddrFormatError, IPNetwork
 
 from . import event_scope, subnet_catalogue
 from .constants import IP_RANGE_MAX_SIZE, Family, IPNetworkValue, StaleCleanupMode
@@ -42,11 +43,9 @@ from .plugin_settings import plugin_setting
 from .pools import Pool
 from .reservations import TRAVERSAL_DIAGNOSTIC_CODES, InSubnetReservationScope, Reservation, ReservationSnapshot
 from .subnet_catalogue import CatalogueUnavailable
-from .sync import sync_mac_address
+from .sync import normalized_mac, sync_mac_address
 
 if TYPE_CHECKING:
-    from dcim.models import MACAddress
-
     from .subnet_catalogue import CompleteCatalogueSnapshot
 
 logger = logging.getLogger(__name__)
@@ -605,16 +604,11 @@ def claim(
     conflicts: set[str] = set()
 
     def apply(row: _Report) -> AddressClaim:
+        if source == RESERVATION:
+            _require_one_mac_each(row)
         outcome = _claim(server, family, source, row, force=force, conflicts=conflicts)
         ip = IPAddress.objects.filter(vrf_id=server.sync_vrf_id, address__net_host=row.address).first()
-        resolved_macs = {}
-        if outcome != "conflict":
-            for hardware, hostname in row.mac_addresses:
-                mac = sync_mac_address(hardware, hostname)
-                if mac is None and source == RESERVATION:
-                    raise _RowRefused("The required hardware address could not be resolved")
-                if mac is not None:
-                    resolved_macs[hardware, hostname] = mac
+        resolved_macs = {} if outcome == "conflict" else _sync_row_macs(row, required=source == RESERVATION)
         if row.facts is None and not row.disagreement and outcome == "unchanged":
             if ip is not None and not _is_owned_description(ip.description):
                 return AddressClaim(row.address, "conflict", ip)
@@ -625,6 +619,29 @@ def claim(
     for row, result in _each_row(reports.values(), report, source, apply, lambda row: row.address):
         outcomes[row.address] = result
     return ClaimResult(addresses=outcomes, conflicts=conflicts)
+
+
+def _require_one_mac_each(row: _Report) -> None:
+    """Refuse a Reservation row before its first write when a hardware address cannot resolve to one MAC row."""
+    for hardware, _hostname in row.mac_addresses:
+        try:
+            mac = normalized_mac(hardware)
+        except AddrFormatError as exc:
+            raise _RowRefused("The required hardware address is not an EUI-48 or EUI-64 address") from exc
+        if MACAddress.objects.filter(mac_address=mac).count() > 1:
+            raise _RowRefused("NetBox has more than one MAC address row for the required hardware address")
+
+
+def _sync_row_macs(row: _Report, *, required: bool) -> dict[tuple[str, str], MACAddress]:
+    """Synchronize the MAC rows of *row*; a required one that does not resolve refuses the row."""
+    resolved = {}
+    for hardware, hostname in row.mac_addresses:
+        mac = sync_mac_address(hardware, hostname)
+        if mac is None and required:
+            raise _RowRefused("The required hardware address could not be resolved")
+        if mac is not None:
+            resolved[hardware, hostname] = mac
+    return resolved
 
 
 def _claim_reports(

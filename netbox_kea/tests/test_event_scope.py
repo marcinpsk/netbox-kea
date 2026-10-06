@@ -32,6 +32,7 @@ from netbox.context_managers import event_tracking
 from netbox.settings import VERSION
 
 from netbox_kea.ipam_reconciliation import claim
+from netbox_kea.sync import sync_mac_address
 from netbox_kea.tests.kea_stub import stub_kea
 from netbox_kea.tests.test_integration_dhcp_plugin import _reservation_snapshot
 from netbox_kea.tests.utils import DISPATCHED_EVENTS, _make_db_server
@@ -169,6 +170,16 @@ class UnitEventTest(_Recorded, TransactionTestCase):
         self.assertEqual(str(raised.exception.__cause__), "The events pipeline is down")
         self.assertTrue(IPAddress.objects.filter(address__net_host=host["ip-address"]).exists())
 
+    @unittest.skipUnless(NESTED_TRACKING, "Units need the nestable event_tracking of NetBox 4.7")
+    def test_a_flush_failure_leaves_the_mac_sync(self):
+        from netbox_kea.event_scope import EventDispatchError
+
+        with override_settings(EVENTS_PIPELINE=[_FAILING_PIPELINE]), event_tracking(self.request):
+            with self.assertRaises(RuntimeError) as raised:
+                sync_mac_address("02:00:00:00:77:31", "flush-failure")
+        self.assertIsInstance(raised.exception, EventDispatchError)
+        self.assertTrue(MACAddress.objects.filter(mac_address="02:00:00:00:77:31").exists())
+
     def test_an_open_transaction_selects_plain_mode(self):
         from netbox_kea import event_scope
 
@@ -253,6 +264,19 @@ class UnitEventTest(_Recorded, TransactionTestCase):
 class SavepointLimitTest(_Recorded, TestCase):
     """Inside a caller's transaction a plugin block is a plain savepoint. These pin the limits that remain there."""
 
+    def test_a_failed_mac_description_write_queues_no_mac_event(self):
+        hardware = "02:00:00:00:77:41"
+
+        def refuse_the_description(sender, instance, **kwargs):
+            if instance.description:
+                raise OperationalError("simulated database failure of the description write")
+
+        with _receiver(pre_save, MACAddress, refuse_the_description), event_tracking(self.request):
+            with transaction.atomic():
+                self.assertIsNone(sync_mac_address(hardware, "described"))
+        self.assertFalse(MACAddress.objects.filter(mac_address=hardware).exists())
+        self.assertEqual(self.dispatched(), [])
+
     def test_limit_a_database_failure_after_the_ip_write_dispatches_the_reverted_ip(self):
         failed, healthy = _host(51), _host(52)
         server = _make_db_server(dhcp6=False)
@@ -262,6 +286,45 @@ class SavepointLimitTest(_Recorded, TestCase):
         self.assertFalse(IPAddress.objects.filter(address__net_host=failed["ip-address"]).exists())
         reverted = [pk for model, pk in self.reverted() if model is IPAddress]
         self.assertEqual(len(reverted), 1, "NetBox now discards a savepoint's events: remove this accepted limit")
+
+    def test_limit_b_a_duplicate_mac_made_after_the_pre_check_dispatches_the_reverted_ip(self):
+        host = _host(61)
+
+        def duplicate_the_mac(sender, instance, created, **kwargs):
+            if created and str(instance.address).split("/")[0] == host["ip-address"]:
+                MACAddress.objects.create(mac_address=host["hw-address"])
+                MACAddress.objects.create(mac_address=host["hw-address"])
+
+        server = _make_db_server(dhcp6=False)
+        with _receiver(post_save, IPAddress, duplicate_the_mac), event_tracking(self.request), transaction.atomic():
+            result = claim(server, 4, _reservations(host), force=False)
+        self.assertEqual(result.addresses[host["ip-address"]].outcome, "error")
+        self.assertFalse(IPAddress.objects.filter(address__net_host=host["ip-address"]).exists())
+        self.assertIn(IPAddress, [model for model, _ in self.reverted()])
+
+    def test_a_persistent_duplicate_mac_refuses_the_row_before_its_ip_write(self):
+        host, healthy = _host(71), _host(72)
+        MACAddress.objects.create(mac_address=host["hw-address"])
+        MACAddress.objects.create(mac_address=host["hw-address"])
+        server = _make_db_server(dhcp6=False)
+        with event_tracking(self.request), transaction.atomic():
+            result = claim(server, 4, _reservations(host, healthy), force=False)
+        self.assertEqual(result.addresses[host["ip-address"]].outcome, "error")
+        self.assertEqual(
+            [model for model, _ in self.dispatched() if model is IPAddress],
+            [IPAddress],
+            "Only the healthy row's address dispatches",
+        )
+        self.assert_every_event_names_a_committed_row()
+
+    def test_an_unparseable_reservation_mac_refuses_the_row_before_its_ip_write(self):
+        # Kea accepts a hardware address of up to 20 octets; NetBox stores only EUI-48 and EUI-64.
+        host = {**_host(81), "hw-address": "02:00:00:00:00:00:00:00:00:51"}
+        server = _make_db_server(dhcp6=False)
+        with event_tracking(self.request), transaction.atomic():
+            result = claim(server, 4, _reservations(host), force=False)
+        self.assertEqual(result.addresses[host["ip-address"]].outcome, "error")
+        self.assertEqual(self.dispatched(), [])
 
 
 @override_settings(EVENTS_PIPELINE=[_RECORDER])
@@ -362,6 +425,35 @@ class DhcpImportEventTest(_Recorded, TransactionTestCase):
         self.assertFalse(DHCPServer.objects.filter(pk=reverted[0]).exists())
         # Accepted limit: the caller's transaction owns the events, so the reverted DHCP server's event dispatches.
         self.assertIn((DHCPServer, reverted[0]), self.dispatched())
+
+
+@override_settings(EVENTS_PIPELINE=[_RECORDER])
+class DhcpImportMacTest(_Recorded, TestCase):
+    @classmethod
+    def setUpClass(cls):
+        if not apps.is_installed("netbox_dhcp"):
+            raise unittest.SkipTest("netbox_dhcp not installed")
+        super().setUpClass()
+
+    def test_a_persistent_duplicate_mac_inside_an_import_dispatches_only_the_healthy_ip(self):
+        from netbox_kea.integrations.dhcp_plugin import import_server_config
+        from netbox_kea.mappers.kea_to_dhcp import parse_dhcp_config
+
+        config = {"subnet6": [{"id": 1, "subnet": "2001:db8:1::/64"}]}
+        hardware = "aa:bb:cc:00:00:01"
+        MACAddress.objects.create(mac_address=hardware)
+        MACAddress.objects.create(mac_address=hardware)
+        failed = {"subnet-id": 1, "hw-address": hardware, "ip-addresses": ["2001:db8:1::10"]}
+        healthy = {"subnet-id": 1, "duid": "01:02:03:04", "ip-addresses": ["2001:db8:1::11"]}
+        server = _make_db_server(name="duplicate-mac-import", dhcp4=False, dhcp6=True)
+        observation = _reservation_snapshot(config, 6, [failed, healthy])
+        with event_tracking(self.request):
+            summary = import_server_config(server, parse_dhcp_config(config, 6), observation)
+        self.assertEqual((summary.errors, summary.reservations_created), (1, 1))
+        self.assertFalse(IPAddress.objects.filter(address__net_host="2001:db8:1::10").exists())
+        healthy_ip = IPAddress.objects.get(address__net_host="2001:db8:1::11")
+        self.assertEqual([pk for model, pk in self.dispatched() if model is IPAddress], [healthy_ip.pk])
+        self.assert_every_event_names_a_committed_row()
 
 
 @override_settings(EVENTS_PIPELINE=["extras.events.process_event_queue"])
