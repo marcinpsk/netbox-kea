@@ -756,7 +756,11 @@ def test_branching_job_cannot_pass_with_the_branching_tests_skipped():
     runs = [step for step in job["steps"] if "run" in step]
     install = next(step["run"] for step in runs if "uv pip install" in step["run"])
     test_steps = [step for step in runs if "pytest" in step["run"]]
-    test_step = next(step for step in test_steps if "/netbox_kea/tests/test_dhcp_mapping_recovery.py " in step["run"])
+    test_step = next(
+        step
+        for step in test_steps
+        if re.search(r"/netbox_kea/tests/test_dhcp_mapping_recovery\.py(?:\s|$)", step["run"])
+    )
     optional_step = next(step for step in test_steps if "::OptionalMappingReplayTest" in step["run"])
 
     assert re.fullmatch(r"\d+\.\d+\.\d+", str(yaml.safe_load(workflow)["env"]["NETBOX_BRANCHING_VERSION"]))
@@ -768,7 +772,7 @@ def test_branching_job_cannot_pass_with_the_branching_tests_skipped():
     assert "::TestOptionalMetadataCoordination" in optional_step["run"]
     assert "--plugin netbox_kea --branching" in optional_step["run"]
     assert "--plugin netbox_dhcp" not in optional_step["run"]
-    assert "/netbox_kea/tests/test_branching.py " in test_step["run"]
+    assert re.search(r"/netbox_kea/tests/test_branching\.py(?:\s|$)", test_step["run"])
     assert job["permissions"] == {"contents": "read"}
     source = (REPOSITORY_ROOT / "netbox_kea/tests/test_branching.py").read_text()
     assert 'raise RuntimeError(f"{_REQUIRE_BRANCHING}=1, but netbox_branching is not an installed app")' in source
