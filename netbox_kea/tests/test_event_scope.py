@@ -346,6 +346,16 @@ class SavepointLimitTest(_Recorded, TestCase):
         self.assertEqual(result.addresses[host["ip-address"]].outcome, "error")
         self.assertEqual(self.dispatched(), [])
 
+    def test_a_disagreeing_row_with_one_bad_mac_writes_no_mac(self):
+        valid = _host(93)
+        bad = {**valid, "hw-address": "02:00:00:00:00:00:00:00:00:53", "hostname": "other-93"}
+        server = _make_db_server(dhcp6=False)
+        with event_tracking(self.request), transaction.atomic():
+            result = claim(server, 4, _reservations(valid, bad), force=False)
+        self.assertEqual(result.addresses[valid["ip-address"]].outcome, "error")
+        self.assertFalse(MACAddress.objects.filter(mac_address=valid["hw-address"]).exists())
+        self.assertEqual(self.dispatched(), [])
+
     def _claim_curated(self, host: dict) -> str:
         server = _make_db_server(dhcp6=False)
         IPAddress.objects.create(address=f"{host['ip-address']}/24", vrf_id=server.sync_vrf_id, description="curated")
