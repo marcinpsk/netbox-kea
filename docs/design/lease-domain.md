@@ -150,7 +150,8 @@ allocations. Finite expiration and infinite lifetime follow Kea's semantics. Use
 evaluation time for an observation, and re-evaluate a fresh record before mutation or manual Sync.
 Never label a Lease current just because its address is valid. Inactive records remain displayable.
 The infinite sentinel is `0xffffffff`. A finite lifetime has expired when CLTT plus lifetime is
-strictly less than the evaluation time. Registered allocations do not bypass expiration.
+strictly less than the evaluation time in whole seconds (the evaluation time rounded down, as Kea
+compares against `time(NULL)`). Registered allocations do not bypass expiration.
 
 Keep wire documents private to KeaClient operations. During an edit, read a fresh raw body, validate
 that same body into the immutable Lease, compare shown facts, then change only explicit fields in
