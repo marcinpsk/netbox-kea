@@ -488,7 +488,7 @@ resort, reserved for true external boundaries you cannot run locally.
   before it removes stale ownership links for complete phases. An incomplete phase
   keeps its links. `claim()` handles selected records without stale cleanup.
 - **Transactions**: open every transaction with `event_scope.atomic()`, never `transaction.atomic`
-  (opengrep `kea-raw-atomic`). At the top level of a tracked request on NetBox 4.6.9 or later it is a unit, whose events
+  (opengrep `kea-raw-atomic`). At the top level of a tracked request, on a NetBox release whose `event_tracking` nests (`event_scope._nested_tracking`), it is a unit, whose events
   dispatch after its COMMIT or not at all. Put `except event_scope.EventDispatchError: raise` before a broad
   `except`. Read `docs/design/savepoint-event-queue.md` (sections 22 and 24) before you change it.
 - **Kea option aliases**: DNS options can be `domain-name-servers` or `dns-servers`;
