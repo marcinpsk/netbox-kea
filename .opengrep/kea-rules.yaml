@@ -456,7 +456,7 @@ rules:
     languages: [python]
     severity: ERROR
     message: >-
-      Run MAC lookup and save in transaction.atomic() before catching their errors.
+      Run MAC lookup and save in event_scope.atomic() before catching their errors.
       A failed MAC write must not abort the caller's IPAM claim.
     metadata:
       category: correctness
@@ -473,7 +473,7 @@ rules:
           - pattern: dcim.models.MACAddress.objects.get_or_create(...)
           - pattern: $MAC.save(...)
       - pattern-not-inside: |
-          with django.db.transaction.atomic(...):
+          with event_scope.atomic(...):
               ...
 
   - id: netbox-ipam-mutation-outside-reconciliation

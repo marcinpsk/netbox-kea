@@ -193,7 +193,7 @@ class SyncJobChangeRecordTest(TestCase):
         self.assertEqual(change.postchange_data["description"], "dhcp_hostname: phone.example.invalid")
         self.assertEqual(len(set(ObjectChange.objects.values_list("request_id", flat=True))), 1)
 
-    def test_a_new_mac_records_its_create_and_hostname_update_in_the_same_execution(self):
+    def test_a_new_mac_records_one_create_that_carries_its_hostname(self):
         job = self._run(leases=[{**_LEASE, "hw-address": "02:00:00:00:00:42"}])
         self.assertEqual(job.status, "completed")
         mac = MACAddress.objects.get(mac_address="02:00:00:00:00:42")
@@ -202,11 +202,9 @@ class SyncJobChangeRecordTest(TestCase):
                 changed_object_type=ContentType.objects.get_for_model(mac), changed_object_id=mac.pk
             ).order_by("pk")
         )
-        self.assertEqual([change.action for change in changes], ["create", "update"])
-        self.assertEqual(changes[0].postchange_data["description"], "")
-        self.assertEqual(changes[1].prechange_data["description"], "")
-        self.assertEqual(changes[1].postchange_data["description"], "dhcp_hostname: phone.example.invalid")
-        self.assertEqual(changes[0].request_id, changes[1].request_id)
+        # One event-producing write per MAC sync: a failed write then queues no event (#302).
+        self.assertEqual([change.action for change in changes], ["create"])
+        self.assertEqual(changes[0].postchange_data["description"], "dhcp_hostname: phone.example.invalid")
 
     def test_legacy_adoption_keeps_the_vrf_move_and_lease_update_as_separate_changes(self):
         vrf = VRF.objects.create(name="sync-vrf")
