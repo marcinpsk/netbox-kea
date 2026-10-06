@@ -542,7 +542,7 @@ class _BaseBulkLeaseImportView(_KeaChangeMixin, ConditionalLoginRequiredMixin, V
 
         try:
             client = instance.get_client(version=self.dhcp_version)
-        except (KeaException, requests.RequestException, ValueError):
+        except ValueError:
             logger.exception("Failed to get Kea client for server %s", instance.pk)
             form.add_error(None, "Failed to connect to Kea server.")
             return render(

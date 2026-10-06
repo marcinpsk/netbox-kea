@@ -2556,6 +2556,19 @@ class TestLeaseBulkImportEdgeCases(_ViewTestBase):
         self.assertContains(response, "parsing failed")
         self.assertNotContains(response, "bad column")
 
+    def test_a_client_that_cannot_be_built_is_reported_on_the_form(self):
+        """A key without a certificate makes get_client() raise ValueError; the form reports it."""
+        import io
+
+        Server.objects.filter(pk=self.server.pk).update(client_key_path="/tls/client.key", client_cert_path="")
+        csv_file = io.BytesIO(b"ip-address\n10.0.0.1")
+        csv_file.name = "leases.csv"
+        with _lease_stub({}) as kea:
+            response = self.client.post(self._url(), {"csv_file": csv_file})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(kea.commands(), [])
+        self.assertContains(response, "Failed to connect to Kea server.")
+
     def test_generic_exception_is_row_error(self):
         """Generic exceptions from lease_add are caught per-row (not propagated)."""
         import io
