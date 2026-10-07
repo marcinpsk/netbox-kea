@@ -1243,19 +1243,22 @@ def _enrich_leases_with_badges(
     nb_ips = bulk_fetch_netbox_ips([_row_address(lease) for lease in leases])
     for lease in leases:
         ip = _row_address(lease)
+        # Sync and Edit look up an address Lease, so a delegated prefix offers neither.
+        is_address = lease["lease"].kind == "address"
         nb_ip = nb_ips.get(ip)
         if nb_ip:
             lease["netbox_ip_url"] = nb_ip.get_absolute_url()
         # Don't offer Sync for leases with indeterminate reservation state.
         elif (
             can_change
+            and is_address
             and host_cmds_available
             and not lease.get("pending_ip_change")
             and not lease.get("stale_mac")
             and ip not in failed_ips
         ):
             lease["sync_url"] = sync_url
-        if can_change:
+        if can_change and is_address:
             lease["edit_url"] = reverse(edit_url_name, args=[server.pk, ip])
         lease["can_delete"] = can_delete
         lease["can_change"] = can_change
