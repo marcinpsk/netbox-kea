@@ -36,6 +36,7 @@ from ..kea import (
 )
 from ..leases import DHCPv4AddressLease, LeaseAbsent, LeaseFound, LeaseIdentity, LeaseSnapshot, address_identity
 from ..models import Server
+from ..published_name import lease_published_name
 from ..reservations import (
     GlobalReservationScope,
     InSubnetReservationScope,
@@ -1182,7 +1183,7 @@ def _set_lease_reservation_fields(
     params = {
         "subnet_cidr": subnet_cidr,
         "ip_addresses" if version == 6 else "ip_address": ip,
-        "hostname": observed.hostname,
+        "hostname": lease_published_name(observed.hostname),
         "return_url": return_url,
     }
     identities = lease_identities(observed).identities
