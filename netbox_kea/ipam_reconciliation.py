@@ -635,8 +635,8 @@ def claim(
     source = LEASE if lease_records else RESERVATION
     if lease_records and catalogue is None:
         catalogue = subnet_catalogue.for_synchronization(server, family)
-    reports = _claim_reports(server, family, address_records, catalogue)
-    outcomes = {address: AddressClaim(address, "error") for address in reports}
+    reports, failed = _claim_reports(server, family, address_records, catalogue)
+    outcomes = {address: AddressClaim(address, "error") for address in (*reports, *failed)}
 
     conflicts: set[str] = set()
 
@@ -711,20 +711,34 @@ def _claim_reports(
     family: Family,
     records: Sequence[Lease | Reservation],
     catalogue: CatalogueSnapshot | None,
-) -> dict[str, _Report]:
-    """Validate and aggregate one call before acquiring locks or changing objects."""
+) -> tuple[dict[str, _Report], set[str]]:
+    """Validate and aggregate one call before acquiring locks or changing objects.
+
+    Also return the addresses of the Reservations whose published name is unknown: those rows fail, as in the job.
+    """
     subnets = catalogue.subnets if catalogue is not None else ()
     subnet_prefix_lengths = {subnet.subnet_id: subnet.network.prefixlen for subnet in subnets}
     reports: dict[str, _Report] = {}
+    failed: set[str] = set()
     for record in records:
         if not isinstance(record, Reservation):
             _add_report(reports, _lease_report(server, family, record, subnet_prefix_lengths))
             continue
         if record.family != family:
             raise ValueError("The Reservation does not match the claim family")
-        for row in _reservation_rows(record, catalogue):
+        try:
+            rows = _reservation_rows(record, catalogue)
+        except CatalogueUnavailable:
+            logger.warning(
+                "Server %s (v%s): a Reservation has no known published name", server.name, family, exc_info=True
+            )
+            failed.update(str(address) for address in record.addresses)
+            continue
+        for row in rows:
             _add_report(reports, row)
-    return reports
+    for address in failed:
+        reports.pop(address, None)
+    return reports, failed
 
 
 def _reservation_rows(reservation: Reservation, catalogue: CatalogueSnapshot | None) -> list[_Report]:
