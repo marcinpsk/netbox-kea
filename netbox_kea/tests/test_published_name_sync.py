@@ -188,6 +188,8 @@ class TestReservationPublishedName(TestCase):
         in_21 = InSubnetReservationScope(catalogue.find_by_id(21).identity)
         for reservation, expected in (
             (self._reservation(in_21, "198.51.100.130"), "host.office.example.org"),
+            (self._reservation(in_21, "198.51.100.210"), "host.pool.example.org"),
+            (self._reservation(GlobalReservationScope(), "198.51.100.210"), "host.pool.example.org"),
             (self._reservation(GlobalReservationScope(), "198.51.100.20"), "host.office.example.net"),
             (self._reservation(GlobalReservationScope(), "192.0.2.30"), "host"),
             (self._reservation(GlobalReservationScope(), "203.0.113.5"), "host.dhcp.example.com"),
@@ -203,3 +205,9 @@ class TestReservationPublishedName(TestCase):
             with self.subTest(reservation=reservation), self.assertRaises(CatalogueUnavailable):
                 reservation_published_name(reservation, catalogue)
         self.assertEqual(reservation_published_name(self._reservation(in_21, hostname=""), catalogue), "")
+
+    def test_a_reservation_without_an_address_in_a_subnet_with_a_pool_suffix_is_unknown(self):
+        catalogue = self._catalogue()
+        in_21 = InSubnetReservationScope(catalogue.find_by_id(21).identity)
+        with self.assertRaises(CatalogueUnavailable):
+            reservation_published_name(self._reservation(in_21), catalogue)

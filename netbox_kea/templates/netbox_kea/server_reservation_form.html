@@ -81,6 +81,7 @@
         <form method="post" id="reservation-form">
           {% csrf_token %}
           {% for field in form.hidden_fields %}{{ field }}{% endfor %}
+          {% if dhcp_version == 4 %}{% firstof "#id_ip_address" as address_field %}{% else %}{% firstof "#id_ip_addresses" as address_field %}{% endif %}
           {% for field in form.visible_fields %}
           {% render_field field %}
           {% if field.name == "hostname" %}
@@ -88,8 +89,8 @@
           <div class="row mb-3">
             <div class="col offset-sm-3 form-text mt-0" id="published-name-preview" aria-live="polite"
                  hx-get="{{ published_name_url }}"
-                 hx-trigger="load, input changed delay:400ms from:#id_hostname, change from:#id_subnet_cidr"
-                 hx-include="#id_hostname, #id_subnet_cidr"></div>
+                 hx-trigger="load, input changed delay:400ms from:#id_hostname, change from:#id_subnet_cidr, change from:{{ address_field }}"
+                 hx-include="#id_hostname, #id_subnet_cidr, {{ address_field }}"></div>
           </div>
           {% endif %}
           {% endfor %}

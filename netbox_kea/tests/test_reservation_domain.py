@@ -298,7 +298,9 @@ class TestReservationPage(SimpleTestCase):
         catalogue = _catalogue(4, 20, "198.18.0.0/24")
         configured = ConfiguredSubnet(
             candidate_identity=catalogue.subnets[0].identity,
-            configuration=SubnetConfiguration(pools=(), options=(), settings=SubnetSettings()),
+            configuration=SubnetConfiguration(
+                pools=(), options=(), settings=SubnetSettings(), pool_qualifying_suffixes=()
+            ),
             shared_network=None,
             qualifying_suffix="",
         )

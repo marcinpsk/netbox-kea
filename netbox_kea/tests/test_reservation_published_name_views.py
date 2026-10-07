@@ -4,7 +4,7 @@
 
 The Kea replies come from the configuration recorded from Kea 3.2.0: a global suffix ``dhcp.example.com``,
 Subnet 10 with an empty suffix, Subnet 20 in the Shared Network ``office`` with ``office.example.net``,
-and Subnet 21 with its own ``office.example.org.``.
+and Subnet 21 with its own ``office.example.org.`` and one Pool with ``pool.example.org``.
 """
 
 from typing import Any
@@ -23,6 +23,16 @@ _SUBNETS: dict[int, dict[int, str]] = {
     4: {10: "192.0.2.0/24", 20: "198.51.100.0/25", 21: "198.51.100.128/25"},
     6: {10: "2001:db8:1::/64", 20: "2001:db8:2::/64", 21: "2001:db8:3::/64"},
 }
+# An address of each Subnet outside every Pool, and one in the Pool of Subnet 21.
+_ADDRESSES: dict[int, dict[int, str]] = {
+    4: {10: "192.0.2.30", 20: "198.51.100.60", 21: "198.51.100.130"},
+    6: {10: "2001:db8:1::5", 20: "2001:db8:2::5", 21: "2001:db8:3::5"},
+}
+_IN_POOL = {4: "198.51.100.210", 6: "2001:db8:3::150"}
+
+
+def _address_field(family: int) -> str:
+    return "ip_address" if family == 4 else "ip_addresses"
 
 
 def _recorded(family: int) -> dict[str, Any]:
@@ -36,8 +46,11 @@ def _recorded(family: int) -> dict[str, Any]:
     }
 
 
-def _stored(subnet_id: int, hostname: str) -> dict[str, Any]:
+def _stored(family: int, subnet_id: int, hostname: str, address: str | None = None) -> dict[str, Any]:
     raw: dict[str, Any] = {"subnet-id": subnet_id, "hw-address": _HW}
+    address = _ADDRESSES[family][subnet_id] if address is None else address
+    if address:
+        raw.update({"ip-address": address} if family == 4 else {"ip-addresses": [address]})
     if hostname:
         raw["hostname"] = hostname
     return raw
@@ -54,12 +67,15 @@ class _PublishedNameViewTest(_ViewTestBase):
         return f"{url}?{urlencode({'identifier_type': 'hw-address', 'identifier': _HW})}"
 
     def _open(self, family: int, subnet_id: int, stored: str):
-        with stub_kea({**_recorded(family), "reservation-get": _res_get(_stored(subnet_id, stored))}):
+        with stub_kea({**_recorded(family), "reservation-get": _res_get(_stored(family, subnet_id, stored))}):
             return self.client.get(self._url(family, subnet_id))
 
-    def _form_data(self, family: int, subnet_id: int, hostname: str, **extra: str) -> dict[str, str]:
+    def _form_data(
+        self, family: int, subnet_id: int, hostname: str, address: str | None = None, **extra: str
+    ) -> dict[str, str]:
         return {
             "subnet_cidr": _SUBNETS[family][subnet_id],
+            _address_field(family): _ADDRESSES[family][subnet_id] if address is None else address,
             "identifier_type": "hw-address",
             "identifier": _HW,
             "hostname": hostname,
@@ -68,8 +84,8 @@ class _PublishedNameViewTest(_ViewTestBase):
 
 
 class TestReservationAddPublishedName(_PublishedNameViewTest):
-    def _add(self, family: int, subnet_id: int, hostname: str) -> dict[str, Any]:
-        intended = _stored(subnet_id, "")
+    def _post_add(self, family: int, subnet_id: int, hostname: str, address: str | None = None):
+        intended = _stored(family, subnet_id, "", address)
         with stub_kea(
             {
                 **_recorded(family),
@@ -79,32 +95,55 @@ class TestReservationAddPublishedName(_PublishedNameViewTest):
         ) as kea:
             response = self.client.post(
                 reverse(f"plugins:netbox_kea:server_reservation{family}_add", args=[self.server.pk]),
-                self._form_data(family, subnet_id, hostname),
+                self._form_data(family, subnet_id, hostname, address),
             )
+        return response, kea
+
+    def _add(self, family: int, subnet_id: int, hostname: str, address: str | None = None) -> dict[str, Any]:
+        response, kea = self._post_add(family, subnet_id, hostname, address)
         self.assertEqual(response.status_code, 302)
         return kea.bodies("reservation-add")[0]["arguments"]["reservation"]
 
     def test_add_stores_the_hostname_that_publishes_the_entered_name(self):
         for family in (4, 6):
-            for subnet_id, entered, stored in (
-                (21, "host.office.example.org", "host"),
-                (21, "Host.Office.Example.org.", "Host"),
-                (21, "web.example.com", "web.example.com."),
-                (21, "printer", "printer"),
-                (20, "host.office.example.net", "host"),
-                (10, "web.example.com.", "web.example.com"),
+            for subnet_id, entered, stored, address in (
+                (21, "host.office.example.org", "host", None),
+                (21, "Host.Office.Example.org.", "Host", None),
+                (21, "web.example.com", "web.example.com.", None),
+                (21, "printer", "printer", None),
+                (21, "host.pool.example.org", "host", _IN_POOL[family]),
+                (21, "host.office.example.org", "host.office.example.org.", _IN_POOL[family]),
+                (20, "host.office.example.net", "host", None),
+                (10, "web.example.com.", "web.example.com", None),
             ):
-                with self.subTest(family=family, subnet_id=subnet_id, entered=entered):
-                    self.assertEqual(self._add(family, subnet_id, entered)["hostname"], stored)
+                with self.subTest(family=family, subnet_id=subnet_id, entered=entered, address=address):
+                    self.assertEqual(self._add(family, subnet_id, entered, address)["hostname"], stored)
+
+    def test_a_name_without_an_address_in_a_subnet_with_a_pool_suffix_is_refused(self):
+        # Kea takes the suffix from the Pool of the dynamic lease, so no stored form is known.
+        response, kea = self._post_add(4, 21, "host.office.example.org", "")
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("reservation-add", kea.commands())
 
     def test_add_without_a_hostname_sends_none(self):
         self.assertNotIn("hostname", self._add(4, 21, ""))
+        self.assertNotIn("hostname", self._add(4, 21, "", ""))
 
 
 class TestReservationEditPublishedName(_PublishedNameViewTest):
-    def _save(self, family: int, subnet_id: int, stored: str, entered: str, *, form_page=None, config_get=None):
+    def _save(
+        self,
+        family: int,
+        subnet_id: int,
+        stored: str,
+        entered: str,
+        *,
+        form_page=None,
+        config_get=None,
+        address: str | None = None,
+    ):
         form_page = form_page or self._open(family, subnet_id, stored)
-        current = _stored(subnet_id, stored)
+        current = _stored(family, subnet_id, stored)
         responses = {
             **_recorded(family),
             "reservation-get": queued(_res_get(current), _res_get(current), _res_get(current)),
@@ -119,6 +158,7 @@ class TestReservationEditPublishedName(_PublishedNameViewTest):
                     family,
                     subnet_id,
                     entered,
+                    address,
                     managed_fingerprint=form_page.context["form"].initial["managed_fingerprint"],
                 ),
             )
@@ -170,6 +210,15 @@ class TestReservationEditPublishedName(_PublishedNameViewTest):
                     sent = kea.bodies("reservation-update")[0]["arguments"]["reservation"]
                     self.assertEqual(sent["hostname"], stored)
 
+    def test_a_moved_address_stores_the_shown_name_under_the_suffix_of_its_pool(self):
+        # The shown name is what the user keeps: moving into the Pool must not change the name that clients get.
+        for family in (4, 6):
+            with self.subTest(family=family):
+                response, kea = self._save(family, 21, "host", "host.office.example.org", address=_IN_POOL[family])
+                self.assertEqual(response.status_code, 302)
+                sent = kea.bodies("reservation-update")[0]["arguments"]["reservation"]
+                self.assertEqual(sent["hostname"], "host.office.example.org.")
+
     def test_clearing_the_name_removes_the_hostname(self):
         response, kea = self._save(4, 21, "host", "")
         self.assertEqual(response.status_code, 302)
@@ -211,7 +260,7 @@ class TestReservationEditPublishedName(_PublishedNameViewTest):
             {
                 **_recorded(4),
                 "config-get": RuntimeError("config-get failed"),
-                "reservation-get": _res_get(_stored(21, "host")),
+                "reservation-get": _res_get(_stored(4, 21, "host")),
             }
         ) as kea:
             response = self.client.get(self._url(4, 21))
@@ -226,26 +275,35 @@ class TestPublishedNamePreview(_PublishedNameViewTest):
         url = reverse(f"plugins:netbox_kea:server_reservation{family}_published_name", args=[self.server.pk])
         return self.client.get(url, params, headers={"HX-Request": "true"})
 
+    def _subnet(self, family: int, subnet_id: int, address: str | None = None) -> dict[str, str]:
+        address = _ADDRESSES[family][subnet_id] if address is None else address
+        return {"subnet_cidr": _SUBNETS[family][subnet_id], _address_field(family): address}
+
     def test_the_preview_shows_the_published_name(self):
         for family in (4, 6):
-            for subnet_id, entered, published in (
-                (21, "printer", "printer.office.example.org"),
-                (21, "web.example.com", "web.example.com"),
-                (21, "DB.Office.Example.org.", "db.office.example.org"),
-                (20, "printer", "printer.office.example.net"),
-                (10, "printer", "printer"),
+            for subnet_id, entered, published, address in (
+                (21, "printer", "printer.office.example.org", None),
+                (21, "web.example.com", "web.example.com", None),
+                (21, "DB.Office.Example.org.", "db.office.example.org", None),
+                (21, "printer", "printer.pool.example.org", _IN_POOL[family]),
+                (20, "printer", "printer.office.example.net", None),
+                (20, "printer", "printer.office.example.net", ""),
+                (10, "printer", "printer", None),
             ):
-                with self.subTest(family=family, subnet_id=subnet_id, entered=entered), stub_kea(_recorded(family)):
-                    response = self._preview(family, subnet_cidr=_SUBNETS[family][subnet_id], hostname=entered)
+                with (
+                    self.subTest(family=family, subnet_id=subnet_id, entered=entered, address=address),
+                    stub_kea(_recorded(family)),
+                ):
+                    response = self._preview(family, **self._subnet(family, subnet_id, address), hostname=entered)
                     self.assertEqual(response.status_code, 200)
                     self.assertEqual(response.context["published"], published)
                     self.assertContains(response, f"<code>{published}</code>", html=False)
 
     def test_the_preview_reads_the_cached_catalogue(self):
         with stub_kea(_recorded(4)) as kea:
-            self._preview(4, subnet_cidr=_SUBNETS[4][21], hostname="printer")
+            self._preview(4, **self._subnet(4, 21), hostname="printer")
             commands = kea.commands()
-            response = self._preview(4, subnet_cidr=_SUBNETS[4][20], hostname="printer")
+            response = self._preview(4, **self._subnet(4, 20), hostname="printer")
             self.assertEqual(kea.commands(), commands)
         self.assertEqual(response.context["published"], "printer.office.example.net")
 
@@ -261,10 +319,18 @@ class TestPublishedNamePreview(_PublishedNameViewTest):
 
     def test_an_unknown_suffix_says_so(self):
         with stub_kea({**_recorded(4), "config-get": RuntimeError("config-get failed")}):
-            response = self._preview(4, subnet_cidr=_SUBNETS[4][21], hostname="printer")
+            response = self._preview(4, **self._subnet(4, 21), hostname="printer")
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("published", response.context)
-        self.assertContains(response, "The DDNS qualifying suffix of this Subnet is unknown")
+        self.assertContains(response, "The DDNS qualifying suffix for this Subnet and address is unknown")
+
+    def test_a_pool_suffix_without_an_address_says_the_name_is_unknown(self):
+        for family in (4, 6):
+            with self.subTest(family=family), stub_kea(_recorded(family)):
+                for address in ("", "not-an-address"):
+                    response = self._preview(family, **self._subnet(family, 21, address), hostname="printer")
+                    self.assertNotIn("published", response.context)
+                    self.assertContains(response, "The DDNS qualifying suffix for this Subnet and address is unknown")
 
     def test_the_preview_needs_the_change_permission(self):
         from django.contrib.contenttypes.models import ContentType
@@ -285,5 +351,6 @@ class TestPublishedNamePreview(_PublishedNameViewTest):
         with stub_kea(_recorded(4)):
             add = self.client.get(reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk]))
         self.assertContains(add, f'hx-get="{preview}"')
+        self.assertContains(add, 'hx-include="#id_hostname, #id_subnet_cidr, #id_ip_address"')
         edit = self._open(4, 21, "host")
         self.assertContains(edit, f'hx-get="{preview}?{urlencode({"subnet_cidr": _SUBNETS[4][21]})}"')

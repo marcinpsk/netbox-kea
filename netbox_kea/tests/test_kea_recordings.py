@@ -247,14 +247,54 @@ class TestRecordedQualifyingSuffix(TestCase):
                     ["", "office.example.net", "office.example.org."],
                 )
                 self.assertEqual(catalogue.global_qualifying_suffix, "dhcp.example.com")
-                self.assertEqual(
-                    catalogue.subnet_qualifying_suffix(catalogue.subnets[2].identity), "office.example.org."
-                )
                 in_21, in_20, outside = (ipaddress.ip_address(address) for address in self._ADDRESSES[family])
+                self.assertEqual(
+                    catalogue.subnet_qualifying_suffix(catalogue.subnets[2].identity, in_21), "office.example.org."
+                )
                 self.assertEqual(catalogue.address_qualifying_suffix(in_21), "office.example.org.")
                 self.assertEqual(catalogue.address_qualifying_suffix(in_20), "office.example.net")
                 self.assertEqual(catalogue.address_qualifying_suffix(outside), "dhcp.example.com")
                 self.assertEqual(catalogue.address_qualifying_suffix(None), "dhcp.example.com")
+
+    def test_a_pool_suffix_applies_to_an_address_in_the_pool(self):
+        # Subnet 21 has one Pool that sets its own suffix; Kea takes it from the Pool of the leased address.
+        in_pool = {4: "198.51.100.210", 6: "2001:db8:3::150"}
+        for family in (4, 6):
+            with self.subTest(family=family):
+                snapshot = self._snapshot(family)
+                subnet_21 = snapshot.subnets[2]
+                self.assertEqual(
+                    [(pool.range, suffix) for pool, suffix in subnet_21.configuration.pool_qualifying_suffixes],
+                    [(subnet_21.configuration.pools[0].range, "pool.example.org")],
+                )
+                recording = _recording(family)
+                with stub_kea(
+                    {"config-get": recording["config-get"], f"subnet{family}-list": recording[f"subnet{family}-list"]}
+                ):
+                    catalogue = for_synchronization(self.server, family)
+                identity = catalogue.subnets[2].identity
+                in_21 = ipaddress.ip_address(self._ADDRESSES[family][0])
+                pool_address = ipaddress.ip_address(in_pool[family])
+                self.assertEqual(catalogue.subnet_qualifying_suffix(identity, pool_address), "pool.example.org")
+                self.assertEqual(catalogue.address_qualifying_suffix(pool_address), "pool.example.org")
+                self.assertEqual(catalogue.subnet_qualifying_suffix(identity, in_21), "office.example.org.")
+                # Without an address, the Pool of the dynamic lease decides, so the suffix is unknown.
+                with self.assertRaises(CatalogueUnavailable):
+                    catalogue.subnet_qualifying_suffix(identity, None)
+                # A Subnet without a Pool suffix needs no address.
+                self.assertEqual(
+                    catalogue.subnet_qualifying_suffix(catalogue.subnets[1].identity, None), "office.example.net"
+                )
+
+    def test_an_invalid_pool_suffix_makes_the_subnet_suffix_unknown(self):
+        def invalid_pool(configuration):
+            office = next(network for network in configuration["shared-networks"] if network["name"] == "office")
+            office[f"subnet{family}"][1]["pools"][0]["ddns-qualifying-suffix"] = 7
+
+        family = 4
+        snapshot = self._snapshot(family, invalid_pool)
+        self.assertFalse(snapshot.complete)
+        self.assertIsNone(self._effective(snapshot)[21])
 
     def test_an_identity_only_catalogue_does_not_know_a_suffix(self):
         recording = _recording(4)
@@ -262,7 +302,7 @@ class TestRecordedQualifyingSuffix(TestCase):
             catalogue = display(self.server, 4)
         self.assertIsNone(catalogue.global_qualifying_suffix)
         with self.assertRaises(CatalogueUnavailable):
-            catalogue.subnet_qualifying_suffix(catalogue.subnets[0].identity)
+            catalogue.subnet_qualifying_suffix(catalogue.subnets[0].identity, None)
         with self.assertRaises(CatalogueUnavailable):
             catalogue.address_qualifying_suffix(ipaddress.ip_address("203.0.113.5"))
         with self.assertRaises(CatalogueUnavailable):

@@ -82,9 +82,10 @@ def _catalogue(conf: dict, version: Family) -> IncompleteCatalogueSnapshot:
     entries = _subnet_entries(conf, version)
     # The real parser reads the effective DDNS qualifying suffixes from *conf*.
     configuration = server_configuration.observed_snapshot(Server(pk=1), version, conf)
+    declared = {subnet.declared_subnet_id: subnet for subnet in configuration.subnets}
     suffixes = {
-        declared.declared_subnet_id: server_configuration.effective_qualifying_suffix(configuration, declared)
-        for declared in configuration.subnets
+        subnet_id: server_configuration.effective_qualifying_suffix(configuration, subnet)
+        for subnet_id, subnet in declared.items()
     }
     verified = tuple(
         VerifiedSubnet(
@@ -93,7 +94,7 @@ def _catalogue(conf: dict, version: Family) -> IncompleteCatalogueSnapshot:
                 network=ipaddress.ip_network(entry["subnet"]),
             ),
             declared_cidr=entry["subnet"],
-            configuration=None,
+            configuration=declared[int(entry["id"])].configuration if int(entry["id"]) in declared else None,
             shared_network=None,
             membership_known=False,
             qualifying_suffix=suffixes.get(int(entry["id"])),
@@ -101,7 +102,7 @@ def _catalogue(conf: dict, version: Family) -> IncompleteCatalogueSnapshot:
         for entry in entries
         if isinstance(entry, dict) and entry.get("id") is not None and entry.get("subnet")
     )
-    # Identity facts and suffixes only: the import reads no other configuration fact from the catalogue.
+    # The real parser's configuration facts; Shared Network membership is not shown.
     return IncompleteCatalogueSnapshot(
         server_id=1,
         family=version,

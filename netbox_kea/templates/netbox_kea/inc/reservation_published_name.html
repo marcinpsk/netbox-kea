@@ -4,7 +4,7 @@
   {% if published %}
     Kea publishes <code>{{ published }}</code>{% if suffix %} with the DDNS qualifying suffix <code>{{ suffix }}</code>{% endif %}.
   {% elif subnet_known %}
-    <span class="text-warning">The DDNS qualifying suffix of this Subnet is unknown, so the published name cannot be shown.</span>
+    <span class="text-warning">The DDNS qualifying suffix for this Subnet and address is unknown, so the published name cannot be shown. A Pool suffix needs the address.</span>
   {% else %}
     Enter a Subnet of this server to see the name that Kea publishes.
   {% endif %}
