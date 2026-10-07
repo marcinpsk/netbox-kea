@@ -1173,7 +1173,8 @@ def _set_lease_reservation_fields(
                     args=[server_pk],
                 )
         return
-    if not (can_change and host_cmds_available and ip not in failed_ips and subnet_cidr):
+    # The add form reads ip_addresses as addresses, so a delegated prefix offers no prefilled link.
+    if not (observed.kind == "address" and can_change and host_cmds_available and ip not in failed_ips and subnet_cidr):
         return
     params = {
         "subnet_cidr": subnet_cidr,

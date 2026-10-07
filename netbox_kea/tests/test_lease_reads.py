@@ -165,6 +165,25 @@ class LeaseBrowsingTest(_ViewTestBase):
         self.assertIsNone(rows["delegated-prefix"].get("edit_url"))
         self.assertIsNone(rows["delegated-prefix"].get("sync_url"))
 
+    def test_only_an_address_lease_row_offers_a_create_reservation_link(self):
+        # A prefix inside the Subnet passes the scoped address lookup, so only the lease kind refuses the link.
+        records = [
+            lease_record("2001:db8:1::10", subnet_id=10),
+            lease_record("2001:db8:1:0:1::", type="IA_PD", prefix_len=80, subnet_id=10),
+        ]
+        responses = {
+            **_catalogue_responses_for_subnets(6, _SUBNETS6),
+            "lease6-get-all": lease_reply(*records),
+            "reservation-get": {"result": 3},
+        }
+        with stub_kea(responses):
+            response = self.client.get(self._url(6), {"by": "subnet_id", "q": "10"}, HTTP_HX_REQUEST="true")
+
+        rows = {row.record["kind"]: row.record for row in response.context["table"].rows}
+        self.assertTrue(rows["address"]["create_reservation_url"])
+        # The add form reads ip_addresses as IPv6 addresses, so a prefix would prefill an address Reservation.
+        self.assertIsNone(rows["delegated-prefix"]["create_reservation_url"])
+
     def test_an_unconfigured_subnet_cidr_is_refused_not_reported_empty(self):
         responses = {**_catalogue_responses_for_subnets(4, _SUBNETS4)}
         with stub_kea(responses) as kea:
