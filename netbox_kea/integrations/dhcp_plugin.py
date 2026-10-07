@@ -54,10 +54,9 @@ if TYPE_CHECKING:
     from ..ipam_reconciliation import ClaimResult, ReservationObservation, SyncReport
 
 from django.apps import apps
-from django.db import transaction
 from django.db.models.signals import post_delete
 
-from .. import branching
+from .. import branching, event_scope
 from ..constants import IPNetworkValue
 from ..dhcp_mapping_lifecycle import coordinated_import
 from ..dhcp_options import DHCPOption
@@ -267,9 +266,11 @@ def _create_custom_option_def(def_intent: OptionDefIntent, family: int, dhcp_ser
             standard=False,
             dhcp_server=dhcp_server,
         )
-        with transaction.atomic():
+        with event_scope.atomic():
             obj.save()
         summary.option_defs_created += 1
+    except event_scope.EventDispatchError:
+        raise
     except Exception as exc:  # noqa: BLE001 — a bad definition must not abort the import
         summary.warn(f"option-def code={def_intent.code}: {exc}")
         return None
@@ -332,7 +333,7 @@ def upsert_options(parent_obj, options, family: int, dhcp_server, custom_defs, s
             summary.warn(f"option {opt.match_key}: no matching definition, skipped")
             continue
         try:
-            with transaction.atomic():
+            with event_scope.atomic():
                 existing = Option.objects.filter(
                     assigned_object_type=ct, assigned_object_id=parent_obj.pk, definition=definition
                 ).first()
@@ -350,6 +351,8 @@ def upsert_options(parent_obj, options, family: int, dhcp_server, custom_defs, s
                 summary.options_created += 1
             else:
                 summary.options_updated += 1
+        except event_scope.EventDispatchError:
+            raise
         except Exception as exc:  # noqa: BLE001 — one bad option must not abort the import
             summary.options_skipped += 1
             summary.warn(f"option {opt.match_key}: {exc}")
@@ -509,8 +512,10 @@ def _apply_global_settings(dhcp_server, settings: dict, summary: ImportSummary, 
         for attr, value in changed.items():
             setattr(dhcp_server, attr, value)
         try:
-            with transaction.atomic():
+            with event_scope.atomic():
                 dhcp_server.save()
+        except event_scope.EventDispatchError:
+            raise
         except Exception as exc:  # noqa: BLE001
             summary.errors += 1
             summary.warn(f"DHCPServer settings: {exc}")
@@ -607,8 +612,10 @@ def upsert_client_class(server, dhcp_server, intent: ClientClassIntent, custom_d
         setattr(obj, name, value)
 
     try:
-        with transaction.atomic():
+        with event_scope.atomic():
             obj.save()
+    except event_scope.EventDispatchError:
+        raise
     except Exception as exc:  # noqa: BLE001 — one bad class must not abort the import
         summary.errors += 1
         summary.warn(f"client-class {intent.name}: {exc}")
@@ -663,7 +670,7 @@ def upsert_subnet(server, dhcp_server, intent: SubnetIntent, summary: ImportSumm
 
     changed = False
     try:
-        with transaction.atomic():
+        with event_scope.atomic():
             # Inside the try so one bad CIDR is counted as a per-subnet error, not fatal.
             network = subnet_network(intent.cidr, intent.family)
             result = claims.prefixes[str(network)]
@@ -699,6 +706,8 @@ def upsert_subnet(server, dhcp_server, intent: SubnetIntent, summary: ImportSumm
                 subnet_obj.save()
             if intent.kea_subnet_id is not None:
                 observe_mapping(server, intent.family, subnet_obj, subnet_id=intent.kea_subnet_id)
+    except event_scope.EventDispatchError:
+        raise
     except Exception as exc:  # noqa: BLE001 — one bad subnet must not abort the import
         summary.errors += 1
         summary.warn(f"subnet {intent.cidr} (id={intent.kea_subnet_id}): {exc}")
@@ -721,7 +730,7 @@ def upsert_pools(subnet_obj, intent: SubnetIntent, summary: ImportSummary, dhcp_
     network = subnet_network(intent.cidr, intent.family)
     for pool_intent in intent.pools:
         try:
-            with transaction.atomic():
+            with event_scope.atomic():
                 try:
                     pool = parse_pool(pool_intent.pool, network)
                 except ValueError:
@@ -738,6 +747,8 @@ def upsert_pools(subnet_obj, intent: SubnetIntent, summary: ImportSummary, dhcp_
                         ip_range=range_obj,
                         defaults={"name": _pool_name(subnet_obj, pool_intent)},
                     )
+        except event_scope.EventDispatchError:
+            raise
         except Exception as exc:  # noqa: BLE001 — one bad pool must not abort the import
             summary.errors += 1
             summary.warn(f"pool {pool_intent.pool} in {intent.cidr}: {exc}")
@@ -833,7 +844,7 @@ def _upsert_reservation(reservation, subnet_obj, server, dhcp_server, custom_def
         scope_name = f"{dhcp_server.name} DHCPv{reservation.family}"
 
     try:
-        with transaction.atomic():
+        with event_scope.atomic():
             # Inside the try so a resolver failure is counted per-reservation, not fatal.
             ipv4_ip, ipv6_ips, mac_obj = _reservation_addresses(reservation, claims, summary)
             if reservation.identity.identifier_type == "hw-address" and mac_obj is None:
@@ -878,6 +889,8 @@ def _upsert_reservation(reservation, subnet_obj, server, dhcp_server, custom_def
             summary.reservations_created += 1
         else:
             summary.reservations_updated += 1
+    except event_scope.EventDispatchError:
+        raise
     except Exception:
         summary.errors += 1
         logger.exception("Could not import reservation %s in %s", reservation.identity.value, scope)
@@ -945,22 +958,10 @@ def import_reservation_snapshot(
         else:
             imported.append((reservation, obj))
     try:
-        with transaction.atomic():
+        with event_scope.atomic():
             phase = DelegatedPrefixPhase([reservation for reservation, _ in imported], observation.cutoff, complete)
             report = reconcile(server, snapshot.family, [phase])
-            for reservation, obj in imported:
-                if any(report.prefixes[str(prefix)].outcome == "error" for prefix in reservation.delegated_prefixes):
-                    summary.warn(
-                        f"reservation {reservation.identity.value}: delegated Prefix claim failed; "
-                        "existing reported Prefix attachments were retained"
-                    )
-                    continue
-                prefixes = []
-                for prefix in reservation.delegated_prefixes:
-                    result = report.prefixes[str(prefix)]
-                    if result.prefix is not None:
-                        prefixes.append(result.prefix)
-                obj.ipv6_prefixes.set(prefixes)
+            _attach_delegated_prefixes(imported, report, summary)
         summary.ownership.merge(report)
         if complete:
             summary.ownership.completed_sources.add("reservation")
@@ -970,11 +971,30 @@ def import_reservation_snapshot(
         summary.owner_disagreements += len(report.disagreements)
         for address in sorted(report.conflicts):
             summary.warn(f"delegated prefix {address}: IPAM ownership conflict, Prefix left unchanged")
+    except event_scope.EventDispatchError:
+        raise
     except Exception:
         summary.errors += 1
         summary.ownership.incomplete.add("delegated-prefix")
         logger.exception("Could not attach delegated Prefixes after DHCP import")
         summary.warn("Delegated Prefixes could not be attached. See server logs.")
+
+
+def _attach_delegated_prefixes(imported, report: SyncReport, summary: ImportSummary) -> None:
+    """Attach each imported Reservation's reported Prefixes, and keep the old ones when a claim failed."""
+    for reservation, obj in imported:
+        if any(report.prefixes[str(prefix)].outcome == "error" for prefix in reservation.delegated_prefixes):
+            summary.warn(
+                f"reservation {reservation.identity.value}: delegated Prefix claim failed; "
+                "existing reported Prefix attachments were retained"
+            )
+            continue
+        prefixes = []
+        for prefix in reservation.delegated_prefixes:
+            result = report.prefixes[str(prefix)]
+            if result.prefix is not None:
+                prefixes.append(result.prefix)
+        obj.ipv6_prefixes.set(prefixes)
 
 
 def _apply_reservation_identifier(obj, reservation: Reservation, mac_obj) -> None:

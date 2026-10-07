@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from contextvars import ContextVar
-from copy import copy, deepcopy
+from copy import deepcopy
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from datetime import datetime
@@ -14,14 +14,14 @@ from functools import cache, wraps
 
 from asgiref.sync import sync_to_async
 from django.apps import apps
-from django.db import IntegrityError, OperationalError, connections, models, router, transaction
+from django.db import IntegrityError, OperationalError, connections, models, router
 from django.db.models.deletion import Collector, ProtectedError, RestrictedError
 from django.db.models.signals import m2m_changed, post_save, pre_delete, pre_save
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from utilities.exceptions import AbortRequest
 
-from . import branching
+from . import branching, event_scope
 
 MAPPING_IDENTITY_FIELDS = ("server", "family", "kea_subnet_id", "kea_identity", "object_type", "object_id")
 _METADATA_LOCK = (0x4B4541, 0x44484350)
@@ -102,7 +102,7 @@ def _lock_boundary(using: str):
     if (request := current_request.get()) is not None:
         setattr(request, _COORDINATED_REQUEST, True)
     try:
-        with transaction.atomic(using=using):
+        with event_scope.atomic(using=using):
             yield
     except OperationalError as error:
         if is_lock_error(error):
@@ -113,11 +113,7 @@ def _lock_boundary(using: str):
 @contextmanager
 def metadata_scope(using: str = "default"):
     """Coordinate before native selection, and refuse contention when a caller can hold row locks."""
-    aliases = {*branching.connection_aliases(), using}
-    transactional = any(
-        connection.connection is not None and (connection.in_atomic_block or not connection.get_autocommit())
-        for connection in (connections[alias] for alias in aliases)
-    )
+    transactional = event_scope.in_transaction(using)
     with _lock_boundary(using):
         with connections[using].cursor() as cursor:
             function = "pg_try_advisory_xact_lock" if transactional else "pg_advisory_xact_lock"
@@ -1219,26 +1215,6 @@ def _guard_endpoint_queryset_write(original):
     return guarded
 
 
-@contextmanager
-def _events_follow_rollback():
-    """Restore the request event queue when an exception rolls back the import's transaction or savepoint."""
-    from netbox.context import events_queue
-
-    queued = {key: _event_copy(event) for key, event in events_queue.get().items()}
-    try:
-        yield
-    except BaseException:
-        events_queue.set(queued)
-        raise
-
-
-def _event_copy(event):
-    # NetBox coalesces a repeated object into its queued event and changes its snapshots in place.
-    copied = copy(event)
-    copied["snapshots"] = dict(event["snapshots"])
-    return copied
-
-
 def coordinated_import(original):
     """Enter the main writer transaction before importer selection or ownership locks."""
 
@@ -1248,7 +1224,7 @@ def coordinated_import(original):
         opened = not connections["default"].in_atomic_block
         summary = None
         try:
-            with _events_follow_rollback(), metadata_scope():
+            with metadata_scope():
                 summary = original(server, config, *args, **kwargs)
         except IntegrityError as error:
             # Only the COMMIT that this scope opened checks deferred references after the import returned.

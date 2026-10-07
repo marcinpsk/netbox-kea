@@ -119,6 +119,29 @@ class ClaimOwnershipTest(TestCase):
         self.assertEqual(result.synchronized_addresses, frozenset({"198.18.0.11"}))
         self.assertEqual(str(IPAMOwnershipLink.objects.get().ip_address.address.ip), "198.18.0.11")
 
+    def test_a_created_reservation_row_checks_its_mac_once_with_a_bounded_query(self):
+        from dcim.models import MACAddress
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        from netbox_kea.ipam_reconciliation import claim
+        from netbox_kea.tests.test_integration_dhcp_plugin import _reservation_snapshot
+
+        observation = _reservation_snapshot(
+            {"subnet4": [{"id": 1, "subnet": "198.18.0.0/24"}]},
+            4,
+            [{"subnet-id": 1, "hw-address": "02:00:00:00:00:03", "ip-address": "198.18.0.12"}],
+        )
+        table = f'FROM "{MACAddress._meta.db_table}"'
+
+        with CaptureQueriesContext(connection) as queries:
+            result = claim(self.server, 4, observation.snapshot.records, force=False)
+
+        self.assertEqual(result.addresses["198.18.0.12"].outcome, "created")
+        mac_reads = [q["sql"] for q in queries if table in q["sql"] and not q["sql"].startswith("INSERT")]
+        self.assertEqual(sum("COUNT(" in sql for sql in mac_reads), 0, "use a bounded read, not a full count")
+        self.assertEqual(sum(sql.endswith("LIMIT 2") for sql in mac_reads), 1, "check each MAC once per row")
+
     def test_empty_claim_and_addressless_reservation_do_not_write(self):
         from netbox_kea.ipam_reconciliation import claim
         from netbox_kea.models import IPAMOwnershipLink

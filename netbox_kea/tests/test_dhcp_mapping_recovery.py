@@ -36,7 +36,7 @@ from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 from django.utils import timezone
 from ipam.models import VRF
-from netbox.context import current_request, events_queue
+from netbox.context import current_request
 from netbox.context_managers import event_tracking
 from netbox_branching.constants import COOKIE_NAME
 from netbox_branching.models import Branch
@@ -3659,6 +3659,57 @@ class DhcpMappingLockScopeTest(TransactionTestCase):
                     self.assertEqual(getattr(current, f"{field}_id"), value.pk)
                 self.assertTrue(KeaDhcpLink.objects.filter(pk=link.pk, object_id=target.pk).exists())
 
+    @override_settings(EVENTS_PIPELINE=[_EVENTS_RECORDER])
+    def test_limit_c_a_caught_late_delete_guard_inside_a_transaction_dispatches_the_reverted_delete(self):
+        from netbox_dhcp.models import DHCPServer
+
+        _, _, _, target, link = self._imported("reservation", 4, "late-guard-events")
+        empty = DHCPServer.objects.create(name="lock-scope-late-guard-events")
+        paused, release, outcome = Event(), Event(), []
+        DISPATCHED_EVENTS.clear()
+        self.addCleanup(DISPATCHED_EVENTS.clear)
+
+        def pause(execute, sql, params, many, context):
+            if not paused.is_set() and sql.startswith("SAVEPOINT"):
+                paused.set()
+                release.wait(20)
+            return execute(sql, params, many, context)
+
+        def delete_in_a_caller_transaction():
+            # A caller that catches the refusal and commits, as a plugin row loop inside a transaction would.
+            try:
+                with event_tracking(_change_request(self.user)), transaction.atomic():
+                    with connections["default"].execute_wrapper(pause):
+                        try:
+                            DHCPServer.objects.get(pk=empty.pk).delete()
+                        except AbortRequest as error:
+                            outcome.append(error.message)
+            finally:
+                connections.close_all()
+
+        def move_the_reservation():
+            try:
+                current = type(target).objects.get(pk=target.pk)
+                current.dhcp_server = empty
+                current.save()
+            finally:
+                connections.close_all()
+
+        workers = self._workers()
+        deleting = workers.submit(delete_in_a_caller_transaction)
+        try:
+            self.assertTrue(paused.wait(20), "The deletion did not reach its savepoint")
+            workers.submit(move_the_reservation).result(timeout=20)
+        finally:
+            release.set()
+        deleting.result(timeout=20)
+        self.assertEqual(outcome, [_STALE_GATE])
+        self.assertTrue(type(target).objects.filter(pk=target.pk).exists())
+        self.assertTrue(KeaDhcpLink.objects.filter(pk=link.pk).exists())
+        # Accepted limit (#302): NetBox queued the delete event before the guard refused, and the caller committed.
+        dispatched = [(e["object_type"].model_class(), e["object_id"], e["event_type"]) for e in DISPATCHED_EVENTS]
+        self.assertIn((type(target), target.pk, "object_deleted"), dispatched)
+
     def test_dependency_delete_during_replay_rolls_back_the_whole_revert(self):
         _, _, _, target, link = self._imported("subnet", 4, "dependency-replay")
         prefix = target.prefix
@@ -3922,47 +3973,6 @@ class DhcpMappingLockScopeTest(TransactionTestCase):
         dispatched = {(event["object_type"].model_class(), event["object_id"]) for event in DISPATCHED_EVENTS}
         self.assertTrue({(type(link.sys4_object), link.object_id) for link in committed} <= dispatched, dispatched)
         self.assertNotIn((HostReservation, doomed[0]), dispatched)
-        for event in DISPATCHED_EVENTS:
-            model, pk = event["object_type"].model_class(), event["object_id"]
-            with self.subTest(model=model, pk=pk, event_type=event["event_type"]):
-                self.assertTrue(model.objects.filter(pk=pk).exists(), "An event names a row that never committed")
-
-    @override_settings(EVENTS_PIPELINE=[_EVENTS_RECORDER])
-    def test_nested_import_failure_restores_the_caller_event_queue(self):
-        from dcim.models import Site
-        from netbox_dhcp.models import DHCPServer
-
-        server = _make_db_server(name="lock-scope-nested-events", ca_url="https://kea.example.invalid", dhcp6=False)
-        intent = parse_dhcp_config({"subnet4": [{"id": 9, "subnet": "198.19.0.0/24"}]}, 4)
-        at_failure = []
-
-        def fail_after_the_event_is_queued(sender, instance, created, **kwargs):
-            at_failure.append(set(events_queue.get()))
-            raise RuntimeError("nested import failure")
-
-        def queued():
-            return {
-                key: (event["event_type"], deepcopy(event["snapshots"])) for key, event in events_queue.get().items()
-            }
-
-        DISPATCHED_EVENTS.clear()
-        with event_tracking(_change_request(self.user)), transaction.atomic():
-            caller = Site.objects.create(name="lock-scope-nested-events", slug="lock-scope-nested-events")
-            before = queued()
-            post_save.connect(fail_after_the_event_is_queued, sender=DHCPServer, weak=False)
-            try:
-                with self.assertRaisesMessage(RuntimeError, "nested import failure"):
-                    import_server_config(server, intent, None)
-            finally:
-                post_save.disconnect(fail_after_the_event_is_queued, sender=DHCPServer)
-            self.assertGreater(at_failure[0], set(before))
-            self.assertEqual(queued(), before)
-            summary = import_server_config(server, intent, None)
-            self.assertEqual(summary.errors, 0, summary.warnings)
-            self.assertGreater(set(events_queue.get()), set(before))
-        link = KeaDhcpLink.objects.get(server=server, family=4)
-        dispatched = {(event["object_type"].model_class(), event["object_id"]) for event in DISPATCHED_EVENTS}
-        self.assertTrue({(Site, caller.pk), (type(link.sys4_object), link.object_id)} <= dispatched, dispatched)
         for event in DISPATCHED_EVENTS:
             model, pk = event["object_type"].model_class(), event["object_id"]
             with self.subTest(model=model, pk=pk, event_type=event["event_type"]):

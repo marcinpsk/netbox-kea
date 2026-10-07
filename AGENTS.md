@@ -116,6 +116,8 @@ makes it fail instead.
   `netbox_kea/tests/query_counts.json` describes that release only (see "Query-count
   baselines"). Bump the constant, `NETBOX_RELEASE` in the workflow `env`, and the baselines in one
   change.
+- **Event-rollback job (NetBox 4.3)**: runs `test_event_scope.py` on the supported floor, where
+  `event_scope.atomic()` is always a plain transaction. Keep that module free of netbox-branching fixtures.
 - **Branching job**: the unit-test NetBox release with netbox-branching 1.2.1 and netbox-plugin-dhcp 0.2.0.
   It runs `test_branching.py` and `test_dhcp_mapping_recovery.py` with
   `NETBOX_KEA_REQUIRE_BRANCHING=1`, so these modules fail
@@ -485,6 +487,10 @@ resort, reserved for true external boundaries you cannot run locally.
   (reservation only), or `active` (both). `reconcile()` claims all phase reports
   before it removes stale ownership links for complete phases. An incomplete phase
   keeps its links. `claim()` handles selected records without stale cleanup.
+- **Transactions**: open every transaction with `event_scope.atomic()`, never `transaction.atomic`
+  (opengrep `kea-raw-atomic`). At the top level of a tracked request, on a NetBox release whose `event_tracking` nests (`event_scope._nested_tracking`), it is a unit, whose events
+  dispatch after its COMMIT or not at all. Put `except event_scope.EventDispatchError: raise` before a broad
+  `except`. Read `docs/design/savepoint-event-queue.md` (sections 22 and 24) before you change it.
 - **Kea option aliases**: DNS options can be `domain-name-servers` or `dns-servers`;
   NTP can be `ntp-servers` or `sntp-servers`. Search both alias tuples.
 - **Forms**: lease search forms inherit `BaseLeasesSarchForm` (the typo is
