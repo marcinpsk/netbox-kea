@@ -50,13 +50,13 @@ _CASES: dict[int, dict[str, Any]] = {
 }
 
 
-def _lease(family: int) -> dict:
+def _lease(family: int, hostname: str | None = None) -> dict:
     case = _CASES[family]
     return complete_lease(
         {
             "ip-address": case["address"],
             "hw-address": _HW,
-            "hostname": case["lease_hostname"],
+            "hostname": case["lease_hostname"] if hostname is None else hostname,
             "subnet-id": 1,
             "valid-lft": 3600,
             "state": 0,
@@ -139,9 +139,9 @@ class TestPerRowSyncPublishedName(_ChangeRecords):
             response = self.client.post(f"{url}?{query}")
         self.assertEqual(response.status_code, 200, response.content)
 
-    def _sync_lease(self, family: int) -> None:
+    def _sync_lease(self, family: int, hostname: str | None = None) -> None:
         url = reverse(f"plugins:netbox_kea:server_lease{family}_sync", args=[self.server.pk])
-        responses = {**_catalogue(family), f"lease{family}-get": {"result": 0, "arguments": _lease(family)}}
+        responses = {**_catalogue(family), f"lease{family}-get": {"result": 0, "arguments": _lease(family, hostname)}}
         with stub_kea(responses):
             response = self.client.post(url, {"ip_address": _CASES[family]["address"]})
         self.assertEqual(response.status_code, 200, response.content)
@@ -162,6 +162,21 @@ class TestPerRowSyncPublishedName(_ChangeRecords):
                 self._sync_lease(family)
                 self._assert_published(family)
                 self.assertEqual(self._changes(ip, mac), after_lease)
+
+    def test_a_dhcpv6_lease_without_an_fqdn_does_not_rename_a_reserved_host(self):
+        # Without a Client FQDN option, Kea stores the raw reserved hostname in the lease (dhcp6_srv.cc).
+        self._sync_reservation(6)
+        ip, mac = self._assert_published(6)
+        before = self._changes(ip, mac)
+        self._sync_lease(6, "host")
+        self._assert_published(6)
+        after_lease = self._changes(ip, mac)
+        self.assertEqual(after_lease[1], before[1])
+        self._assert_keeps_the_name(set(after_lease[0]) - set(before[0]))
+        self._sync_reservation(6)
+        self._sync_lease(6, "host")
+        self._assert_published(6)
+        self.assertEqual(self._changes(ip, mac), after_lease)
 
 
 class TestReservationPublishedName(TestCase):
