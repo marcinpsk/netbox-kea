@@ -81,16 +81,19 @@ def test_documented_inventory_counts_match_the_scanner():
     loaded = sum(site.count for site in SITES if site.kind == "loaded")
     other = sum(site.count for site in SITES if site.kind != "loaded")
     assert tuple(map(int, counts.groups())) == (loaded + other, loaded, other)
-    variants = re.search(r"Each of the (\d+) runtime snapshots.*?All (\d+) variants", document, re.DOTALL)
+    variants = re.search(
+        r"The tree has (\d+) runtime snapshots\. Each of the (\d+) .*?All (\d+) variants", document, re.DOTALL
+    )
     assert variants is not None
-    assert tuple(map(int, variants.groups())) == (len(_snapshot_sites()), 2 * len(_snapshot_sites()))
+    tested = len(_snapshot_sites())
+    assert tuple(map(int, variants.groups())) == (len(_snapshot_sites(inventoried=False)), tested, 2 * tested)
 
 
 def test_production_tree_has_no_snapshot_violations():
     assert scan_tree() == []
 
 
-def _snapshot_sites():
+def _snapshot_sites(*, inventoried=True):
     sites = []
     loaded = {(site.path, site.function, site.receiver) for site in SITES if site.kind == "loaded"}
     for path in sorted(PACKAGE_ROOT.rglob("*.py")):
@@ -105,7 +108,7 @@ def _snapshot_sites():
                 and isinstance(node.value, ast.Call)
                 and isinstance(node.value.func, ast.Attribute)
                 and node.value.func.attr == "snapshot"
-                and (relative, function, ast.unparse(node.value.func.value)) in loaded
+                and (not inventoried or (relative, function, ast.unparse(node.value.func.value)) in loaded)
             )
     return sites
 

@@ -64,8 +64,8 @@ with further bypasses. The final scope uses a small explicit persistence invento
 and checks the current direct patterns. It accepts the alias and dynamic limits
 above. The runtime snapshot fix and its real ObjectChange tests remain intact.
 
-Each of the 16 runtime snapshots is removed and moved after mutation in
-memory. All 32 variants must produce a snapshot or mutation diagnostic.
+The tree has 17 runtime snapshots. Each of the 16 inventoried loaded-save
+snapshots is removed and moved after mutation in memory. All 32 variants must produce a snapshot or mutation diagnostic.
 Nearby controls cover early, missing, late, conditional and wrong-receiver
 snapshots, the mutation helpers, new saves and changed save counts. The
 production tree and hook provide passing controls. Native focused tests, Ruff,
