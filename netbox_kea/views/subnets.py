@@ -817,7 +817,7 @@ class _BaseSubnetWipeView(_KeaChangeMixin, generic.ObjectView):
         except requests.RequestException:
             logger.exception("Failed to wipe leases in subnet %s (network error)", subnet_id)
             messages.error(request, "Network error communicating with Kea: see server logs.")
-        except ValueError:
+        except (RuntimeError, ValueError):
             logger.exception("Failed to wipe leases in subnet %s", subnet_id)
             messages.error(request, "Failed to wipe leases: see server logs for details.")
         return redirect(return_url)

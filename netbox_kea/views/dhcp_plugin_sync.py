@@ -22,6 +22,7 @@ from utilities.views import register_model_view
 
 from .. import server_configuration
 from ..constants import Family
+from ..dhcp_mapping_lifecycle import MetadataBusy
 from ..integrations import dhcp_plugin
 from ..ipam_reconciliation import complete_import_observation
 from ..kea import KeaCommand, KeaException
@@ -164,7 +165,10 @@ def compute_drift(server: Server) -> dict:
     entry lists subnet rows tagged ``imported`` (in both), ``new`` (in Kea, not
     yet imported), or ``orphaned`` (imported, no longer in Kea).
     """
+    from ..dhcp_mapping_lifecycle import require_branch_mappings
     from ..models import KeaDhcpLink
+
+    require_branch_mappings()
 
     versions = []
     kea_unreachable = False
@@ -239,9 +243,20 @@ class ServerDhcpPluginView(generic.ObjectView):
 
     def get_extra_context(self, request, instance):
         """Return drift context for the template (live, read-only Kea read)."""
+        from ..dhcp_mapping_lifecycle import MappingUnavailable
+
+        available = dhcp_plugin.is_available()
+        unavailable = None
+        drift = None
+        if available:
+            try:
+                drift = compute_drift(instance)
+            except MappingUnavailable as error:
+                unavailable = str(error)
         return {
-            "plugin_available": dhcp_plugin.is_available(),
-            "drift": compute_drift(instance) if dhcp_plugin.is_available() else None,
+            "plugin_available": available,
+            "mapping_unavailable": unavailable,
+            "drift": drift,
             "can_sync": _user_can_sync(request.user, instance),
         }
 
@@ -275,6 +290,9 @@ class ServerDhcpPluginSyncNowView(View):
 
         try:
             results = run_dhcp_plugin_import(server)
+        except MetadataBusy as error:
+            messages.error(request, error.message)
+            return redirect
         except (KeaException, requests.RequestException, ValueError):
             # Expected external-boundary failures (Kea read / validation).
             logger.exception("DHCP-plugin import failed for server %s (Kea read/validation)", server.name)

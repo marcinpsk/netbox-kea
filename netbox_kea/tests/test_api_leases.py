@@ -150,6 +150,55 @@ class TestLeaseAPIAuth(_APITestBase):
         self.assertIn(response.status_code, (401, 403))
 
 
+class TestLeaseAPIFormatSuffix(_APITestBase):
+    def test_invalid_selectors_have_the_same_response_on_both_routes(self):
+        for family in (4, 6):
+            with self.subTest(family=family):
+                name = f"plugins-api:netbox_kea-api:server-leases{family}"
+                plain_url = reverse(name, kwargs={"pk": self.server.pk})
+                suffixed_url = reverse(name, kwargs={"pk": self.server.pk, "format": "json"})
+                with stub_kea({}) as kea:
+                    plain = self.api_client.get(plain_url, {"subnet_id": "not-an-integer"})
+                    suffixed = self.api_client.get(suffixed_url, {"subnet_id": "not-an-integer"})
+
+                self.assertEqual(plain.status_code, 400)
+                self.assertEqual(suffixed.status_code, 400)
+                self.assertEqual(suffixed.json(), {"detail": "subnet_id must be an integer."})
+                self.assertEqual(suffixed.json(), plain.json())
+                self.assertEqual(kea.commands(), [])
+
+    def test_subnet_id_and_state_must_be_ascii_decimal_text(self):
+        url = reverse("plugins-api:netbox_kea-api:server-leases4", args=[self.server.pk])
+        cases = (
+            ({"subnet_id": "\u0661\u0662"}, "subnet_id must be an integer."),
+            ({"subnet_id": " 12"}, "subnet_id must be an integer."),
+            ({"subnet_id": "12", "state": "\u0661"}, "A Subnet query supports only the Active or Declined state."),
+        )
+        for params, message in cases:
+            with self.subTest(params=params), stub_kea({}) as kea:
+                response = self.api_client.get(url, params)
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(response.json(), {"detail": message})
+                self.assertEqual(kea.commands(), [])
+
+    def test_permission_denial_has_the_same_response_without_kea_requests(self):
+        denied_user = User.objects.create_user(username="denied_lease_reader")
+        self.api_client.force_authenticate(user=denied_user)
+        for family, address in ((4, "198.18.0.100"), (6, "2001:db8::1")):
+            with self.subTest(family=family):
+                name = f"plugins-api:netbox_kea-api:server-leases{family}"
+                plain_url = reverse(name, kwargs={"pk": self.server.pk})
+                suffixed_url = reverse(name, kwargs={"pk": self.server.pk, "format": "json"})
+                with stub_kea({}) as kea:
+                    plain = self.api_client.get(plain_url, {"ip_address": address})
+                    suffixed = self.api_client.get(suffixed_url, {"ip_address": address})
+
+                self.assertEqual(plain.status_code, 403)
+                self.assertEqual(suffixed.status_code, 403)
+                self.assertEqual(suffixed.json(), plain.json())
+                self.assertEqual(kea.commands(), [])
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Lease4 search tests
 # ─────────────────────────────────────────────────────────────────────────────
@@ -190,6 +239,23 @@ class TestLease4API(_APITestBase):
         with stub_kea({"lease4-get": _LEASE4_RESPONSE}):
             response = self.api_client.get(self._url(), {"ip_address": "10.0.0.100"})
         self.assertEqual(response.status_code, 200)
+
+    def test_json_suffix_returns_the_same_lease_as_the_plain_route(self):
+        url = reverse("plugins-api:netbox_kea-api:server-leases4", kwargs={"pk": self.server.pk, "format": "json"})
+        reply = {"result": 0, "arguments": {**_LEASE4_RESPONSE[0]["arguments"], "ip-address": "198.18.0.100"}}
+        with stub_kea({"lease4-get": reply}) as kea:
+            plain = self.api_client.get(self._url(), {"ip_address": "198.18.0.100"})
+            suffixed = self.api_client.get(url, {"ip_address": "198.18.0.100"})
+
+        self.assertEqual(plain.status_code, 200)
+        self.assertEqual(suffixed.status_code, 200)
+        self.assertEqual(suffixed["Content-Type"], "application/json")
+        self.assertEqual(suffixed.json(), plain.json())
+        self.assertEqual(suffixed.json()["count"], 1)
+        self.assertEqual(suffixed.json()["results"][0]["ip_address"], "198.18.0.100")
+        self.assertEqual(suffixed.json()["results"][0]["hw_address"], "aa:bb:cc:dd:ee:ff")
+        self.assertEqual(suffixed.json()["results"][0]["state_label"], "Active")
+        self.assertEqual(kea.commands(), ["lease4-get", "lease4-get"])
 
     def test_get_by_ip_address_results_in_response(self):
         """Response includes a 'results' list and 'count' key."""
@@ -292,6 +358,22 @@ class TestLease6API(_APITestBase):
         with stub_kea({"lease6-get": _LEASE6_RESPONSE}):
             response = self.api_client.get(self._url(), {"ip_address": "2001:db8::1"})
         self.assertEqual(response.status_code, 200)
+
+    def test_json_suffix_returns_the_same_lease_as_the_plain_route(self):
+        url = reverse("plugins-api:netbox_kea-api:server-leases6", kwargs={"pk": self.server.pk, "format": "json"})
+        with stub_kea({"lease6-get": _LEASE6_RESPONSE}) as kea:
+            plain = self.api_client.get(self._url(), {"ip_address": "2001:db8::1"})
+            suffixed = self.api_client.get(url, {"ip_address": "2001:db8::1"})
+
+        self.assertEqual(plain.status_code, 200)
+        self.assertEqual(suffixed.status_code, 200)
+        self.assertEqual(suffixed["Content-Type"], "application/json")
+        self.assertEqual(suffixed.json(), plain.json())
+        self.assertEqual(suffixed.json()["count"], 1)
+        self.assertEqual(suffixed.json()["results"][0]["ip_address"], "2001:db8::1")
+        self.assertEqual(suffixed.json()["results"][0]["duid"], "00:01:02:03")
+        self.assertEqual(suffixed.json()["results"][0]["state_label"], "Active")
+        self.assertEqual(kea.commands(), ["lease6-get", "lease6-get"])
 
     def test_get_by_duid_returns_200(self):
         """?duid=00:01:02:03 returns 200 with v6 lease list."""

@@ -2556,6 +2556,19 @@ class TestLeaseBulkImportEdgeCases(_ViewTestBase):
         self.assertContains(response, "parsing failed")
         self.assertNotContains(response, "bad column")
 
+    def test_a_client_that_cannot_be_built_is_reported_on_the_form(self):
+        """A key without a certificate makes get_client() raise ValueError; the form reports it."""
+        import io
+
+        Server.objects.filter(pk=self.server.pk).update(client_key_path="/tls/client.key", client_cert_path="")
+        csv_file = io.BytesIO(b"ip-address\n10.0.0.1")
+        csv_file.name = "leases.csv"
+        with _lease_stub({}) as kea:
+            response = self.client.post(self._url(), {"csv_file": csv_file})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(kea.commands(), [])
+        self.assertContains(response, "Failed to connect to Kea server.")
+
     def test_generic_exception_is_row_error(self):
         """Generic exceptions from lease_add are caught per-row (not propagated)."""
         import io
@@ -2804,6 +2817,18 @@ class TestLeasePartialDelete(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(kea.commands().count("lease4-del"), 2)
 
+    def test_continues_after_a_malformed_delete_reply(self):
+        """A reply entry without a result fails that IP only, so the next IP is still deleted."""
+        with _lease_stub({"lease4-del": queued(["ok"], {"result": 0}), "subnet4-list": self._SUBNETS4}) as kea:
+            response = self.client.post(
+                self._url(),
+                {"lease_ips": ["10.0.0.1", "10.0.0.2"], "_confirm": "1", "pk": ["10.0.0.1", "10.0.0.2"]},
+                follow=True,
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(kea.commands().count("lease4-del"), 2)
+        self.assertContains(response, "Error deleting lease 10.0.0.1: see server logs for details.")
+
     def test_success_message_shows_count_of_deleted(self):
         """Success message reflects only the successfully deleted count."""
         with _lease_stub({"lease4-del": {"result": 0}, "subnet4-list": self._SUBNETS4}):
@@ -3039,6 +3064,14 @@ class TestLeaseEditPostTransportErrors(_ViewTestBase):
         self.assertEqual(response.status_code, 302)
         self.assertIn(str(self.server.pk), response.url)
 
+    def test_malformed_reply_redirects(self):
+        """A reply entry without a result from lease_update must redirect (no 500)."""
+        url = reverse("plugins:netbox_kea:server_lease4_edit", args=[self.server.pk, "10.0.0.1"])
+        with _lease_stub({"lease4-get": _LEASE4_GET_RESP[0], "lease4-update": ["ok"]}):
+            response = self.client.post(url, {"hostname": "host", "valid_lft": "3600"})
+        self.assertEqual(response.status_code, 302)
+        self.assertIn(str(self.server.pk), response.url)
+
 
 # ---------------------------------------------------------------------------
 # F3: Lease add POST — ValueError (RequestException already handled)
@@ -3055,6 +3088,14 @@ class TestLeaseAddValueError(_ViewTestBase):
         with _lease_stub({"lease4-add": ValueError("bad value")}):
             response = self.client.post(url, {"ip_address": "10.0.0.99"})
         self.assertIn(response.status_code, [200, 302])
+
+    def test_malformed_reply_rerenders_form(self):
+        """A reply entry without a result from lease_add must re-render the form (no 500)."""
+        url = reverse("plugins:netbox_kea:server_lease4_add", args=[self.server.pk])
+        with _lease_stub({"lease4-add": ["ok"]}):
+            response = self.client.post(url, {"ip_address": "10.0.0.99"})
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Failed to create lease: invalid response from Kea.")
 
 
 # ---------------------------------------------------------------------------

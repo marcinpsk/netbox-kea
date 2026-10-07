@@ -8,6 +8,7 @@ These tests mock all HTTP calls and require no running services.
 
 import dataclasses
 import ipaddress
+import os
 from dataclasses import replace
 from typing import get_args, get_origin, get_type_hints
 from unittest import TestCase
@@ -21,6 +22,7 @@ from netbox_kea.kea import (
     KeaCommand,
     KeaException,
     KeaResponse,
+    KeaTLSFileError,
     LeaseCollection,
     LeasePage,
     LeaseQueryGuardError,
@@ -33,7 +35,7 @@ from netbox_kea.kea import (
     check_response,
     lease_query_guard_message,
 )
-from netbox_kea.tests.kea_stub import _subnet_stats, kea_client, queued, stub_kea
+from netbox_kea.tests.kea_stub import _subnet_stats, kea_client, queued, record_transport, stub_kea
 
 
 def _mock_http_response(json_data, status_code=200):
@@ -81,10 +83,6 @@ class TestKeaClientInit(TestCase):
         with self.assertRaises(ValueError):
             kea_client(url="http://kea:8000", client_key="/key.pem")
 
-    def test_cert_and_key_together_accepted(self):
-        client = kea_client(url="http://kea:8000", client_cert="/cert.pem", client_key="/key.pem")
-        self.assertEqual(client._session.cert, ("/cert.pem", "/key.pem"))
-
     def test_basic_auth_configured(self):
         client = kea_client(url="http://kea:8000", username="admin", password="secret")
         self.assertIsNotNone(client._session.auth)
@@ -93,19 +91,6 @@ class TestKeaClientInit(TestCase):
         # Partial auth — no password means no auth header set
         client = kea_client(url="http://kea:8000", username="admin")
         self.assertIsNone(client._session.auth)
-
-    def test_ssl_verify_false(self):
-        client = kea_client(url="http://kea:8000", verify=False)
-        self.assertFalse(client._session.verify)
-
-    def test_ssl_verify_path(self):
-        client = kea_client(url="http://kea:8000", verify="/etc/ssl/ca.pem")
-        self.assertEqual(client._session.verify, "/etc/ssl/ca.pem")
-
-    def test_no_verify_arg_leaves_session_default(self):
-        client = kea_client(url="http://kea:8000")
-        # requests.Session defaults verify to True; we do not override it when verify=None
-        self.assertTrue(client._session.verify)
 
     def test_clone_copies_url_and_timeout(self):
         """clone() produces a new KeaClient with the same url and timeout."""
@@ -126,22 +111,82 @@ class TestKeaClientInit(TestCase):
         cloned = client.clone()
         self.assertEqual(cloned._session.auth, client._session.auth)
 
-    def test_clone_copies_session_verify(self):
-        """clone() copies the SSL verify setting."""
-        client = kea_client(url="http://kea:8000", verify="/etc/ssl/ca.pem")
-        cloned = client.clone()
-        self.assertEqual(cloned._session.verify, "/etc/ssl/ca.pem")
-
-    def test_clone_copies_session_cert(self):
-        """clone() copies the client cert tuple."""
-        client = kea_client(url="http://kea:8000", client_cert="/cert.pem", client_key="/key.pem")
-        cloned = client.clone()
-        self.assertEqual(cloned._session.cert, client._session.cert)
-
     def test_clone_preserves_send_service(self):
         """clone() carries send_service so a cloned worker-thread client stays direct."""
         self.assertFalse(kea_client(url="http://kea:8000", send_service=False).clone().send_service)
         self.assertTrue(kea_client(url="http://kea:8000").clone().send_service)
+
+
+_ENV_CA_BUNDLE = "/env/bundle.pem"
+_VERSION_REPLY = [{"result": 0, "text": "3.0.0", "arguments": {"extended": "3.0.0"}}]
+
+
+class TestKeaClientTLSSettings(TestCase):
+    """The TLS settings of the client reach the transport, also when the environment names a CA bundle."""
+
+    def _sent(self, client: KeaClient) -> dict:
+        """Send version-get through the real session pipeline and return the TLS settings that reached the transport."""
+        transport = record_transport(client, _VERSION_REPLY)
+        with patch.dict(os.environ, {"REQUESTS_CA_BUNDLE": _ENV_CA_BUNDLE}):
+            client.command(KeaCommand.VERSION_GET, None)
+        return transport.sent[-1]
+
+    def test_a_ca_file_wins_over_the_environment_bundle(self):
+        sent = self._sent(kea_client(url="https://kea:8000", verify="/etc/ssl/ca.pem"))
+        self.assertEqual(sent["verify"], "/etc/ssl/ca.pem")
+
+    def test_disabled_verification_stays_disabled_with_an_environment_bundle(self):
+        sent = self._sent(kea_client(url="https://kea:8000", verify=False))
+        self.assertIs(sent["verify"], False)
+
+    def test_the_client_certificate_pair_reaches_the_transport(self):
+        sent = self._sent(kea_client(url="https://kea:8000", client_cert="/cert.pem", client_key="/key.pem"))
+        self.assertEqual(sent["cert"], ("/cert.pem", "/key.pem"))
+
+    def test_default_verification_uses_the_environment_bundle(self):
+        """Plain verification keeps the trust store of the operator."""
+        for verify in (None, True):
+            with self.subTest(verify=verify):
+                sent = self._sent(kea_client(url="https://kea:8000", verify=verify))
+                self.assertEqual(sent["verify"], _ENV_CA_BUNDLE)
+                self.assertIsNone(sent["cert"])
+
+    def test_a_clone_sends_the_same_tls_settings(self):
+        client = kea_client(
+            url="https://kea:8000", verify="/etc/ssl/ca.pem", client_cert="/cert.pem", client_key="/key.pem"
+        )
+        sent = self._sent(client.clone())
+        self.assertEqual(sent, {"verify": "/etc/ssl/ca.pem", "cert": ("/cert.pem", "/key.pem")})
+
+
+class TestKeaClientTLSFileError(TestCase):
+    """A TLS file that requests cannot find is a request error of the client."""
+
+    def _error(self, client: KeaClient) -> KeaTLSFileError:
+        with self.assertRaises(KeaTLSFileError) as caught:
+            client.command(KeaCommand.VERSION_GET, None)
+        return caught.exception
+
+    def test_a_missing_ca_file_is_a_request_error(self):
+        error = self._error(kea_client(url="https://127.0.0.1:9/", verify="/nonexistent/ca.pem"))
+        self.assertIsInstance(error, requests.RequestException)
+        self.assertIs(type(error.__cause__), OSError)
+        self.assertIn("/nonexistent/ca.pem", str(error.__cause__))
+
+    def test_a_missing_client_certificate_is_a_request_error(self):
+        client = kea_client(
+            url="https://127.0.0.1:9/", verify=False, client_cert="/nonexistent/client.pem", client_key="/key.pem"
+        )
+        error = self._error(client)
+        self.assertIsInstance(error, requests.RequestException)
+        self.assertIs(type(error.__cause__), OSError)
+        self.assertIn("/nonexistent/client.pem", str(error.__cause__))
+
+    def test_a_request_error_passes_unchanged(self):
+        refused = requests.ConnectionError("connection refused")
+        with stub_kea({"version-get": refused}), self.assertRaises(requests.ConnectionError) as caught:
+            kea_client(url="https://kea:8000").command(KeaCommand.VERSION_GET, None)
+        self.assertIs(caught.exception, refused)
 
 
 class TestKeaClientCommand(TestCase):
@@ -1131,6 +1176,8 @@ class TestLeaseSearch(TestCase):
             (4, "subnet_id", True, None, "positive integer"),
             (4, "subnet_id", 1.5, None, "positive integer"),
             (4, "subnet_id", object(), None, "positive integer"),
+            (4, "subnet_id", "\u0661\u0662", None, "positive integer"),
+            (4, "subnet_id", " 12", None, "positive integer"),
         )
 
         for version, selector, value, state, message in cases:

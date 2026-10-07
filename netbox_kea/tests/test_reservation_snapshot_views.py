@@ -3,6 +3,7 @@
 
 import requests
 import yaml
+from bs4 import BeautifulSoup
 from django.urls import reverse
 
 from netbox_kea.views.reservations import _RESERVATION_PAGE_SIZE
@@ -714,9 +715,14 @@ class TestLeaseReservationIdentityMatching(_ViewTestBase):
         )
 
         row = response.context["table"].data.data[0]
-        self.assertTrue(row["is_reserved"])
+        self.assertFalse(row["is_reserved"], "the lease address is not the reserved one yet")
         self.assertTrue(row["pending_ip_change"])
         self.assertEqual(row["pending_reservation_ip"], "198.18.0.21")
+        badges = [
+            badge.get_text(strip=True) for badge in BeautifulSoup(response.content, "html.parser").select(".badge")
+        ]
+        self.assertIn("Pending 198.18.0.21", badges)
+        self.assertNotIn("Reserved", badges)
         self.assertIsNone(row["create_reservation_url"])
         self.assertIn("/reservations4/20/edit/", row["reservation_url"])
         self.assertIn("identifier_type=hw-address", row["reservation_url"])

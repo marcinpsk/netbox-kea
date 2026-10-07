@@ -16,17 +16,13 @@ clearly named.  Every test that triggers a redirect asserts that the redirect UR
 contains an *integer* pk (never the string "None"), which is the pattern that
 revealed the original ``POST /plugins/kea/servers/None`` 404 bug.
 
-View tests use ``django.test.TestCase`` because they write to the test database
-(user + server fixtures).  Server objects are created via ``Server.objects.create()``
-which does **not** call ``Model.clean()`` and therefore does not trigger live Kea
-connectivity checks.
+View tests use ``django.test.TestCase`` because they write user and Server fixtures
+to the real test database. Server submissions use the real forms and Kea client.
 """
 
-from unittest.mock import patch
-
 import requests
+from core.models import ObjectType
 from django.contrib import messages as django_messages
-from django.contrib.contenttypes.models import ContentType
 from django.test import override_settings
 from django.urls import reverse
 
@@ -39,7 +35,7 @@ from .utils import _PLUGINS_CONFIG, User, _make_db_server, _ViewTestBase
 # Kea response builders (real KeaClient + HTTP-boundary stub)
 # ---------------------------------------------------------------------------
 #
-# Server.clean() runs a live connectivity check (``version-get`` per enabled
+# Server submissions check changed connections (``version-get`` per enabled
 # service), and the status view issues ``status-get`` + ``version-get`` per
 # daemon (CA-level = no service; DHCP = service=["dhcp{v}"]) plus ``config-get``
 # for the global-options block. The stub keys by command name only, so where a
@@ -141,11 +137,9 @@ class TestServerAddView(_ViewTestBase):
         self.assertNotIn(b"servers/None", response.content)
 
     def test_post_connectivity_failure_rerenders_form(self):
-        """ValidationError from clean() must re-render the form at /add/, not servers/None."""
-        from django.core.exceptions import ValidationError
-
+        """A failed connection submission must re-render /add/, without an unsaved detail URL."""
         url = reverse("plugins:netbox_kea:server_add")
-        with patch.object(Server, "clean", side_effect=ValidationError("unreachable"), autospec=True):
+        with stub_kea({"version-get": requests.ConnectionError("Unavailable")}):
             response = self.client.post(
                 url,
                 {
@@ -163,7 +157,7 @@ class TestServerAddView(_ViewTestBase):
 
     def test_post_valid_data_redirects_to_integer_pk(self):
         """Successful server creation must redirect to servers/<int:pk>/, never /servers/None/."""
-        # Server.clean() runs a live version-get connectivity check on the enabled service.
+        # Server submission runs a version-get connectivity check on the enabled service.
         url = reverse("plugins:netbox_kea:server_add")
         with stub_kea({"version-get": _VERSION_OK}):
             response = self.client.post(
@@ -369,7 +363,7 @@ class TestServerBulkImportView(_ViewTestBase):
 
     def test_post_valid_csv_creates_server(self):
         """Valid CSV must create the server and redirect."""
-        # Server.clean() runs a live version-get connectivity check per imported row.
+        # Server submission runs a version-get connectivity check per imported row.
         url = reverse("plugins:netbox_kea:server_bulk_import")
         csv_data = (
             "name,ca_url,dhcp4,dhcp6,ssl_verify,has_control_agent\r\n"
@@ -387,8 +381,8 @@ class TestServerBulkImportView(_ViewTestBase):
     def test_post_duplicate_name_returns_error_not_500(self):
         """Duplicate server name must re-render the form with errors, not 500.
 
-        The real clean() connectivity check (version-get) runs first, then the unique
-        constraint on name fires — this guards against a regression where the constraint
+        The native unique constraint on name produces a local validation error
+        before connectivity validation — this guards against a regression where the constraint
         error would surface as a 500 instead of a form error.
         """
         url = reverse("plugins:netbox_kea:server_bulk_import")
@@ -687,7 +681,7 @@ class TestKeaChangeMixinPermission(_ViewTestBase):
         perm = ObjectPermission(name="view-servers", actions=["view"])
         perm.save()
         perm.users.add(readonly)
-        perm.object_types.add(ContentType.objects.get_for_model(Server))
+        perm.object_types.add(ObjectType.objects.get_for_model(Server))
         self.client.force_login(readonly)
         url = reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk])
         response = self.client.get(url)
@@ -967,11 +961,11 @@ class TestBulkDeletePermission(_ViewTestBase):
 
         # Grant view-only ObjectPermission so get_object() succeeds
         viewer = User.objects.create_user(username="viewer_no_bulk_del", password="pass")
-        ct = ContentType.objects.get_for_model(Server)
+        object_type = ObjectType.objects.get_for_model(Server)
         view_op = ObjectPermission(name="view-servers-for-bulk-test", actions=["view"])
         view_op.save()
         view_op.users.add(viewer)
-        view_op.object_types.add(ct)
+        view_op.object_types.add(object_type)
         self.client.force_login(viewer)
         url = reverse("plugins:netbox_kea:server_leases4_delete", args=[self.server.pk])
         # Permission check returns 403 before any Kea traffic.

@@ -80,9 +80,10 @@ TEST_DB_NAME=test_netbox_kea_local TEST_REDIS_HOST=localhost \
 uv run --native-tls pytest -p no:django tests/ --tracing=retain-on-failure -v --cov=netbox_kea --cov-report=xml
 ```
 
-The `host_ca` build secret defaults to `/etc/ssl/certs/ca-certificates.crt`. Compose
-reads that path before the build starts, so set `SSL_CERT_FILE` to the local CA bundle
-on any host that keeps it elsewhere (for example `/etc/pki/tls/certs/ca-bundle.crt`).
+`test_setup.sh` copies the CA bundle to `tests/docker/host_ca.crt` for the `host_ca` build
+secret, because buildx refuses a secret file outside the project. The source defaults to
+`/etc/ssl/certs/ca-certificates.crt`. Set `SSL_CERT_FILE` to the local CA bundle on any host
+that keeps it elsewhere (for example `/etc/pki/tls/certs/ca-bundle.crt`).
 
 The compose stack runs: NetBox, netbox-worker, postgres, redis, nginx (basic-auth
 + TLS), and **kea-dhcp4 / kea-dhcp6 as direct daemons** (no Control Agent). The
@@ -116,7 +117,8 @@ makes it fail instead.
   baselines"). Bump the constant, `NETBOX_RELEASE` in the workflow `env`, and the baselines in one
   change.
 - **Branching job**: the unit-test NetBox release with netbox-branching 1.2.1 and netbox-plugin-dhcp 0.2.0.
-  It runs `test_branching.py` with `NETBOX_KEA_REQUIRE_BRANCHING=1`, so the module fails
+  It runs `test_branching.py` and `test_dhcp_mapping_recovery.py` with
+  `NETBOX_KEA_REQUIRE_BRANCHING=1`, so these modules fail
   instead of skipping when netbox-branching is absent. `netbox_kea/branching.py` is the only
   module that imports `netbox_branching` (ADR 0007, `docs/design/netbox-branching.md`).
   Every migration sets `fake_on_branch`; guard 4 in `test_branching.py` checks the value.
@@ -124,11 +126,17 @@ makes it fail instead.
   callback in a branch, or with an unusable branch selection. Below the middleware, `KeaClient.command()`
   refuses a `write` member of `KeaCommand` with `BranchActive` (`Server.get_client()` binds the client
   to the active branch, and `clone()` keeps the binding), `pre_save` and `pre_delete` receivers in
-  `branching.py` refuse a save or a delete of every netbox_kea row, and `KeaIpamSyncJob` fails before
+  `branching.py` refuse a save or a delete of every netbox_kea row except `KeaDhcpLink`, and `KeaIpamSyncJob` fails before
   any read. Guard 1 in `test_branching.py`
   sends GET, HEAD, OPTIONS, POST, PUT, PATCH and DELETE to every netbox_kea URL in a provisioned
   branch, API action routes included; a new route with a parameter the guard cannot build fails
   by name, so teach `_route_arguments` the object.
+  DHCP Import Mappings follow their imported Subnet or Global Reservation through native
+  squash merge and revert. `dhcp_mapping_lifecycle.py` owns their history and writer boundaries.
+  Before changing mapping writes, target deletion or branch replay, read ADR 0008 and
+  `docs/design/dhcp-import-mapping-transactions.md` for the recovery contract and lock order.
+  Read `docs/design/dhcp-import-mapping-lock-scope.md` before changing which writes, deletions or
+  imports take the mapping lock, or how a lock error maps to a refusal.
 - **Compatibility matrix**: runs the integration suite (`test_setup.sh`) against
   NetBox v4.3 (floor), v4.7 (ceiling), and the dev snapshot (allowed to fail).
 - **Branching browser job**: the integration steps on the netbox-branching variant of the
@@ -173,8 +181,9 @@ URL request
   `dhcp6_url` (dual-URL mode), CA and per-protocol credentials, TLS fields
   (`ssl_verify`, `ca_file_path`, `client_cert_path`, `client_key_path`),
   `has_control_agent`, per-server IPAM sync toggles, `sync_vrf` (`PROTECT` FK to `ipam.VRF`;
-  blank = global table), and `persist_config`. `clean()` runs a **live
-  `version-get` connectivity check** per enabled service before saving.
+  blank = global table), and `persist_config`. `clean()` validates local settings only.
+  `server_connection.py` checks enabled services on UI, REST, CSV and bulk submissions
+  that create a Server or change connection values. Metadata and unchanged connection values send no HTTP.
   `get_client(version=4|6|None)` returns a protocol-aware `KeaClient`.
 - **`SyncConfig` model** (`models.py`): singleton (pk=1) for global sync settings —
   `interval_minutes`, `sync_enabled` (global kill-switch), type toggles. Migration 0018
@@ -193,7 +202,10 @@ URL request
   keyword argument: `Server.get_client()` passes the branch binding, and unit tests build clients
   through `kea_stub.kea_client()`, which passes it too. Responses are
   `list[KeaResponse]`; `check_response()` raises `KeaException` if any result code is not in
-  `check`. `.clone()` creates a thread-safe copy (fresh `requests.Session`) for
+  `check`. `command()` passes the TLS settings (`verify`, `cert`) on each request, so the
+  `REQUESTS_CA_BUNDLE` environment variable cannot replace a CA file or `ssl_verify=False`. A TLS file
+  that requests cannot find raises `KeaTLSFileError`, a `requests.RequestException`, so each
+  handler of request errors also handles it. `.clone()` creates a thread-safe copy (fresh `requests.Session`) for
   concurrent lookups. **`send_service`**: `command()` sends the target as the `service`
   argument only when the server is fronted by a Control Agent
   (`send_service = has_control_agent`); a direct daemon drops it, because Kea 3.2.0+
@@ -300,16 +312,19 @@ When a rule below has a matching opengrep rule, a violation fails the local hook
 - **Always pass `version=` to `server.get_client()`** when the DHCP version is known
   (`server.get_client(version=self.dhcp_version)`). Omitting it falls back to
   `ca_url` even when a protocol-specific URL is configured.
-- **Always call `server.get_client()` inside a try block** — client creation can
-  raise `ValueError` / `requests.RequestException` on bad config or connectivity.
-  Never call it at module/class level or before error handling is in scope.
+- **Always call `server.get_client()` inside a try block** — client creation raises
+  `ValueError` on bad config and sends no request. A try block around `get_client()` alone
+  catches `ValueError` only. Request errors come from the Kea calls, so the "Catch" rule
+  below covers those calls. Never call it at module/class level or before error handling
+  is in scope.
 - **Validate Kea response shape before indexing.** After `client.command()`, check
   `resp` is a non-empty list and `resp[0]` is a dict before reading
   `resp[0]["arguments"]`; check nested keys (`"leases"`, `"subnet4"`, …) are lists
   before indexing. Malformed payloads should raise `RuntimeError` to hit existing
   handlers.
-- **Catch `(KeaException, requests.RequestException, ValueError)` consistently** in
-  mutation handlers. Split `KeaException` when you need `kea_error_hint(exc)` for
+- **Catch `(KeaException, requests.RequestException, RuntimeError, ValueError)`
+  consistently** in user-facing handlers. `check_response()` raises `RuntimeError` for a
+  malformed reply entry. Split `KeaException` when you need `kea_error_hint(exc)` for
   hook-related errors (result=2). A Configuration Change goes through `_run_config_change`
   instead (see "Exception hierarchy").
 - **Use `kea_error_hint(exc)` for user-facing Kea error messages** — it maps result
@@ -347,7 +362,9 @@ resort, reserved for true external boundaries you cannot run locally.
 - **Recorded Kea replies check the parser.** A hand-written stub shows what we expect
   Kea to return. `netbox_kea/tests/kea_recordings/` holds `config-get` and
   `subnet{4,6}-list` replies recorded from a real Kea (the harness `KEA_VERSION`), with
-  coverage configurations that use every field `server_configuration` reads.
+  coverage configurations that use every field `server_configuration` reads. The `leases`
+  section of each recording holds lease replies for every state, an infinite lifetime and
+  DHCPv6 delegated prefixes, and the lease changes that Kea refuses.
   `test_kea_recordings.py` requires zero diagnostics. The script also writes
   `accepted-keys.json` from the keyword tables that Kea's `config-test` and
   `config-set` check in the same release (`simple_parser{4,6}.cc`). `stub_kea()`
@@ -396,7 +413,7 @@ resort, reserved for true external boundaries you cannot run locally.
   production code for Kea command names, hyphenated payload keys, and family-suffixed
   configuration keys or service names. String templates (f-strings, `.format`, `%`, `+`)
   count when they can build a wire literal. Wire owners are `kea.py`, `server_configuration.py`,
-  `subnet_catalogue.py`, `reservations.py`, and `dhcp_options.py`, relative to `netbox_kea/`.
+  `subnet_catalogue.py`, `reservations.py`, `dhcp_options.py`, and `leases.py`, relative to `netbox_kea/`.
   The checker excludes these exact modules, tests, and migrations. The transport stub
   `tests/kea_stub.py` may also use wire literals to model Kea responses.
   It also checks `arguments` when code uses it as a raw payload key. Prefer typed domain
@@ -408,9 +425,9 @@ resort, reserved for true external boundaries you cannot run locally.
   `NetBoxModel` with standard generic views + `NetBoxModelViewSet`), use NetBox's
   `ViewTestCases` / `APIViewTestCases` (see `test_server_generic.py`). Wire plugin
   namespaces: UI `_get_base_url` → `plugins:netbox_kea:server_{}`; API
-  `view_namespace = "plugins-api:netbox_kea"`. `Server.clean()`'s live check (and the
-  REST serializer's `full_clean()`) are answered by `stub_kea({"version-get": ...})`
-  in `setUp`; build fixtures with `bulk_create` (skips `Model.clean()`). These mixins
+  `view_namespace = "plugins-api:netbox_kea"`. Submission connectivity checks are
+  answered by `stub_kea({"version-get": ...})` in `setUp`. Model validation is local;
+  build fixtures with `bulk_create`. These mixins
   don't fit the Kea-proxy views (leases/subnets/reservations over live daemon data) —
   those stay `stub_kea`-driven.
 - **Query-count baselines.** The list-view mixins assert an exact SQL query count

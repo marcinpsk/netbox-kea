@@ -45,6 +45,17 @@ class TestCombinedResponseShapeGuards(_ViewTestBase):
                 _fetch_all_leases_from_server(self.server, 4)
 
 
+class TestCombinedServerSelection(_ViewTestBase):
+    def test_server_selection_reads_only_ascii_decimal_text(self):
+        responses = _catalogue_responses(4, 7, "198.18.0.0/24")
+        responses["stat-lease4-get"] = {"result": 2, "text": "unsupported"}
+        for selection in ("\u00b2", "\u0661"):
+            with self.subTest(selection=selection), stub_kea(responses):
+                response = self.client.get(reverse("plugins:netbox_kea:combined_subnets4"), {"server": selection})
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.context["selected_server_pks"], set())
+
+
 class TestCombinedSubnetDiagnostics(_ViewTestBase):
     def _subnet_actions_response(self, *, verified=True, writable=True):
         if not writable:

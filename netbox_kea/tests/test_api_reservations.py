@@ -86,6 +86,45 @@ class TestReservationAPIAuth(_APITestBase):
         self.assertIn(response.status_code, (401, 403))
 
 
+class TestReservationAPIFormatSuffix(_APITestBase):
+    def test_invalid_selectors_have_the_same_response_on_both_routes(self):
+        params = {"page": "1", "hostname": "host.example.invalid"}
+        for family in (4, 6):
+            with self.subTest(family=family):
+                name = f"plugins-api:netbox_kea-api:server-reservations{family}"
+                plain_url = reverse(name, kwargs={"pk": self.server.pk})
+                suffixed_url = reverse(name, kwargs={"pk": self.server.pk, "format": "json"})
+                with stub_kea({}) as kea:
+                    plain = self.api_client.get(plain_url, params)
+                    suffixed = self.api_client.get(suffixed_url, params)
+
+                self.assertEqual(plain.status_code, 400)
+                self.assertEqual(suffixed.status_code, 400)
+                self.assertEqual(suffixed.json(), plain.json())
+                self.assertEqual(
+                    suffixed.json(),
+                    {"detail": "Select exactly one Reservation query: page, identity, scoped address, or hostname."},
+                )
+                self.assertEqual(kea.commands(), [])
+
+    def test_permission_denial_has_the_same_response_without_kea_requests(self):
+        denied_user = User.objects.create_user(username="denied_reservation_reader")
+        self.api_client.force_authenticate(user=denied_user)
+        for family in (4, 6):
+            with self.subTest(family=family):
+                name = f"plugins-api:netbox_kea-api:server-reservations{family}"
+                plain_url = reverse(name, kwargs={"pk": self.server.pk})
+                suffixed_url = reverse(name, kwargs={"pk": self.server.pk, "format": "json"})
+                with stub_kea({}) as kea:
+                    plain = self.api_client.get(plain_url, {"hostname": "host.example.invalid"})
+                    suffixed = self.api_client.get(suffixed_url, {"hostname": "host.example.invalid"})
+
+                self.assertEqual(plain.status_code, 403)
+                self.assertEqual(suffixed.status_code, 403)
+                self.assertEqual(suffixed.json(), plain.json())
+                self.assertEqual(kea.commands(), [])
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Reservation4 tests
 # ─────────────────────────────────────────────────────────────────────────────
@@ -178,6 +217,20 @@ class TestReservation4API(_APITestBase):
         response = self.api_client.get(self._url(pk=99999), {"page": "1"})
         self.assertEqual(response.status_code, 404)
 
+    def test_subnet_selectors_must_be_ascii_decimal_text(self):
+        identity = {"scope": "in-subnet", "identifier_type": "hw-address", "identifier": "aa:bb:cc:dd:ee:ff"}
+        cases = (
+            ({**identity, "subnet_id": "\u0662\u0660"}, "Invalid Reservation identity selector."),
+            ({**identity, "subnet_id": " 20"}, "Invalid Reservation identity selector."),
+            ({"subnet_id": "\u0662\u0660", "ip_address": "198.18.0.20"}, "Invalid scoped address selector."),
+        )
+        for params, message in cases:
+            with self.subTest(params=params), stub_kea(_catalogue_responses(4, 20, "198.18.0.0/24")) as kea:
+                response = self.api_client.get(self._url(), params)
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(response.json(), {"detail": message})
+                self.assertNotIn("reservation-get", kea.commands())
+
     def test_incomplete_tls_configuration_returns_server_error_for_every_query_mode(self):
         """A stored Server configuration failure is not a malformed API selector."""
         self.server.client_cert_path = "/certs/client.pem"
@@ -262,6 +315,49 @@ class TestReservation4API(_APITestBase):
         self.assertEqual(response.json()["results"][0]["scope"]["subnet"]["cidr"], "198.18.0.0/24")
         self.assertEqual(kea.commands(), ["subnet4-list", "config-get", "reservation-get"])
 
+    def test_json_suffix_returns_the_same_reservation_as_the_plain_route(self):
+        url = reverse(
+            "plugins-api:netbox_kea-api:server-reservations4", kwargs={"pk": self.server.pk, "format": "json"}
+        )
+        params = {
+            "scope": "in-subnet",
+            "subnet_id": "20",
+            "identifier_type": "hw-address",
+            "identifier": "AA-BB-CC-DD-EE-FF",
+        }
+        responses = _catalogue_responses(4, 20, "198.18.0.0/24")
+        responses["reservation-get"] = _res_get(
+            {"subnet-id": 20, "hw-address": "AA-BB-CC-DD-EE-FF", "ip-address": "198.18.0.20"}
+        )
+        with stub_kea(responses):
+            plain = self.api_client.get(self._url(), params)
+            suffixed = self.api_client.get(url, params)
+
+        self.assertEqual(plain.status_code, 200)
+        self.assertEqual(suffixed.status_code, 200)
+        self.assertEqual(suffixed["Content-Type"], "application/json")
+        self.assertEqual(suffixed.json(), plain.json())
+        self.assertEqual(
+            suffixed.json(),
+            {
+                "count": 1,
+                "results": [
+                    {
+                        "family": 4,
+                        "scope": {"type": "in-subnet", "subnet": {"id": 20, "cidr": "198.18.0.0/24"}},
+                        "identity": {"type": "hw-address", "value": "aa:bb:cc:dd:ee:ff"},
+                        "addresses": ["198.18.0.20"],
+                        "delegated_prefixes": [],
+                        "hostname": "",
+                        "options": [],
+                    }
+                ],
+                "diagnostics": [],
+                "complete": True,
+                "next_cursor": None,
+            },
+        )
+
     def test_subnet_only_selector_is_rejected_without_unbounded_iteration(self):
         with stub_kea({}) as kea:
             response = self.api_client.get(self._url(), {"subnet_id": "1"})
@@ -299,7 +395,7 @@ class TestReservation4API(_APITestBase):
 
     def test_page_rejects_invalid_limits_without_a_kea_request(self):
         with stub_kea({}) as kea:
-            for limit in ("not-an-integer", "0", "501"):
+            for limit in ("not-an-integer", "0", "501", "\u0661\u0660", " 10"):
                 with self.subTest(limit=limit):
                     response = self.api_client.get(self._url(), {"page": "1", "limit": limit})
                     self.assertEqual(response.status_code, 400)
@@ -602,6 +698,54 @@ class TestReservation6API(_APITestBase):
 
     def _url(self):
         return reverse("plugins-api:netbox_kea-api:server-reservations6", args=[self.server.pk])
+
+    def test_json_suffix_returns_the_same_reservation_as_the_plain_route(self):
+        url = reverse(
+            "plugins-api:netbox_kea-api:server-reservations6", kwargs={"pk": self.server.pk, "format": "json"}
+        )
+        params = {
+            "scope": "in-subnet",
+            "subnet_id": "10",
+            "identifier_type": "duid",
+            "identifier": "00-01-02-03",
+        }
+        responses = _catalogue_responses(6, 10, "2001:db8::/64")
+        responses["reservation-get"] = _res_get(
+            {
+                "subnet-id": 10,
+                "duid": "00-01-02-03",
+                "ip-addresses": ["2001:db8::20", "2001:db8::10"],
+                "prefixes": ["2001:db8:100::/56"],
+            }
+        )
+        with stub_kea(responses):
+            plain = self.api_client.get(self._url(), params)
+            suffixed = self.api_client.get(url, params)
+
+        self.assertEqual(plain.status_code, 200)
+        self.assertEqual(suffixed.status_code, 200)
+        self.assertEqual(suffixed["Content-Type"], "application/json")
+        self.assertEqual(suffixed.json(), plain.json())
+        self.assertEqual(
+            suffixed.json(),
+            {
+                "count": 1,
+                "results": [
+                    {
+                        "family": 6,
+                        "scope": {"type": "in-subnet", "subnet": {"id": 10, "cidr": "2001:db8::/64"}},
+                        "identity": {"type": "duid", "value": "00:01:02:03"},
+                        "addresses": ["2001:db8::20", "2001:db8::10"],
+                        "delegated_prefixes": ["2001:db8:100::/56"],
+                        "hostname": "",
+                        "options": [],
+                    }
+                ],
+                "diagnostics": [],
+                "complete": True,
+                "next_cursor": None,
+            },
+        )
 
     def test_no_filter_params_returns_400(self):
         """Requesting reservations6 without any filter param returns HTTP 400."""

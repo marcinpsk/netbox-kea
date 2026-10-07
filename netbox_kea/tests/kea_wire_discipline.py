@@ -26,7 +26,9 @@ from pathlib import Path
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 _BASELINE_PATH = Path(__file__).with_name("kea_wire_discipline_baseline.txt")
-_OWNERS = frozenset({"kea.py", "server_configuration.py", "subnet_catalogue.py", "reservations.py", "dhcp_options.py"})
+_OWNERS = frozenset(
+    {"kea.py", "server_configuration.py", "subnet_catalogue.py", "reservations.py", "dhcp_options.py", "leases.py"}
+)
 
 _RECORDINGS = Path(__file__).with_name("kea_recordings")
 # Every command the harness Kea lists; scripts/record_kea_config_get.py records them.
@@ -121,6 +123,8 @@ WIRE_PAYLOAD_KEYS = frozenset(
         "finger-server",
         "flex-id",
         "font-servers",
+        "fqdn-fwd",
+        "fqdn-rev",
         "geoconf-civic",
         "ha-mode",
         "ha-servers",
@@ -198,8 +202,11 @@ WIRE_PAYLOAD_KEYS = frozenset(
         "pd-pools",
         "perform-mask-discovery",
         "policy-filter",
+        "pool-id",
         "pop-server",
+        "preferred-lft",
         "preferred-lifetime",
+        "prefix-len",
         "rapid-commit",
         "rdnss-selection",
         "rebind-timer",

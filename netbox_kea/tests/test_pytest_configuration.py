@@ -672,13 +672,14 @@ def test_database_jobs_use_the_shared_ci_configuration_writer():
         assert f"*{anchor}" in dhcp_plugin_job, anchor
         assert f"*{anchor}" in branching_job, anchor
 
-    assert workflow.count(writer) == 3
+    assert workflow.count(writer) == 4
     assert f"{writer} --output netbox/configuration.py --plugin netbox_kea\n" in unit_test_job
     assert f"{writer} --output netbox/configuration.py --plugin netbox_kea --plugin netbox_dhcp\n" in dhcp_plugin_job
     assert (
         f"{writer} --output netbox/configuration.py --plugin netbox_kea --plugin netbox_dhcp --branching\n"
         in branching_job
     )
+    assert f"{writer} --output netbox/configuration.py --plugin netbox_kea --branching\n" in branching_job
     assert "cat > netbox/configuration.py" not in workflow
 
     uv_commands = _workflow_uv_commands(workflow)
@@ -754,13 +755,24 @@ def test_branching_job_cannot_pass_with_the_branching_tests_skipped():
     job = yaml.safe_load(workflow)["jobs"]["branching-test"]
     runs = [step for step in job["steps"] if "run" in step]
     install = next(step["run"] for step in runs if "uv pip install" in step["run"])
-    test_step = next(step for step in runs if "pytest" in step["run"])
+    test_steps = [step for step in runs if "pytest" in step["run"]]
+    test_step = next(
+        step
+        for step in test_steps
+        if re.search(r"/netbox_kea/tests/test_dhcp_mapping_recovery\.py(?:\s|$)", step["run"])
+    )
+    optional_step = next(step for step in test_steps if "::OptionalMappingReplayTest" in step["run"])
 
     assert re.fullmatch(r"\d+\.\d+\.\d+", str(yaml.safe_load(workflow)["env"]["NETBOX_BRANCHING_VERSION"]))
     assert '"netboxlabs-netbox-branching==${NETBOX_BRANCHING_VERSION}"' in install
     assert '"netbox-plugin-dhcp==0.2.0"' in install
-    assert test_step["env"]["NETBOX_KEA_REQUIRE_BRANCHING"] == "1"
-    assert "/netbox_kea/tests/test_branching.py " in test_step["run"]
+    assert len(test_steps) == 2
+    assert all(step["env"]["NETBOX_KEA_REQUIRE_BRANCHING"] == "1" for step in test_steps)
+    assert test_step["env"]["TEST_DB_NAME"] != optional_step["env"]["TEST_DB_NAME"]
+    assert "::TestOptionalMetadataCoordination" in optional_step["run"]
+    assert "--plugin netbox_kea --branching" in optional_step["run"]
+    assert "--plugin netbox_dhcp" not in optional_step["run"]
+    assert re.search(r"/netbox_kea/tests/test_branching\.py(?:\s|$)", test_step["run"])
     assert job["permissions"] == {"contents": "read"}
     source = (REPOSITORY_ROOT / "netbox_kea/tests/test_branching.py").read_text()
     assert 'raise RuntimeError(f"{_REQUIRE_BRANCHING}=1, but netbox_branching is not an installed app")' in source
@@ -2666,7 +2678,9 @@ def _write_tool_stubs(stub_bin: Path) -> None:
         stub.chmod(0o755)
 
 
-def _run_setup_script(sandbox: Path, wheel_names: tuple[str, ...]) -> subprocess.CompletedProcess:
+def _run_setup_script(
+    sandbox: Path, wheel_names: tuple[str, ...], environment: dict[str, str] | None = None
+) -> subprocess.CompletedProcess:
     """Run the real ``tests/test_setup.sh`` in *sandbox* with every external tool stubbed."""
     (sandbox / "tests" / "docker").mkdir(parents=True, exist_ok=True)
     (sandbox / "tests" / "test_setup.sh").write_bytes((REPOSITORY_ROOT / "tests/test_setup.sh").read_bytes())
@@ -2681,7 +2695,12 @@ def _run_setup_script(sandbox: Path, wheel_names: tuple[str, ...]) -> subprocess
     return subprocess.run(
         ["bash", "./tests/test_setup.sh"],
         cwd=sandbox,
-        env={**os.environ, "PATH": f"{stub_bin}:{os.environ['PATH']}", "NETBOX_CONTAINER_TAG": "v4.6"},
+        env={
+            **os.environ,
+            "PATH": f"{stub_bin}:{os.environ['PATH']}",
+            "NETBOX_CONTAINER_TAG": "v4.6",
+            **(environment or {}),
+        },
         capture_output=True,
         text=True,
         check=False,
@@ -2742,6 +2761,54 @@ def test_the_setup_script_refuses_an_ambiguous_wheel_set(wheel_names):
 
         assert result.returncode == 1, result.stdout
         assert "Expected exactly one wheel" in result.stderr, result.stderr
+
+
+def test_the_setup_script_copies_the_ca_bundle_into_the_build_project():
+    """buildx 0.37.2 refuses a build secret read from outside the project without ``--allow=fs.read``."""
+    with tempfile.TemporaryDirectory() as directory:
+        sandbox = Path(directory)
+        bundle = sandbox / "host-ca-bundle.pem"
+        bundle.write_text("-----BEGIN CERTIFICATE-----\nlocal\n-----END CERTIFICATE-----\n")
+
+        result = _run_setup_script(sandbox, ("netbox_kea_ng-1.9.0-py3-none-any.whl",), {"SSL_CERT_FILE": str(bundle)})
+
+        assert result.returncode == 0, result.stderr
+        assert (sandbox / "tests/docker/host_ca.crt").read_text() == bundle.read_text()
+
+
+def _secret_source_is_inside_the_compose_project(source: str) -> bool:
+    expanded = _expand(source, {})
+    path = Path(expanded)
+    # Path("") is the project directory itself, so an unset ${NAME} would pass the containment check.
+    return (
+        bool(expanded)
+        and not path.is_absolute()
+        and (_COMPOSE_FILE.parent / path).resolve().is_relative_to(_COMPOSE_FILE.parent)
+    )
+
+
+@pytest.mark.parametrize(
+    ("source", "inside"),
+    [
+        ("./host_ca.crt", True),
+        ("${UNSET_CA_FILE}", False),
+        ("${UNSET_CA_FILE:-/etc/ssl/ca.pem}", False),
+        ("../host_ca.crt", False),
+    ],
+)
+def test_a_compose_secret_source_must_name_a_file_inside_the_project(source, inside):
+    assert _secret_source_is_inside_the_compose_project(source) is inside
+
+
+def test_every_compose_build_secret_is_inside_the_compose_project():
+    compose = yaml.safe_load(_COMPOSE_FILE.read_text())
+    sources = {name: secret["file"] for name, secret in compose.get("secrets", {}).items() if "file" in secret}
+    assert sources, "The compose stack declares no file secret; this guard reads nothing."
+    for name, source in sources.items():
+        assert _secret_source_is_inside_the_compose_project(source), (
+            f"Secret {name} reads {source}, outside {_COMPOSE_FILE.parent.relative_to(REPOSITORY_ROOT)}. "
+            "Copy the file into the project in tests/test_setup.sh."
+        )
 
 
 # ---------------------------------------------------------------------------

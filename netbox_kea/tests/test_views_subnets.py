@@ -474,6 +474,18 @@ class TestServerSubnet4WipeView(_ViewTestBase):
         self.assertEqual(response.status_code, 302)
         self._assert_no_none_pk_redirect(response)
 
+    def test_post_on_malformed_reply_shows_error_message(self):
+        """A reply entry without a result must redirect with an error (no 500)."""
+        from django.contrib.messages import get_messages
+
+        with stub_kea({**_ABSENT_READ_HOOKS, "lease4-wipe": ["ok"]}):
+            response = self.client.post(self._url())
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            [str(message) for message in get_messages(response.wsgi_request)],
+            ["Failed to wipe leases: see server logs for details."],
+        )
+
     def test_get_requires_login(self):
         """Unauthenticated GET must redirect to login."""
         self.client.logout()

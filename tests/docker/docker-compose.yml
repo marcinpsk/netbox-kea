@@ -140,4 +140,4 @@ volumes:
 
 secrets:
   host_ca:
-    file: ${SSL_CERT_FILE:-/etc/ssl/certs/ca-certificates.crt}
+    file: ./host_ca.crt

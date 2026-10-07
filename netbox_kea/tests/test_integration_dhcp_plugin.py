@@ -14,7 +14,11 @@ import ipaddress
 import unittest
 
 from django.apps import apps
-from django.test import TestCase, override_settings, tag
+from django.contrib.auth import get_user_model
+from django.contrib.contenttypes.models import ContentType
+from django.db import connection, transaction
+from django.test import TestCase, TransactionTestCase, override_settings, tag
+from django.urls import reverse
 from django.utils import timezone
 
 from netbox_kea.ipam_reconciliation import ReservationObservation
@@ -30,7 +34,7 @@ from netbox_kea.reservations import (
 from netbox_kea.subnet_catalogue import IdentityOnlyCatalogueSnapshot, SubnetIdentity, VerifiedSubnet
 
 from .kea_stub import _res_page, kea_client, stub_kea
-from .utils import _make_db_server, plugins_config
+from .utils import _make_db_server, linked_dhcp_targets, plugins_config
 
 DHCP_PLUGIN = "netbox_dhcp"
 _PLUGINS_CONFIG = plugins_config()
@@ -112,6 +116,47 @@ def _reservation_snapshot(conf: dict, version: Family, hosts: list[dict] | None 
         return ReservationObservation(client.reservation_page(version, catalogue, limit=max(len(hosts), 1)), cutoff)
 
 
+class TestOptionalMetadataCoordination(TransactionTestCase):
+    def test_ordinary_tag_edit_and_contenttype_delete_do_not_acquire_the_mapping_lock(self):
+        from extras.models import Tag
+
+        from netbox_kea import branching
+        from netbox_kea.dhcp_mapping_lifecycle import _METADATA_LOCK
+
+        if branching.installed() and apps.is_installed("netbox_dhcp"):
+            self.skipTest("This profile verifies ordinary behavior without both optional plugins")
+        self.client.force_login(get_user_model().objects.create_superuser("unbranched-metadata-admin"))
+        tag = Tag.objects.create(name="ordinary tag", slug="ordinary-tag")
+        stale = ContentType.objects.create(app_label="netbox_kea", model="obsolete_unbranched_mapping")
+        stale_pk = stale.pk
+        holder = connection.Database.connect(**connection.get_connection_params())
+        try:
+            with holder.cursor() as cursor:
+                cursor.execute("SELECT pg_advisory_lock(%s, %s)", _METADATA_LOCK)
+            with transaction.atomic():
+                with connection.cursor() as cursor:
+                    cursor.execute("SELECT pg_try_advisory_xact_lock(%s, %s)", _METADATA_LOCK)
+                    self.assertFalse(cursor.fetchone()[0], "The independent writer did not hold the mapping lock")
+                response = self.client.post(
+                    reverse("extras:tag_edit", args=[tag.pk]),
+                    {
+                        "name": tag.name,
+                        "slug": tag.slug,
+                        "color": "112233",
+                        "weight": 0,
+                        "description": "ordinary edit",
+                    },
+                    follow=True,
+                )
+                self.assertEqual(response.status_code, 200)
+                tag.refresh_from_db()
+                self.assertEqual(tag.description, "ordinary edit")
+                stale.delete()
+            self.assertFalse(ContentType.objects.filter(pk=stale_pk).exists())
+        finally:
+            holder.close()
+
+
 @tag("dhcp_plugin")
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class DhcpPluginAdapterTest(TestCase):
@@ -130,6 +175,51 @@ class DhcpPluginAdapterTest(TestCase):
         self.adapter = dhcp_plugin
 
     # ── basic import ────────────────────────────────────────────────────────
+
+    def test_target_deletion_accepts_a_model_attribute(self):
+        from netbox_kea.models import KeaDhcpLink
+
+        for target, link in linked_dhcp_targets(self.server):
+            with self.subTest(model=target._meta.label):
+                target.model = "target metadata"
+
+                target.delete()
+
+                self.assertFalse(type(target).objects.filter(pk=link.object_id).exists())
+                self.assertFalse(KeaDhcpLink.objects.filter(pk=link.pk).exists())
+
+    def test_dhcp_target_deletion_removes_only_its_matching_link(self):
+        from netbox_kea.models import KeaDhcpLink
+
+        targets = linked_dhcp_targets(self.server)
+        remaining = {link.pk for _, link in targets}
+        for target, link in targets:
+            with self.subTest(model=target._meta.label, object_id=target.pk):
+                target.delete()
+                remaining.remove(link.pk)
+                self.assertSetEqual(set(KeaDhcpLink.objects.values_list("pk", flat=True)), remaining)
+
+    def test_dhcp_target_queryset_deletion_removes_its_links(self):
+        from netbox_kea.models import KeaDhcpLink
+
+        targets = linked_dhcp_targets(self.server)
+        for target, link in targets:
+            with self.subTest(model=target._meta.label):
+                type(target).objects.filter(pk=target.pk).delete()
+                self.assertFalse(KeaDhcpLink.objects.filter(pk=link.pk).exists())
+
+    def test_dhcp_target_and_link_cleanup_rollback_together(self):
+        from netbox_kea.models import KeaDhcpLink
+
+        for target, link in linked_dhcp_targets(self.server):
+            with self.subTest(model=target._meta.label):
+                target_pk = target.pk
+                with self.assertRaisesRegex(RuntimeError, "roll back target deletion"), transaction.atomic():
+                    target.delete()
+                    self.assertFalse(KeaDhcpLink.objects.filter(pk=link.pk).exists())
+                    raise RuntimeError("roll back target deletion")
+                self.assertTrue(type(target).objects.filter(pk=target_pk).exists())
+                self.assertTrue(KeaDhcpLink.objects.filter(pk=link.pk).exists())
 
     def test_import_links_each_shared_ipam_object_to_its_source(self):
         from netbox_kea.models import IPAMOwnershipLink
@@ -406,9 +496,16 @@ class DhcpPluginAdapterTest(TestCase):
         link = KeaDhcpLink.objects.get(server=self.server, family=4, kea_subnet_id=1)
         old_pk = link.sys4_object.pk
 
-        # Subnet deleted out from under the link; the link row survives, dangling.
         Subnet.objects.filter(pk=old_pk).delete()
-        link.refresh_from_db()
+        self.assertFalse(KeaDhcpLink.objects.filter(pk=link.pk).exists())
+        # Recreate a dangling link from an installation without target cleanup.
+        link = KeaDhcpLink.objects.create(
+            server=self.server,
+            family=4,
+            kea_subnet_id=1,
+            object_type_id=link.object_type_id,
+            object_id=old_pk,
+        )
         self.assertIsNone(link.sys4_object)
 
         # Re-import must relink the stale identity row, not violate the

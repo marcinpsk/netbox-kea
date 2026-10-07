@@ -10,6 +10,8 @@ configurations load the same hook libraries as the Compose harness.
 It also reads the keyword tables that Kea's config-test and config-set check in the same
 release, and writes the keys Kea accepts on a Shared Network and on a Subnet to
 accepted-keys.json.
+The same daemons record lease replies: every lease state, an infinite lifetime, IPv6
+delegated prefixes, exact lookups, pages, and the lease changes that Kea refuses.
 The Kea version is the Compose harness default, so both use the same Kea.
 
 Kea 3.2 has no Control Agent, so control-agent.json comes from the last Kea release series
@@ -22,6 +24,7 @@ Usage: scripts/record_kea_config_get.py
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import re
 import shutil
@@ -50,6 +53,95 @@ CONTROL_AGENT_REPOSITORY = "https://dl.cloudsmith.io/public/isc/kea-3-0/alpine/v
 _OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
+def _constants():
+    """Load the plugin constants without the plugin package, which needs NetBox."""
+    spec = importlib.util.spec_from_file_location("netbox_kea_constants", REPO_ROOT / "netbox_kea" / "constants.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_CONSTANTS = _constants()
+INFINITE_LIFETIME = _CONSTANTS.INFINITE_LIFETIME
+STATE = _CONSTANTS.LEASE_STATE_CODES
+_NESTED_CONTEXT = {"site": {"rack": "r1", "slots": [1, 2]}}
+_DUID = "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01"
+# The Subnet with ID 10 in each coverage configuration holds every recorded lease.
+LEASES: dict[int, list[dict]] = {
+    4: [
+        {
+            "ip-address": "192.0.2.10", "subnet-id": 10, "pool-id": 1,
+            "hw-address": "aa:bb:cc:00:00:10", "client-id": "01:aa:bb:cc:00:00:10",
+            "valid-lft": 3600, "hostname": "host10.example.org", "fqdn-fwd": True, "fqdn-rev": True,
+            "user-context": _NESTED_CONTEXT,
+        },
+        {"ip-address": "192.0.2.11", "subnet-id": 10, "hw-address": "aa:bb:cc:00:00:11", "valid-lft": INFINITE_LIFETIME},
+        {"ip-address": "192.0.2.12", "subnet-id": 10, "hw-address": "", "valid-lft": 86400, "state": STATE["declined"]},
+        {"ip-address": "192.0.2.13", "subnet-id": 10, "hw-address": "aa:bb:cc:00:00:13", "state": STATE["expired-reclaimed"]},
+        {"ip-address": "192.0.2.14", "subnet-id": 10, "hw-address": "aa:bb:cc:00:00:14", "state": STATE["released"]},
+        {"ip-address": "192.0.2.15", "subnet-id": 10, "hw-address": "", "client-id": "ff:00:00:00:15:00:02"},
+    ],
+    6: [
+        {
+            "ip-address": "2001:db8:1::10", "subnet-id": 10, "pool-id": 1, "duid": _DUID, "iaid": 1,
+            "hw-address": "aa:bb:cc:00:00:01", "valid-lft": 3600, "preferred-lft": 1800,
+            "hostname": "host10.example.org", "fqdn-fwd": True, "fqdn-rev": False, "user-context": _NESTED_CONTEXT,
+        },
+        {"ip-address": "2001:db8:1::11", "subnet-id": 10, "duid": _DUID, "iaid": 2, "state": STATE["registered"]},
+        {"ip-address": "2001:db8:1::12", "subnet-id": 10, "duid": "00:00:00", "iaid": 0, "state": STATE["declined"], "preferred-lft": 0},
+        {"ip-address": "2001:db8:1::13", "subnet-id": 10, "duid": _DUID, "iaid": 3, "state": STATE["expired-reclaimed"]},
+        {"ip-address": "2001:db8:1::14", "subnet-id": 10, "duid": _DUID, "iaid": 4, "state": STATE["released"]},
+        {
+            "ip-address": "2001:db8:1::15", "subnet-id": 10, "duid": _DUID, "iaid": 5,
+            "valid-lft": INFINITE_LIFETIME, "preferred-lft": INFINITE_LIFETIME,
+        },
+        {"ip-address": "2001:db8:100:100::", "type": "IA_PD", "prefix-len": 56, "subnet-id": 10, "duid": _DUID, "iaid": 6},
+        {
+            "ip-address": "2001:db8:100:200::", "type": "IA_PD", "prefix-len": 56, "subnet-id": 10,
+            "duid": _DUID, "iaid": 7, "valid-lft": INFINITE_LIFETIME, "preferred-lft": INFINITE_LIFETIME,
+        },
+        {
+            "ip-address": "2001:db8:100:300::", "type": "IA_PD", "prefix-len": 56, "subnet-id": 10,
+            "duid": _DUID, "iaid": 8, "state": STATE["registered"],
+        },
+        {
+            "ip-address": "2001:db8:100:400::", "type": "IA_PD", "prefix-len": 56, "subnet-id": 10,
+            "duid": _DUID, "iaid": 9, "state": STATE["released"],
+        },
+    ],
+}  # fmt: skip
+# Six DHCPv4 leases end on an empty page; ten DHCPv6 leases end on a short page.
+LEASE_PAGE_LIMIT = {4: 3, 6: 4}
+# Each refusal is evidence for a lease value or edit rule; the key names the rule.
+REFUSED_LEASE_CHANGES: dict[int, dict[str, tuple[str, dict]]] = {
+    4: {
+        "missing-hw-address": ("lease4-add", {"ip-address": "192.0.2.20", "subnet-id": 10}),
+        "registered-state": (
+            "lease4-update", {"ip-address": "192.0.2.10", "subnet-id": 10, "hw-address": "aa:bb:cc:00:00:10", "state": STATE["registered"]},
+        ),
+        "fqdn-without-hostname": (
+            "lease4-update",
+            {"ip-address": "192.0.2.10", "subnet-id": 10, "hw-address": "aa:bb:cc:00:00:10", "hostname": "", "fqdn-fwd": True},
+        ),
+    },
+    6: {
+        "temporary-address-kind": (
+            "lease6-add", {"ip-address": "2001:db8:1::20", "type": "IA_TA", "subnet-id": 10, "duid": _DUID, "iaid": 20},
+        ),
+        "declined-delegated-prefix": (
+            "lease6-add",
+            {"ip-address": "2001:db8:100:500::", "type": "IA_PD", "prefix-len": 56, "subnet-id": 10,
+             "duid": _DUID, "iaid": 21, "state": STATE["declined"]},
+        ),
+        "non-canonical-delegated-prefix": (
+            "lease6-add",
+            {"ip-address": "2001:db8:100:501::", "type": "IA_PD", "prefix-len": 56, "subnet-id": 10,
+             "duid": _DUID, "iaid": 22},
+        ),
+    },
+}  # fmt: skip
+
+
 def _run(tool: str, *args: str, check: bool = True) -> str:
     executable = shutil.which(tool)
     if executable is None:
@@ -72,7 +164,12 @@ def _harness_kea_version() -> str:
 
 
 def _command(
-    port: int, name: str, arguments: dict | None = None, *, service: str | None = None, result: int = 0
+    port: int,
+    name: str,
+    arguments: dict | None = None,
+    *,
+    service: str | None = None,
+    result: int | tuple[int, ...] = 0,
 ) -> dict:
     body: dict = {"command": name}
     if service is not None:
@@ -86,7 +183,7 @@ def _command(
     )
     with _OPENER.open(request, timeout=5) as response:
         (reply,) = json.load(response)
-    if reply.get("result") != result:
+    if reply.get("result") not in (result if isinstance(result, tuple) else (result,)):
         raise SystemExit(f"{name} returned an unexpected result: {reply}")
     return reply
 
@@ -105,6 +202,61 @@ def _wait_until_ready(port: int) -> None:
         if time.monotonic() > deadline:
             raise SystemExit(f"Kea on port {port} did not answer within 30 seconds")
         time.sleep(0.5)
+
+
+def _lease_pages(port: int, family: int) -> list[dict]:
+    pages = []
+    cursor = "start"
+    while True:
+        page = _command(
+            port, f"lease{family}-get-page", {"from": cursor, "limit": LEASE_PAGE_LIMIT[family]}, result=(0, 3)
+        )
+        pages.append(page)
+        if page["result"] == 3 or page["arguments"]["count"] < LEASE_PAGE_LIMIT[family]:
+            return pages
+        cursor = page["arguments"]["leases"][-1]["ip-address"]
+
+
+def _renewal(port: int, family: int) -> dict:
+    """Record that an update without ``expire`` renews the lease, and that ``expire`` keeps its time."""
+    if family == 6:
+        return {}
+    lease = {"ip-address": "192.0.2.30", "subnet-id": 10, "hw-address": "aa:bb:cc:00:00:30", "valid-lft": 3600}
+    _command(port, "lease4-add", {**lease, "expire": 2_000_000_000})
+    fresh = _command(port, "lease4-get", {"ip-address": "192.0.2.30"})
+    recorded = {"before": fresh}
+    with_expire = {**fresh["arguments"], "expire": fresh["arguments"]["cltt"] + fresh["arguments"]["valid-lft"]}
+    _command(port, "lease4-update", with_expire)
+    recorded["after-update-with-expire"] = _command(port, "lease4-get", {"ip-address": "192.0.2.30"})
+    _command(port, "lease4-update", fresh["arguments"])
+    recorded["after-update-without-expire"] = _command(port, "lease4-get", {"ip-address": "192.0.2.30"})
+    return {"lease4-update": recorded}
+
+
+def _record_leases(port: int, family: int) -> dict:
+    for lease in LEASES[family]:
+        _command(port, f"lease{family}-add", lease)
+    present = LEASES[family][0]["ip-address"]
+    absent = "192.0.2.99" if family == 4 else "2001:db8:1::99"
+    exact = {
+        "present": _command(port, f"lease{family}-get", {"ip-address": present}),
+        "absent": _command(port, f"lease{family}-get", {"ip-address": absent}, result=3),
+    }
+    if family == 6:
+        prefix = "2001:db8:100:100::"
+        exact["delegated-prefix"] = _command(port, "lease6-get", {"ip-address": prefix, "type": "IA_PD"})
+        exact["delegated-prefix-as-address"] = _command(port, "lease6-get", {"ip-address": prefix}, result=3)
+    refused = {
+        rule: _command(port, command, arguments, result=1)
+        for rule, (command, arguments) in REFUSED_LEASE_CHANGES[family].items()
+    }
+    return {
+        f"lease{family}-get-all": _command(port, f"lease{family}-get-all"),
+        f"lease{family}-get-page": _lease_pages(port, family),
+        f"lease{family}-get": exact,
+        "refused": refused,
+        **_renewal(port, family),
+    }
 
 
 def _record(family: int, version: str) -> None:
@@ -131,6 +283,7 @@ def _record(family: int, version: str) -> None:
                 "present": _command(port, f"network{family}-get", {"name": network}),
                 "absent": _command(port, f"network{family}-get", {"name": "absent"}, result=3),
             },
+            "leases": _record_leases(port, family),
         }
     finally:
         _docker("rm", "-f", container, check=False)

@@ -21,6 +21,7 @@ from netbox_kea.forms import (
 )
 from netbox_kea.models import Server
 from netbox_kea.reservations import ReservationCapabilities, reservation_identifier_types
+from netbox_kea.subnet_catalogue import MAX_SUBNET_ID
 
 
 def _reservation_capabilities(family, identifiers=None):
@@ -96,6 +97,13 @@ class TestLeases4SearchFormValidation(SimpleTestCase):
         form = self._form("subnet_id", "0")
         self.assertFalse(form.is_valid())
 
+    def test_subnet_id_above_the_kea_range_fails(self):
+        for value in (str(MAX_SUBNET_ID + 1), "99999999999999999999"):
+            with self.subTest(value=value):
+                form = self._form("subnet_id", value)
+                self.assertFalse(form.is_valid())
+                self.assertEqual(form.errors["q"], ["Invalid subnet ID."])
+
     def test_subnet_id_negative_fails(self):
         form = self._form("subnet_id", "-1")
         self.assertFalse(form.is_valid())
@@ -103,6 +111,11 @@ class TestLeases4SearchFormValidation(SimpleTestCase):
     def test_subnet_id_non_integer_fails(self):
         form = self._form("subnet_id", "abc")
         self.assertFalse(form.is_valid())
+
+    def test_subnet_id_must_be_ascii_decimal_text(self):
+        form = self._form("subnet_id", "\u0661\u0662")
+        self.assertFalse(form.is_valid())
+        self.assertEqual(form.errors["q"], ["Subnet ID must be an integer."])
 
     def test_valid_client_id(self):
         form = self._form("client_id", "aabb")
@@ -126,7 +139,7 @@ class TestLeases4SearchFormValidation(SimpleTestCase):
         self.assertEqual(form.cleaned_data["page"], 2)
 
     def test_hostname_page_must_be_a_positive_integer(self):
-        for page in ("198.18.0.2", "0", "-1", "1.5"):
+        for page in ("198.18.0.2", "0", "-1", "1.5", "\u0662"):
             with self.subTest(page=page):
                 form = self._form("hostname", "search-host", page=page)
                 self.assertFalse(form.is_valid())

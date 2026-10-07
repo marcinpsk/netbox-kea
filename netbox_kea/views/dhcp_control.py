@@ -41,7 +41,7 @@ class _BaseServerDHCPEnableView(_KeaChangeMixin, generic.ObjectView):
             messages.success(request, f"DHCPv{self.dhcp_version} service re-enabled on {instance}.")
         except KeaException as exc:
             messages.error(request, f"Failed to enable DHCPv{self.dhcp_version}: {kea_error_hint(exc)}")
-        except (requests.RequestException, ValueError):
+        except (requests.RequestException, RuntimeError, ValueError):
             logger.exception("Unexpected error enabling DHCPv%s on server %s", self.dhcp_version, pk)
             messages.error(request, "An internal error occurred.")
         return redirect(reverse("plugins:netbox_kea:server_status", args=[pk]))
@@ -92,7 +92,7 @@ class _BaseServerDHCPDisableView(_KeaChangeMixin, generic.ObjectView):
                 messages.warning(request, f"DHCPv{self.dhcp_version} disabled on {instance}.")
         except KeaException as exc:
             messages.error(request, f"Failed to disable DHCPv{self.dhcp_version}: {kea_error_hint(exc)}")
-        except (requests.RequestException, ValueError):
+        except (requests.RequestException, RuntimeError, ValueError):
             logger.exception("Unexpected error disabling DHCPv%s on server %s", self.dhcp_version, pk)
             messages.error(request, "An internal error occurred.")
         return redirect(reverse("plugins:netbox_kea:server_status", args=[pk]))
