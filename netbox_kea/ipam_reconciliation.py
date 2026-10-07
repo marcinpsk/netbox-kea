@@ -41,12 +41,13 @@ from .leases import LEASE_VARIANTS, Lease
 from .models import IPAMOwnershipLink, IPAMOwnershipSource, Server, SyncConfig, next_confirmation_number
 from .plugin_settings import plugin_setting
 from .pools import Pool
+from .published_name import lease_published_name, reservation_published_name
 from .reservations import TRAVERSAL_DIAGNOSTIC_CODES, InSubnetReservationScope, Reservation, ReservationSnapshot
 from .subnet_catalogue import CatalogueUnavailable
 from .sync import normalized_mac, sync_mac_address
 
 if TYPE_CHECKING:
-    from .subnet_catalogue import CompleteCatalogueSnapshot
+    from .subnet_catalogue import CatalogueSnapshot, CompleteCatalogueSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -200,10 +201,11 @@ class PoolPhase:
 
 @dataclass(frozen=True)
 class ReservationObservation:
-    """A Reservation snapshot and the confirmation cutoff taken before its read."""
+    """A Reservation snapshot, the confirmation cutoff taken before its read, and the catalogue that verified it."""
 
     snapshot: ReservationSnapshot
     cutoff: int
+    catalogue: CatalogueSnapshot
 
 
 @dataclass(frozen=True)
@@ -574,12 +576,15 @@ def claim(
     family: Family,
     records: Sequence[Lease] | Sequence[Reservation] | Sequence[SubnetClaim] | Sequence[PoolClaim],
     force: bool,
+    *,
+    catalogue: CatalogueSnapshot | None = None,
 ) -> ClaimResult:
     """Claim one source's records in the Server's VRF, with per-address outcomes and no stale cleanup.
 
     A call contains one source: leases, Reservations, Subnets or Pools. All records are validated and grouped
-    before any write. Lease masks come from the live Kea Subnet Catalogue. Reservations carry their verified
-    Subnet mask. Network records carry their own canonical network and Pool bounds.
+    before any write. Lease masks come from the Kea Subnet Catalogue. Reservations carry their verified
+    Subnet mask, and the catalogue gives their published names. Network records carry their own canonical network
+    and Pool bounds. *catalogue* is the catalogue that verified the records; None reads a live complete one.
     """
     if family not in (4, 6) or isinstance(family, bool):
         raise ValueError("The address family must be 4 or 6")
@@ -594,11 +599,9 @@ def claim(
     if any(isinstance(record, LEASE_VARIANTS) != lease_records for record in records):
         raise ValueError("A claim takes one source: leases or Reservations, not both")
     source = LEASE if lease_records else RESERVATION
-    subnet_prefix_lengths = {}
-    if lease_records:
+    if catalogue is None:
         catalogue = subnet_catalogue.for_synchronization(server, family)
-        subnet_prefix_lengths = {subnet.subnet_id: subnet.network.prefixlen for subnet in catalogue.subnets}
-    reports = _claim_reports(server, family, address_records, subnet_prefix_lengths)
+    reports = _claim_reports(server, family, address_records, catalogue)
     outcomes = {address: AddressClaim(address, "error") for address in reports}
 
     conflicts: set[str] = set()
@@ -667,9 +670,10 @@ def _claim_reports(
     server: Server,
     family: Family,
     records: Sequence[Lease | Reservation],
-    subnet_prefix_lengths: Mapping[int, int],
+    catalogue: CatalogueSnapshot,
 ) -> dict[str, _Report]:
     """Validate and aggregate one call before acquiring locks or changing objects."""
+    subnet_prefix_lengths = {subnet.subnet_id: subnet.network.prefixlen for subnet in catalogue.subnets}
     reports: dict[str, _Report] = {}
     for record in records:
         if not isinstance(record, Reservation):
@@ -677,15 +681,24 @@ def _claim_reports(
             continue
         if record.family != family:
             raise ValueError("The Reservation does not match the claim family")
-        facts = None
-        mac_addresses: tuple[tuple[str, str], ...] = ()
-        if isinstance(record.scope, InSubnetReservationScope):
-            facts = _Facts(record.hostname, record.scope.subnet.network.prefixlen)
-            if (hardware := record.identity.hardware_address) is not None:
-                mac_addresses = ((hardware, record.hostname),)
-        for address in record.addresses:
-            _add_report(reports, _Report(str(address), facts, mac_addresses))
+        for row in _reservation_rows(record, catalogue):
+            _add_report(reports, row)
     return reports
+
+
+def _reservation_rows(reservation: Reservation, catalogue: CatalogueSnapshot) -> list[_Report]:
+    """Return the reports of the allocation addresses of *reservation*, with its published name.
+
+    A Global Reservation reports its addresses without facts: no IPAM row is written for it (ADR 0002).
+    """
+    facts: _Facts | None = None
+    mac_addresses: tuple[tuple[str, str], ...] = ()
+    if isinstance(reservation.scope, InSubnetReservationScope) and reservation.addresses:
+        hostname = reservation_published_name(reservation, catalogue)
+        facts = _Facts(hostname, reservation.scope.subnet.network.prefixlen)
+        if (hardware := reservation.identity.hardware_address) is not None:
+            mac_addresses = ((hardware, hostname),)
+    return [_Report(str(address), facts, mac_addresses) for address in reservation.addresses]
 
 
 def _lease_report(
@@ -709,8 +722,9 @@ def _lease_report(
             .first()
         )
         prefix_length = prefix.prefix.prefixlen if prefix is not None else address.max_prefixlen
-    mac_addresses = ((lease.hw_address, lease.hostname),) if lease.hw_address else ()
-    return _Report(str(address), _Facts(lease.hostname, prefix_length), mac_addresses)
+    hostname = lease_published_name(lease.hostname)
+    mac_addresses = ((lease.hw_address, hostname),) if lease.hw_address else ()
+    return _Report(str(address), _Facts(hostname, prefix_length), mac_addresses)
 
 
 def reconcile(server: Server, family: Family, phases: Sequence[Phase]) -> SyncReport:
@@ -885,16 +899,15 @@ def _reservation_reports(
 
     reports: dict[str, _Report] = {}
     for reservation in snapshot.records:
-        facts: _Facts | None = None
-        mac_addresses: tuple[tuple[str, str], ...] = ()
-        if isinstance(reservation.scope, InSubnetReservationScope) and reservation.addresses:
-            facts = _Facts(reservation.hostname, reservation.scope.subnet.network.prefixlen)
-            if (hw_address := reservation.identity.hardware_address) is not None:
-                mac_addresses = ((hw_address, reservation.hostname),)
-        else:
+        if not isinstance(reservation.scope, InSubnetReservationScope) or not reservation.addresses:
             report.skipped_reservations.append(reservation)
-        for address in reservation.addresses:
-            _add_report(reports, _Report(str(address), facts, mac_addresses))
+        try:
+            rows = _reservation_rows(reservation, phase.catalogue)
+        except CatalogueUnavailable as exc:
+            report.fail_row(RESERVATION, f"a Reservation of Server {server.name}", exc)
+            continue
+        for row in rows:
+            _add_report(reports, row)
     logger.info(
         "Server %s (v%s): fetched %d Reservations; %d of them are Global or reserve no address",
         server.name,

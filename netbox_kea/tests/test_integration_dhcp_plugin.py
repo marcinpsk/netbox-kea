@@ -69,12 +69,17 @@ def _conf_v6():
     }
 
 
-def _reservation_snapshot(conf: dict, version: Family, hosts: list[dict] | None = None) -> ReservationObservation:
-    """Build the real typed Snapshot used by the optional adapter."""
+def _subnet_entries(conf: dict, version: Family) -> list:
     subnet_key = f"subnet{version}"
     entries = list(conf.get(subnet_key, []))
     for shared_network in conf.get("shared-networks", []):
         entries.extend(shared_network.get(subnet_key, []))
+    return entries
+
+
+def _catalogue(conf: dict, version: Family) -> IncompleteCatalogueSnapshot:
+    """Return the Subnet identities of *conf* with the effective DDNS qualifying suffixes."""
+    entries = _subnet_entries(conf, version)
     # The real parser reads the effective DDNS qualifying suffixes from *conf*.
     configuration = server_configuration.observed_snapshot(Server(pk=1), version, conf)
     suffixes = {
@@ -97,7 +102,7 @@ def _reservation_snapshot(conf: dict, version: Family, hosts: list[dict] | None 
         if isinstance(entry, dict) and entry.get("id") is not None and entry.get("subnet")
     )
     # Identity facts and suffixes only: the import reads no other configuration fact from the catalogue.
-    catalogue = IncompleteCatalogueSnapshot(
+    return IncompleteCatalogueSnapshot(
         server_id=1,
         family=version,
         observed_at=timezone.now(),
@@ -112,6 +117,12 @@ def _reservation_snapshot(conf: dict, version: Family, hosts: list[dict] | None 
         configuration_hash=None,
         global_qualifying_suffix=configuration.ddns_qualifying_suffix,
     )
+
+
+def _reservation_snapshot(conf: dict, version: Family, hosts: list[dict] | None = None) -> ReservationObservation:
+    """Build the real typed Snapshot used by the optional adapter."""
+    entries = _subnet_entries(conf, version)
+    catalogue = _catalogue(conf, version)
     if hosts is None:
         hosts = []
         for entry in entries:
@@ -121,7 +132,9 @@ def _reservation_snapshot(conf: dict, version: Family, hosts: list[dict] | None 
     with stub_kea({"reservation-get-page": _res_page(hosts)}):
         # Bound the page to the fixture so a larger fixture cannot silently truncate.
         cutoff = next_confirmation_number()
-        return ReservationObservation(client.reservation_page(version, catalogue, limit=max(len(hosts), 1)), cutoff)
+        return ReservationObservation(
+            client.reservation_page(version, catalogue, limit=max(len(hosts), 1)), cutoff, catalogue
+        )
 
 
 class TestOptionalMetadataCoordination(TransactionTestCase):
@@ -1053,6 +1066,39 @@ class DhcpPluginReservationSnapshotImportTest(TestCase):
             MACAddress.objects.get(mac_address="aa:bb:cc:dd:ee:11"),
         )
 
+    def test_global_reservation_mac_takes_the_published_name_of_its_subnet(self):
+        """The MAC description takes the published name; the plugin row mirrors the stored Kea hostname."""
+        from dcim.models import MACAddress
+
+        HostReservation = apps.get_model(DHCP_PLUGIN, "HostReservation")
+        conf = {
+            "ddns-qualifying-suffix": "dhcp.example.com",
+            "subnet4": [{"id": 7, "subnet": "10.12.0.0/24", "ddns-qualifying-suffix": "lab.example.com."}],
+        }
+        hosts = [
+            {"subnet-id": 0, "hw-address": "aa:bb:cc:dd:ee:12", "ip-address": "10.12.0.9", "hostname": "in-subnet"},
+            {"subnet-id": 0, "hw-address": "aa:bb:cc:dd:ee:13", "ip-address": "10.13.0.9", "hostname": "outside"},
+            {"subnet-id": 0, "hw-address": "aa:bb:cc:dd:ee:14", "hostname": "Host.example.org."},
+        ]
+        summary = self.adapter.import_server_config(
+            self.server, parse_dhcp_config(conf, 4), _reservation_snapshot(conf, 4, hosts)
+        )
+
+        self.assertEqual(summary.errors, 0, summary.warnings)
+        for hardware, published in (
+            ("aa:bb:cc:dd:ee:12", "in-subnet.lab.example.com"),
+            ("aa:bb:cc:dd:ee:13", "outside.dhcp.example.com"),
+            ("aa:bb:cc:dd:ee:14", "host.example.org"),
+        ):
+            with self.subTest(hardware=hardware):
+                self.assertEqual(
+                    MACAddress.objects.get(mac_address=hardware).description, f"dhcp_hostname: {published}"
+                )
+        self.assertEqual(
+            sorted(HostReservation.objects.values_list("hostname", flat=True)),
+            ["Host.example.org.", "in-subnet", "outside"],
+        )
+
     def test_dual_stack_global_reservations_keep_separate_rows(self):
         """One identifier reserved globally in both protocols is two Reservations, not one.
 
@@ -1457,7 +1503,11 @@ class ImportSummaryCompletenessTest(TestCase):
         from netbox_kea.integrations.dhcp_plugin import ImportSummary, import_reservation_snapshot
 
         summary = ImportSummary()
-        observation = ReservationObservation(snapshot, next_confirmation_number()) if snapshot is not None else None
+        observation = (
+            ReservationObservation(snapshot, next_confirmation_number(), _catalogue({}, 4))
+            if snapshot is not None
+            else None
+        )
         import_reservation_snapshot(_make_db_server(), None, observation, None, summary)
         return summary
 

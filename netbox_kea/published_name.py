@@ -7,6 +7,14 @@ This module is the one owner of Kea's rule. The Reservation forms, the preview a
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+from .reservations import InSubnetReservationScope
+
+if TYPE_CHECKING:
+    from .reservations import Reservation
+    from .subnet_catalogue import CatalogueSnapshot
+
 
 def _suffix_present(name: str, suffix: str) -> bool:
     """Return whether *name* ends in *suffix* at a label boundary, compared as Kea compares them."""
@@ -53,3 +61,21 @@ def stored_hostname(name: str, suffix: str) -> str:
 def lease_published_name(hostname: str) -> str:
     """Return the published name of a lease: Kea stores the published name, with a trailing dot from an FQDN."""
     return hostname.removesuffix(".")
+
+
+def reservation_published_name(reservation: Reservation, catalogue: CatalogueSnapshot) -> str:
+    """Return the published name of *reservation* under the effective suffix of its scope in *catalogue*.
+
+    A Global Reservation takes the suffix of the Subnet that contains its first address, else the global suffix.
+
+    Raises:
+        CatalogueUnavailable: When *catalogue* does not show the suffix of a Reservation that has a hostname.
+
+    """
+    if not reservation.hostname:
+        return ""
+    if isinstance(reservation.scope, InSubnetReservationScope):
+        suffix = catalogue.subnet_qualifying_suffix(reservation.scope.subnet)
+    else:
+        suffix = catalogue.address_qualifying_suffix(reservation.addresses[0] if reservation.addresses else None)
+    return published_name(reservation.hostname, suffix)
