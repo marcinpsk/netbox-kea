@@ -312,9 +312,11 @@ When a rule below has a matching opengrep rule, a violation fails the local hook
 - **Always pass `version=` to `server.get_client()`** when the DHCP version is known
   (`server.get_client(version=self.dhcp_version)`). Omitting it falls back to
   `ca_url` even when a protocol-specific URL is configured.
-- **Always call `server.get_client()` inside a try block** — client creation can
-  raise `ValueError` / `requests.RequestException` on bad config or connectivity.
-  Never call it at module/class level or before error handling is in scope.
+- **Always call `server.get_client()` inside a try block** — client creation raises
+  `ValueError` on bad config and sends no request. A try block around `get_client()` alone
+  catches `ValueError` only. Request errors come from the Kea calls, so the "Catch" rule
+  below covers those calls. Never call it at module/class level or before error handling
+  is in scope.
 - **Validate Kea response shape before indexing.** After `client.command()`, check
   `resp` is a non-empty list and `resp[0]` is a dict before reading
   `resp[0]["arguments"]`; check nested keys (`"leases"`, `"subnet4"`, …) are lists
