@@ -604,10 +604,25 @@ def claim(
     conflicts: set[str] = set()
 
     def apply(row: _Report) -> AddressClaim:
-        before_write = (lambda: _require_one_mac_each(row)) if source == RESERVATION else None
-        outcome = _claim(server, family, source, row, force=force, conflicts=conflicts, before_write=before_write)
+        checked = False
+
+        def before_write() -> None:
+            nonlocal checked
+            _require_one_mac_each(row)
+            checked = True
+
+        required = source == RESERVATION
+        outcome = _claim(
+            server,
+            family,
+            source,
+            row,
+            force=force,
+            conflicts=conflicts,
+            before_write=before_write if required else None,
+        )
         ip = IPAddress.objects.filter(vrf_id=server.sync_vrf_id, address__net_host=row.address).first()
-        resolved_macs = {} if outcome == "conflict" else _sync_row_macs(row, required=source == RESERVATION)
+        resolved_macs = {} if outcome == "conflict" else _sync_row_macs(row, required=required, checked=checked)
         if row.facts is None and not row.disagreement and outcome == "unchanged":
             if ip is not None and not _is_owned_description(ip.description):
                 return AddressClaim(row.address, "conflict", ip)
@@ -627,13 +642,16 @@ def _require_one_mac_each(row: _Report) -> None:
             mac = normalized_mac(hardware)
         except AddrFormatError as exc:
             raise _RowRefused("The required hardware address is not an EUI-48 or EUI-64 address") from exc
-        if MACAddress.objects.filter(mac_address=mac).count() > 1:
+        if len(MACAddress.objects.filter(mac_address=mac).values_list("pk", flat=True)[:2]) > 1:
             raise _RowRefused("NetBox has more than one MAC address row for the required hardware address")
 
 
-def _sync_row_macs(row: _Report, *, required: bool) -> dict[tuple[str, str], MACAddress]:
-    """Synchronize the MAC rows of *row*; a required one that does not resolve refuses the row."""
-    if required:
+def _sync_row_macs(row: _Report, *, required: bool, checked: bool) -> dict[tuple[str, str], MACAddress]:
+    """Synchronize the MAC rows of *row*; a required one that does not resolve refuses the row.
+
+    *checked* is true when the claim already ran the duplicate check before its IP address write.
+    """
+    if required and not checked:
         _require_one_mac_each(row)
     resolved = {}
     for hardware, hostname in row.mac_addresses:
