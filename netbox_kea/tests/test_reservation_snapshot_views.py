@@ -849,6 +849,14 @@ class TestLeaseReservationIdentityMatching(_ViewTestBase):
         self.assertIn("/reservations4/add/", row["create_reservation_url"])
         self.assertIn("subnet_cidr=198.18.0.0%2F24", row["create_reservation_url"])
 
+    def test_the_create_action_prefills_the_published_name_of_the_lease(self):
+        # An FQDN lease keeps the trailing dot; the Reservation form takes the name without it.
+        self.lease = {**self.lease, "hostname": "lease.example.invalid."}
+        response = self._get(queued({"result": 3}, {"result": 3}, {"result": 3}))
+
+        url = response.context["table"].data.data[0]["create_reservation_url"]
+        self.assertEqual(parse_qs(urlsplit(url).query)["hostname"], ["lease.example.invalid"])
+
     def test_unavailable_host_commands_do_not_offer_a_false_create_action(self):
         response = self._get({"result": 2, "text": "command not supported"})
 
