@@ -49,6 +49,14 @@ class _PublishedNameViewTest(_ViewTestBase):
         for family in (4, 6):
             server_configuration.invalidate(self.server, family)
 
+    def _url(self, family: int, subnet_id: int) -> str:
+        url = reverse(f"plugins:netbox_kea:server_reservation{family}_edit", args=[self.server.pk, subnet_id])
+        return f"{url}?{urlencode({'identifier_type': 'hw-address', 'identifier': _HW})}"
+
+    def _open(self, family: int, subnet_id: int, stored: str):
+        with stub_kea({**_recorded(family), "reservation-get": _res_get(_stored(subnet_id, stored))}):
+            return self.client.get(self._url(family, subnet_id))
+
     def _form_data(self, family: int, subnet_id: int, hostname: str, **extra: str) -> dict[str, str]:
         return {
             "subnet_cidr": _SUBNETS[family][subnet_id],
@@ -94,14 +102,6 @@ class TestReservationAddPublishedName(_PublishedNameViewTest):
 
 
 class TestReservationEditPublishedName(_PublishedNameViewTest):
-    def _url(self, family: int, subnet_id: int) -> str:
-        url = reverse(f"plugins:netbox_kea:server_reservation{family}_edit", args=[self.server.pk, subnet_id])
-        return f"{url}?{urlencode({'identifier_type': 'hw-address', 'identifier': _HW})}"
-
-    def _open(self, family: int, subnet_id: int, stored: str):
-        with stub_kea({**_recorded(family), "reservation-get": _res_get(_stored(subnet_id, stored))}):
-            return self.client.get(self._url(family, subnet_id))
-
     def _save(self, family: int, subnet_id: int, stored: str, entered: str, *, form_page=None, config_get=None):
         form_page = form_page or self._open(family, subnet_id, stored)
         current = _stored(subnet_id, stored)
@@ -201,7 +201,10 @@ class TestReservationEditPublishedName(_PublishedNameViewTest):
         response, kea = self._save(4, 21, "host", "host.office.example.org", form_page=form_page, config_get=changed)
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("reservation-update", kea.commands())
-        self.assertContains(response, "DDNS qualifying suffix")
+        self.assertIn(
+            "The DDNS qualifying suffix of the Subnet changed after the edit form was opened.",
+            " ".join(response.context["form"].non_field_errors()),
+        )
 
     def test_an_unknown_suffix_does_not_open_the_form_of_a_named_reservation(self):
         with stub_kea(
@@ -214,3 +217,73 @@ class TestReservationEditPublishedName(_PublishedNameViewTest):
             response = self.client.get(self._url(4, 21))
         self.assertEqual(response.status_code, 302)
         self.assertNotIn("reservation-update", kea.commands())
+
+
+class TestPublishedNamePreview(_PublishedNameViewTest):
+    """The preview endpoint renders the name that Kea publishes, from the cached Subnet Catalogue."""
+
+    def _preview(self, family: int, **params: str):
+        url = reverse(f"plugins:netbox_kea:server_reservation{family}_published_name", args=[self.server.pk])
+        return self.client.get(url, params, headers={"HX-Request": "true"})
+
+    def test_the_preview_shows_the_published_name(self):
+        for family in (4, 6):
+            for subnet_id, entered, published in (
+                (21, "printer", "printer.office.example.org"),
+                (21, "web.example.com", "web.example.com"),
+                (21, "DB.Office.Example.org.", "db.office.example.org"),
+                (20, "printer", "printer.office.example.net"),
+                (10, "printer", "printer"),
+            ):
+                with self.subTest(family=family, subnet_id=subnet_id, entered=entered), stub_kea(_recorded(family)):
+                    response = self._preview(family, subnet_cidr=_SUBNETS[family][subnet_id], hostname=entered)
+                    self.assertEqual(response.status_code, 200)
+                    self.assertEqual(response.context["published"], published)
+                    self.assertContains(response, f"<code>{published}</code>", html=False)
+
+    def test_the_preview_reads_the_cached_catalogue(self):
+        with stub_kea(_recorded(4)) as kea:
+            self._preview(4, subnet_cidr=_SUBNETS[4][21], hostname="printer")
+            commands = kea.commands()
+            response = self._preview(4, subnet_cidr=_SUBNETS[4][20], hostname="printer")
+            self.assertEqual(kea.commands(), commands)
+        self.assertEqual(response.context["published"], "printer.office.example.net")
+
+    def test_the_preview_without_a_name_or_a_known_subnet(self):
+        with stub_kea(_recorded(4)):
+            self.assertEqual(self._preview(4, subnet_cidr=_SUBNETS[4][21], hostname="").content.strip(), b"")
+            for cidr in ("203.0.113.0/24", "not-a-subnet", ""):
+                with self.subTest(cidr=cidr):
+                    response = self._preview(4, subnet_cidr=cidr, hostname="printer")
+                    self.assertEqual(response.status_code, 200)
+                    self.assertNotIn("published", response.context)
+                    self.assertContains(response, "Enter a Subnet of this server")
+
+    def test_an_unknown_suffix_says_so(self):
+        with stub_kea({**_recorded(4), "config-get": RuntimeError("config-get failed")}):
+            response = self._preview(4, subnet_cidr=_SUBNETS[4][21], hostname="printer")
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("published", response.context)
+        self.assertContains(response, "The DDNS qualifying suffix of this Subnet is unknown")
+
+    def test_the_preview_needs_the_change_permission(self):
+        from django.contrib.contenttypes.models import ContentType
+        from users.models import ObjectPermission
+
+        self.user.is_superuser = False
+        self.user.save()
+        permission = ObjectPermission.objects.create(name="view-published-name-server", actions=["view"])
+        permission.object_types.add(ContentType.objects.get_for_model(type(self.server)))
+        permission.users.add(self.user)
+        with stub_kea(_recorded(4)) as kea:
+            response = self._preview(4, subnet_cidr=_SUBNETS[4][21], hostname="printer")
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(kea.commands(), [])
+
+    def test_the_forms_request_the_preview(self):
+        preview = reverse("plugins:netbox_kea:server_reservation4_published_name", args=[self.server.pk])
+        with stub_kea(_recorded(4)):
+            add = self.client.get(reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk]))
+        self.assertContains(add, f'hx-get="{preview}"')
+        edit = self._open(4, 21, "host")
+        self.assertContains(edit, f'hx-get="{preview}?{urlencode({"subnet_cidr": _SUBNETS[4][21]})}"')

@@ -1,0 +1,11 @@
+{# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com> #}
+{# SPDX-License-Identifier: Apache-2.0 #}
+{% if hostname %}
+  {% if published %}
+    Kea publishes <code>{{ published }}</code>{% if suffix %} with the DDNS qualifying suffix <code>{{ suffix }}</code>{% endif %}.
+  {% elif subnet_known %}
+    <span class="text-warning">The DDNS qualifying suffix of this Subnet is unknown, so the published name cannot be shown.</span>
+  {% else %}
+    Enter a Subnet of this server to see the name that Kea publishes.
+  {% endif %}
+{% endif %}
