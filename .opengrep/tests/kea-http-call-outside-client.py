@@ -42,5 +42,5 @@ def good_exception_handler(server, family):
     try:
         return server.get_client(version=family).command(KeaCommand.VERSION_GET, family)
     # ok: kea-http-call-outside-client
-    except requests.RequestException:
+    except (requests.RequestException, RuntimeError):
         return None
