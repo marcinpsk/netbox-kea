@@ -628,7 +628,9 @@ class _ReservationEditView(_ReservationMutationView):
     ) -> HttpResponse:
         # The Subnet field is disabled, so the preview request carries the Subnet in its URL.
         query = urlencode({"subnet_cidr": form.initial["subnet_cidr"]})
-        return super()._render(request, server, form, options_formset, capabilities, published_name_query=query)
+        return super()._render(
+            request, server, form, options_formset, capabilities, published_name_query=query, **context
+        )
 
     def get(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         server = self.get_object(pk=pk)
