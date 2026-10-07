@@ -1740,6 +1740,7 @@ def _verified_subnet(cidr="10.0.0.0/24", pools=("10.0.0.10-10.0.0.20",), *, conf
         configuration=facts if configuration else None,
         shared_network=None,
         membership_known=True,
+        qualifying_suffix="" if configuration else None,
     )
 
 
