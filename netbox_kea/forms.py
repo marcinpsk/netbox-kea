@@ -659,6 +659,11 @@ def _identifier_type_choices(version: Family) -> list[tuple[str, str]]:
     return list(reservation_identifier_choices(version))
 
 
+_RESERVATION_HOSTNAME_HELP = (
+    "The name that clients get, for example <code>host.example.com</code>."
+    " Kea adds the DDNS qualifying suffix of the Subnet to a single label."
+    " Leave blank to reserve no hostname."
+)
 _IDENTIFIER_TYPE_CHOICES_V4 = _identifier_type_choices(4)
 _IDENTIFIER_TYPE_CHOICES_V6 = _identifier_type_choices(6)
 
@@ -740,7 +745,7 @@ class Reservation4Form(_SyncToNetBoxForm):
     hostname = forms.CharField(
         label="Hostname",
         required=False,
-        help_text="Optional hostname to assign with this reservation.",
+        help_text=_RESERVATION_HOSTNAME_HELP,
     )
     sync_to_netbox = forms.BooleanField(
         label="Sync to NetBox IPAM",
@@ -841,7 +846,7 @@ class Reservation6Form(_SyncToNetBoxForm):
     hostname = forms.CharField(
         label="Hostname",
         required=False,
-        help_text="Optional hostname to assign with this reservation.",
+        help_text=_RESERVATION_HOSTNAME_HELP,
     )
     sync_to_netbox = forms.BooleanField(
         label="Sync to NetBox IPAM",

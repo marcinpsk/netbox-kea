@@ -24,8 +24,10 @@ from ..ipam_reconciliation import RESERVATION, claim, claim_permissions
 from ..kea import KeaClient, KeaException
 from ..models import Server
 from ..pools import addresses_in_pools
+from ..published_name import published_name, stored_hostname
 from ..reservations import (
     ClearValue,
+    FieldChange,
     InSubnetReservationScope,
     IPv4Reservation,
     IPv6Reservation,
@@ -166,7 +168,7 @@ def _options_initial(reservation: Reservation) -> list[dict[str, Any]]:
     ]
 
 
-def _signed_fingerprint(reservation: Reservation) -> str:
+def _signed_fingerprint(reservation: Reservation, suffix: str | None) -> str:
     scope = _in_subnet_scope(reservation)
     return signing.dumps(
         {
@@ -175,13 +177,40 @@ def _signed_fingerprint(reservation: Reservation) -> str:
             "identifier_type": reservation.identity.identifier_type,
             "identifier": reservation.identity.value,
             "fingerprint": reservation_fingerprint(reservation),
+            # The form shows the published name under this suffix.
+            "qualifying_suffix": suffix,
         },
         salt=_FINGERPRINT_SALT,
         compress=True,
     )
 
 
-def _fingerprint_from_post(token: str, reservation: Reservation) -> str:
+def _shown_suffix(reservation: Reservation, catalogue: CatalogueSnapshot) -> str | None:
+    """Return the suffix under which the edit form shows the hostname of *reservation*; None without a hostname."""
+    if not reservation.hostname:
+        return None
+    return catalogue.subnet_qualifying_suffix(_in_subnet_scope(reservation).subnet)
+
+
+def _hostname_change(
+    current: Reservation, entered: str, shown_suffix: str | None, catalogue: CatalogueSnapshot
+) -> FieldChange[str]:
+    """Return the hostname change that makes Kea publish the *entered* name under the live suffix.
+
+    A name that publishes the same name as the current hostname leaves the stored hostname unchanged.
+    """
+    if not current.hostname and not entered:
+        return Unchanged()
+    suffix = catalogue.subnet_qualifying_suffix(_in_subnet_scope(current).subnet)
+    if current.hostname and shown_suffix != suffix:
+        raise ReservationConflict("The DDNS qualifying suffix of the Subnet changed after the edit form was opened.")
+    stored = stored_hostname(entered, suffix)
+    if published_name(stored, suffix) == published_name(current.hostname, suffix):
+        return Unchanged()
+    return _change(current.hostname, stored, "")
+
+
+def _payload_from_post(token: str, reservation: Reservation) -> dict[str, Any]:
     try:
         payload = signing.loads(token, salt=_FINGERPRINT_SALT, max_age=86_400)
     except signing.BadSignature as exc:
@@ -196,9 +225,12 @@ def _fingerprint_from_post(token: str, reservation: Reservation) -> str:
     if not isinstance(payload, dict) or any(payload.get(key) != value for key, value in target.items()):
         raise ReservationConflict("The edit fingerprint does not match this Reservation.")
     fingerprint = payload.get("fingerprint")
-    if not isinstance(fingerprint, str) or not fingerprint:
+    suffix = payload.get("qualifying_suffix")
+    if not isinstance(fingerprint, str) or not fingerprint or not isinstance(suffix, str | None):
         raise ReservationConflict("The edit fingerprint is invalid.")
-    return fingerprint
+    if fingerprint != reservation_fingerprint(reservation):
+        raise ReservationConflict("The Reservation changed after the edit form was opened.")
+    return payload
 
 
 def _identity_from_request(request: HttpRequest, version: Family) -> ReservationIdentity:
@@ -505,6 +537,9 @@ class _ReservationAddView(_ReservationMutationView):
                 raise RuntimeError("The Subnet Catalogue is unavailable.")
             scope = InSubnetReservationScope(subnet.identity)
             identity = ReservationIdentity(cleaned_data["identifier_type"], cleaned_data["identifier"])
+            hostname = cleaned_data.get("hostname", "")
+            if hostname:
+                hostname = stored_hostname(hostname, catalogue.subnet_qualifying_suffix(subnet.identity))
             if self.dhcp_version == 4:
                 ipv4_addresses = (
                     (ipaddress.IPv4Address(cleaned_data["ip_address"]),) if cleaned_data.get("ip_address") else ()
@@ -513,7 +548,7 @@ class _ReservationAddView(_ReservationMutationView):
                     scope=scope,
                     identity=identity,
                     addresses=ipv4_addresses,
-                    hostname=cleaned_data.get("hostname", ""),
+                    hostname=hostname,
                     options=options,
                 )
             else:
@@ -530,7 +565,7 @@ class _ReservationAddView(_ReservationMutationView):
                     identity=identity,
                     addresses=ipv6_addresses,
                     delegated_prefixes=ipv6_prefixes,
-                    hostname=cleaned_data.get("hostname", ""),
+                    hostname=hostname,
                     options=options,
                 )
             _warn_addresses_in_pools(request, subnet, reservation.addresses)
@@ -546,12 +581,13 @@ class _ReservationEditView(_ReservationMutationView):
         identity = _identity_from_request(request, self.dhcp_version)
         try:
             reservation = _load_target(server, self.dhcp_version, subnet_id, identity)
+            suffix = _shown_suffix(reservation, subnet_catalogue.display(server, self.dhcp_version))
         except (KeaException, requests.RequestException, RuntimeError, ValueError):
             logger.exception("Could not load the Reservation edit target")
             messages.error(request, "The Reservation could not be loaded. See server logs.")
             return redirect(self._return_url(server))
         capabilities = _configured_capabilities(server, self.dhcp_version)
-        form = self._form_for(reservation, capabilities)
+        form = self._form_for(reservation, suffix, capabilities)
         return self._render(
             request,
             server,
@@ -576,7 +612,7 @@ class _ReservationEditView(_ReservationMutationView):
             ):
                 form = self.form_class(
                     data=request.POST,
-                    initial=self._initial(current),
+                    initial=self._initial(current, _shown_suffix(current, catalogue)),
                     capabilities=capabilities,
                     sync_refusal=self._sync_refusal(),
                 )
@@ -585,11 +621,16 @@ class _ReservationEditView(_ReservationMutationView):
                 options_formset, options_valid = _build_reservation_options_formset(request.POST)
                 if form.is_valid() and options_valid:
                     try:
-                        fingerprint = _fingerprint_from_post(form.cleaned_data["managed_fingerprint"], current)
+                        payload = _payload_from_post(form.cleaned_data["managed_fingerprint"], current)
                         change = self._change(
-                            current, form.cleaned_data, _options_from_formset(options_formset, current.options)
+                            current,
+                            form.cleaned_data,
+                            _options_from_formset(options_formset, current.options),
+                            _hostname_change(
+                                current, form.cleaned_data.get("hostname", ""), payload["qualifying_suffix"], catalogue
+                            ),
                         )
-                        result = client.reservation_change(current, fingerprint, change, catalogue)
+                        result = client.reservation_change(current, payload["fingerprint"], change, catalogue)
                         _confirmed_side_effects(
                             request,
                             server,
@@ -616,14 +657,14 @@ class _ReservationEditView(_ReservationMutationView):
             return redirect(return_url)
         return self._render(request, server, form, options_formset, capabilities)
 
-    def _initial(self, reservation: Reservation) -> dict[str, Any]:
+    def _initial(self, reservation: Reservation, suffix: str | None) -> dict[str, Any]:
         scope = _in_subnet_scope(reservation)
         initial = {
             "subnet_cidr": scope.subnet.cidr,
             "identifier_type": reservation.identity.identifier_type,
             "identifier": reservation.identity.value,
-            "hostname": reservation.hostname,
-            "managed_fingerprint": _signed_fingerprint(reservation),
+            "hostname": published_name(reservation.hostname, suffix or ""),
+            "managed_fingerprint": _signed_fingerprint(reservation, suffix),
         }
         if reservation.family == 4:
             initial["ip_address"] = str(reservation.addresses[0]) if reservation.addresses else ""
@@ -632,9 +673,9 @@ class _ReservationEditView(_ReservationMutationView):
             initial["prefixes"] = ",".join(str(prefix) for prefix in reservation.delegated_prefixes)
         return initial
 
-    def _form_for(self, reservation: Reservation, capabilities: ReservationCapabilities | None):
+    def _form_for(self, reservation: Reservation, suffix: str | None, capabilities: ReservationCapabilities | None):
         form = self.form_class(
-            initial=self._initial(reservation), capabilities=capabilities, sync_refusal=self._sync_refusal()
+            initial=self._initial(reservation, suffix), capabilities=capabilities, sync_refusal=self._sync_refusal()
         )
         for field in ("subnet_cidr", "identifier_type", "identifier"):
             form.fields[field].disabled = True
@@ -645,6 +686,7 @@ class _ReservationEditView(_ReservationMutationView):
         current: Reservation,
         cleaned_data: dict[str, Any],
         options: tuple[DHCPOption, ...],
+        hostname: FieldChange[str],
     ) -> ReservationChange:
         addresses: tuple[ipaddress.IPv4Address | ipaddress.IPv6Address, ...]
         prefixes: tuple[ipaddress.IPv6Network, ...]
@@ -661,7 +703,7 @@ class _ReservationEditView(_ReservationMutationView):
         return ReservationChange(
             addresses=_change(current.addresses, addresses, ()),
             delegated_prefixes=_change(current.delegated_prefixes, prefixes, ()),
-            hostname=_change(current.hostname, cleaned_data.get("hostname", ""), ""),
+            hostname=hostname,
             options=_change(current.options, options, ()),
         )
 
