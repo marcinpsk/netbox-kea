@@ -876,7 +876,8 @@ def _upsert_reservation(reservation, subnet_obj, server, dhcp_server, custom_def
                     # Newly adopted: take the family-qualified name so the other family is free
                     # to create its own row under the unique-name constraint.
                     obj.name = _reservation_name(scope_name, reservation)
-            obj.hostname = reservation.hostname or None
+            # The DHCP row mirrors the stored Kea hostname, not the published name.
+            obj.hostname = reservation.hostname or None  # nosemgrep: kea-sync-hostname-unpublished
             _apply_reservation_identifier(obj, reservation, mac_obj)
             # One row holds one family. _reservation_addresses returns the other
             # family empty, which also splits a row an earlier import merged.
