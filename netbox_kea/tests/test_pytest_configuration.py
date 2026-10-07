@@ -2776,14 +2776,36 @@ def test_the_setup_script_copies_the_ca_bundle_into_the_build_project():
         assert (sandbox / "tests/docker/host_ca.crt").read_text() == bundle.read_text()
 
 
+def _secret_source_is_inside_the_compose_project(source: str) -> bool:
+    expanded = _expand(source, {})
+    path = Path(expanded)
+    # Path("") is the project directory itself, so an unset ${NAME} would pass the containment check.
+    return (
+        bool(expanded)
+        and not path.is_absolute()
+        and (_COMPOSE_FILE.parent / path).resolve().is_relative_to(_COMPOSE_FILE.parent)
+    )
+
+
+@pytest.mark.parametrize(
+    ("source", "inside"),
+    [
+        ("./host_ca.crt", True),
+        ("${UNSET_CA_FILE}", False),
+        ("${UNSET_CA_FILE:-/etc/ssl/ca.pem}", False),
+        ("../host_ca.crt", False),
+    ],
+)
+def test_a_compose_secret_source_must_name_a_file_inside_the_project(source, inside):
+    assert _secret_source_is_inside_the_compose_project(source) is inside
+
+
 def test_every_compose_build_secret_is_inside_the_compose_project():
     compose = yaml.safe_load(_COMPOSE_FILE.read_text())
     sources = {name: secret["file"] for name, secret in compose.get("secrets", {}).items() if "file" in secret}
     assert sources, "The compose stack declares no file secret; this guard reads nothing."
     for name, source in sources.items():
-        path = Path(_expand(source, {}))
-        resolved = (_COMPOSE_FILE.parent / path).resolve()
-        assert not path.is_absolute() and resolved.is_relative_to(_COMPOSE_FILE.parent), (
+        assert _secret_source_is_inside_the_compose_project(source), (
             f"Secret {name} reads {source}, outside {_COMPOSE_FILE.parent.relative_to(REPOSITORY_ROOT)}. "
             "Copy the file into the project in tests/test_setup.sh."
         )
