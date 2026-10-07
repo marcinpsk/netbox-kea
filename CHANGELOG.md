@@ -13,6 +13,41 @@ forked, and predate its conventional-commit history.
 
 <!-- version list -->
 
+## v1.14.0 (2026-10-07)
+
+### Bug Fixes
+
+- Resolve branch control targets without the script prefix
+  ([`fb5175f`](https://github.com/marcinpsk/netbox-kea/commit/fb5175f9acf10d6b3941486da3f0f8802aa47eb9))
+
+- Show a pending reservation on a lease, not Reserved
+  ([`07a46fe`](https://github.com/marcinpsk/netbox-kea/commit/07a46fe40d494c448f8419b88a062cc08964a4fb))
+
+### Continuous Integration
+
+- Copy the CA bundle into the compose project for the build secret
+  ([`522ba29`](https://github.com/marcinpsk/netbox-kea/commit/522ba29ff5e9f816b53cfef5df95f5dcc8549068))
+
+### Documentation
+
+- Separate the D12 completion note from the snapshot() follow-up
+  ([`484e969`](https://github.com/marcinpsk/netbox-kea/commit/484e969c7e86acb8acc62ac4fa0d610e2d4f08fa))
+
+- State that get_client() raises ValueError only
+  ([`a3b4715`](https://github.com/marcinpsk/netbox-kea/commit/a3b4715be9d68b74178271b154db07cb434057ae))
+
+### Testing
+
+- Count every runtime snapshot in the documented inventory check
+  ([`2ad984d`](https://github.com/marcinpsk/netbox-kea/commit/2ad984d2d51be45a1d08603ada0abae33b9df18d))
+
+- Match branching job test paths at a path boundary
+  ([`bfcb8bc`](https://github.com/marcinpsk/netbox-kea/commit/bfcb8bc54b931728b7b0a0f171a283842e8fe0d9))
+
+- Reject a compose secret source that expands to an empty path
+  ([`e0acf7a`](https://github.com/marcinpsk/netbox-kea/commit/e0acf7aa135dccb292dffd550983c61bb2ed161a))
+
+
 ## v1.13.0 (2026-10-05)
 
 ### Bug Fixes
