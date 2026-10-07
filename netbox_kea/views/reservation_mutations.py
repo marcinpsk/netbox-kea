@@ -214,7 +214,8 @@ def _hostname_change(
     """
     if not current.hostname and not entered:
         return Unchanged()
-    if current.hostname and shown_suffix != _shown_suffix(current, catalogue):
+    # The token holds no suffix when the form showed no hostname; reservation_change() refuses a changed Reservation.
+    if current.hostname and shown_suffix is not None and shown_suffix != _shown_suffix(current, catalogue):
         raise ReservationConflict("The DDNS qualifying suffix of the Subnet changed after the edit form was opened.")
     suffix = catalogue.subnet_qualifying_suffix(_in_subnet_scope(current).subnet, _first_address(addresses))
     stored = stored_hostname(entered, suffix)
@@ -250,8 +251,6 @@ def _payload_from_post(token: str, reservation: Reservation) -> dict[str, Any]:
     suffix = payload.get("qualifying_suffix")
     if not isinstance(fingerprint, str) or not fingerprint or not isinstance(suffix, str | None):
         raise ReservationConflict("The edit fingerprint is invalid.")
-    if fingerprint != reservation_fingerprint(reservation):
-        raise ReservationConflict("The Reservation changed after the edit form was opened.")
     return payload
 
 
@@ -426,7 +425,8 @@ def _published_name_preview(
         return {"subnet_known": True}
     return {
         "subnet_known": True,
-        "suffix": suffix,
+        # Display only: the configured value can end in a dot.
+        "suffix": suffix.removesuffix("."),
         "published": published_name(stored_hostname(hostname, suffix), suffix),
     }
 
@@ -755,7 +755,8 @@ class _ReservationEditView(_ReservationMutationView):
             "subnet_cidr": scope.subnet.cidr,
             "identifier_type": reservation.identity.identifier_type,
             "identifier": reservation.identity.value,
-            "hostname": published_name(reservation.hostname, suffix or ""),
+            # A Reservation without a hostname has no suffix to show.
+            "hostname": "" if suffix is None else published_name(reservation.hostname, suffix),
             "managed_fingerprint": _signed_fingerprint(reservation, suffix),
         }
         if reservation.family == 4:
