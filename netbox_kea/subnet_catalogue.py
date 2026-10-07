@@ -522,7 +522,7 @@ def _observe_once(
 def _catalogue_client(server: Server, family: Family) -> KeaClient | None:
     try:
         return server.get_client(version=family)
-    except (KeaException, requests.RequestException, ValueError):
+    except ValueError:
         logger.warning("Could not create a Kea client for the Subnet Catalogue", exc_info=True)
         return None
 

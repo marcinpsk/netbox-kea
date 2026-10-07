@@ -261,7 +261,7 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
         state_filter: int | None = form.cleaned_data.get("state")
         try:
             client = instance.get_client(version=self.dhcp_version)
-        except (ValueError, requests.RequestException):
+        except ValueError:
             logger.exception("Failed to create Kea client for server %s", instance.pk)
             messages.error(request, "Failed to connect to Kea: see server logs.")
             return redirect(request.path)
@@ -277,12 +277,8 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
             logger.exception("Failed to fetch leases for export on server %s", instance.pk)
             messages.error(request, kea_error_hint(exc))
             return redirect(request.path)
-        except (requests.RequestException, ValueError):
+        except (requests.RequestException, RuntimeError, ValueError):
             logger.exception("Transport/parse error fetching leases for export on server %s", instance.pk)
-            messages.error(request, "Failed to fetch leases for export; see server logs.")
-            return redirect(request.path)
-        except RuntimeError:
-            logger.exception("Unexpected error fetching leases for export on server %s", instance.pk)
             messages.error(request, "Failed to fetch leases for export; see server logs.")
             return redirect(request.path)
 
@@ -597,7 +593,7 @@ class BaseServerLeasesDeleteView(GetReturnURLMixin, generic.ObjectView, metaclas
 
         try:
             client = instance.get_client(version=self.dhcp_version)
-        except (ValueError, requests.RequestException):
+        except ValueError:
             logger.exception("Failed to create Kea client for server %s", instance.pk)
             messages.error(request, "Failed to connect to Kea: see server logs for details.")
             return redirect(return_url)
