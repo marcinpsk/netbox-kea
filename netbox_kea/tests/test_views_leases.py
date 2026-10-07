@@ -108,6 +108,12 @@ class TestServerLeases4View(_ViewTestBase):
         response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
 
+    def test_shows_the_add_and_bulk_import_links(self):
+        response = self.client.get(reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk]))
+        for name in ("server_lease4_add", "server_lease4_bulk_import"):
+            with self.subTest(name):
+                self.assertContains(response, f'href="{reverse(f"plugins:netbox_kea:{name}", args=[self.server.pk])}"')
+
     def test_get_with_dhcp4_disabled_redirects_to_server_with_valid_pk(self):
         """When DHCPv4 is disabled the view must redirect to the server detail page.
 
