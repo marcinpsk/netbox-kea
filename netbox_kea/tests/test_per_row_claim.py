@@ -8,6 +8,7 @@ from django.urls import reverse
 from ipam.models import IPAddress
 
 from netbox_kea.models import Server
+from netbox_kea.subnet_catalogue import for_synchronization
 from netbox_kea.tests.kea_stub import (
     _catalogue_responses,
     _catalogue_responses_for_subnets,
@@ -155,6 +156,24 @@ class ClaimOwnershipTest(TestCase):
             self.assertEqual(result.synchronized_addresses, frozenset())
         self.assertFalse(IPAddress.objects.exists())
         self.assertFalse(IPAMOwnershipLink.objects.exists())
+        self.assertEqual(self.kea.commands(), [])
+
+    def test_a_named_reservation_without_its_catalogue_is_refused_before_writes(self):
+        from ipaddress import ip_address, ip_network
+
+        from netbox_kea.ipam_reconciliation import claim
+        from netbox_kea.reservations import InSubnetReservationScope, IPv4Reservation, ReservationIdentity
+        from netbox_kea.subnet_catalogue import SubnetIdentity
+
+        reservation = IPv4Reservation(
+            InSubnetReservationScope(SubnetIdentity(1, ip_network("198.18.0.0/24"))),
+            ReservationIdentity("flex-id", "named"),
+            (ip_address("198.18.0.10"),),
+            hostname="host",
+        )
+        with self.assertRaisesMessage(ValueError, "needs the catalogue"):
+            claim(self.server, 4, [reservation], force=True)
+        self.assertFalse(IPAddress.objects.exists())
         self.assertEqual(self.kea.commands(), [])
 
     def test_global_reservation_only_links_existing_marker_rows_without_facts(self):
@@ -360,7 +379,9 @@ class ClaimOwnershipTest(TestCase):
         self.assertFalse(IPAddress.objects.exists())
         foreign = IPAddress.objects.create(address="2001:db8::20/64", description="Operator row")
         before = IPAddress.objects.values().get(pk=foreign.pk)
-        result = claim(self.server, 6, [reservation], force=False)
+        with stub_kea(_catalogue_responses_for_subnets(6, [{"id": 30, "subnet": "2001:db8::/64"}])):
+            catalogue = for_synchronization(self.server, 6)
+        result = claim(self.server, 6, [reservation], force=False, catalogue=catalogue)
         self.assertEqual(
             {address: row.outcome for address, row in result.addresses.items()},
             {"2001:db8::20": "conflict", "2001:db8::21": "created"},
