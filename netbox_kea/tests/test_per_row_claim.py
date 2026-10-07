@@ -90,6 +90,34 @@ class ClaimOwnershipTest(TestCase):
         self.kea = transport.__enter__()
         self.addCleanup(transport.__exit__, None, None, None)
 
+    def test_an_unknown_published_name_fails_only_its_reservation_rows(self):
+        from netbox_kea.ipam_reconciliation import claim
+        from netbox_kea.tests.test_integration_dhcp_plugin import _reservation_snapshot
+
+        # An invalid Pool suffix makes the suffix of Subnet 2 unknown; Subnet 1 stays valid.
+        conf = {
+            "subnet4": [
+                {"id": 1, "subnet": "198.18.0.0/24"},
+                {
+                    "id": 2,
+                    "subnet": "198.18.1.0/24",
+                    "pools": [{"pool": "198.18.1.100-198.18.1.110", "ddns-qualifying-suffix": 7}],
+                },
+            ]
+        }
+        observation = _reservation_snapshot(
+            conf,
+            4,
+            [
+                {"subnet-id": 1, "hw-address": "02:00:00:00:00:01", "ip-address": "198.18.0.10", "hostname": "a"},
+                {"subnet-id": 2, "hw-address": "02:00:00:00:00:02", "ip-address": "198.18.1.10", "hostname": "b"},
+            ],
+        )
+        result = claim(self.server, 4, observation.snapshot.records, force=False, catalogue=observation.catalogue)
+        self.assertEqual(result.addresses["198.18.0.10"].outcome, "created")
+        self.assertEqual(result.addresses["198.18.1.10"].outcome, "error")
+        self.assertEqual(list(IPAddress.objects.values_list("dns_name", flat=True)), ["a"])
+
     def test_ambiguous_hardware_rolls_back_reservation_claim_and_keeps_other_rows(self):
         from dcim.models import MACAddress
 
