@@ -1109,6 +1109,8 @@ def _set_lease_reservation_fields(
             and all(str(address) != ip for address in reservation.addresses)
         ):
             lease["pending_ip_change"] = True
+            # The lease keeps its address until renewal, so the reservation is pending, not current.
+            lease["is_reserved"] = False
             # Every reserved address, because the domain names no primary one.
             lease["pending_reservation_ip"] = ", ".join(str(address) for address in reservation.addresses)
         if (
