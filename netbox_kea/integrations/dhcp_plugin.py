@@ -52,6 +52,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ..ipam_reconciliation import ClaimResult, ReservationObservation, SyncReport
+    from ..subnet_catalogue import CatalogueSnapshot
 
 from django.apps import apps
 from django.db.models.signals import post_delete
@@ -68,6 +69,7 @@ from ..mappers.kea_to_dhcp import (
     SubnetIntent,
 )
 from ..pools import parse_pool
+from ..published_name import reservation_published_name
 from ..reservations import (
     TRAVERSAL_DIAGNOSTIC_CODES,
     InSubnetReservationScope,
@@ -166,7 +168,9 @@ def _link_model():
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def _reservation_addresses(reservation: Reservation, claims: ClaimResult, summary: ImportSummary):
+def _reservation_addresses(
+    reservation: Reservation, claims: ClaimResult, catalogue: CatalogueSnapshot, summary: ImportSummary
+):
     """Attach the address objects returned by the whole-snapshot ownership claim."""
     ipv4_ip = None
     ipv6_ips = []
@@ -197,12 +201,13 @@ def _reservation_addresses(reservation: Reservation, claims: ClaimResult, summar
     hardware = reservation.identity.hardware_address
     mac_obj = None
     if hardware:
+        hostname = reservation_published_name(reservation, catalogue)
         for address in reservation.addresses:
-            mac_obj = claims.addresses[str(address)].resolved_macs.get((hardware, reservation.hostname))
+            mac_obj = claims.addresses[str(address)].resolved_macs.get((hardware, hostname))
             if mac_obj is not None:
                 break
         if mac_obj is None:
-            mac_obj = _resolve_mac(hardware, reservation.hostname)
+            mac_obj = _resolve_mac(hardware, hostname)
     return ipv4_ip, ipv6_ips, mac_obj
 
 
@@ -821,7 +826,7 @@ def _find_reservation(base, reservation: Reservation, mac_obj):
     return None
 
 
-def _upsert_reservation(reservation, subnet_obj, server, dhcp_server, custom_defs, summary, claims):
+def _upsert_reservation(reservation, subnet_obj, server, dhcp_server, custom_defs, summary, claims, catalogue):
     """Upsert one typed Reservation while preserving its Global or In-Subnet Scope.
 
     An In-Subnet Reservation matches by identifier inside its Subnet, which already
@@ -846,7 +851,7 @@ def _upsert_reservation(reservation, subnet_obj, server, dhcp_server, custom_def
     try:
         with event_scope.atomic():
             # Inside the try so a resolver failure is counted per-reservation, not fatal.
-            ipv4_ip, ipv6_ips, mac_obj = _reservation_addresses(reservation, claims, summary)
+            ipv4_ip, ipv6_ips, mac_obj = _reservation_addresses(reservation, claims, catalogue, summary)
             if reservation.identity.identifier_type == "hw-address" and mac_obj is None:
                 raise RuntimeError("The reservation hardware address could not be resolved.")
             linked = None if subnet_obj is not None else _linked_reservation(server, reservation)
@@ -936,7 +941,7 @@ def import_reservation_snapshot(
     )
     for diagnostic in snapshot.diagnostics:
         summary.warn(f"reservation {diagnostic.source_position}: {diagnostic.message}")
-    claims = claim(server, snapshot.family, snapshot.records, force=False)
+    claims = claim(server, snapshot.family, snapshot.records, force=False, catalogue=observation.catalogue)
     summary.owner_disagreements += sum(result.outcome == "disagreement" for result in claims.addresses.values())
     imported = []
     complete = snapshot.complete and not snapshot.diagnostics
@@ -952,7 +957,9 @@ def import_reservation_snapshot(
                 continue
         else:
             subnet_obj = None
-        obj = _upsert_reservation(reservation, subnet_obj, server, dhcp_server, custom_defs, summary, claims)
+        obj = _upsert_reservation(
+            reservation, subnet_obj, server, dhcp_server, custom_defs, summary, claims, observation.catalogue
+        )
         if obj is None:
             complete = False
         else:

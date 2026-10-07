@@ -655,7 +655,7 @@ class ImportOwnershipTest(TestCase):
             },
         ]
         observation = _reservation_snapshot(self.config, 6, hosts)
-        result = claim(self.server, 6, observation.snapshot.records, force=False)
+        result = claim(self.server, 6, observation.snapshot.records, force=False, catalogue=observation.catalogue)
         first = result.addresses["2001:db8:1::10"]
         self.assertEqual(
             set(first.resolved_macs), {("aa:bb:cc:00:00:01", "first.example"), ("aa:bb:cc:00:00:02", "second.example")}

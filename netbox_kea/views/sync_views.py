@@ -130,12 +130,12 @@ class _BaseReservationSyncView(ConditionalLoginRequiredMixin, View):
             with _reservation_target_scope(server, self.dhcp_version, subnet_id, identity) as (
                 reservation,
                 _client,
-                _catalogue,
+                catalogue,
             ):
                 from ..ipam_reconciliation import claim
                 from ..sync import reservation_synchronization_state
 
-                result = claim(server, self.dhcp_version, [reservation], force=True)
+                result = claim(server, self.dhcp_version, [reservation], force=True, catalogue=catalogue)
                 state = reservation_synchronization_state(
                     reservation, synchronized_addresses=result.synchronized_addresses
                 )
@@ -365,7 +365,7 @@ class _BaseBulkReservationImportView(_KeaChangeMixin, ConditionalLoginRequiredMi
                 break
             created += 1
             try:
-                _confirmed_side_effects(request, instance, "created", mutation_result)
+                _confirmed_side_effects(request, instance, "created", mutation_result, catalogue)
             except (ValidationError, ValueError, RuntimeError, requests.RequestException):
                 logger.exception("Side effects failed for created Reservation document entry %s", index)
                 failure = {
