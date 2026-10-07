@@ -21,9 +21,10 @@ from django.test import TestCase, TransactionTestCase, override_settings, tag
 from django.urls import reverse
 from django.utils import timezone
 
+from netbox_kea import server_configuration
 from netbox_kea.ipam_reconciliation import ReservationObservation
 from netbox_kea.mappers.kea_to_dhcp import parse_dhcp_config
-from netbox_kea.models import next_confirmation_number
+from netbox_kea.models import Server, next_confirmation_number
 from netbox_kea.reservations import (
     RESERVATION_INVALID_IDENTIFIER,
     RESERVATION_PAGE_FETCH_FAILED,
@@ -31,7 +32,7 @@ from netbox_kea.reservations import (
     ReservationDiagnostic,
     ReservationSnapshot,
 )
-from netbox_kea.subnet_catalogue import IdentityOnlyCatalogueSnapshot, SubnetIdentity, VerifiedSubnet
+from netbox_kea.subnet_catalogue import IncompleteCatalogueSnapshot, SubnetIdentity, VerifiedSubnet
 
 from .kea_stub import _res_page, kea_client, stub_kea
 from .utils import _make_db_server, linked_dhcp_targets, plugins_config
@@ -74,6 +75,12 @@ def _reservation_snapshot(conf: dict, version: Family, hosts: list[dict] | None 
     entries = list(conf.get(subnet_key, []))
     for shared_network in conf.get("shared-networks", []):
         entries.extend(shared_network.get(subnet_key, []))
+    # The real parser reads the effective DDNS qualifying suffixes from *conf*.
+    configuration = server_configuration.observed_snapshot(Server(pk=1), version, conf)
+    suffixes = {
+        declared.declared_subnet_id: server_configuration.effective_qualifying_suffix(configuration, declared)
+        for declared in configuration.subnets
+    }
     verified = tuple(
         VerifiedSubnet(
             identity=SubnetIdentity(
@@ -84,13 +91,13 @@ def _reservation_snapshot(conf: dict, version: Family, hosts: list[dict] | None 
             configuration=None,
             shared_network=None,
             membership_known=False,
+            qualifying_suffix=suffixes.get(int(entry["id"])),
         )
         for entry in entries
         if isinstance(entry, dict) and entry.get("id") is not None and entry.get("subnet")
     )
-    # Identity-only: every VerifiedSubnet here carries configuration=None, which the
-    # real builder only produces when no configuration source was read.
-    catalogue = IdentityOnlyCatalogueSnapshot(
+    # Identity facts and suffixes only: the import reads no other configuration fact from the catalogue.
+    catalogue = IncompleteCatalogueSnapshot(
         server_id=1,
         family=version,
         observed_at=timezone.now(),
@@ -98,11 +105,12 @@ def _reservation_snapshot(conf: dict, version: Family, hosts: list[dict] | None 
         configured_subnets=(),
         diagnostics=(),
         identity_available=True,
-        configuration_available=False,
+        configuration_available=True,
         identity_complete=True,
-        configuration_complete=False,
+        configuration_complete=not configuration.subnet_diagnostics,
         consistent=True,
         configuration_hash=None,
+        global_qualifying_suffix=configuration.ddns_qualifying_suffix,
     )
     if hosts is None:
         hosts = []

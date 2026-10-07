@@ -59,6 +59,7 @@ def _catalogue(family: Family, subnet_id: int, cidr: str) -> CatalogueSnapshot:
         configuration=None,
         shared_network=None,
         membership_known=True,
+        qualifying_suffix=None,
     )
     # Identity-only: the fixture carries no configuration, which is all a Reservation
     # Scope needs verified.
@@ -75,6 +76,7 @@ def _catalogue(family: Family, subnet_id: int, cidr: str) -> CatalogueSnapshot:
         configuration_complete=False,
         consistent=True,
         configuration_hash=None,
+        global_qualifying_suffix=None,
     )
 
 
@@ -298,6 +300,7 @@ class TestReservationPage(SimpleTestCase):
             candidate_identity=catalogue.subnets[0].identity,
             configuration=SubnetConfiguration(pools=(), options=(), settings=SubnetSettings()),
             shared_network=None,
+            qualifying_suffix="",
         )
         catalogue = replace(catalogue, subnets=(), configured_subnets=(configured,))
         raw = {"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:ff", "ip-address": "198.18.0.20"}
