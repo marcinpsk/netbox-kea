@@ -19,7 +19,7 @@ from netbox_kea.reservations import (
     ReservationIdentity,
     ReservationSynchronizationState,
 )
-from netbox_kea.subnet_catalogue import SubnetIdentity
+from netbox_kea.subnet_catalogue import SubnetIdentity, for_synchronization
 from netbox_kea.sync import reservation_synchronization_state
 
 from .kea_stub import _catalogue_responses_for_subnets, stub_kea
@@ -34,7 +34,8 @@ class TestTypedReservationSynchronization(TestCase):
     def _claim(self, reservation):
         subnets = {4: [{"id": 20, "subnet": "198.18.0.0/24"}], 6: [{"id": 30, "subnet": "2001:db8::/64"}]}
         with stub_kea(_catalogue_responses_for_subnets(reservation.family, subnets[reservation.family])):
-            return claim(self.server, reservation.family, [reservation], force=False)
+            catalogue = for_synchronization(self.server, reservation.family)
+        return claim(self.server, reservation.family, [reservation], force=False, catalogue=catalogue)
 
     def test_synchronizes_every_ipv6_address_as_one_result(self):
         reservation = IPv6Reservation(
