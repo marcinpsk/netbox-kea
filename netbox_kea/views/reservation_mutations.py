@@ -6,6 +6,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import replace
 from typing import Any, Literal
+from urllib.parse import urlencode
 
 import requests
 from django.contrib import messages
@@ -13,8 +14,9 @@ from django.core import signing
 from django.core.exceptions import BadRequest, ValidationError
 from django.db import DatabaseError
 from django.http import Http404, HttpRequest, HttpResponse
-from django.shortcuts import redirect, render
+from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
+from django.views import View
 from netbox.views import generic
 
 from .. import constants, forms, subnet_catalogue
@@ -377,6 +379,42 @@ def _change(current: Any, submitted: Any, empty: Any):
     return SetValue(submitted)
 
 
+def _published_name_preview(server: Server, family: Family, cidr: str, hostname: str) -> dict[str, Any]:
+    """Return the preview facts of the name that Kea publishes for *hostname* in the Subnet *cidr*."""
+    catalogue = subnet_catalogue.display(server, family)
+    try:
+        subnet = catalogue.find_by_cidr(cidr)
+    except ValueError:
+        subnet = None
+    if subnet is None:
+        return {"subnet_known": False}
+    try:
+        suffix = catalogue.subnet_qualifying_suffix(subnet.identity)
+    except CatalogueUnavailable:
+        return {"subnet_known": True}
+    return {
+        "subnet_known": True,
+        "suffix": suffix,
+        "published": published_name(stored_hostname(hostname, suffix), suffix),
+    }
+
+
+class _ReservationPublishedNameView(_KeaChangeMixin, View):
+    """Render the name that Kea publishes for the hostname in the Reservation form, from the cached catalogue."""
+
+    dhcp_version: Family
+
+    def get(self, request: HttpRequest, pk: int) -> HttpResponse:
+        server = get_object_or_404(Server.objects.restrict(request.user, "change"), pk=pk)
+        hostname = request.GET.get("hostname", "").strip()
+        context: dict[str, Any] = {"hostname": hostname}
+        if hostname:
+            context.update(
+                _published_name_preview(server, self.dhcp_version, request.GET.get("subnet_cidr", "").strip(), hostname)
+            )
+        return render(request, "netbox_kea/inc/reservation_published_name.html", context)
+
+
 class _ReservationMutationView(_KeaChangeMixin, generic.ObjectView):
     queryset = Server.objects.all()
     tab = _RESERVATIONS_TAB
@@ -415,8 +453,11 @@ class _ReservationMutationView(_KeaChangeMixin, generic.ObjectView):
         *,
         subnet_choices: tuple[tuple[str, int], ...] = (),
         subnet_cmds_available: bool = True,
-        lease_diff: dict[str, str] | None = None,
+        published_name_query: str = "",
     ) -> dict[str, Any]:
+        preview_url = reverse(
+            f"plugins:netbox_kea:server_reservation{self.dhcp_version}_published_name", args=[server.pk]
+        )
         return {
             "object": server,
             "form": form,
@@ -431,7 +472,7 @@ class _ReservationMutationView(_KeaChangeMixin, generic.ObjectView):
             "reservation_capabilities": capabilities,
             "mutation_available": bool(capabilities and capabilities.mutation_available),
             "flex_id_documentation_url": FLEX_ID_DOCUMENTATION_URL,
-            "lease_diff": lease_diff,
+            "published_name_url": f"{preview_url}?{published_name_query}" if published_name_query else preview_url,
         }
 
     def _render(
@@ -575,6 +616,19 @@ class _ReservationAddView(_ReservationMutationView):
 
 class _ReservationEditView(_ReservationMutationView):
     form_action = "Edit"
+
+    def _render(
+        self,
+        request: HttpRequest,
+        server: Server,
+        form: Any,
+        options_formset: Any,
+        capabilities: ReservationCapabilities | None,
+        **context: Any,
+    ) -> HttpResponse:
+        # The Subnet field is disabled, so the preview request carries the Subnet in its URL.
+        query = urlencode({"subnet_cidr": form.initial["subnet_cidr"]})
+        return super()._render(request, server, form, options_formset, capabilities, published_name_query=query)
 
     def get(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         server = self.get_object(pk=pk)
@@ -790,6 +844,18 @@ class ServerReservation6EditView(_ReservationEditView):
 
     dhcp_version = 6
     form_class = forms.Reservation6Form
+
+
+class ServerReservation4PublishedNameView(_ReservationPublishedNameView):
+    """Preview the name that Kea publishes for a DHCPv4 Reservation hostname."""
+
+    dhcp_version = 4
+
+
+class ServerReservation6PublishedNameView(_ReservationPublishedNameView):
+    """Preview the name that Kea publishes for a DHCPv6 Reservation hostname."""
+
+    dhcp_version = 6
 
 
 class ServerReservation4DeleteView(_ReservationDeleteView):

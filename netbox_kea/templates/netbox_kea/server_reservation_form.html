@@ -10,21 +10,6 @@
 {% include "netbox_kea/includes/persist_config_warning.html" %}
 <div class="row">
   <div class="col col-md-6 offset-md-3">
-    {% if lease_diff %}
-    <div class="alert alert-warning d-flex align-items-start mb-3" role="alert">
-      <i class="mdi mdi-information-outline me-2 mt-1" aria-hidden="true"></i>
-      <div>
-        <strong>Active lease differs from reservation</strong><br>
-        {% if lease_diff.hostname %}
-        The active lease has hostname: <code>{{ lease_diff.hostname }}</code>
-        <button type="button" class="btn btn-sm btn-outline-secondary ms-2"
-                onclick="document.getElementById('id_hostname').value = '{{ lease_diff.hostname|escapejs }}'">
-          ← Use this value
-        </button>
-        {% endif %}
-      </div>
-    </div>
-    {% endif %}
     <div class="card">
       <div class="card-header">
         <strong>{{ action }} DHCPv{{ dhcp_version }} Reservation</strong>
@@ -95,7 +80,19 @@
         {% endif %}
         <form method="post" id="reservation-form">
           {% csrf_token %}
-          {% render_form form %}
+          {% for field in form.hidden_fields %}{{ field }}{% endfor %}
+          {% for field in form.visible_fields %}
+          {% render_field field %}
+          {% if field.name == "hostname" %}
+          {# The server computes the preview; a disabled Subnet field is not sent, so the edit URL carries it. #}
+          <div class="row mb-3">
+            <div class="col offset-sm-3 form-text mt-0" id="published-name-preview" aria-live="polite"
+                 hx-get="{{ published_name_url }}"
+                 hx-trigger="load, input changed delay:400ms from:#id_hostname, change from:#id_subnet_cidr"
+                 hx-include="#id_hostname, #id_subnet_cidr"></div>
+          </div>
+          {% endif %}
+          {% endfor %}
           {% if subnet_choices %}
           {# Suggests the server's configured subnets on the Subnet CIDR field. Free typing #}
           {# stays allowed: a datalist only suggests, it never constrains. #}
