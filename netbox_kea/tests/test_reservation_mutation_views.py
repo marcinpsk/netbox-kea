@@ -543,7 +543,7 @@ class TestReservationMutationViews(_ViewTestBase):
         from django.contrib.messages import get_messages
         from django.core.exceptions import ValidationError
 
-        def fail_sync(_server, _family, _records, *, force):
+        def fail_sync(_server, _family, _records, *, force, catalogue):
             raise ValidationError("IPAM validation failed")
 
         responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])

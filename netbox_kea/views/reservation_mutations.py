@@ -41,7 +41,7 @@ from ..reservations import (
     reservation_identifier_types,
 )
 from ..signals import reservation_created, reservation_deleted, reservation_updated
-from ..subnet_catalogue import CatalogueSnapshot, MutationScope, VerifiedSubnet
+from ..subnet_catalogue import CatalogueSnapshot, CatalogueUnavailable, MutationScope, VerifiedSubnet
 from ..utilities import kea_error_hint
 from ._base import _diagnostic_messages, _KeaChangeMixin, _safe_return_url
 from .reservations import _RESERVATIONS_TAB, _build_reservation_options_formset, _configured_capabilities
@@ -290,6 +290,7 @@ def _confirmed_side_effects(
     server: Server,
     action: Literal["created", "updated", "deleted"],
     result: ReservationMutationResult,
+    catalogue: CatalogueSnapshot,
     sync_to_netbox: bool = False,
 ) -> None:
     reservation = result.intended or result.previous
@@ -332,10 +333,10 @@ def _confirmed_side_effects(
             )
         else:
             try:
-                outcome = claim(server, reservation.family, [result.intended], force=True)
+                outcome = claim(server, reservation.family, [result.intended], force=True, catalogue=catalogue)
                 if any(not address.synchronized for address in outcome.addresses.values()):
                     messages.warning(request, "The Reservation changed, but NetBox IPAM synchronization failed.")
-            except (DatabaseError, ValidationError, ValueError):
+            except (CatalogueUnavailable, DatabaseError, ValidationError, ValueError):
                 logger.exception("Could not synchronize a confirmed Reservation mutation to NetBox IPAM")
                 messages.warning(request, "The Reservation changed, but NetBox IPAM synchronization failed.")
     if result.verification == "failed":
@@ -456,12 +457,15 @@ class _ReservationAddView(_ReservationMutationView):
         options_formset, options_valid = _build_reservation_options_formset(request.POST)
         if form.is_valid() and options_valid:
             try:
-                result = self._create(request, server, form.cleaned_data, _options_from_formset(options_formset))
+                result, catalogue = self._create(
+                    request, server, form.cleaned_data, _options_from_formset(options_formset)
+                )
                 _confirmed_side_effects(
                     request,
                     server,
                     "created",
                     result,
+                    catalogue,
                     sync_to_netbox=bool(form.cleaned_data.get("sync_to_netbox")),
                 )
                 messages.success(request, "Reservation created.")
@@ -492,7 +496,8 @@ class _ReservationAddView(_ReservationMutationView):
         server: Server,
         cleaned_data: dict[str, Any],
         options: tuple[DHCPOption, ...],
-    ) -> ReservationMutationResult:
+    ) -> tuple[ReservationMutationResult, CatalogueSnapshot]:
+        """Create the Reservation. Return the result and the catalogue that verified its Subnet."""
         with MutationScope(server, self.dhcp_version) as mutation_scope:
             subnet = mutation_scope.find_by_cidr(cleaned_data["subnet_cidr"])
             if subnet is None:
@@ -532,7 +537,7 @@ class _ReservationAddView(_ReservationMutationView):
                 )
             _warn_addresses_in_pools(request, subnet, reservation.addresses)
             client = server.get_client(version=self.dhcp_version)
-            return client.reservation_create(reservation, catalogue)
+            return client.reservation_create(reservation, catalogue), catalogue
 
 
 class _ReservationEditView(_ReservationMutationView):
@@ -587,6 +592,7 @@ class _ReservationEditView(_ReservationMutationView):
                             server,
                             "updated",
                             result,
+                            catalogue,
                             sync_to_netbox=bool(form.cleaned_data.get("sync_to_netbox")),
                         )
                         messages.success(request, "Reservation updated.")
@@ -698,7 +704,7 @@ class _ReservationDeleteView(_ReservationMutationView):
                 catalogue,
             ):
                 result = client.reservation_delete(reservation, catalogue)
-                _confirmed_side_effects(request, server, "deleted", result)
+                _confirmed_side_effects(request, server, "deleted", result, catalogue)
                 messages.success(request, "Reservation deleted.")
         except ReservationConflict:
             messages.error(request, "The Reservation changed or no longer exists.")

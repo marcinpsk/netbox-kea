@@ -1830,7 +1830,11 @@ class IPAMPhaseConcurrencyTest(TransactionTestCase):
                 facts={"prefix_length": 64},
                 confirmation=next_confirmation_number(),
             )
-        observation = ReservationObservation(ReservationSnapshot(6, (), (), True, None), next_confirmation_number())
+        with stub_kea(_catalogue_responses_for_subnets(6, [])):
+            catalogue = subnet_catalogue.for_synchronization(owner, 6)
+        observation = ReservationObservation(
+            ReservationSnapshot(6, (), (), True, None), next_confirmation_number(), catalogue
+        )
         cascaded = threading.Event()
         resume_delete = threading.Event()
         sqlstates = []
@@ -1913,7 +1917,11 @@ class IPAMPhaseConcurrencyTest(TransactionTestCase):
                 facts={"prefix_length": 64},
                 confirmation=next_confirmation_number(),
             )
-        observation = ReservationObservation(ReservationSnapshot(6, (), (), True, None), next_confirmation_number())
+        with stub_kea(_catalogue_responses_for_subnets(6, [])):
+            catalogue = subnet_catalogue.for_synchronization(owner, 6)
+        observation = ReservationObservation(
+            ReservationSnapshot(6, (), (), True, None), next_confirmation_number(), catalogue
+        )
         later_row = threading.Event()
         resume_import = threading.Event()
         cascaded = threading.Event()
