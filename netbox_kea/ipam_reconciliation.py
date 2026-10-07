@@ -584,7 +584,8 @@ def claim(
     A call contains one source: leases, Reservations, Subnets or Pools. All records are validated and grouped
     before any write. Lease masks come from the Kea Subnet Catalogue. Reservations carry their verified
     Subnet mask, and the catalogue gives their published names. Network records carry their own canonical network
-    and Pool bounds. *catalogue* is the catalogue that verified the records; None reads a live complete one.
+    and Pool bounds. *catalogue* is the catalogue that verified the records. A lease claim without one reads a live
+    complete catalogue. A Reservation claim reads nothing from Kea, so it needs one to report a hostname.
     """
     if family not in (4, 6) or isinstance(family, bool):
         raise ValueError("The address family must be 4 or 6")
@@ -599,7 +600,7 @@ def claim(
     if any(isinstance(record, LEASE_VARIANTS) != lease_records for record in records):
         raise ValueError("A claim takes one source: leases or Reservations, not both")
     source = LEASE if lease_records else RESERVATION
-    if catalogue is None:
+    if lease_records and catalogue is None:
         catalogue = subnet_catalogue.for_synchronization(server, family)
     reports = _claim_reports(server, family, address_records, catalogue)
     outcomes = {address: AddressClaim(address, "error") for address in reports}
@@ -670,10 +671,11 @@ def _claim_reports(
     server: Server,
     family: Family,
     records: Sequence[Lease | Reservation],
-    catalogue: CatalogueSnapshot,
+    catalogue: CatalogueSnapshot | None,
 ) -> dict[str, _Report]:
     """Validate and aggregate one call before acquiring locks or changing objects."""
-    subnet_prefix_lengths = {subnet.subnet_id: subnet.network.prefixlen for subnet in catalogue.subnets}
+    subnets = catalogue.subnets if catalogue is not None else ()
+    subnet_prefix_lengths = {subnet.subnet_id: subnet.network.prefixlen for subnet in subnets}
     reports: dict[str, _Report] = {}
     for record in records:
         if not isinstance(record, Reservation):
@@ -686,7 +688,7 @@ def _claim_reports(
     return reports
 
 
-def _reservation_rows(reservation: Reservation, catalogue: CatalogueSnapshot) -> list[_Report]:
+def _reservation_rows(reservation: Reservation, catalogue: CatalogueSnapshot | None) -> list[_Report]:
     """Return the reports of the allocation addresses of *reservation*, with its published name.
 
     A Global Reservation reports its addresses without facts: no IPAM row is written for it (ADR 0002).
@@ -694,7 +696,12 @@ def _reservation_rows(reservation: Reservation, catalogue: CatalogueSnapshot) ->
     facts: _Facts | None = None
     mac_addresses: tuple[tuple[str, str], ...] = ()
     if isinstance(reservation.scope, InSubnetReservationScope) and reservation.addresses:
-        hostname = reservation_published_name(reservation, catalogue)
+        if catalogue is not None:
+            hostname = reservation_published_name(reservation, catalogue)
+        elif reservation.hostname:
+            raise ValueError("A Reservation with a hostname needs the catalogue that verified it.")
+        else:
+            hostname = ""
         facts = _Facts(hostname, reservation.scope.subnet.network.prefixlen)
         if (hardware := reservation.identity.hardware_address) is not None:
             mac_addresses = ((hardware, hostname),)

@@ -79,8 +79,9 @@ def _host(index: int) -> dict:
     }
 
 
-def _reservations(*hosts: dict) -> list:
-    return list(_reservation_snapshot(_SUBNET, 4, list(hosts)).snapshot.records)
+def _claim_hosts(server, *hosts: dict, force: bool):
+    observation = _reservation_snapshot(_SUBNET, 4, list(hosts))
+    return claim(server, 4, observation.snapshot.records, force=force, catalogue=observation.catalogue)
 
 
 @contextmanager
@@ -167,7 +168,7 @@ class UnitEventTest(_Recorded, TransactionTestCase):
         failed, healthy = _host(11), _host(12)
         server = _make_db_server(dhcp6=False)
         with _mac_write_fails(failed["hw-address"]), event_tracking(self.request):
-            result = claim(server, 4, _reservations(failed, healthy), force=False)
+            result = _claim_hosts(server, failed, healthy, force=False)
         self.assertEqual(result.addresses[failed["ip-address"]].outcome, "error")
         self.assertFalse(IPAddress.objects.filter(address__net_host=failed["ip-address"]).exists())
         sibling = IPAddress.objects.get(address__net_host=healthy["ip-address"])
@@ -185,7 +186,7 @@ class UnitEventTest(_Recorded, TransactionTestCase):
         server = _make_db_server(dhcp6=False)
         with override_settings(EVENTS_PIPELINE=[_FAILING_PIPELINE]), event_tracking(self.request):
             with self.assertRaises(RuntimeError) as raised:
-                claim(server, 4, _reservations(host), force=False)
+                _claim_hosts(server, host, force=False)
         self.assertIsInstance(raised.exception, EventDispatchError)
         self.assertEqual(str(raised.exception.__cause__), "The events pipeline is down")
         self.assertTrue(IPAddress.objects.filter(address__net_host=host["ip-address"]).exists())
@@ -301,7 +302,7 @@ class SavepointLimitTest(_Recorded, TestCase):
         failed, healthy = _host(51), _host(52)
         server = _make_db_server(dhcp6=False)
         with _mac_write_fails(failed["hw-address"]), event_tracking(self.request), transaction.atomic():
-            result = claim(server, 4, _reservations(failed, healthy), force=False)
+            result = _claim_hosts(server, failed, healthy, force=False)
         self.assertEqual(result.addresses[failed["ip-address"]].outcome, "error")
         self.assertFalse(IPAddress.objects.filter(address__net_host=failed["ip-address"]).exists())
         reverted = [pk for model, pk in self.reverted() if model is IPAddress]
@@ -317,7 +318,7 @@ class SavepointLimitTest(_Recorded, TestCase):
 
         server = _make_db_server(dhcp6=False)
         with _receiver(post_save, IPAddress, duplicate_the_mac), event_tracking(self.request), transaction.atomic():
-            result = claim(server, 4, _reservations(host), force=False)
+            result = _claim_hosts(server, host, force=False)
         self.assertEqual(result.addresses[host["ip-address"]].outcome, "error")
         self.assertFalse(IPAddress.objects.filter(address__net_host=host["ip-address"]).exists())
         self.assertIn(IPAddress, [model for model, _ in self.reverted()])
@@ -328,7 +329,7 @@ class SavepointLimitTest(_Recorded, TestCase):
         MACAddress.objects.create(mac_address=host["hw-address"])
         server = _make_db_server(dhcp6=False)
         with event_tracking(self.request), transaction.atomic():
-            result = claim(server, 4, _reservations(host, healthy), force=False)
+            result = _claim_hosts(server, host, healthy, force=False)
         self.assertEqual(result.addresses[host["ip-address"]].outcome, "error")
         self.assertEqual(
             [model for model, _ in self.dispatched() if model is IPAddress],
@@ -342,7 +343,7 @@ class SavepointLimitTest(_Recorded, TestCase):
         host = {**_host(81), "hw-address": "02:00:00:00:00:00:00:00:00:51"}
         server = _make_db_server(dhcp6=False)
         with event_tracking(self.request), transaction.atomic():
-            result = claim(server, 4, _reservations(host), force=False)
+            result = _claim_hosts(server, host, force=False)
         self.assertEqual(result.addresses[host["ip-address"]].outcome, "error")
         self.assertEqual(self.dispatched(), [])
 
@@ -351,7 +352,7 @@ class SavepointLimitTest(_Recorded, TestCase):
         bad = {**valid, "hw-address": "02:00:00:00:00:00:00:00:00:53", "hostname": "other-93"}
         server = _make_db_server(dhcp6=False)
         with event_tracking(self.request), transaction.atomic():
-            result = claim(server, 4, _reservations(valid, bad), force=False)
+            result = _claim_hosts(server, valid, bad, force=False)
         self.assertEqual(result.addresses[valid["ip-address"]].outcome, "error")
         self.assertFalse(MACAddress.objects.filter(mac_address=valid["hw-address"]).exists())
         self.assertEqual(self.dispatched(), [])
@@ -360,7 +361,7 @@ class SavepointLimitTest(_Recorded, TestCase):
         server = _make_db_server(dhcp6=False)
         IPAddress.objects.create(address=f"{host['ip-address']}/24", vrf_id=server.sync_vrf_id, description="curated")
         with event_tracking(self.request), transaction.atomic():
-            result = claim(server, 4, _reservations(host), force=False)
+            result = _claim_hosts(server, host, force=False)
         return result.addresses[host["ip-address"]].outcome
 
     def test_a_conflict_with_a_duplicate_mac_stays_a_conflict(self):
