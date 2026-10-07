@@ -26,3 +26,10 @@ def _claim_reports(record, hardware):
 def _merge(facts, other):
     # ok: kea-sync-hostname-unpublished
     return facts.hostname or other.hostname
+
+
+def _reservation_mirror(obj, reservation):
+    # ok: kea-sync-hostname-unpublished
+    if reservation.hostname:
+        # ok: kea-sync-hostname-unpublished
+        obj.hostname = reservation.hostname or None

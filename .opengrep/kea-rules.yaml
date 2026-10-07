@@ -59,11 +59,14 @@ rules:
         - "netbox_kea/integrations/dhcp_plugin.py"
         - "kea-sync-hostname-unpublished.py"
     patterns:
-      - pattern: $RECORD.hostname
+      # A reported name reaches the sync as a call argument or in a (hardware, hostname) pair.
+      - pattern-either:
+          - pattern: $FUNCTION(..., $RECORD.hostname, ...)
+          - pattern: ($HARDWARE, $RECORD.hostname)
       - metavariable-regex:
           metavariable: $RECORD
           regex: (?i)(lease|reservation|record)$
-      - pattern-not-inside: lease_published_name(...)
+      - pattern-not: lease_published_name(...)
 
   - id: kea-get-client-missing-version
     languages: [python]
