@@ -40,6 +40,8 @@ from netbox_kea.utilities import lease_rows
 from .kea_stub import (
     _catalogue_responses,
     _catalogue_responses_for_subnets,
+    _http_response,
+    _raw_http_response,
     _subnet_list,
     _subnet_stats,
     complete_lease,
@@ -2614,6 +2616,25 @@ class TestLeaseBulkImportEdgeCases(_ViewTestBase):
             response.context["result"]["error_rows"][0]["error"],
             "An unexpected error occurred.",
         )
+
+    def test_a_malformed_reply_body_is_an_invalid_response_row_error(self):
+        """A lease4-add body that is not a JSON list is a malformed reply, not a connection error."""
+        import io
+
+        for name, reply in (
+            ("not a list", _http_response({"result": 0})),
+            ("not JSON", _raw_http_response(b"<html>")),
+        ):
+            with self.subTest(name):
+                csv_file = io.BytesIO(b"ip-address\n10.0.0.1")
+                csv_file.name = "leases.csv"
+                with _lease_stub({"lease4-add": reply}):
+                    response = self.client.post(self._url(), {"csv_file": csv_file})
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(
+                    [row["error"] for row in response.context["result"]["error_rows"]],
+                    ["Invalid response from Kea — could not parse server reply."],
+                )
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)

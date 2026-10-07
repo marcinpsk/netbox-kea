@@ -916,6 +916,7 @@ class KeaClient:
             BranchActive: If *command* is a write and the write guard refuses it, for example in a branch.
             KeaTLSFileError: If requests cannot find a TLS file of the client. It is a ``RequestException``.
             requests.HTTPError: If the HTTP response status is not 2xx.
+            RuntimeError: If the reply body is not JSON or not a list, or a reply entry is malformed.
             KeaException: If any response result code is not in *check*.
 
         """
@@ -940,9 +941,12 @@ class KeaClient:
         except OSError as exc:
             raise KeaTLSFileError("A TLS CA, certificate or key file of the client could not be found.") from exc
         resp.raise_for_status()
-        resp_json = resp.json()
+        try:
+            resp_json = resp.json()
+        except requests.JSONDecodeError as exc:
+            raise RuntimeError("Kea returned a reply body that is not JSON.") from exc
         if not isinstance(resp_json, list):
-            raise ValueError(f"Expected list response from Kea API, got {type(resp_json).__name__}")
+            raise RuntimeError(f"Kea returned a reply that is not a list: {type(resp_json).__name__}")
         if check is not None:
             check_response(resp_json, check)
         return resp_json

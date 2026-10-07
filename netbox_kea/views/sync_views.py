@@ -555,7 +555,7 @@ class _BaseBulkLeaseImportView(_KeaChangeMixin, ConditionalLoginRequiredMixin, V
             except requests.RequestException:
                 logger.exception("Connection error importing lease row %s", row)
                 error_rows.append({"row": row, "error": "Connection error — could not reach Kea server."})
-            except ValueError:
+            except (RuntimeError, ValueError):
                 logger.exception("Data error importing lease row %s", row)
                 error_rows.append({"row": row, "error": "Invalid response from Kea — could not parse server reply."})
             except Exception:
