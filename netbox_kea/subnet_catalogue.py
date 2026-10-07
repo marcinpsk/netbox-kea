@@ -197,17 +197,33 @@ class CatalogueSnapshot:
         network = subnet_network(cidr, self.family)
         return next((subnet for subnet in self._display_subnets() if subnet.identity.network == network), None)
 
-    def subnet_qualifying_suffix(self, identity: SubnetIdentity) -> str:
-        """Return the effective DDNS qualifying suffix of the Subnet *identity*.
+    def subnet_qualifying_suffix(self, identity: SubnetIdentity, address: IPAddressValue | None) -> str:
+        """Return the DDNS qualifying suffix that Kea applies to *address* in the Subnet *identity*.
+
+        The Pool that contains the address comes first, then the effective suffix of the Subnet. Without an address,
+        a Pool suffix makes the value depend on the dynamic lease, so it is unknown.
 
         Raises:
             CatalogueUnavailable: When the snapshot does not show the Subnet with this identity or its suffix.
 
         """
         subnet = self.find_by_id(identity.subnet_id)
-        if subnet is None or subnet.identity != identity or subnet.qualifying_suffix is None:
+        if (
+            subnet is None
+            or subnet.identity != identity
+            or subnet.configuration is None
+            or subnet.qualifying_suffix is None
+        ):
             raise CatalogueUnavailable(f"The DDNS qualifying suffix of Subnet {identity.cidr} is unknown.")
-        return subnet.qualifying_suffix
+        pool_suffixes = subnet.configuration.pool_qualifying_suffixes
+        if address is None and pool_suffixes:
+            raise CatalogueUnavailable(
+                f"A Pool of Subnet {identity.cidr} sets a DDNS qualifying suffix, so it depends on the address."
+            )
+        return next(
+            (suffix for pool, suffix in pool_suffixes if address is not None and pool.contains(address)),
+            subnet.qualifying_suffix,
+        )
 
     def address_qualifying_suffix(self, address: IPAddressValue | None) -> str:
         """Return the DDNS qualifying suffix of the Subnet that contains *address*, else the global suffix.
@@ -222,7 +238,7 @@ class CatalogueSnapshot:
                 None,
             )
             if subnet is not None:
-                return self.subnet_qualifying_suffix(subnet.identity)
+                return self.subnet_qualifying_suffix(subnet.identity, address)
             if not self.configuration_complete:
                 raise CatalogueUnavailable(f"No complete configuration shows the Subnet of {address}.")
         if self.global_qualifying_suffix is None:

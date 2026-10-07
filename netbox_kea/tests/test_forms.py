@@ -1732,7 +1732,10 @@ def _verified_subnet(cidr="10.0.0.0/24", pools=("10.0.0.10-10.0.0.20",), *, conf
 
     network = ipaddress.ip_network(cidr)
     facts = SubnetConfiguration(
-        pools=tuple(parse_pool(pool, network) for pool in pools), options=(), settings=SubnetSettings()
+        pools=tuple(parse_pool(pool, network) for pool in pools),
+        options=(),
+        settings=SubnetSettings(),
+        pool_qualifying_suffixes=(),
     )
     return VerifiedSubnet(
         identity=SubnetIdentity(subnet_id=1, network=network),
