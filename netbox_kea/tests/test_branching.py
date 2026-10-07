@@ -56,7 +56,15 @@ from django.db.models import ProtectedError  # noqa: E402
 from django.db.models.signals import pre_delete, pre_save  # noqa: E402
 from django.test import Client, RequestFactory, SimpleTestCase, TransactionTestCase, override_settings  # noqa: E402
 from django.test.utils import CaptureQueriesContext, isolate_apps  # noqa: E402
-from django.urls import URLPattern, URLResolver, get_resolver, resolve, reverse  # noqa: E402
+from django.urls import (  # noqa: E402
+    URLPattern,
+    URLResolver,
+    clear_script_prefix,
+    get_resolver,
+    resolve,
+    reverse,
+    set_script_prefix,
+)
 from django.utils import timezone  # noqa: E402
 from django.utils.html import escape  # noqa: E402
 from extras.models import Tag  # noqa: E402
@@ -1942,6 +1950,29 @@ class RenderedBranchControlsTest(TransactionTestCase):
         self.assertNotContains(in_branch, f'hx-get="{delete}"')
         self.assertContains(in_branch, 'aria-disabled="true"')
         self.assertContains(in_branch, "Switch to main to make this change.")
+
+    def test_controls_are_disabled_under_a_script_prefix(self):
+        user = get_user_model().objects.create_superuser("prefix-controls")
+        server = _make_db_server(name="prefix-controls")
+        branch = _provisioned_branch(self, "prefix controls")
+        client = Client()
+        client.force_login(user)
+        client.cookies[COOKIE_NAME] = branch.schema_id
+        url = reverse("plugins:netbox_kea:server", args=[server.pk])
+        edit = reverse("plugins:netbox_kea:server_edit", args=[server.pk])
+
+        # The test client skips WSGIHandler, which sets the script prefix from SCRIPT_NAME.
+        set_script_prefix("/netbox/")
+        try:
+            with stub_kea(_recorded_kea()):
+                in_branch = client.get(url, SCRIPT_NAME="/netbox")
+        finally:
+            clear_script_prefix()
+
+        self.assertEqual(in_branch.status_code, 200)
+        self.assertContains(in_branch, "/netbox/")
+        self.assertNotContains(in_branch, f'href="/netbox{edit}"')
+        self.assertContains(in_branch, 'aria-disabled="true"')
 
     def test_every_rendered_plugin_page_disables_its_known_mutation_controls(self):
         from bs4 import BeautifulSoup

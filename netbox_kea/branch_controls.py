@@ -7,7 +7,7 @@ from uuid import uuid4
 
 from bs4 import BeautifulSoup, Tag
 from django.http import HttpRequest
-from django.urls import Resolver404, resolve
+from django.urls import Resolver404, get_script_prefix, resolve
 
 from .branching import mutation_form, unsafe_plugin_request
 
@@ -40,8 +40,12 @@ class _Targets:
         url = urlsplit(urljoin(self.base, target))
         if (url.scheme, url.netloc) != (self.origin.scheme, self.origin.netloc):
             return False
+        prefix = get_script_prefix()
+        if not url.path.startswith(prefix):
+            return False
         try:
-            callback = resolve(url.path).func
+            # resolve() takes the URLconf path, without the script prefix that reverse() adds.
+            callback = resolve("/" + url.path.removeprefix(prefix)).func
         except Resolver404:
             return False
         return unsafe_plugin_request(callback, method) or (navigation and mutation_form(callback))
