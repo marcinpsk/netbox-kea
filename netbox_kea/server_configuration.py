@@ -84,6 +84,8 @@ class SubnetConfiguration:
     pools: tuple[Pool, ...]
     options: tuple[DHCPOption, ...]
     settings: SubnetSettings
+    # Each Pool that sets its own DDNS qualifying suffix; Kea applies it to an address in the Pool.
+    pool_qualifying_suffixes: tuple[tuple[Pool, str], ...]
 
 
 @dataclass(frozen=True)
@@ -493,15 +495,17 @@ def _parse_configured_fact(
             _diagnostic("invalid-subnet-cidr", "Kea returned an invalid Subnet CIDR.", "configuration", path)
         )
         return None
+    pools, pool_suffixes = _parse_pools(entry.get("pools", []), network, path, diagnostics)
     return DeclaredSubnet(
         declared_cidr=entry["subnet"],
         network=network,
         declared_subnet_id=subnet_id,
         shared_network_name=shared_network_name,
         configuration=SubnetConfiguration(
-            pools=_parse_pools(entry.get("pools", []), network, path, diagnostics),
+            pools=pools,
             options=_parse_options(entry.get("option-data", []), path, diagnostics),
             settings=_parse_settings(entry, family, path, diagnostics),
+            pool_qualifying_suffixes=pool_suffixes,
         ),
         complete=len(diagnostics) == diagnostic_count,
     )
@@ -631,13 +635,15 @@ def _parse_pools(
     subnet: IPNetworkValue,
     path: str,
     diagnostics: list[Diagnostic],
-) -> tuple[Pool, ...]:
+) -> tuple[tuple[Pool, ...], tuple[tuple[Pool, str], ...]]:
+    """Return the Pools of a Subnet, and each Pool that sets its own DDNS qualifying suffix."""
     if not isinstance(entries, list):
         diagnostics.append(
             _diagnostic("invalid-pool-collection", "Kea returned a non-list Pool collection.", "configuration", path)
         )
-        return ()
+        return (), ()
     pools: list[Pool] = []
+    suffixes: list[tuple[Pool, str]] = []
     for index, entry in enumerate(entries):
         pool_path = f"{path}.pools[{index}]"
         raw_pool = entry.get("pool") if isinstance(entry, dict) else None
@@ -647,7 +653,10 @@ def _parse_pools(
             diagnostics.append(_diagnostic("invalid-pool", "Kea returned an invalid Pool.", "configuration", pool_path))
             continue
         pools.append(pool)
-    return tuple(pools)
+        suffix = _optional_string(entry, _DDNS_QUALIFYING_SUFFIX, pool_path, diagnostics, allow_empty=True)
+        if suffix is not None:
+            suffixes.append((pool, suffix))
+    return tuple(pools), tuple(suffixes)
 
 
 def _parse_options(entries: Any, path: str, diagnostics: list[Diagnostic]) -> tuple[DHCPOption, ...]:

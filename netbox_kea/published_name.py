@@ -66,7 +66,8 @@ def lease_published_name(hostname: str) -> str:
 def reservation_published_name(reservation: Reservation, catalogue: CatalogueSnapshot) -> str:
     """Return the published name of *reservation* under the effective suffix of its scope in *catalogue*.
 
-    A Global Reservation takes the suffix of the Subnet that contains its first address, else the global suffix.
+    The first address selects the Pool suffix. A Global Reservation takes the suffix of the Subnet that contains its
+    first address, else the global suffix.
 
     Raises:
         CatalogueUnavailable: When *catalogue* does not show the suffix of a Reservation that has a hostname.
@@ -74,8 +75,9 @@ def reservation_published_name(reservation: Reservation, catalogue: CatalogueSna
     """
     if not reservation.hostname:
         return ""
+    address = reservation.addresses[0] if reservation.addresses else None
     if isinstance(reservation.scope, InSubnetReservationScope):
-        suffix = catalogue.subnet_qualifying_suffix(reservation.scope.subnet)
+        suffix = catalogue.subnet_qualifying_suffix(reservation.scope.subnet, address)
     else:
-        suffix = catalogue.address_qualifying_suffix(reservation.addresses[0] if reservation.addresses else None)
+        suffix = catalogue.address_qualifying_suffix(address)
     return published_name(reservation.hostname, suffix)

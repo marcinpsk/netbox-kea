@@ -346,7 +346,13 @@
                 "max-valid-lifetime": 4000,
                 "min-valid-lifetime": 4000,
                 "option-data": [],
-                "pools": [],
+                "pools": [
+                  {
+                    "ddns-qualifying-suffix": "pool.example.org",
+                    "option-data": [],
+                    "pool": "198.51.100.200-198.51.100.220"
+                  }
+                ],
                 "rebind-timer": 2000,
                 "relay": {
                   "ip-addresses": [
@@ -439,7 +445,7 @@
         "t2-percent": 0.875,
         "valid-lifetime": 4000
       },
-      "hash": "9CB528692C3E6AC03EB9D8C4FCF68A321A17540ED6EB5C6C8D77D0EC3E6A0822"
+      "hash": "DDE40219B1A96F4DC66A52D4944B1CDD9CB7989755AB6F91FB891D0C32D9C128"
     },
     "result": 0
   },
@@ -453,7 +459,7 @@
       "present": {
         "arguments": {
           "client-id": "01:aa:bb:cc:00:00:10",
-          "cltt": 1791402725,
+          "cltt": 1791405003,
           "fqdn-fwd": true,
           "fqdn-rev": true,
           "hostname": "host10.example.org",
@@ -482,7 +488,7 @@
         "leases": [
           {
             "client-id": "01:aa:bb:cc:00:00:10",
-            "cltt": 1791402725,
+            "cltt": 1791405003,
             "fqdn-fwd": true,
             "fqdn-rev": true,
             "hostname": "host10.example.org",
@@ -503,7 +509,7 @@
             "valid-lft": 3600
           },
           {
-            "cltt": 1791402725,
+            "cltt": 1791405003,
             "fqdn-fwd": false,
             "fqdn-rev": false,
             "hostname": "",
@@ -514,7 +520,7 @@
             "valid-lft": 4294967295
           },
           {
-            "cltt": 1791402725,
+            "cltt": 1791405003,
             "fqdn-fwd": false,
             "fqdn-rev": false,
             "hostname": "",
@@ -525,7 +531,7 @@
             "valid-lft": 86400
           },
           {
-            "cltt": 1791402725,
+            "cltt": 1791405003,
             "fqdn-fwd": false,
             "fqdn-rev": false,
             "hostname": "",
@@ -536,7 +542,7 @@
             "valid-lft": 3600
           },
           {
-            "cltt": 1791402725,
+            "cltt": 1791405003,
             "fqdn-fwd": false,
             "fqdn-rev": false,
             "hostname": "",
@@ -548,7 +554,7 @@
           },
           {
             "client-id": "ff:00:00:00:15:00:02",
-            "cltt": 1791402725,
+            "cltt": 1791405003,
             "fqdn-fwd": false,
             "fqdn-rev": false,
             "hostname": "",
@@ -570,7 +576,7 @@
           "leases": [
             {
               "client-id": "01:aa:bb:cc:00:00:10",
-              "cltt": 1791402725,
+              "cltt": 1791405003,
               "fqdn-fwd": true,
               "fqdn-rev": true,
               "hostname": "host10.example.org",
@@ -591,7 +597,7 @@
               "valid-lft": 3600
             },
             {
-              "cltt": 1791402725,
+              "cltt": 1791405003,
               "fqdn-fwd": false,
               "fqdn-rev": false,
               "hostname": "",
@@ -602,7 +608,7 @@
               "valid-lft": 4294967295
             },
             {
-              "cltt": 1791402725,
+              "cltt": 1791405003,
               "fqdn-fwd": false,
               "fqdn-rev": false,
               "hostname": "",
@@ -622,7 +628,7 @@
           "count": 3,
           "leases": [
             {
-              "cltt": 1791402725,
+              "cltt": 1791405003,
               "fqdn-fwd": false,
               "fqdn-rev": false,
               "hostname": "",
@@ -633,7 +639,7 @@
               "valid-lft": 3600
             },
             {
-              "cltt": 1791402725,
+              "cltt": 1791405003,
               "fqdn-fwd": false,
               "fqdn-rev": false,
               "hostname": "",
@@ -645,7 +651,7 @@
             },
             {
               "client-id": "ff:00:00:00:15:00:02",
-              "cltt": 1791402725,
+              "cltt": 1791405003,
               "fqdn-fwd": false,
               "fqdn-rev": false,
               "hostname": "",
@@ -687,7 +693,7 @@
       },
       "after-update-without-expire": {
         "arguments": {
-          "cltt": 1791402725,
+          "cltt": 1791405003,
           "fqdn-fwd": false,
           "fqdn-rev": false,
           "hostname": "",
@@ -924,7 +930,13 @@
                 "max-valid-lifetime": 4000,
                 "min-valid-lifetime": 4000,
                 "option-data": [],
-                "pools": [],
+                "pools": [
+                  {
+                    "ddns-qualifying-suffix": "pool.example.org",
+                    "option-data": [],
+                    "pool": "198.51.100.200-198.51.100.220"
+                  }
+                ],
                 "rebind-timer": 2000,
                 "relay": {
                   "ip-addresses": [

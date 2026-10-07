@@ -186,29 +186,49 @@ def _signed_fingerprint(reservation: Reservation, suffix: str | None) -> str:
     )
 
 
+def _first_address(addresses: tuple[IPAddressValue, ...]) -> IPAddressValue | None:
+    """Return the address that selects the Pool suffix: the first one, as for a synchronized Reservation."""
+    return addresses[0] if addresses else None
+
+
 def _shown_suffix(reservation: Reservation, catalogue: CatalogueSnapshot) -> str | None:
     """Return the suffix under which the edit form shows the hostname of *reservation*; None without a hostname."""
     if not reservation.hostname:
         return None
-    return catalogue.subnet_qualifying_suffix(_in_subnet_scope(reservation).subnet)
+    return catalogue.subnet_qualifying_suffix(
+        _in_subnet_scope(reservation).subnet, _first_address(reservation.addresses)
+    )
 
 
 def _hostname_change(
-    current: Reservation, entered: str, shown_suffix: str | None, catalogue: CatalogueSnapshot
+    current: Reservation,
+    entered: str,
+    addresses: tuple[IPAddressValue, ...],
+    shown_suffix: str | None,
+    catalogue: CatalogueSnapshot,
 ) -> FieldChange[str]:
-    """Return the hostname change that makes Kea publish the *entered* name under the live suffix.
+    """Return the hostname change that makes Kea publish the *entered* name at the submitted *addresses*.
 
     A name that publishes the same name as the current hostname leaves the stored hostname unchanged.
     """
     if not current.hostname and not entered:
         return Unchanged()
-    suffix = catalogue.subnet_qualifying_suffix(_in_subnet_scope(current).subnet)
-    if current.hostname and shown_suffix != suffix:
+    if current.hostname and shown_suffix != _shown_suffix(current, catalogue):
         raise ReservationConflict("The DDNS qualifying suffix of the Subnet changed after the edit form was opened.")
+    suffix = catalogue.subnet_qualifying_suffix(_in_subnet_scope(current).subnet, _first_address(addresses))
     stored = stored_hostname(entered, suffix)
     if published_name(stored, suffix) == published_name(current.hostname, suffix):
         return Unchanged()
     return _change(current.hostname, stored, "")
+
+
+def _stored_for(
+    catalogue: CatalogueSnapshot, subnet: VerifiedSubnet, name: str, addresses: tuple[IPAddressValue, ...]
+) -> str:
+    """Return the hostname to store so that Kea publishes *name* at *addresses* in *subnet*."""
+    if not name:
+        return ""
+    return stored_hostname(name, catalogue.subnet_qualifying_suffix(subnet.identity, _first_address(addresses)))
 
 
 def _payload_from_post(token: str, reservation: Reservation) -> dict[str, Any]:
@@ -385,8 +405,20 @@ def _change(current: Any, submitted: Any, empty: Any):
     return SetValue(submitted)
 
 
-def _published_name_preview(server: Server, family: Family, cidr: str, hostname: str) -> dict[str, Any]:
-    """Return the preview facts of the name that Kea publishes for *hostname* in the Subnet *cidr*."""
+def _entered_address(value: str, family: Family) -> IPAddressValue | None:
+    """Return the first address of an address field, or None when the field holds none or no valid one."""
+    first = value.split(",", maxsplit=1)[0].strip()
+    try:
+        address = ipaddress.ip_address(first)
+    except ValueError:
+        return None
+    return address if address.version == family else None
+
+
+def _published_name_preview(
+    server: Server, family: Family, cidr: str, address: IPAddressValue | None, hostname: str
+) -> dict[str, Any]:
+    """Return the preview facts of the name that Kea publishes for *hostname* at *address* in the Subnet *cidr*."""
     catalogue = subnet_catalogue.display(server, family)
     try:
         subnet = catalogue.find_by_cidr(cidr)
@@ -395,7 +427,7 @@ def _published_name_preview(server: Server, family: Family, cidr: str, hostname:
     if subnet is None:
         return {"subnet_known": False}
     try:
-        suffix = catalogue.subnet_qualifying_suffix(subnet.identity)
+        suffix = catalogue.subnet_qualifying_suffix(subnet.identity, address)
     except CatalogueUnavailable:
         return {"subnet_known": True}
     return {
@@ -415,8 +447,15 @@ class _ReservationPublishedNameView(_KeaChangeMixin, View):
         hostname = request.GET.get("hostname", "").strip()
         context: dict[str, Any] = {"hostname": hostname}
         if hostname:
+            field = "ip_address" if self.dhcp_version == 4 else "ip_addresses"
             context.update(
-                _published_name_preview(server, self.dhcp_version, request.GET.get("subnet_cidr", "").strip(), hostname)
+                _published_name_preview(
+                    server,
+                    self.dhcp_version,
+                    request.GET.get("subnet_cidr", "").strip(),
+                    _entered_address(request.GET.get(field, ""), self.dhcp_version),
+                    hostname,
+                )
             )
         return render(request, "netbox_kea/inc/reservation_published_name.html", context)
 
@@ -581,8 +620,6 @@ class _ReservationAddView(_ReservationMutationView):
             scope = InSubnetReservationScope(subnet.identity)
             identity = ReservationIdentity(cleaned_data["identifier_type"], cleaned_data["identifier"])
             hostname = cleaned_data.get("hostname", "")
-            if hostname:
-                hostname = stored_hostname(hostname, catalogue.subnet_qualifying_suffix(subnet.identity))
             if self.dhcp_version == 4:
                 ipv4_addresses = (
                     (ipaddress.IPv4Address(cleaned_data["ip_address"]),) if cleaned_data.get("ip_address") else ()
@@ -591,7 +628,7 @@ class _ReservationAddView(_ReservationMutationView):
                     scope=scope,
                     identity=identity,
                     addresses=ipv4_addresses,
-                    hostname=hostname,
+                    hostname=_stored_for(catalogue, subnet, hostname, ipv4_addresses),
                     options=options,
                 )
             else:
@@ -608,7 +645,7 @@ class _ReservationAddView(_ReservationMutationView):
                     identity=identity,
                     addresses=ipv6_addresses,
                     delegated_prefixes=ipv6_prefixes,
-                    hostname=hostname,
+                    hostname=_stored_for(catalogue, subnet, hostname, ipv6_addresses),
                     options=options,
                 )
             _warn_addresses_in_pools(request, subnet, reservation.addresses)
@@ -683,9 +720,8 @@ class _ReservationEditView(_ReservationMutationView):
                             current,
                             form.cleaned_data,
                             _options_from_formset(options_formset, current.options),
-                            _hostname_change(
-                                current, form.cleaned_data.get("hostname", ""), payload["qualifying_suffix"], catalogue
-                            ),
+                            payload["qualifying_suffix"],
+                            catalogue,
                         )
                         result = client.reservation_change(current, payload["fingerprint"], change, catalogue)
                         _confirmed_side_effects(
@@ -741,7 +777,8 @@ class _ReservationEditView(_ReservationMutationView):
         current: Reservation,
         cleaned_data: dict[str, Any],
         options: tuple[DHCPOption, ...],
-        hostname: FieldChange[str],
+        shown_suffix: str | None,
+        catalogue: CatalogueSnapshot,
     ) -> ReservationChange:
         addresses: tuple[ipaddress.IPv4Address | ipaddress.IPv6Address, ...]
         prefixes: tuple[ipaddress.IPv6Network, ...]
@@ -758,7 +795,7 @@ class _ReservationEditView(_ReservationMutationView):
         return ReservationChange(
             addresses=_change(current.addresses, addresses, ()),
             delegated_prefixes=_change(current.delegated_prefixes, prefixes, ()),
-            hostname=hostname,
+            hostname=_hostname_change(current, cleaned_data.get("hostname", ""), addresses, shown_suffix, catalogue),
             options=_change(current.options, options, ()),
         )
 

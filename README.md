@@ -48,8 +48,10 @@ NetBox plugin for the [Kea DHCP](https://www.isc.org/kea/) server. Manage your D
   subnet, there being no reserved address to match on
 - Per-reservation DHCP options
 - The hostname field takes the name that clients get. Kea adds the effective `ddns-qualifying-suffix`
-  (Subnet, then Shared Network, then global) to a reserved hostname, except to a name that ends in a dot
-  or already ends in the suffix. The form shows a preview of the published name, and the plugin stores the
+  (the Pool that contains the reserved address, then the Subnet, the Shared Network and the global value) to a
+  reserved hostname, except to a name that ends in a dot or already ends in the suffix. When a Pool of the
+  Subnet sets a suffix, a Reservation without an address has no known published name, and the form refuses a
+  hostname for it. The form shows a preview of the published name, and the plugin stores the
   hostname that makes Kea publish the entered name: the labels without the suffix, a single label as entered
   (Kea qualifies it), or any other name with a trailing dot. A saved Reservation keeps its stored hostname
   until you edit the name
