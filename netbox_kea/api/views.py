@@ -15,7 +15,7 @@ from .. import constants, filtersets, models
 from ..constants import Family
 from ..decimal_text import parse_decimal
 from ..kea import KeaException, LeaseQueryGuardError, lease_query_guard_message
-from ..leases import LeaseSnapshot, MalformedLeaseResponse, lease_record_data
+from ..leases import LeaseSnapshot, lease_record_data
 from ..reservations import (
     GlobalReservationScope,
     InSubnetReservationScope,
@@ -236,12 +236,13 @@ class ServerViewSet(NetBoxModelViewSet):
         except KeaException:
             logger.exception("Kea error on server %s", server.name)
             return Response({"detail": "An internal error occurred"}, status=status.HTTP_502_BAD_GATEWAY)
-        except MalformedLeaseResponse:
-            logger.exception("Malformed Kea lease response on server %s", server.name)
-            return Response({"detail": "An internal error occurred"}, status=status.HTTP_502_BAD_GATEWAY)
         except ValueError:
             logger.exception("Configuration error for server %s", server.name)
             return Response({"detail": "Server configuration error."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        except RuntimeError:
+            # MalformedLeaseResponse and the malformed statistics and reply-entry errors are all RuntimeErrors.
+            logger.exception("Malformed Kea lease response on server %s", server.name)
+            return Response({"detail": "An internal error occurred"}, status=status.HTTP_502_BAD_GATEWAY)
         except Exception:
             logger.exception("Unexpected error fetching leases from %s", server.name)
             return Response({"detail": "An internal error occurred"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

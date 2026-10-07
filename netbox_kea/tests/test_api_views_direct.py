@@ -151,7 +151,7 @@ class TestLeaseSearchErrors(SimpleTestCase):
 
     def test_generic_exception_returns_500(self):
         view, _ = _make_view()
-        with stub_kea({"lease4-get": RuntimeError("unexpected internal error")}):
+        with stub_kea({"lease4-get": KeyError("unexpected internal error")}):
             response = view._lease_search(_make_request({"ip_address": "10.0.0.1"}), version=4)
         self.assertEqual(response.status_code, status.HTTP_500_INTERNAL_SERVER_ERROR)
         self.assertIn("internal error", response.data["detail"].lower())

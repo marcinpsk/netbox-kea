@@ -463,6 +463,29 @@ class LeaseRestTest(_ViewTestBase):
         for private in ("user-context", "user_context", "rack", "state_label", "private-state-value"):
             self.assertNotIn(private, body)
 
+    def test_every_malformed_kea_reply_is_a_bad_gateway(self):
+        cases = {
+            "stat-lease4-get without a result set": (
+                {"subnet_id": "10"},
+                {"stat-lease4-get": {"result": 0, "arguments": {}}},
+            ),
+            "reply entry without a result": ({"ip_address": "192.0.2.10"}, {"lease4-get": {"text": "no result"}}),
+            "lease page without a record list": (
+                {"subnet_id": "10"},
+                {
+                    "stat-lease4-get": _subnet_stats(4, 10, assigned=1),
+                    "lease4-get-all": {"result": 0, "arguments": {"leases": "x"}},
+                },
+            ),
+        }
+        for name, (params, responses) in cases.items():
+            with (
+                self.subTest(name),
+                override_settings(PLUGINS_CONFIG=plugins_config(lease_query_max_unpaged_leases=100)),
+            ):
+                response = self._get(4, params, responses)
+                self.assertEqual(response.status_code, 502)
+
     def test_a_dhcpv6_address_search_reads_both_kinds(self):
         prefix = lease_record("2001:db8:100:100::", type="IA_PD", prefix_len=56)
         url = reverse("plugins-api:netbox_kea-api:server-leases6", args=[self.server.pk])
