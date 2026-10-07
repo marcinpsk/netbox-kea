@@ -16,6 +16,7 @@ from netbox_kea.tests.kea_stub import (
     stub_kea,
     typed_lease,
 )
+from netbox_kea.tests.test_integration_dhcp_plugin import _catalogue
 from netbox_kea.tests.utils import plugins_config
 
 _LEASE = {"ip-address": "198.18.0.10", "hostname": "host.example.com", "subnet-id": 1}
@@ -139,7 +140,7 @@ class ClaimOwnershipTest(TestCase):
             ],
         )
 
-        result = claim(self.server, 4, observation.snapshot.records, force=True)
+        result = claim(self.server, 4, observation.snapshot.records, force=True, catalogue=observation.catalogue)
 
         self.assertEqual(result.addresses["198.18.0.10"].outcome, "error")
         self.assertEqual(IPAddress.objects.values().get(pk=ip.pk), before)
@@ -164,7 +165,7 @@ class ClaimOwnershipTest(TestCase):
         table = f'FROM "{MACAddress._meta.db_table}"'
 
         with CaptureQueriesContext(connection) as queries:
-            result = claim(self.server, 4, observation.snapshot.records, force=False)
+            result = claim(self.server, 4, observation.snapshot.records, force=False, catalogue=observation.catalogue)
 
         self.assertEqual(result.addresses["198.18.0.12"].outcome, "created")
         mac_reads = [q["sql"] for q in queries if table in q["sql"] and not q["sql"].startswith("INSERT")]
@@ -178,7 +179,7 @@ class ClaimOwnershipTest(TestCase):
 
         reservation = IPv4Reservation(GlobalReservationScope(), ReservationIdentity("flex-id", "addressless"), ())
         for records in ([], [reservation]):
-            result = claim(self.server, 4, records, force=True)
+            result = claim(self.server, 4, records, force=True, catalogue=_catalogue({}, 4))
             self.assertEqual(result.addresses, {})
             self.assertIsNone(result.primary)
             self.assertEqual(result.synchronized_addresses, frozenset())
@@ -186,7 +187,7 @@ class ClaimOwnershipTest(TestCase):
         self.assertFalse(IPAMOwnershipLink.objects.exists())
         self.assertEqual(self.kea.commands(), [])
 
-    def test_a_named_reservation_without_its_catalogue_is_refused_before_writes(self):
+    def test_a_reservation_claim_without_its_catalogue_is_refused_before_writes(self):
         from ipaddress import ip_address, ip_network
 
         from netbox_kea.ipam_reconciliation import claim
@@ -199,8 +200,8 @@ class ClaimOwnershipTest(TestCase):
             (ip_address("198.18.0.10"),),
             hostname="host",
         )
-        with self.assertRaisesMessage(ValueError, "needs the catalogue"):
-            claim(self.server, 4, [reservation], force=True)
+        with self.assertRaisesMessage(TypeError, "takes the catalogue that verified it"):
+            claim(self.server, 4, [reservation], force=True)  # type: ignore[call-overload]
         self.assertFalse(IPAddress.objects.exists())
         self.assertEqual(self.kea.commands(), [])
 
@@ -214,14 +215,14 @@ class ClaimOwnershipTest(TestCase):
         reservation = IPv4Reservation(
             GlobalReservationScope(), ReservationIdentity("flex-id", "global"), (ip_address("198.18.0.10"),)
         )
-        result = claim(self.server, 4, [reservation], force=True)
+        result = claim(self.server, 4, [reservation], force=True, catalogue=_catalogue({}, 4))
         self.assertEqual(result.addresses["198.18.0.10"].outcome, "not-applicable")
         self.assertFalse(IPAddress.objects.exists())
         for description in ("Operator row", "[kea-sync: lease]"):
             with self.subTest(description=description):
                 ip = IPAddress.objects.create(address="198.18.0.10/24", description=description)
                 before = IPAddress.objects.values().get(pk=ip.pk)
-                result = claim(self.server, 4, [reservation], force=True)
+                result = claim(self.server, 4, [reservation], force=True, catalogue=_catalogue({}, 4))
                 expected = "conflict" if description == "Operator row" else "not-applicable"
                 self.assertEqual(result.addresses["198.18.0.10"].outcome, expected)
                 self.assertEqual(result.addresses["198.18.0.10"].ip, ip)
@@ -242,7 +243,7 @@ class ClaimOwnershipTest(TestCase):
         reservation = IPv4Reservation(GlobalReservationScope(), ReservationIdentity("flex-id", "addressless"), ())
         for family in (True, 5, 6):
             with self.subTest(family=family), self.assertRaisesMessage(ValueError, "family"):
-                claim(self.server, family, [reservation], force=True)
+                claim(self.server, family, [reservation], force=True, catalogue=_catalogue({}, 4))
         self.assertFalse(IPAddress.objects.exists())
 
     def test_same_call_disagreement_never_forces_a_foreign_row(self):
