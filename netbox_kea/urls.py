@@ -95,6 +95,11 @@ urlpatterns = (
         name="server_reservation4_add",
     ),
     path(
+        "servers/<int:pk>/reservations4/published-name/",
+        reservation_mutations.ServerReservation4PublishedNameView.as_view(),
+        name="server_reservation4_published_name",
+    ),
+    path(
         "servers/<int:pk>/reservations4/<int:subnet_id>/edit/",
         reservation_mutations.ServerReservation4EditView.as_view(),
         name="server_reservation4_edit",
@@ -108,6 +113,11 @@ urlpatterns = (
         "servers/<int:pk>/reservations6/add/",
         reservation_mutations.ServerReservation6AddView.as_view(),
         name="server_reservation6_add",
+    ),
+    path(
+        "servers/<int:pk>/reservations6/published-name/",
+        reservation_mutations.ServerReservation6PublishedNameView.as_view(),
+        name="server_reservation6_published_name",
     ),
     path(
         "servers/<int:pk>/reservations6/<int:subnet_id>/edit/",
