@@ -3693,10 +3693,10 @@ class TestLeaseDeletePartialFailure(_ViewTestBase):
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestFetchOneMacValueError(_ViewTestBase):
-    """A lease with a non-numeric subnet_id gets no reservation lookup.
+    """A lease with a non-numeric subnet_id is excluded before any reservation lookup.
 
-    _reservation_for_lease_worker marks the lease indeterminate; the test drives it
-    through an HTMX lease search.
+    The typed reader excludes the lease with a diagnostic; the test drives it through
+    an HTMX lease search.
     """
 
     def _htmx_get(self, url, data):
@@ -3704,10 +3704,8 @@ class TestFetchOneMacValueError(_ViewTestBase):
 
     _SUBNETS4 = _subnet_list(4, [])
 
-    def test_non_numeric_subnet_id_does_not_crash(self):
-        """Lease with non-numeric subnet-id must not crash during MAC reservation lookup."""
-        # A non-int subnet-id makes enrichment mark the IP indeterminate without any
-        # reservation-get, so no reservation command is registered.
+    def test_non_numeric_subnet_id_is_excluded_without_reservation_lookup(self):
+        """A lease with a non-numeric subnet-id is excluded, diagnosed, and gets no reservation-get."""
         lease = complete_lease(
             {
                 "ip-address": "10.0.0.5",
@@ -3719,10 +3717,14 @@ class TestFetchOneMacValueError(_ViewTestBase):
             }
         )
         url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
-        with _lease_stub({"subnet4-list": self._SUBNETS4, "lease4-get": {"result": 0, "arguments": lease}}):
+        with _lease_stub({"subnet4-list": self._SUBNETS4, "lease4-get": {"result": 0, "arguments": lease}}) as kea:
             response = self._htmx_get(url, {"by": "ip", "q": "10.0.0.5"})
-        # Must render OK, not 500
         self.assertEqual(response.status_code, 200)
+        self.assertEqual(list(response.context["table"].rows), [])
+        self.assertEqual(
+            response.context["lease_diagnostics"], ["arguments (subnet-id): A lease field has the wrong type."]
+        )
+        self.assertNotIn("reservation-get", kea.commands())
 
     def test_null_subnet_id_is_rejected_before_reservation_lookup(self):
         """A null subnet-id is diagnosed, and no MAC reservation lookup is sent to Kea."""
