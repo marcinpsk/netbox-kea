@@ -114,7 +114,7 @@ class SharedNetwork:
     member_cidrs: tuple[str, ...]
     complete: bool
     # None: the Shared Network does not set it, so its Subnets take the global value.
-    ddns_qualifying_suffix: str | None = None
+    ddns_qualifying_suffix: str | None
 
 
 @dataclass(frozen=True)
@@ -576,12 +576,17 @@ def shown_subnet_definition(definition: SubnetDefinition) -> SubnetEdit | None:
     return None if subnet is None else shown_subnet(subnet.configuration, definition.family)
 
 
+def _shared_network(snapshot: ServerConfigurationSnapshot, name: str) -> SharedNetwork | None:
+    """Return the Shared Network *name* of *snapshot*, if it holds one."""
+    return next((network for network in snapshot.shared_networks if network.name == name), None)
+
+
 def shown_shared_network(snapshot: ServerConfigurationSnapshot, name: str) -> SharedNetworkEdit | None:
     """Return the values that the Shared Network edit form shows for the Shared Network *name* in *snapshot*.
 
     Return None when the snapshot has no Shared Network *name* with facts that the form can show.
     """
-    network = next((network for network in snapshot.shared_networks if network.name == name), None)
+    network = _shared_network(snapshot, name)
     if not snapshot.shared_networks_complete or network is None or not network.complete:
         return None
     try:
@@ -603,7 +608,7 @@ def shown_shared_network(snapshot: ServerConfigurationSnapshot, name: str) -> Sh
 
 
 def effective_qualifying_suffix(snapshot: ServerConfigurationSnapshot, subnet: DeclaredSubnet) -> str | None:
-    """Return the DDNS qualifying suffix that Kea applies in *subnet*: its own, its Shared Network's, then the global one.
+    """Return the DDNS qualifying suffix of *subnet*: its own, its Shared Network's, then the global one.
 
     Return None when *snapshot* does not show the value, because a fact on that path is not valid.
     """
@@ -612,9 +617,7 @@ def effective_qualifying_suffix(snapshot: ServerConfigurationSnapshot, subnet: D
     if subnet.configuration.settings.ddns_qualifying_suffix is not None:
         return subnet.configuration.settings.ddns_qualifying_suffix
     if subnet.shared_network_name is not None:
-        network = next(
-            (network for network in snapshot.shared_networks if network.name == subnet.shared_network_name), None
-        )
+        network = _shared_network(snapshot, subnet.shared_network_name)
         if network is None or not network.complete:
             return None
         if network.ddns_qualifying_suffix is not None:

@@ -67,6 +67,12 @@ class TestStoredHostname(SimpleTestCase):
         self.assertEqual(stored_hostname("host.example.org.", ""), "host.example.org")
         self.assertEqual(stored_hostname("", "dhcp.example.com"), "")
 
+    def test_the_suffix_of_the_entered_name_matches_in_any_case(self):
+        # Kea compares the suffix byte by byte, but the stored labels requalify to the same lower-case name.
+        stored = stored_hostname("HOST.Dhcp.Example.COM", "dhcp.EXAMPLE.com")
+        self.assertEqual(stored, "HOST")
+        self.assertEqual(published_name(stored, "dhcp.EXAMPLE.com"), "host.dhcp.example.com")
+
     def test_a_single_label_is_stored_as_entered_so_kea_qualifies_it(self):
         self.assertEqual(stored_hostname("host", "dhcp.example.com"), "host")
         self.assertEqual(

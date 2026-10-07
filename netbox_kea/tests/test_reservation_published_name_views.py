@@ -299,6 +299,12 @@ class TestPublishedNamePreview(_PublishedNameViewTest):
                     self.assertEqual(response.context["published"], published)
                     self.assertContains(response, f"<code>{published}</code>", html=False)
 
+    def test_the_preview_shows_the_suffix_without_its_trailing_dot(self):
+        with stub_kea(_recorded(4)):
+            response = self._preview(4, **self._subnet(4, 21), hostname="printer")
+        self.assertContains(response, "with the DDNS qualifying suffix <code>office.example.org</code>.")
+        self.assertNotContains(response, "office.example.org.</code>")
+
     def test_the_preview_reads_the_cached_catalogue(self):
         with stub_kea(_recorded(4)) as kea:
             self._preview(4, **self._subnet(4, 21), hostname="printer")
