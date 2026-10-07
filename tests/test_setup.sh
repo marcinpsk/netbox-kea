@@ -45,6 +45,9 @@ fi
 WHL_FILE=$(basename "${wheels[0]}")
 cp "./dist/$WHL_FILE" ./tests/docker/
 
+# buildx 0.37.2 refuses a build secret read from outside the project without --allow=fs.read.
+cp "${SSL_CERT_FILE:-/etc/ssl/certs/ca-certificates.crt}" ./tests/docker/host_ca.crt
+
 echo "Running docker compose up"
 cd ./tests/docker/
 docker compose build --build-arg "FROM=netboxcommunity/netbox:$NETBOX_CONTAINER_TAG" --build-arg "WHL_FILE=$WHL_FILE"

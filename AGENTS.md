@@ -80,9 +80,10 @@ TEST_DB_NAME=test_netbox_kea_local TEST_REDIS_HOST=localhost \
 uv run --native-tls pytest -p no:django tests/ --tracing=retain-on-failure -v --cov=netbox_kea --cov-report=xml
 ```
 
-The `host_ca` build secret defaults to `/etc/ssl/certs/ca-certificates.crt`. Compose
-reads that path before the build starts, so set `SSL_CERT_FILE` to the local CA bundle
-on any host that keeps it elsewhere (for example `/etc/pki/tls/certs/ca-bundle.crt`).
+`test_setup.sh` copies the CA bundle to `tests/docker/host_ca.crt` for the `host_ca` build
+secret, because buildx refuses a secret file outside the project. The source defaults to
+`/etc/ssl/certs/ca-certificates.crt`. Set `SSL_CERT_FILE` to the local CA bundle on any host
+that keeps it elsewhere (for example `/etc/pki/tls/certs/ca-bundle.crt`).
 
 The compose stack runs: NetBox, netbox-worker, postgres, redis, nginx (basic-auth
 + TLS), and **kea-dhcp4 / kea-dhcp6 as direct daemons** (no Control Agent). The

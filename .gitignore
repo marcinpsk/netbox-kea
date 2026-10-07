@@ -168,6 +168,7 @@ tests/files/certs
 tests/docker/certs/
 tests/docker/kea_schema/
 tests/docker/*.whl
+tests/docker/host_ca.crt
 test-results/
 .claude/
 core

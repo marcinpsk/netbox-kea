@@ -2678,7 +2678,9 @@ def _write_tool_stubs(stub_bin: Path) -> None:
         stub.chmod(0o755)
 
 
-def _run_setup_script(sandbox: Path, wheel_names: tuple[str, ...]) -> subprocess.CompletedProcess:
+def _run_setup_script(
+    sandbox: Path, wheel_names: tuple[str, ...], environment: dict[str, str] | None = None
+) -> subprocess.CompletedProcess:
     """Run the real ``tests/test_setup.sh`` in *sandbox* with every external tool stubbed."""
     (sandbox / "tests" / "docker").mkdir(parents=True, exist_ok=True)
     (sandbox / "tests" / "test_setup.sh").write_bytes((REPOSITORY_ROOT / "tests/test_setup.sh").read_bytes())
@@ -2693,7 +2695,12 @@ def _run_setup_script(sandbox: Path, wheel_names: tuple[str, ...]) -> subprocess
     return subprocess.run(
         ["bash", "./tests/test_setup.sh"],
         cwd=sandbox,
-        env={**os.environ, "PATH": f"{stub_bin}:{os.environ['PATH']}", "NETBOX_CONTAINER_TAG": "v4.6"},
+        env={
+            **os.environ,
+            "PATH": f"{stub_bin}:{os.environ['PATH']}",
+            "NETBOX_CONTAINER_TAG": "v4.6",
+            **(environment or {}),
+        },
         capture_output=True,
         text=True,
         check=False,
@@ -2754,6 +2761,32 @@ def test_the_setup_script_refuses_an_ambiguous_wheel_set(wheel_names):
 
         assert result.returncode == 1, result.stdout
         assert "Expected exactly one wheel" in result.stderr, result.stderr
+
+
+def test_the_setup_script_copies_the_ca_bundle_into_the_build_project():
+    """buildx 0.37.2 refuses a build secret read from outside the project without ``--allow=fs.read``."""
+    with tempfile.TemporaryDirectory() as directory:
+        sandbox = Path(directory)
+        bundle = sandbox / "host-ca-bundle.pem"
+        bundle.write_text("-----BEGIN CERTIFICATE-----\nlocal\n-----END CERTIFICATE-----\n")
+
+        result = _run_setup_script(sandbox, ("netbox_kea_ng-1.9.0-py3-none-any.whl",), {"SSL_CERT_FILE": str(bundle)})
+
+        assert result.returncode == 0, result.stderr
+        assert (sandbox / "tests/docker/host_ca.crt").read_text() == bundle.read_text()
+
+
+def test_every_compose_build_secret_is_inside_the_compose_project():
+    compose = yaml.safe_load(_COMPOSE_FILE.read_text())
+    sources = {name: secret["file"] for name, secret in compose.get("secrets", {}).items() if "file" in secret}
+    assert sources, "The compose stack declares no file secret; this guard reads nothing."
+    for name, source in sources.items():
+        path = Path(_expand(source, {}))
+        resolved = (_COMPOSE_FILE.parent / path).resolve()
+        assert not path.is_absolute() and resolved.is_relative_to(_COMPOSE_FILE.parent), (
+            f"Secret {name} reads {source}, outside {_COMPOSE_FILE.parent.relative_to(REPOSITORY_ROOT)}. "
+            "Copy the file into the project in tests/test_setup.sh."
+        )
 
 
 # ---------------------------------------------------------------------------
