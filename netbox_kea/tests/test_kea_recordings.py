@@ -7,6 +7,7 @@ configurations in kea_recordings/ on the Compose harness Kea version. The Contro
 replies come from Kea 3.0, the last release series that has a Control Agent.
 """
 
+import copy
 import ipaddress
 import json
 import re
@@ -16,7 +17,7 @@ from django.test import TestCase, override_settings
 
 from netbox_kea import server_configuration
 from netbox_kea.kea import KeaException
-from netbox_kea.subnet_catalogue import CompleteCatalogueSnapshot, for_synchronization
+from netbox_kea.subnet_catalogue import CatalogueUnavailable, CompleteCatalogueSnapshot, display, for_synchronization
 from netbox_kea.tests.kea_stub import _network_absent, _network_present, kea_client, queued, stub_kea
 from netbox_kea.tests.utils import _PLUGINS_CONFIG, _make_db_server
 
@@ -154,3 +155,115 @@ class TestRecordedKeaConfiguration(TestCase):
                     snapshot = for_synchronization(self.server, family)
                 self.assertIsInstance(snapshot, CompleteCatalogueSnapshot)
                 self.assertEqual([subnet.identity.subnet_id for subnet in snapshot.subnets], [10, 20, 21])
+
+
+class TestRecordedQualifyingSuffix(TestCase):
+    """Kea applies the DDNS qualifying suffix of the Subnet, then of its Shared Network, then the global one."""
+
+    # A DHCPv4 and a DHCPv6 address in Subnet 21, in Subnet 20, and outside every recorded Subnet.
+    _ADDRESSES = {
+        4: ("198.51.100.130", "198.51.100.20", "203.0.113.5"),
+        6: ("2001:db8:3::5", "2001:db8:2::20", "2001:db8:ffff::5"),
+    }
+
+    def setUp(self):
+        self.server = _make_db_server()
+
+    def _config_get(self, family: int, edit=None) -> dict:
+        reply = copy.deepcopy(_recording(family)["config-get"])
+        if edit is not None:
+            edit(reply["arguments"][f"Dhcp{family}"])
+        return reply
+
+    def _snapshot(self, family: int, edit=None) -> server_configuration.ServerConfigurationSnapshot:
+        with stub_kea({"config-get": self._config_get(family, edit)}):
+            return server_configuration.for_verification(self.server, family)
+
+    def _effective(self, snapshot) -> dict[int | None, str | None]:
+        return {
+            subnet.declared_subnet_id: server_configuration.effective_qualifying_suffix(snapshot, subnet)
+            for subnet in snapshot.subnets
+        }
+
+    def test_the_recorded_suffixes_and_their_inheritance(self):
+        for family in (4, 6):
+            with self.subTest(family=family):
+                snapshot = self._snapshot(family)
+                self.assertEqual(snapshot.ddns_qualifying_suffix, "dhcp.example.com")
+                self.assertEqual(
+                    {network.name: network.ddns_qualifying_suffix for network in snapshot.shared_networks},
+                    {"empty-network": None, "office": "office.example.net"},
+                )
+                # Subnet 10 sets an empty suffix, Subnet 20 sets none, and Subnet 21 sets its own.
+                self.assertEqual(
+                    self._effective(snapshot), {10: "", 20: "office.example.net", 21: "office.example.org."}
+                )
+
+    def test_a_subnet_without_a_suffix_on_its_path_takes_the_global_one(self):
+        def drop(configuration):
+            del configuration[f"subnet{family}"][0]["ddns-qualifying-suffix"]
+            office = next(network for network in configuration["shared-networks"] if network["name"] == "office")
+            del office["ddns-qualifying-suffix"]
+
+        for family in (4, 6):
+            with self.subTest(family=family):
+                snapshot = self._snapshot(family, drop)
+                self.assertEqual(
+                    self._effective(snapshot),
+                    {10: "dhcp.example.com", 20: "dhcp.example.com", 21: "office.example.org."},
+                )
+
+    def test_kea_default_global_suffix_is_empty(self):
+        def drop(configuration):
+            del configuration["ddns-qualifying-suffix"]
+
+        self.assertEqual(self._snapshot(4, drop).ddns_qualifying_suffix, "")
+
+    def test_an_invalid_suffix_on_the_path_makes_the_effective_suffix_unknown(self):
+        def invalid_global(configuration):
+            configuration["ddns-qualifying-suffix"] = 7
+            del configuration["subnet4"][0]["ddns-qualifying-suffix"]
+
+        def invalid_network(configuration):
+            office = next(network for network in configuration["shared-networks"] if network["name"] == "office")
+            office["ddns-qualifying-suffix"] = ["office.example.net"]
+
+        snapshot = self._snapshot(4, invalid_global)
+        self.assertIsNone(snapshot.ddns_qualifying_suffix)
+        self.assertFalse(snapshot.complete)
+        self.assertIsNone(self._effective(snapshot)[10])
+        self.assertIsNone(self._effective(self._snapshot(4, invalid_network))[20])
+
+    def test_the_catalogue_carries_the_effective_suffixes(self):
+        for family in (4, 6):
+            with self.subTest(family=family):
+                recording = _recording(family)
+                with stub_kea(
+                    {"config-get": recording["config-get"], f"subnet{family}-list": recording[f"subnet{family}-list"]}
+                ):
+                    catalogue = for_synchronization(self.server, family)
+                self.assertEqual(
+                    [subnet.qualifying_suffix for subnet in catalogue.subnets],
+                    ["", "office.example.net", "office.example.org."],
+                )
+                self.assertEqual(catalogue.global_qualifying_suffix, "dhcp.example.com")
+                self.assertEqual(
+                    catalogue.subnet_qualifying_suffix(catalogue.subnets[2].identity), "office.example.org."
+                )
+                in_21, in_20, outside = (ipaddress.ip_address(address) for address in self._ADDRESSES[family])
+                self.assertEqual(catalogue.address_qualifying_suffix(in_21), "office.example.org.")
+                self.assertEqual(catalogue.address_qualifying_suffix(in_20), "office.example.net")
+                self.assertEqual(catalogue.address_qualifying_suffix(outside), "dhcp.example.com")
+                self.assertEqual(catalogue.address_qualifying_suffix(None), "dhcp.example.com")
+
+    def test_an_identity_only_catalogue_does_not_know_a_suffix(self):
+        recording = _recording(4)
+        with stub_kea({"config-get": RuntimeError("config-get failed"), "subnet4-list": recording["subnet4-list"]}):
+            catalogue = display(self.server, 4)
+        self.assertIsNone(catalogue.global_qualifying_suffix)
+        with self.assertRaises(CatalogueUnavailable):
+            catalogue.subnet_qualifying_suffix(catalogue.subnets[0].identity)
+        with self.assertRaises(CatalogueUnavailable):
+            catalogue.address_qualifying_suffix(ipaddress.ip_address("203.0.113.5"))
+        with self.assertRaises(CatalogueUnavailable):
+            catalogue.address_qualifying_suffix(None)

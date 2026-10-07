@@ -28,7 +28,7 @@
         "ddns-generated-prefix": "myhost",
         "ddns-override-client-update": false,
         "ddns-override-no-update": false,
-        "ddns-qualifying-suffix": "",
+        "ddns-qualifying-suffix": "dhcp.example.com",
         "ddns-replace-client-name": "never",
         "ddns-send-updates": true,
         "ddns-update-on-renew": false,
@@ -282,6 +282,7 @@
             "allocator": "iterative",
             "cache-threshold": 0.25,
             "calculate-tee-times": true,
+            "ddns-qualifying-suffix": "office.example.net",
             "interface": "eth0",
             "max-preferred-lifetime": 3000,
             "max-valid-lifetime": 4000,
@@ -458,7 +459,7 @@
         "t2-percent": 0.8,
         "valid-lifetime": 4000
       },
-      "hash": "1757F58EF75D753F30238CACE00337AA5182CDC4E017A2CF15FC056168757D63"
+      "hash": "20F3EF3AC33195BED7EFF2902FFABEBF8EBA9D4B018154CF4DD99795325243D9"
     },
     "result": 0
   },
@@ -471,7 +472,7 @@
       },
       "delegated-prefix": {
         "arguments": {
-          "cltt": 1791204540,
+          "cltt": 1791402726,
           "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
           "fqdn-fwd": false,
           "fqdn-rev": false,
@@ -494,7 +495,7 @@
       },
       "present": {
         "arguments": {
-          "cltt": 1791204540,
+          "cltt": 1791402726,
           "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
           "fqdn-fwd": true,
           "fqdn-rev": false,
@@ -526,7 +527,7 @@
       "arguments": {
         "leases": [
           {
-            "cltt": 1791204540,
+            "cltt": 1791402726,
             "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
             "fqdn-fwd": true,
             "fqdn-rev": false,
@@ -551,7 +552,7 @@
             "valid-lft": 3600
           },
           {
-            "cltt": 1791204540,
+            "cltt": 1791402726,
             "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
             "fqdn-fwd": false,
             "fqdn-rev": false,
@@ -565,7 +566,7 @@
             "valid-lft": 3600
           },
           {
-            "cltt": 1791204540,
+            "cltt": 1791402726,
             "duid": "00:00:00",
             "fqdn-fwd": false,
             "fqdn-rev": false,
@@ -579,7 +580,7 @@
             "valid-lft": 3600
           },
           {
-            "cltt": 1791204540,
+            "cltt": 1791402726,
             "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
             "fqdn-fwd": false,
             "fqdn-rev": false,
@@ -593,7 +594,7 @@
             "valid-lft": 3600
           },
           {
-            "cltt": 1791204540,
+            "cltt": 1791402726,
             "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
             "fqdn-fwd": false,
             "fqdn-rev": false,
@@ -607,7 +608,7 @@
             "valid-lft": 3600
           },
           {
-            "cltt": 1791204540,
+            "cltt": 1791402726,
             "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
             "fqdn-fwd": false,
             "fqdn-rev": false,
@@ -621,7 +622,7 @@
             "valid-lft": 4294967295
           },
           {
-            "cltt": 1791204540,
+            "cltt": 1791402726,
             "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
             "fqdn-fwd": false,
             "fqdn-rev": false,
@@ -636,7 +637,7 @@
             "valid-lft": 3600
           },
           {
-            "cltt": 1791204540,
+            "cltt": 1791402726,
             "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
             "fqdn-fwd": false,
             "fqdn-rev": false,
@@ -651,7 +652,7 @@
             "valid-lft": 4294967295
           },
           {
-            "cltt": 1791204540,
+            "cltt": 1791402726,
             "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
             "fqdn-fwd": false,
             "fqdn-rev": false,
@@ -666,7 +667,7 @@
             "valid-lft": 3600
           },
           {
-            "cltt": 1791204540,
+            "cltt": 1791402726,
             "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
             "fqdn-fwd": false,
             "fqdn-rev": false,
@@ -691,7 +692,7 @@
           "count": 4,
           "leases": [
             {
-              "cltt": 1791204540,
+              "cltt": 1791402726,
               "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
               "fqdn-fwd": true,
               "fqdn-rev": false,
@@ -716,7 +717,7 @@
               "valid-lft": 3600
             },
             {
-              "cltt": 1791204540,
+              "cltt": 1791402726,
               "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
               "fqdn-fwd": false,
               "fqdn-rev": false,
@@ -730,7 +731,7 @@
               "valid-lft": 3600
             },
             {
-              "cltt": 1791204540,
+              "cltt": 1791402726,
               "duid": "00:00:00",
               "fqdn-fwd": false,
               "fqdn-rev": false,
@@ -744,7 +745,7 @@
               "valid-lft": 3600
             },
             {
-              "cltt": 1791204540,
+              "cltt": 1791402726,
               "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
               "fqdn-fwd": false,
               "fqdn-rev": false,
@@ -767,7 +768,7 @@
           "count": 4,
           "leases": [
             {
-              "cltt": 1791204540,
+              "cltt": 1791402726,
               "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
               "fqdn-fwd": false,
               "fqdn-rev": false,
@@ -781,7 +782,7 @@
               "valid-lft": 3600
             },
             {
-              "cltt": 1791204540,
+              "cltt": 1791402726,
               "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
               "fqdn-fwd": false,
               "fqdn-rev": false,
@@ -795,7 +796,7 @@
               "valid-lft": 4294967295
             },
             {
-              "cltt": 1791204540,
+              "cltt": 1791402726,
               "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
               "fqdn-fwd": false,
               "fqdn-rev": false,
@@ -810,7 +811,7 @@
               "valid-lft": 3600
             },
             {
-              "cltt": 1791204540,
+              "cltt": 1791402726,
               "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
               "fqdn-fwd": false,
               "fqdn-rev": false,
@@ -834,7 +835,7 @@
           "count": 2,
           "leases": [
             {
-              "cltt": 1791204540,
+              "cltt": 1791402726,
               "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
               "fqdn-fwd": false,
               "fqdn-rev": false,
@@ -849,7 +850,7 @@
               "valid-lft": 3600
             },
             {
-              "cltt": 1791204540,
+              "cltt": 1791402726,
               "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
               "fqdn-fwd": false,
               "fqdn-rev": false,
@@ -1007,6 +1008,7 @@
             "allocator": "iterative",
             "cache-threshold": 0.25,
             "calculate-tee-times": true,
+            "ddns-qualifying-suffix": "office.example.net",
             "interface": "eth0",
             "max-preferred-lifetime": 3000,
             "max-valid-lifetime": 4000,
