@@ -390,7 +390,7 @@ def _confirmed_side_effects(
                 outcome = claim(server, reservation.family, [result.intended], force=True, catalogue=catalogue)
                 if any(not address.synchronized for address in outcome.addresses.values()):
                     messages.warning(request, "The Reservation changed, but NetBox IPAM synchronization failed.")
-            except (CatalogueUnavailable, DatabaseError, ValidationError, ValueError):
+            except (DatabaseError, ValidationError, ValueError):
                 logger.exception("Could not synchronize a confirmed Reservation mutation to NetBox IPAM")
                 messages.warning(request, "The Reservation changed, but NetBox IPAM synchronization failed.")
     if result.verification == "failed":
