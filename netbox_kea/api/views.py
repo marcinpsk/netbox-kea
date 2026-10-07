@@ -230,7 +230,7 @@ class ServerViewSet(NetBoxModelViewSet):
                 {"detail": lease_query_guard_message(exc, lease_state)},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        except (requests.ConnectionError, requests.Timeout):
+        except requests.RequestException:
             logger.exception("Kea connection error on server %s", server.name)
             return Response({"detail": "Could not connect to Kea server."}, status=status.HTTP_502_BAD_GATEWAY)
         except KeaException:

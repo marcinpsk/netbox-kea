@@ -19,7 +19,7 @@ from users.models import ObjectPermission
 
 from netbox_kea.models import Server
 
-from .kea_stub import queued, stub_kea
+from .kea_stub import _http_response, _raw_http_response, queued, stub_kea
 from .utils import _PLUGINS_CONFIG, DISPATCHED_EVENTS, User, _make_db_server, _ViewTestBase
 
 _VERSION_OK = {"result": 0, "arguments": {"extended": "3.2.0"}}
@@ -124,13 +124,14 @@ class ServerSubmissionConnectivityTest(_ViewTestBase):
             (requests.exceptions.SSLError("private diagnostic"), "Unable to reach"),
             (ValueError("private diagnostic"), "Unable to reach"),
             ({"result": 1, "text": "private diagnostic"}, "Unable to reach"),
-            (requests.exceptions.JSONDecodeError("private diagnostic", "", 0), "An internal error occurred."),
+            (_raw_http_response(b"private diagnostic"), "An internal error occurred."),
+            (_http_response({"result": 0, "text": "private diagnostic"}), "An internal error occurred."),
             (["private diagnostic"], "An internal error occurred."),
         )
         url = reverse("plugins:netbox_kea:server_add")
         for family in (4, 6):
-            for reply, message in cases:
-                with self.subTest(family=family, reply=type(reply).__name__), stub_kea({"version-get": reply}) as kea:
+            for case, (reply, message) in enumerate(cases):
+                with self.subTest(family=family, case=case), stub_kea({"version-get": reply}) as kea:
                     response = self.client.post(url, self._payload(dhcp4=family == 4, dhcp6=family == 6))
                     self.assertEqual(response.status_code, 200)
                     errors = response.context["form"].errors[f"dhcp{family}"]
@@ -532,7 +533,7 @@ class ServerImportConnectivityTest(_ViewTestBase):
         self.server.dhcp6 = False
         self.server.save()
         csv = f"id,ca_url\r\n{self.server.pk},https://changed.example.invalid\r\n"
-        with stub_kea({"version-get": requests.exceptions.JSONDecodeError("private diagnostic", "", 0)}) as kea:
+        with stub_kea({"version-get": _raw_http_response(b"private diagnostic")}) as kea:
             response = self.client.post(
                 reverse("plugins:netbox_kea:server_bulk_import"),
                 {

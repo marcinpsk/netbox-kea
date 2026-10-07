@@ -62,12 +62,17 @@ def kea_client(url: str, **options: Any) -> KeaClient:
 
 def _http_response(payload: Any, status: int = 200, url: str = "") -> requests.Response:
     """Build a concrete ``requests.Response`` with a JSON body."""
+    return _raw_http_response(json.dumps(payload).encode("utf-8"), status=status, url=url)
+
+
+def _raw_http_response(body: bytes, status: int = 200, url: str = "") -> requests.Response:
+    """Build a concrete ``requests.Response`` whose body is *body*, which does not have to be JSON."""
     response = requests.Response()
     response.status_code = status
     response.url = url
     response.encoding = "utf-8"
     response.headers["Content-Type"] = "application/json"
-    response._content = json.dumps(payload).encode(response.encoding)
+    response._content = body
     return response
 
 

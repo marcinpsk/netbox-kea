@@ -77,9 +77,73 @@ def ok_bare_except(client):
         logger.exception("Unexpected error")
 
 
-def ok_no_kea_exception_clause(client):
+def ok_request_exception_with_exception_sibling(client):
     # ok: kea-exception-handler-misses-runtime-error
     try:
         client.command("lease4-add", 4)
     except requests.RequestException:
         logger.exception("Network error")
+    except Exception:
+        logger.exception("Unexpected error")
+
+
+def bad_request_exception_alone(client):
+    # ruleid: kea-exception-handler-misses-runtime-error
+    try:
+        client.command("lease4-add", 4)
+    except requests.RequestException:
+        logger.exception("Network error")
+
+
+def bad_request_exception_without_runtime_error(request, client):
+    # ruleid: kea-exception-handler-misses-runtime-error
+    try:
+        client.lease_add(4, row)
+    except requests.RequestException:
+        messages.error(request, "Connection error.")
+    except ValueError:
+        messages.error(request, "Invalid reply.")
+
+
+def bad_request_exception_in_a_tuple(server):
+    # ruleid: kea-exception-handler-misses-runtime-error
+    try:
+        server.get_client(version=4).command("version-get", 4)
+    except (requests.RequestException, ValueError) as exc:
+        raise ValidationError("Unable to reach Kea.") from exc
+
+
+def bad_get_client_catches_request_exception(server):
+    # ruleid: kea-exception-handler-misses-runtime-error
+    try:
+        client = server.get_client(version=4)
+    except (ValueError, requests.RequestException):
+        return None
+    return client
+
+
+def ok_request_exception_with_runtime_error(request, client):
+    # ok: kea-exception-handler-misses-runtime-error
+    try:
+        client.lease_wipe(version=4, subnet_id=1)
+    except requests.RequestException:
+        messages.error(request, "Network error.")
+    except (RuntimeError, ValueError):
+        messages.error(request, "Malformed reply.")
+
+
+def ok_get_client_catches_value_error_only(server):
+    # ok: kea-exception-handler-misses-runtime-error
+    try:
+        client = server.get_client(version=4)
+    except ValueError:
+        return None
+    return client
+
+
+def ok_connection_error_subclass_is_not_matched(client):
+    # ok: kea-exception-handler-misses-runtime-error
+    try:
+        client.command("version-get", 4)
+    except requests.ConnectionError:
+        logger.exception("Kea connection error")

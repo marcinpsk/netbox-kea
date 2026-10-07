@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
+import requests
 from django.contrib.messages import get_messages
 from django.test import override_settings
 from django.urls import reverse
@@ -28,7 +29,9 @@ from netbox_kea.ipam_reconciliation import LeasePhase, reconcile
 
 from .kea_stub import (
     _catalogue_responses_for_subnets,
+    _http_response,
     _leases_per_subnet,
+    _raw_http_response,
     _res_page,
     _subnet_stats,
     lease_page,
@@ -489,6 +492,8 @@ class LeaseRestTest(_ViewTestBase):
                 {"stat-lease4-get": {"result": 0, "arguments": {}}},
             ),
             "reply entry without a result": ({"ip_address": "192.0.2.10"}, {"lease4-get": {"text": "no result"}}),
+            "reply is not a list": ({"ip_address": "192.0.2.10"}, {"lease4-get": _http_response({"result": 0})}),
+            "reply is not JSON": ({"ip_address": "192.0.2.10"}, {"lease4-get": _raw_http_response(b"<html>")}),
             "lease page without a record list": (
                 {"subnet_id": "10"},
                 {
@@ -504,6 +509,19 @@ class LeaseRestTest(_ViewTestBase):
             ):
                 response = self._get(4, params, responses)
                 self.assertEqual(response.status_code, 502)
+                self.assertEqual(response.json(), {"detail": "An internal error occurred"})
+
+    def test_every_kea_transport_failure_is_a_bad_gateway(self):
+        cases = {
+            "connection refused": requests.ConnectionError("refused"),
+            "timeout": requests.Timeout("slow"),
+            "HTTP error status": _http_response({"result": 1}, status=503),
+        }
+        for name, reply in cases.items():
+            with self.subTest(name):
+                response = self._get(4, {"ip_address": "192.0.2.10"}, {"lease4-get": reply})
+                self.assertEqual(response.status_code, 502)
+                self.assertEqual(response.json(), {"detail": "Could not connect to Kea server."})
 
     def test_a_dhcpv6_address_search_reads_both_kinds(self):
         prefix = lease_record("2001:db8:100:100::", type="IA_PD", prefix_len=56)

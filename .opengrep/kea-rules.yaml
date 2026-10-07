@@ -814,13 +814,16 @@ rules:
     languages: [python]
     severity: ERROR
     message: >-
-      This try catches KeaException but no clause catches RuntimeError.
-      KeaClient.check_response() raises RuntimeError for a malformed reply
+      This try catches KeaException or requests.RequestException but no clause
+      catches RuntimeError. KeaClient.command() raises RuntimeError for a reply
+      body that is not a JSON list, and check_response() for a malformed reply
       entry, for example ["ok"] from a proxy, so the request fails with HTTP 500.
-      Add RuntimeError to the clause that reports the generic error.
-      Limits: a try with an else or finally clause is not checked, and a
-      RuntimeError caught by an outer try is not seen. Suppress a true exception
-      with `# nosemgrep: kea-exception-handler-misses-runtime-error`.
+      Add RuntimeError to the clause that reports the generic error. A try around
+      server.get_client() alone catches ValueError only.
+      Limits: a try with an else or finally clause is not checked, a RuntimeError
+      caught by an outer try is not seen, and a subclass such as
+      requests.ConnectionError or an aliased requests import is not matched. Suppress a true exception with
+      `# nosemgrep: kea-exception-handler-misses-runtime-error`.
     metadata:
       category: correctness
       confidence: MEDIUM
@@ -856,6 +859,26 @@ rules:
               try:
                   ...
               except (..., KeaException, ...) as $E:
+                  ...
+          - pattern: |
+              try:
+                  ...
+              except requests.RequestException:
+                  ...
+          - pattern: |
+              try:
+                  ...
+              except requests.RequestException as $E:
+                  ...
+          - pattern: |
+              try:
+                  ...
+              except (..., requests.RequestException, ...):
+                  ...
+          - pattern: |
+              try:
+                  ...
+              except (..., requests.RequestException, ...) as $E:
                   ...
       - pattern-not: |
           try:

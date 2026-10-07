@@ -43,6 +43,8 @@ from netbox_kea.leases import (
     MalformedLeaseResponse,
 )
 from netbox_kea.tests.kea_stub import (
+    _http_response,
+    _raw_http_response,
     _subnet_stats,
     complete_lease,
     kea_client,
@@ -299,14 +301,16 @@ class TestKeaClientCommand(TestCase):
             with self.assertRaises(requests.HTTPError):
                 self.client.command(KeaCommand.VERSION_GET, None)
 
-    def test_command_raises_value_error_on_non_list_json(self):
-        with patch.object(
-            self.client._session,
-            "post",
-            return_value=_mock_http_response({"result": 0, "text": "ok"}),
-        ):
-            with self.assertRaises(ValueError):
-                self.client.command(KeaCommand.VERSION_GET, None)
+    def test_a_malformed_reply_body_raises_runtime_error_without_the_body(self):
+        cases = {
+            "not a list": _http_response({"result": 0, "text": "private body"}),
+            "not JSON": _raw_http_response(b"<html>private body</html>"),
+        }
+        for name, reply in cases.items():
+            with self.subTest(name), stub_kea({"version-get": reply}):
+                with self.assertRaises(RuntimeError) as ctx:
+                    self.client.command(KeaCommand.VERSION_GET, None)
+                self.assertNotIn("private", str(ctx.exception))
 
     def test_command_uses_timeout(self):
         resp = [{"result": 0, "text": "ok"}]
