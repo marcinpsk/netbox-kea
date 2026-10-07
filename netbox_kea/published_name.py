@@ -1,0 +1,55 @@
+# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
+# SPDX-License-Identifier: Apache-2.0
+"""The published name: the hostname that Kea gives a client for a reserved hostname and a DDNS qualifying suffix.
+
+This module is the one owner of Kea's rule. The Reservation forms, the preview and the IPAM synchronization use it.
+"""
+
+from __future__ import annotations
+
+
+def _suffix_present(name: str, suffix: str) -> bool:
+    """Return whether *name* ends in *suffix* at a label boundary, compared as Kea compares them."""
+    core = suffix.removesuffix(".")
+    if not name.endswith(core):
+        return False
+    rest = name[: len(name) - len(core)]
+    return not rest or rest.endswith(".")
+
+
+def published_name(stored: str, suffix: str) -> str:
+    """Return the name that Kea publishes for the reserved hostname *stored* under the qualifying *suffix*.
+
+    Kea does not qualify a name that ends in a dot or that already ends in the suffix. It lowers the name, and
+    NetBox gets it without a trailing dot. An empty *stored* hostname publishes no name.
+    """
+    if not stored:
+        return ""
+    name = stored
+    if suffix and not stored.endswith(".") and not _suffix_present(stored, suffix):
+        name = f"{stored}.{suffix}"
+    return name.removesuffix(".").lower()
+
+
+def stored_hostname(name: str, suffix: str) -> str:
+    """Return the hostname to store so that Kea publishes the entered *name* under the qualifying *suffix*.
+
+    A name that ends in the suffix is stored as its labels without the suffix. A single label is stored as it is, so
+    Kea qualifies it. Any other name gets a trailing dot, so Kea publishes it unchanged.
+    """
+    name = name.removesuffix(".")
+    if not name or not suffix:
+        return name
+    core = suffix.removesuffix(".")
+    if name.lower().endswith(f".{core.lower()}"):
+        labels = name[: -len(core) - 1]
+        if published_name(labels, suffix) == name.lower():
+            return labels
+    if "." not in name:
+        return name
+    return f"{name}."
+
+
+def lease_published_name(hostname: str) -> str:
+    """Return the published name of a lease: Kea stores the published name, with a trailing dot from an FQDN."""
+    return hostname.removesuffix(".")
