@@ -491,11 +491,11 @@ fails instead of skipping the modules. With real provisioning, it covers guards 
 - `snapshot()` before plugin updates (13 sites) and `KeaIpamSyncJob` writing IPAM with no
   ObjectChange: main changelog defects. With branching, merge conflict detection cannot see the
   job's edits.
-Mutation controls in a branch (D12) are complete. The rendered-response transformation disables
-mutation navigation, unsafe form submissions and HTMX requests. Focusable wrappers show the
-reason on hover and keyboard focus. Fixed tooltips remain visible outside responsive tables.
-The response tests walk provisioned-branch pages and cover native submission semantics, HTMX
-fragments and compression.
+- Mutation controls in a branch (D12) are complete. The rendered-response transformation disables
+  mutation navigation, unsafe form submissions and HTMX requests. Focusable wrappers show the
+  reason on hover and keyboard focus. Fixed tooltips remain visible outside responsive tables.
+  The response tests walk provisioned-branch pages and cover native submission semantics, HTMX
+  fragments and compression.
 
 ### Original implementation increments
 
