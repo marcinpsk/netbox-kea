@@ -47,6 +47,12 @@ NetBox plugin for the [Kea DHCP](https://www.isc.org/kea/) server. Manage your D
   column matches the client identifier against the leases of the reservation's own
   subnet, there being no reserved address to match on
 - Per-reservation DHCP options
+- The hostname field takes the name that clients get. Kea adds the effective `ddns-qualifying-suffix`
+  (Subnet, then Shared Network, then global) to a reserved hostname, except to a name that ends in a dot
+  or already ends in the suffix. The form shows a preview of the published name, and the plugin stores the
+  hostname that makes Kea publish the entered name: the labels without the suffix, a single label as entered
+  (Kea qualifies it), or any other name with a trailing dot. A saved Reservation keeps its stored hostname
+  until you edit the name
 - Journal entries on add/edit/delete
 - Validated YAML or JSON bulk transfer. Export a Complete Snapshot from one server
   or the combined view, then import it from the matching DHCPv4 or DHCPv6 Reservations page
@@ -388,9 +394,12 @@ The `Kea IPAM Sync` job runs automatically when `rqworker` is active:
 2. For each server: fetches all active leases (v4 + v6) and all reservations
 3. Creates or updates NetBox `IPAddress` objects in the server's `sync_vrf`, and links each one to the server
    and its source (lease or reservation):
-   - Leases → `status=dhcp`, `dns_name` set from the Kea hostname
-   - In-subnet reservations → `status=reserved`, `dns_name` set from the Kea hostname
+   - Leases → `status=dhcp`, `dns_name` set from the lease hostname, without a trailing dot
+   - In-subnet reservations → `status=reserved`, `dns_name` set from the published name: the reserved hostname
+     with the effective `ddns-qualifying-suffix`, as Kea gives it to the client
    - An address with both a lease and a reservation → `status=active`; the reservation hostname wins
+   - The MAC address description `dhcp_hostname: <name>` takes the same name from both sources, so a lease and
+     its reservation do not change it on each run
    - Global reservations create and change no IP address
    - The description starts with the sync marker `[kea-sync: <kind>]`. Text after the marker is an operator note,
      and the sync keeps it. To release an address from the sync, remove the marker or move it away from the start.
@@ -509,7 +518,7 @@ Known limits. NetBox gives a plugin no public way to remove one event from its q
 
 When [netbox-dns](https://github.com/peteeckel/netbox-plugin-dns) with IPAMDNSsync is installed:
 
-1. The IPAM sync sets `dns_name` on `IPAddress` objects from the Kea hostname
+1. The IPAM sync sets `dns_name` on `IPAddress` objects from the name that Kea publishes (see Background IPAM Sync)
 2. IPAMDNSsync picks up `dns_name` changes via Django signals
 3. A/AAAA/PTR records are created automatically (provided matching DNS views + zones exist)
 
