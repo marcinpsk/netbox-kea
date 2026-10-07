@@ -19,7 +19,7 @@ from utilities.views import ViewTab
 
 from . import constants
 from .constants import Family
-from .leases import DHCPv4AddressLease, Lease, LeaseDiagnostic, LeaseSnapshot, lease_record_data
+from .leases import DHCPv4AddressLease, Lease, LeaseDiagnostic, LeaseSnapshot, lease_record_data, selection_label
 from .models import Server
 
 logger = logging.getLogger(__name__)
@@ -115,6 +115,7 @@ def _lease_row(lease: Lease, now: datetime) -> dict[str, Any]:
         expiry_class = "text-warning"
     row: dict[str, Any] = {
         "lease": lease,
+        "selection": selection_label(lease),
         "ip_address": str(address),
         "_ip_sort_key": int(address),
         "family": lease.family,

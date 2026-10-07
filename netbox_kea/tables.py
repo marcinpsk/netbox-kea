@@ -369,7 +369,7 @@ class BaseLeaseTable(GenericTable):
     """Base table for DHCP lease data; subclassed for v4 and v6."""
 
     # This column is for the select checkboxes.
-    pk = ToggleColumn(verbose_name="IP Address", accessor="ip_address", visible=True)
+    pk = ToggleColumn(verbose_name="IP Address", accessor="selection", visible=True)
     ip_address = tables.Column(verbose_name="IP Address", order_by="_ip_sort_key")
     family = tables.Column(verbose_name="Family")
     kind = tables.Column(verbose_name="Kind")
@@ -421,7 +421,7 @@ class BaseLeaseTable(GenericTable):
             ' hx-post="{{ record.delete_lease_url }}"'
             ' hx-confirm="Delete lease {{ record.ip_address|escapejs }} held by {{ record.stale_lease_mac|escapejs }}?'
             ' The old device must re-request this IP via DORA."'
-            ' hx-vals=\'{"pk":"{{ record.ip_address|escapejs }}","_confirm":"1"}\'>'
+            ' hx-vals=\'{"pk":"{{ record.selection|escapejs }}","_confirm":"1"}\'>'
             '<i class="mdi mdi-delete-outline" aria-hidden="true"></i></button>'
             "{% endif %}"
             "{% endif %}"

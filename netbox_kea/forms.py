@@ -21,6 +21,7 @@ from .constants import MAX_SUBNET_ID, MIN_SUBNET_ID, Family, IPNetworkValue
 from .decimal_text import parse_decimal
 from .dhcp_options import InvalidAddress, address_list, parse_dhcp_option
 from .kea import SharedNetworkEdit, SubnetEdit, SubnetFields, description_as_shown, subnet_network
+from .leases import LeaseIdentity, parse_selection
 from .models import Server
 from .pools import Pool, parse_pool
 from .reservation_transfer import MAX_DOCUMENT_BYTES as MAX_TRANSFER_DOCUMENT_BYTES
@@ -605,16 +606,16 @@ class Leases6SearchForm(BaseLeasesSarchForm):
         ip_version = 6
 
 
-class MultipleIPField(forms.MultipleChoiceField):
-    """Form field accepting a list of IP addresses validated against a specific IP version."""
+class LeaseSelectionField(forms.MultipleChoiceField):
+    """Form field accepting a list of lease selection labels; cleans to identities keyed by canonical label."""
 
     def __init__(self, version: Family, *args, **kwargs) -> None:
         """Initialise with the required IP *version* (4 or 6)."""
         self._version = version
         super().__init__(*args, widget=forms.MultipleHiddenInput, **kwargs)
 
-    def clean(self, value: Any) -> Any:
-        """Validate and normalise each IP address in the list."""
+    def clean(self, value: Any) -> dict[str, LeaseIdentity]:
+        """Validate each label and return the identity it names, once per canonical label."""
         if not isinstance(value, list):
             raise forms.ValidationError(f"Expected a list, got {type(value)}.")
 
@@ -622,9 +623,9 @@ class MultipleIPField(forms.MultipleChoiceField):
             raise forms.ValidationError("IP address list is empty.")
 
         try:
-            return [str(IPAddress(ip, version=self._version)) for ip in value]
-        except (AddrFormatError, ValueError) as e:
-            raise forms.ValidationError("Invalid IP address.") from e
+            return dict(parse_selection(self._version, label) for label in value)
+        except (TypeError, ValueError) as e:
+            raise forms.ValidationError("Invalid IP address or delegated prefix.") from e
 
 
 class BaseLeaseDeleteForm(forms.Form):
@@ -640,15 +641,15 @@ class BaseLeaseDeleteForm(forms.Form):
 
 
 class Lease6DeleteForm(BaseLeaseDeleteForm):
-    """Delete form for DHCPv6 leases; validates a list of IPv6 addresses."""
+    """Delete form for DHCPv6 leases; validates a list of IPv6 addresses and delegated prefixes."""
 
-    pk = MultipleIPField(6)
+    pk = LeaseSelectionField(6)
 
 
 class Lease4DeleteForm(BaseLeaseDeleteForm):
     """Delete form for DHCPv4 leases; validates a list of IPv4 addresses."""
 
-    pk = MultipleIPField(4)
+    pk = LeaseSelectionField(4)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -1793,6 +1793,19 @@ class KeaClient:
         )
         return read_exact_lease(response, identity)
 
+    def lease_delete(self, identity: LeaseIdentity) -> bool:
+        """Delete the one Lease with *identity*; return ``False`` when Kea has no such Lease.
+
+        Raises:
+            KeaException: If Kea returns a result other than success or not found.
+            RuntimeError: If the reply has no result.
+
+        """
+        response = self.command(
+            LEASE_DEL[identity.family], identity.family, arguments=lookup_arguments(identity), check=(0, 3)
+        )
+        return response[0]["result"] == 0
+
     def lease_search(
         self,
         version: Family,

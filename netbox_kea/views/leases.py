@@ -29,14 +29,13 @@ from .. import constants, forms, subnet_catalogue, tables
 from ..constants import Family
 from ..ipam_reconciliation import claim
 from ..kea import (
-    LEASE_DEL,
     KeaClient,
     KeaException,
     LeaseQueryGuardError,
     LeaseQueryUnknownSubnet,
     lease_query_guard_message,
 )
-from ..leases import DHCPv4AddressLease, LeaseAbsent, LeaseFound, LeaseSnapshot, address_identity
+from ..leases import DHCPv4AddressLease, LeaseAbsent, LeaseFound, LeaseIdentity, LeaseSnapshot, address_identity
 from ..models import Server
 from ..reservations import (
     GlobalReservationScope,
@@ -559,10 +558,6 @@ class BaseServerLeasesDeleteView(GetReturnURLMixin, generic.ObjectView, metaclas
     queryset = Server.objects.all()
     default_return_url = "plugins:netbox_kea:server_list"
 
-    def delete_lease(self, client: KeaClient, ip: str) -> None:
-        """Issue a lease-del command to Kea for *ip*; silently accepts result 3 (not found)."""
-        client.command(LEASE_DEL[self.dhcp_version], self.dhcp_version, arguments={"ip-address": ip}, check=(0, 3))
-
     def get(self, request: HttpRequest, **kwargs):
         """Redirect back to the server on GET (this view is POST-only)."""
         return redirect(self.get_return_url(request, obj=self.get_object(**kwargs)))
@@ -583,7 +578,7 @@ class BaseServerLeasesDeleteView(GetReturnURLMixin, generic.ObjectView, metaclas
             messages.warning(request, str(form.errors))
             return redirect(_strip_empty_params(self.get_return_url(request, obj=instance)))
 
-        lease_ips = form.cleaned_data["pk"]
+        selected: dict[str, LeaseIdentity] = form.cleaned_data["pk"]
         return_url = _strip_empty_params(self.get_return_url(request, obj=instance))
         if "_confirm" not in request.POST:
             return render(
@@ -592,7 +587,7 @@ class BaseServerLeasesDeleteView(GetReturnURLMixin, generic.ObjectView, metaclas
                 {
                     "model": FakeLeaseModel,
                     "table": tables.LeaseDeleteTable(
-                        ({"ip": ip} for ip in lease_ips),
+                        ({"ip": label} for label in selected),
                         orderable=False,
                     ),
                     "form": form,
@@ -608,16 +603,22 @@ class BaseServerLeasesDeleteView(GetReturnURLMixin, generic.ObjectView, metaclas
             return redirect(return_url)
 
         successful_ips: list[str] = []
-        for ip in lease_ips:
+        absent_count = 0
+        for label, identity in selected.items():
             try:
-                self.delete_lease(client, ip)
-                successful_ips.append(ip)
+                deleted = client.lease_delete(identity)
             except KeaException as exc:  # noqa: PERF203
-                logger.exception("Kea error deleting lease %s on server %s", ip, instance.pk)
-                messages.error(request, f"Error deleting lease {ip}: {kea_error_hint(exc)}")
+                logger.exception("Kea error deleting lease %s on server %s", label, instance.pk)
+                messages.error(request, f"Error deleting lease {label}: {kea_error_hint(exc)}")
             except (requests.RequestException, RuntimeError, ValueError):
-                logger.exception("Error deleting lease %s on server %s", ip, instance.pk)
-                messages.error(request, f"Error deleting lease {ip}: see server logs for details.")
+                logger.exception("Error deleting lease %s on server %s", label, instance.pk)
+                messages.error(request, f"Error deleting lease {label}: see server logs for details.")
+            else:
+                if deleted:
+                    successful_ips.append(label)
+                else:
+                    absent_count += 1
+                    messages.warning(request, f"Lease {label} was not found in Kea; nothing was deleted.")
 
         if successful_ips:
             messages.success(request, f"Deleted {len(successful_ips)} DHCPv{self.dhcp_version} lease(s).")
@@ -633,7 +634,7 @@ class BaseServerLeasesDeleteView(GetReturnURLMixin, generic.ObjectView, metaclas
                 request=request,
             )
 
-        failed_count = len(lease_ips) - len(successful_ips)
+        failed_count = len(selected) - len(successful_ips) - absent_count
         if failed_count:
             messages.warning(request, f"Failed to delete {failed_count} lease(s). See above for details.")
         if request.headers.get("HX-Request"):

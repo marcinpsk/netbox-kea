@@ -27,7 +27,6 @@ utilities.py::parse_lease_csv	18
 utilities.py::parse_subnet_stats	7
 views/_base.py::_option_payload	3
 views/dhcp_plugin_sync.py::_extract_dhcp_conf	2
-views/leases.py::BaseServerLeasesDeleteView.delete_lease	1
 views/leases.py::_BaseLeaseAddView.post	4
 views/leases.py::_set_lease_reservation_fields	2
 views/options.py::BaseServerOptionDefAddView.get	1

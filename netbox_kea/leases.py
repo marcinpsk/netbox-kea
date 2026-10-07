@@ -183,6 +183,25 @@ def allocation_identities(family: Family, address: str) -> tuple[LeaseIdentity, 
     return tuple(LeaseIdentity(family=family, kind=kind, address=ipaddress.ip_address(address)) for kind in kinds)
 
 
+def selection_label(lease: Lease) -> str:
+    """Return the label that selects *lease*: its address, or its prefix for a delegated prefix."""
+    return str(lease.prefix) if isinstance(lease, DHCPv6PrefixLease) else str(lease.identity.address)
+
+
+def parse_selection(family: Family, label: str) -> tuple[str, LeaseIdentity]:
+    """Return the canonical form of a :func:`selection_label` and the identity it names.
+
+    Raises:
+        ValueError: If *label* is not an address or a delegated prefix of *family*.
+
+    """
+    if "/" not in label:
+        identity = address_identity(family, label)
+        return str(identity.address), identity
+    prefix = ipaddress.ip_network(label)
+    return str(prefix), LeaseIdentity(family=family, kind="delegated-prefix", address=prefix.network_address)
+
+
 class DHCPv4Binding(_Value):
     """The DHCPv4 client identifiers of one Lease; ``None`` is an identifier that Kea left empty or omitted."""
 
@@ -932,9 +951,9 @@ def _raw_address(raw: Any, family: int) -> IPAddressValue | None:
 
 
 def lookup_arguments(identity: LeaseIdentity) -> dict[str, Any]:
-    """Return the ``lease{4,6}-get`` arguments for *identity*."""
+    """Return the ``lease{4,6}-get`` and ``lease{4,6}-del`` arguments for *identity*."""
     arguments: dict[str, Any] = {"ip-address": str(identity.address)}
-    # Without the type, Kea 3.2 reports a delegated prefix as not found.
+    # Without the type, Kea 3.2 reports a delegated prefix as not found and deletes nothing.
     if identity.kind == "delegated-prefix":
         arguments["type"] = _PREFIX_TYPE
     return arguments
