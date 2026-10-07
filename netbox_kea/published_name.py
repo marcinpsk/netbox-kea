@@ -44,6 +44,7 @@ def stored_hostname(name: str, suffix: str) -> str:
 
     A name that ends in the suffix is stored as its labels without the suffix. A single label is stored as it is, so
     Kea qualifies it. Any other name gets a trailing dot, so Kea publishes it unchanged.
+    The suffix match ignores case, because Kea publishes the name in lower case.
     """
     name = name.removesuffix(".")
     if not name or not suffix:

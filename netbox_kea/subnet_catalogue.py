@@ -300,10 +300,10 @@ class _ConfigurationObservation:
     diagnostics: tuple[Diagnostic, ...]
     available: bool
     complete: bool
+    global_qualifying_suffix: str | None
     configuration_hash: str | None = None
     quarantined_ids: frozenset[int] = frozenset()
     quarantined_networks: frozenset[IPNetworkValue] = frozenset()
-    global_qualifying_suffix: str | None = None
 
 
 def _validate_family(family: int) -> Family:
@@ -346,6 +346,7 @@ def _unavailable_configuration(code: str, message: str) -> _ConfigurationObserva
         diagnostics=(_diagnostic(code, message, "configuration"),),
         available=False,
         complete=False,
+        global_qualifying_suffix=None,
     )
 
 
@@ -951,7 +952,9 @@ class MutationScope(_SubnetLookup, AbstractContextManager["MutationScope"]):
 
 
 # A check read sends no config-get, so its Subnets are verified by the subnet{v}-list read alone.
-_CONFIGURATION_NOT_READ = _ConfigurationObservation(facts=(), diagnostics=(), available=False, complete=False)
+_CONFIGURATION_NOT_READ = _ConfigurationObservation(
+    facts=(), diagnostics=(), available=False, complete=False, global_qualifying_suffix=None
+)
 
 
 class IdentityRead(_SubnetLookup):
