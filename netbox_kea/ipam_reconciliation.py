@@ -626,7 +626,13 @@ def claim(
             before_write=before_write if required else None,
         )
         ip = IPAddress.objects.filter(vrf_id=server.sync_vrf_id, address__net_host=row.address).first()
-        resolved_macs = {} if outcome == "conflict" else _sync_row_macs(row, required=required, checked=checked)
+        resolved_macs = (
+            {}
+            if outcome == "conflict"
+            else _sync_row_macs(
+                replace(row, mac_addresses=_mac_names(server, source, row)), required=required, checked=checked
+            )
+        )
         if row.facts is None and not row.disagreement and outcome == "unchanged":
             if ip is not None and not _is_owned_description(ip.description):
                 return AddressClaim(row.address, "conflict", ip)
@@ -824,7 +830,7 @@ def _run_phase(server: Server, family: Family, phase: Phase, report: SyncReport)
     for row, outcome in rows:
         _count(report, row.address, outcome)
         if outcome != "conflict":
-            for hw_address, hostname in row.mac_addresses:
+            for hw_address, hostname in _mac_names(server, phase.source, row):
                 sync_mac_address(hw_address, hostname)
     return None if phase.source in report.incomplete else cutoff
 
@@ -1108,19 +1114,40 @@ def _applied_facts(source: str, facts: _Facts, others: Iterable[IPAMOwnershipLin
     makes no claim: a lease and a Reservation of one address often name the host differently. The hostname of a live
     Reservation link wins, so a lease does not change the DNS name then.
     """
-    hostname = facts.hostname
     for link in others:
         if not _is_live(link):
             continue
         theirs = _Facts(**link.facts)
         if theirs.prefix_length != facts.prefix_length:
             return None
-        if link.source == source:
-            if _merge(facts, theirs) is None:
-                return None
-        elif link.source == RESERVATION and theirs.hostname:
-            hostname = ""
-    return replace(facts, hostname=hostname)
+        if link.source == source and _merge(facts, theirs) is None:
+            return None
+    return replace(facts, hostname="") if _yields_to_reservation(source, others) else facts
+
+
+def _yields_to_reservation(source: str, links: Iterable[IPAMOwnershipLink]) -> bool:
+    """Return whether a live Reservation link with a hostname names the host instead of a report of *source*.
+
+    The rule applies to the DNS name and to the MAC address description alike.
+    """
+    return source != RESERVATION and any(
+        _is_live(link) and link.source == RESERVATION and link.facts["hostname"] for link in links
+    )
+
+
+def _mac_names(server: Server, source: str, row: _Report) -> tuple[tuple[str, str], ...]:
+    """Return the (hardware address, hostname) pairs that the MAC sync writes for *row* after its claim.
+
+    A report that yields to a Reservation hostname writes no hostname, so a lease does not rename a reserved host.
+    """
+    if not row.mac_addresses or source == RESERVATION:
+        return row.mac_addresses
+    links = IPAMOwnershipLink.objects.filter(
+        ip_address__vrf_id=server.sync_vrf_id, ip_address__address__net_host=row.address
+    )
+    if _yields_to_reservation(source, links):
+        return tuple((hardware, "") for hardware, _hostname in row.mac_addresses)
+    return row.mac_addresses
 
 
 def _is_live(link: IPAMOwnershipLink) -> bool:
