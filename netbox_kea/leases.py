@@ -988,6 +988,17 @@ def read_exact_lease(response: Any, identity: LeaseIdentity) -> ExactLeaseResult
     return LeaseFound(lease=lease)
 
 
+def read_deletion(response: Any) -> bool:
+    """Read one ``lease{4,6}-del`` reply: ``True`` when Kea deleted the Lease, ``False`` when it held none.
+
+    Raises:
+        MalformedLeaseResponse: If the envelope is unusable.
+
+    """
+    result, _arguments = _reply(response)
+    return result == 0
+
+
 def _edited_arguments(raw: Mapping[str, Any], fresh: Lease, edit: LeaseEdit) -> dict[str, Any]:
     """Return a copy of the fresh Kea body with only the written fields changed.
 

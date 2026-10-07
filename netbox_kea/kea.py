@@ -43,6 +43,7 @@ from .leases import (
     LeaseSnapshot,
     allocation_identities,
     lookup_arguments,
+    read_deletion,
     read_exact_lease,
     read_lease_collection,
     read_lease_page,
@@ -1798,13 +1799,13 @@ class KeaClient:
 
         Raises:
             KeaException: If Kea returns a result other than success or not found.
-            RuntimeError: If the reply has no result.
+            MalformedLeaseResponse: If the reply envelope is unusable.
 
         """
         response = self.command(
             LEASE_DEL[identity.family], identity.family, arguments=lookup_arguments(identity), check=(0, 3)
         )
-        return response[0]["result"] == 0
+        return read_deletion(response)
 
     def lease_search(
         self,

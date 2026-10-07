@@ -290,6 +290,25 @@ class LeaseDeleteTest(_ViewTestBase):
         self.assertEqual(received, [])
         self.assertFalse(JournalEntry.objects.filter(assigned_object_id=self.server.pk).exists())
 
+    def test_an_empty_delete_reply_fails_that_lease_and_the_rest_continue(self):
+        store, respond = _deleting_kea(("IA_NA", "2001:db8:1::11"))
+        with stub_kea({"lease6-del": queued([], respond)}):
+            response = self.client.post(
+                self._delete_url(), {"pk": ["2001:db8:1::10", "2001:db8:1::11"], "_confirm": "1"}
+            )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(store, set())
+        messages = [str(message) for message in get_messages(response.wsgi_request)]
+        self.assertEqual(
+            messages,
+            [
+                "Error deleting lease 2001:db8:1::10: see server logs for details.",
+                "Deleted 1 DHCPv6 lease(s).",
+                "Failed to delete 1 lease(s). See above for details.",
+            ],
+        )
+
     def test_a_dhcpv4_delete_refuses_a_prefix_before_kea(self):
         with stub_kea({}) as kea:
             response = self.client.post(self._delete_url(4), {"pk": ["192.0.2.0/24"], "_confirm": "1"})
