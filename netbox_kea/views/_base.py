@@ -19,7 +19,7 @@ from netbox.tables import BaseTable
 from ..config_write import ConfigChangeOutcome, ConfigChangeRejected, RejectionReason
 from ..constants import Family
 from ..dhcp_options import DHCPOption
-from ..kea import STAT_LEASE_GET, KeaException
+from ..kea import KeaException
 from ..models import Server
 from ..server_configuration import Diagnostic, SharedNetwork
 from ..subnet_catalogue import ConfiguredSubnet, VerifiedSubnet
@@ -220,14 +220,15 @@ def _diagnostic_messages(request: HttpRequest, diagnostics: tuple[Diagnostic, ..
 
 def _enrich_subnet_statistics(rows: list[dict[str, Any]], server: Server, version: Family) -> None:
     """Add available utilization measurements to Subnet presentation rows."""
-    from ..utilities import parse_subnet_stats
-
     try:
-        client = server.get_client(version=version)
-        response = client.command(STAT_LEASE_GET[version], version)
-        stats = parse_subnet_stats(cast(list[dict[str, Any]], response), version)
-        for row in rows:
-            if row["id"] in stats:
-                row.update(stats[row["id"]])
-    except (KeaException, requests.RequestException, KeyError, ValueError, TypeError, RuntimeError):
-        logger.debug("stat_cmds hook unavailable or failed", exc_info=True)
+        utilization = server.get_client(version=version).subnet_utilization(version)
+    except KeaException:
+        logger.debug("stat_cmds hook unavailable", exc_info=True)
+        return
+    except (requests.RequestException, RuntimeError, ValueError):
+        logger.warning("Could not read Subnet utilization from server %s", server.pk, exc_info=True)
+        return
+    for row in rows:
+        if (counts := utilization.get(row["id"])) is not None:
+            pct = round(counts.assigned / counts.total * 100) if counts.total > 0 else 0
+            row.update(total=counts.total, assigned=counts.assigned, utilization=f"{pct}%", utilization_pct=pct)

@@ -31,6 +31,7 @@ from netbox_kea.kea import (
     MalformedReply,
     SubnetEdit,
     SubnetFields,
+    SubnetUtilization,
     check_response,
     lease_query_guard_message,
 )
@@ -765,6 +766,61 @@ class TestDHCPEnable(TestCase):
         self.assertIsNone(result)
 
 
+def _utilization_reply(columns, rows):
+    return {"result": 0, "arguments": {"result-set": {"columns": columns, "rows": rows}}}
+
+
+class TestSubnetUtilization(TestCase):
+    """KeaClient.subnet_utilization reads ``stat-lease{4,6}-get`` for every Subnet of the family."""
+
+    def setUp(self):
+        self.client = kea_client(url="http://kea:8000")
+
+    def test_v4_counts_addresses_per_subnet(self):
+        # Kea 3.2.0 reply shape, including the columns the client does not read.
+        columns = [
+            "subnet-id",
+            "total-addresses",
+            "cumulative-assigned-addresses",
+            "assigned-addresses",
+            "declined-addresses",
+        ]
+        reply = _utilization_reply(columns, [[1, 100, 40, 25, 0], [2, 50, 50, 50, 1]])
+        with stub_kea({"stat-lease4-get": reply}) as kea:
+            utilization = self.client.subnet_utilization(4)
+        self.assertEqual(utilization, {1: SubnetUtilization(100, 25), 2: SubnetUtilization(50, 50)})
+        self.assertEqual(kea.commands(), ["stat-lease4-get"])
+        self.assertNotIn("arguments", kea.bodies("stat-lease4-get")[0])
+
+    def test_v6_counts_non_temporary_addresses(self):
+        reply = _utilization_reply(["subnet-id", "total-nas", "assigned-nas", "assigned-pds"], [[10, 2**64, 3, 7]])
+        with stub_kea({"stat-lease6-get": reply}):
+            self.assertEqual(self.client.subnet_utilization(6), {10: SubnetUtilization(2**64, 3)})
+
+    def test_no_statistics_is_an_empty_mapping(self):
+        with stub_kea({"stat-lease4-get": {"result": 3, "arguments": {}, "text": "no matching data"}}):
+            self.assertEqual(self.client.subnet_utilization(4), {})
+
+    def test_an_unloaded_hook_raises_kea_exception(self):
+        with stub_kea({"stat-lease4-get": {"result": 2, "text": "unknown command"}}), self.assertRaises(KeaException):
+            self.client.subnet_utilization(4)
+
+    def test_malformed_statistics_are_rejected(self):
+        columns = ["subnet-id", "total-addresses", "assigned-addresses"]
+        cases = (
+            ([], "one valid result"),
+            ({"result": 0, "arguments": None}, "malformed statistics"),
+            (_utilization_reply(["total-addresses", "assigned-addresses"], [[100, 25]]), "omitted required"),
+            (_utilization_reply(columns, [[1, 100, 50], [2]]), "malformed statistics row"),
+            (_utilization_reply(columns, [[1, None, None]]), "invalid lease count"),
+            (_utilization_reply(columns, [["1", 100, 25]]), "invalid lease count"),
+        )
+        for reply, message in cases:
+            with self.subTest(message=message), stub_kea({"stat-lease4-get": reply}):
+                with self.assertRaisesRegex(RuntimeError, message):
+                    self.client.subnet_utilization(4)
+
+
 # TestLeaseUpdate
 # ---------------------------------------------------------------------------
 
@@ -1372,7 +1428,7 @@ class TestLeaseSearch(TestCase):
     def test_malformed_statistics_are_rejected(self):
         columns = ["subnet-id", "assigned-addresses", "declined-addresses"]
         cases = (
-            ([], "empty reply"),
+            ([], "one valid result"),
             ({"result": 0, "arguments": {}}, "malformed statistics"),
             (
                 {"result": 0, "arguments": {"result-set": {"columns": ["subnet-id"], "rows": [[12]]}}},

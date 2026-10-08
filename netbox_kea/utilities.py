@@ -267,66 +267,6 @@ def format_option_data(option_list: list[dict[str, Any]], version: Family) -> di
     return result
 
 
-def parse_subnet_stats(stat_response: list[dict[str, Any]], version: Family) -> dict[int, dict[str, Any]]:
-    """Parse a ``stat-lease{4|6}-get`` response into a per-subnet stats dict.
-
-    Args:
-        stat_response: Raw Kea API response list from ``stat-lease4-get`` /
-            ``stat-lease6-get``.
-        version: DHCP version (4 or 6) — determines which column names to look for.
-
-    Returns:
-        ``{subnet_id: {"total": N, "assigned": M, "utilization": "X%"}}`` mapping.
-        Returns an empty dict when the response is missing or malformed.
-
-    """
-    if not isinstance(stat_response, list) or not stat_response or not isinstance(stat_response[0], dict):
-        return {}
-    if stat_response[0].get("result") != 0:
-        return {}
-    arguments = stat_response[0].get("arguments")
-    if not isinstance(arguments, dict):
-        return {}
-    result_set = arguments.get("result-set")
-    if not isinstance(result_set, dict):
-        return {}
-    columns_raw = result_set.get("columns")
-    columns: list[str] = columns_raw if isinstance(columns_raw, list) else []
-    rows_raw = result_set.get("rows")
-    rows: list[list] = rows_raw if isinstance(rows_raw, list) else []
-
-    total_col = "total-addresses" if version == 4 else "total-nas"
-    assigned_col = "assigned-addresses" if version == 4 else "assigned-nas"
-
-    try:
-        id_idx = columns.index("subnet-id")
-        total_idx = columns.index(total_col)
-        assigned_idx = columns.index(assigned_col)
-    except ValueError:
-        return {}
-
-    stats: dict[int, dict[str, Any]] = {}
-    min_len = max(id_idx, total_idx, assigned_idx) + 1
-    for row in rows:
-        if not isinstance(row, (list, tuple)) or len(row) < min_len:
-            continue
-        try:
-            subnet_id = int(row[id_idx])
-        except (TypeError, ValueError):
-            continue
-        try:
-            total = int(row[total_idx])
-        except (TypeError, ValueError):
-            total = 0
-        try:
-            assigned = int(row[assigned_idx])
-        except (TypeError, ValueError):
-            assigned = 0
-        pct = round(assigned / total * 100) if total > 0 else 0
-        stats[subnet_id] = {"total": total, "assigned": assigned, "utilization": f"{pct}%", "utilization_pct": pct}
-    return stats
-
-
 def check_dhcp_enabled(instance: Server, version: Family) -> HttpResponse | None:
     """Return a redirect to the server detail page if the requested DHCP version is disabled, else ``None``."""
     if (version == 6 and instance.dhcp6) or (version == 4 and instance.dhcp4):

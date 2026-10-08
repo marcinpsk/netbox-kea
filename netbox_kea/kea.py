@@ -381,6 +381,42 @@ class _SubnetLeaseCounts(NamedTuple):
     declined: int
 
 
+class SubnetUtilization(NamedTuple):
+    """Address counts that ``stat_cmds`` reports for one Subnet; DHCPv6 counts non-temporary addresses."""
+
+    total: int
+    assigned: int
+
+
+def _stat_lease_counts(command: KeaCommand, reply: KeaResponse, names: Sequence[str]) -> dict[int, tuple[int, ...]]:
+    """Return the *names* counts of each Subnet row of one ``stat-lease{4,6}-get`` reply.
+
+    Raises:
+        RuntimeError: If the result set, a column, a row or a count is malformed.
+
+    """
+    arguments = reply.get("arguments")
+    result_set = arguments.get("result-set") if isinstance(arguments, dict) else None
+    columns = result_set.get("columns") if isinstance(result_set, dict) else None
+    rows = result_set.get("rows") if isinstance(result_set, dict) else None
+    if not isinstance(columns, list) or not isinstance(rows, list):
+        raise RuntimeError(f"{command.value} returned malformed statistics.")
+    try:
+        indexes = [columns.index(name) for name in ("subnet-id", *names)]
+    except ValueError as exc:
+        raise RuntimeError(f"{command.value} omitted required statistics columns.") from exc
+
+    counts: dict[int, tuple[int, ...]] = {}
+    for row in rows:
+        if not isinstance(row, (list, tuple)) or len(row) <= max(indexes):
+            raise RuntimeError(f"{command.value} returned a malformed statistics row.")
+        subnet_id, *values = (row[index] for index in indexes)
+        if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in (subnet_id, *values)):
+            raise RuntimeError(f"{command.value} returned an invalid lease count.")
+        counts[subnet_id] = tuple(values)
+    return counts
+
+
 def _lease_cursor(version: int, cursor: str | None) -> IPAddressValue | None:
     """Return the parsed page cursor of one DHCP family, or ``None`` for the start of the scope."""
     if cursor is None:
@@ -1960,50 +1996,42 @@ class KeaClient:
                 rather than treat an unmeasured Subnet as an empty one.
 
         """
-        command = STAT_LEASE_GET[version].value
-        response = self.command(STAT_LEASE_GET[version], version, arguments={"subnet-id": subnet_id}, check=(0, 3))
-        if not response or not isinstance(response[0], dict):
-            raise RuntimeError(f"{command} returned a malformed response.")
-        if response[0].get("result") == 3:
-            raise LeaseQueryPreflightUnavailable
-        arguments = response[0].get("arguments")
-        result_set = arguments.get("result-set") if isinstance(arguments, dict) else None
-        columns = result_set.get("columns") if isinstance(result_set, dict) else None
-        rows = result_set.get("rows") if isinstance(result_set, dict) else None
-        if not isinstance(columns, list) or not isinstance(rows, list):
-            raise RuntimeError(f"{command} returned malformed statistics.")
-
-        count_columns = (
-            ["assigned-addresses", "declined-addresses"]
+        command = STAT_LEASE_GET[version]
+        reply = self._one_command(command, version, {"subnet-id": subnet_id}, (0, 3))
+        names = (
+            ("assigned-addresses", "declined-addresses")
             if version == 4
-            else ["assigned-nas", "declined-addresses", "assigned-pds"]
+            else ("assigned-nas", "declined-addresses", "assigned-pds")
         )
-        try:
-            subnet_index = columns.index("subnet-id")
-            count_indexes = [columns.index(name) for name in count_columns]
-        except ValueError as exc:
-            raise RuntimeError(f"{command} omitted required statistics columns.") from exc
+        if reply["result"] == 3 or (counts := _stat_lease_counts(command, reply, names).get(subnet_id)) is None:
+            raise LeaseQueryPreflightUnavailable
+        assigned, declined, *assigned_pds = counts
+        if assigned < declined:
+            raise RuntimeError(f"{command.value} returned inconsistent lease counts.")
+        delegated = assigned_pds[0] if assigned_pds else 0
+        return _SubnetLeaseCounts(
+            covered=assigned + delegated,
+            active=assigned - declined + delegated,
+            declined=declined,
+        )
 
-        for row in rows:
-            if not isinstance(row, (list, tuple)) or len(row) <= max(subnet_index, *count_indexes):
-                raise RuntimeError(f"{command} returned a malformed statistics row.")
-            if row[subnet_index] != subnet_id:
-                continue
-            values = [row[index] for index in count_indexes]
-            if any(isinstance(count, bool) or not isinstance(count, int) or count < 0 for count in values):
-                raise RuntimeError(f"{command} returned an invalid lease count.")
-            assigned, declined, *assigned_pds = values
-            if assigned < declined:
-                raise RuntimeError(f"{command} returned inconsistent lease counts.")
-            delegated = assigned_pds[0] if assigned_pds else 0
-            return _SubnetLeaseCounts(
-                covered=assigned + delegated,
-                active=assigned - declined + delegated,
-                declined=declined,
-            )
-        # Kea knows no statistics for this Subnet, so the guard has nothing to size the
-        # query with. Report it as unavailable instead of reading it as zero leases.
-        raise LeaseQueryPreflightUnavailable
+    def subnet_utilization(self, version: Family) -> dict[int, SubnetUtilization]:
+        """Return the address counts of each Subnet of the family from ``stat_cmds``, by Subnet ID.
+
+        Raises:
+            KeaException: If Kea returns a failure result, for example when ``stat_cmds`` is not loaded.
+            RuntimeError: If the reply is malformed.
+
+        """
+        command = STAT_LEASE_GET[version]
+        reply = self._one_command(command, version, None, (0, 3))
+        if reply["result"] == 3:
+            return {}
+        names = ("total-addresses", "assigned-addresses") if version == 4 else ("total-nas", "assigned-nas")
+        return {
+            subnet_id: SubnetUtilization(*counts)
+            for subnet_id, counts in _stat_lease_counts(command, reply, names).items()
+        }
 
     def lease_get_page(
         self,

@@ -24,7 +24,6 @@ mappers/kea_to_dhcp.py::parse_dhcp_config	6
 reservation_transfer.py::_parse_options	3
 tables.py::<module>	1
 utilities.py::parse_lease_csv	18
-utilities.py::parse_subnet_stats	7
 views/_base.py::_option_payload	3
 views/dhcp_plugin_sync.py::_extract_dhcp_conf	2
 views/leases.py::_BaseLeaseAddView.post	4
