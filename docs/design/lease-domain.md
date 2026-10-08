@@ -16,8 +16,10 @@ record the operator's answers. Issue 291 implements the typed values and observa
 combined views, exports, REST, Reservation matching and the IPAM lease phase. Issue 293 moves the
 actions to them: Edit and Delete carry the `ShownLease` facts and read the target again in `KeaClient`
 before a change, creation and CSV import send typed requests, Reserve fills the prefix field for a
-delegated prefix, and the lease signals carry typed values. The IPAM lease phase keeps its address-only
-ownership until issue 294 lands.
+delegated prefix, and the lease signals carry typed values. Issue 294 adds the `lease-prefix` ownership
+source: the job reads one Lease Snapshot for its address and delegated-prefix phases, both take only Current
+Leases, a manual Sync claims a delegated prefix as a Prefix, and a recorded allocation kind repairs the IP
+addresses that earlier releases made of delegated prefixes.
 
 ## Accepted decisions
 

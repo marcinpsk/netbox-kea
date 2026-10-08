@@ -18,6 +18,7 @@ from netbox.models.features import ChangeLoggingMixin, JobsMixin
 from . import branching
 from .constants import Family
 from .kea import KeaClient
+from .leases import AllocationKind
 from .plugin_settings import plugin_setting
 from .reservations import MAX_IDENTITY_LENGTH
 
@@ -148,7 +149,10 @@ class Server(JobsMixin, NetBoxModel):
     sync_leases_enabled = models.BooleanField(
         verbose_name="Sync Leases",
         default=True,
-        help_text="Sync active DHCP leases as NetBox IP Addresses for this server.",
+        help_text=(
+            "Sync current DHCP address leases as NetBox IP Addresses for this server. With Sync Prefixes also on,"
+            " sync current DHCPv6 delegated-prefix leases as NetBox Prefixes."
+        ),
     )
     sync_reservations_enabled = models.BooleanField(
         verbose_name="Sync Reservations",
@@ -158,7 +162,10 @@ class Server(JobsMixin, NetBoxModel):
     sync_prefixes_enabled = models.BooleanField(
         verbose_name="Sync Prefixes",
         default=True,
-        help_text="Sync Kea subnets as NetBox IP Prefixes for this server.",
+        help_text=(
+            "Sync Kea subnets as NetBox IP Prefixes for this server. With Sync Leases also on,"
+            " sync current DHCPv6 delegated-prefix leases as NetBox Prefixes."
+        ),
     )
     sync_ip_ranges_enabled = models.BooleanField(
         verbose_name="Sync IP Ranges",
@@ -364,7 +371,10 @@ class SyncConfig(models.Model):
     )
     sync_leases_enabled = models.BooleanField(
         default=True,
-        help_text="Sync active Kea leases to NetBox IPAM as IP addresses.",
+        help_text=(
+            "Sync current Kea address leases to NetBox IPAM as IP addresses. With Prefix sync also on,"
+            " sync current DHCPv6 delegated-prefix leases as Prefixes."
+        ),
     )
     sync_reservations_enabled = models.BooleanField(
         default=True,
@@ -372,7 +382,10 @@ class SyncConfig(models.Model):
     )
     sync_prefixes_enabled = models.BooleanField(
         default=True,
-        help_text="Sync Kea subnets to NetBox IPAM as IP Prefixes.",
+        help_text=(
+            "Sync Kea subnets to NetBox IPAM as IP Prefixes. With lease sync also on,"
+            " sync current DHCPv6 delegated-prefix leases as Prefixes."
+        ),
     )
     sync_ip_ranges_enabled = models.BooleanField(
         default=True,
@@ -513,6 +526,7 @@ class IPAMOwnershipSource(models.TextChoices):
     SUBNET = "subnet", "Subnet"
     POOL = "pool", "Pool"
     DELEGATED_PREFIX = "delegated-prefix", "Delegated prefix"
+    LEASE_PREFIX = "lease-prefix", "Delegated-prefix lease"
 
 
 OWNED_OBJECT_KEYS = ("ip_address", "prefix", "ip_range")
@@ -569,6 +583,16 @@ class IPAMOwnershipLink(models.Model):
         help_text="The confirmation sequence number that a run took when it last confirmed the link.",
     )
     adopted: models.BooleanField = models.BooleanField(default=False)
+    allocation_kind: models.CharField = models.CharField(
+        max_length=16,
+        blank=True,
+        default="",
+        choices=[(kind, kind.replace("-", " ").capitalize()) for kind in get_args(AllocationKind)],
+        help_text=(
+            "For a lease link: the allocation kind of the lease that the link came from;"
+            " empty when it is unknown (a DHCPv6 lease link from before the kind was recorded)."
+        ),
+    )
     stale_mark: models.BigIntegerField = models.BigIntegerField(
         null=True,
         blank=True,
@@ -590,6 +614,10 @@ class IPAMOwnershipLink(models.Model):
             models.CheckConstraint(
                 condition=models.Q(source__in=IPAMOwnershipSource.values),
                 name="ipamownershiplink_source",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(allocation_kind="") | models.Q(source=IPAMOwnershipSource.LEASE),
+                name="ipamownershiplink_allocation_kind",
             ),
             *(
                 models.UniqueConstraint(

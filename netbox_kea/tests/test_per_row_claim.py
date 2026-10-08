@@ -17,7 +17,7 @@ from netbox_kea.tests.kea_stub import (
     typed_lease,
 )
 from netbox_kea.tests.test_integration_dhcp_plugin import _catalogue
-from netbox_kea.tests.utils import plugins_config
+from netbox_kea.tests.utils import lease_phase, plugins_config
 
 _LEASE = {"ip-address": "198.18.0.10", "hostname": "host.example.com", "subnet-id": 1}
 
@@ -32,7 +32,7 @@ class PerRowLeaseCleanupTest(TestCase):
     def test_lease_sync_uses_the_same_kea_subnet_facts_as_reconciliation(self):
         from ipam.models import Prefix
 
-        from netbox_kea.ipam_reconciliation import LeasePhase, reconcile
+        from netbox_kea.ipam_reconciliation import reconcile
         from netbox_kea.models import IPAMOwnershipLink
         from netbox_kea.tests.test_jobs import _lease_page
 
@@ -43,9 +43,8 @@ class PerRowLeaseCleanupTest(TestCase):
             name="second-owner", ca_url="https://second.example.com", dhcp4=True, dhcp6=False
         )
         lease = complete_lease({"ip-address": "198.18.0.10", "hostname": "", "subnet-id": 1})
-        phase = LeasePhase(max_leases=None, subnet_prefix_lengths={1: 24})
         with stub_kea({"lease4-get-page": _lease_page([lease])}):
-            reconcile(second, 4, [phase])
+            reconcile(second, 4, [lease_phase(second, 4, {1: 24})])
         self.assertFalse(Prefix.objects.exists())
         with stub_kea({**_catalogue_responses(4, 1, "198.18.0.0/24"), "lease4-get": {"result": 0, "arguments": lease}}):
             response = self.client.post(
@@ -56,7 +55,7 @@ class PerRowLeaseCleanupTest(TestCase):
         self.assertNotContains(response, "Owner disagreement")
         self.assertContains(response, "198.18.0.10/24")
         with stub_kea({"lease4-get-page": _lease_page([{**lease, "hostname": "updated.example.com"}])}):
-            report = reconcile(second, 4, [phase])
+            report = reconcile(second, 4, [lease_phase(second, 4, {1: 24})])
         self.assertFalse(report.disagreements)
         self.assertEqual(IPAddress.objects.get(address__net_host="198.18.0.10").dns_name, "updated.example.com")
 
