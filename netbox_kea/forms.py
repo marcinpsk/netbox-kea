@@ -631,9 +631,8 @@ class LeaseSelectionField(forms.MultipleChoiceField):
 class BaseLeaseDeleteForm(forms.Form):
     """Base form for confirming bulk deletion of DHCP leases."""
 
-    # NetBox v4.4 requires a background_job field for the bulk_delete.html
-    # template.
-    background_job = forms.CharField(required=False, widget=VeryHiddenInput, label="background_job")
+    # NetBox 4.4+ bulk_delete.html renders this field and its label; an empty label shows nothing.
+    background_job = forms.CharField(required=False, widget=VeryHiddenInput, label="")
     return_url = forms.CharField(
         required=False,
         widget=forms.HiddenInput(),

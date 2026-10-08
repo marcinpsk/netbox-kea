@@ -837,6 +837,12 @@ class TestLeaseDeleteFullFlow(_ViewTestBase):
         self.assertContains(response, "10.0.0.1")
         self.assertContains(response, "10.0.0.2")
 
+    def test_confirmation_page_shows_no_background_job_label(self):
+        """NetBox renders the label of the hidden background_job field, so the field has no label."""
+        response = self.client.post(self._url(), {"pk": ["10.0.0.1"]})
+        self.assertContains(response, "Confirm Bulk Deletion")
+        self.assertNotContains(response, "background_job")
+
     def test_post_confirmed_calls_kea_and_redirects(self):
         """POST with _confirm=1 must call Kea lease4-del and redirect."""
         with _lease_stub({"lease4-del": {"result": 0}}) as kea:
