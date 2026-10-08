@@ -75,7 +75,7 @@
         <table class="table table-bordered mb-0">
           <thead>
             <tr>
-              <th>Row</th>
+              <th>Line</th>
               <th>Address</th>
               <th>Error</th>
             </tr>
@@ -83,7 +83,7 @@
           <tbody>
             {% for item in result.error_rows %}
             <tr class="table-danger">
-              <td>{{ item.row }}</td>
+              <td>{{ item.line }}</td>
               <td><code>{{ item.address }}</code></td>
               <td>{{ item.error }}</td>
             </tr>
