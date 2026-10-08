@@ -776,6 +776,44 @@ class TestLeaseReservationIdentityMatching(_ViewTestBase):
             ("span", ["badge", "text-bg-secondary"], "Host reservation", _HOST_RESERVATION_TITLE),
         )
 
+    def test_a_prefix_only_reservation_matched_by_identity_is_not_a_host_reservation(self):
+        lease = complete_lease(
+            {
+                "ip-address": "2001:db8:20::20",
+                "duid": "00:01:02:03",
+                "iaid": 1,
+                "subnet-id": 20,
+                "cltt": 1_700_000_000,
+                "valid-lft": 3600,
+                "state": 0,
+            }
+        )
+
+        def lease6_get(body):
+            if "type" in body["arguments"]:
+                return {"result": 3, "text": "Lease not found."}
+            return {"result": 0, "arguments": lease}
+
+        responses = _catalogue_responses(6, 20, "2001:db8:20::/64")
+        responses.update(
+            {
+                "lease6-get": lease6_get,
+                "reservation-get": queued(
+                    {"result": 3},
+                    _res_get({"subnet-id": 20, "duid": "00:01:02:03", "prefixes": ["2001:db8:100::/56"]}),
+                ),
+            }
+        )
+        url = reverse("plugins:netbox_kea:server_leases6", args=[self.server.pk])
+        with stub_kea(responses):
+            response = self.client.get(url, {"by": "ip", "q": "2001:db8:20::20"}, HTTP_HX_REQUEST="true")
+
+        row = response.context["table"].data.data[0]
+        self.assertFalse(row["is_reserved"], "the Reservation holds only a delegated prefix, not this address")
+        self.assertFalse(row["host_reservation"])
+        self.assertTrue(row["other_kind_reservation"])
+        self.assertEqual([badge.get_text(strip=True) for badge in _reserved_badges(response)], ["Reservation"])
+
     def test_global_reservation_matches_by_identity_and_has_no_mutation_link(self):
         response = self._get(
             queued(

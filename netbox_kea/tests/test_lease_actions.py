@@ -14,6 +14,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from django.contrib.messages import get_messages
 from django.test import override_settings
 from django.urls import reverse
+from django.utils.html import escape
 
 from netbox_kea import signals
 from netbox_kea.leases import DHCPv4LeaseRequest, DHCPv6PrefixLease
@@ -185,7 +186,10 @@ class LeaseEditTest(_ViewTestBase):
 
         self.assertEqual(kea.commands(), ["lease4-get"])
         self.assertEqual(daemon.leases, {})
-        self.assertEqual(_messages(response), ["Lease 192.0.2.40 was not found in Kea. The edit did not recreate it."])
+        self.assertEqual(
+            _messages(response),
+            ["Lease 192.0.2.40 was not found in Kea; nothing was changed. The edit did not recreate it."],
+        )
 
     def test_a_target_deleted_after_the_check_is_reported_and_not_recreated(self):
         daemon = LeaseDaemon(4, _address4())
@@ -216,6 +220,24 @@ class LeaseEditTest(_ViewTestBase):
         self.assertEqual((sent["type"], sent["prefix-len"], sent["user-context"]), ("IA_PD", 56, _CONTEXT))
         self.assertEqual(daemon.lease(_PREFIX, "IA_PD")["hostname"], "renamed.example.org")
         self.assertEqual(_messages(response), [f"Lease {_PREFIX}/56 updated."])
+
+    def test_a_fresh_prefix_of_another_length_or_kind_sends_no_update(self):
+        cases = {
+            "prefix length": lambda held: held.put(_prefix(prefix_len=60)),
+            "kind": lambda held: (held.leases.clear(), held.put(lease_record(_PREFIX, subnet_id=10, iaid=30))),
+        }
+        for name, change in cases.items():
+            with self.subTest(changed=name):
+                self._fresh_client()
+                daemon = LeaseDaemon(6, _prefix())
+                form = self._shown(daemon, 6, f"{_PREFIX}/56")
+                change(daemon)
+
+                kea, response = self._save(daemon, 6, f"{_PREFIX}/56", form, hostname="renamed.example.org")
+
+                self.assertNotIn("lease6-update", kea.commands())
+                (message,) = _messages(response)
+                self.assertIn(f"{_PREFIX}/56", message)
 
     def test_an_address_route_does_not_edit_a_delegated_prefix_at_that_address(self):
         daemon = LeaseDaemon(6, _prefix())
@@ -300,6 +322,21 @@ class LeaseDeleteTest(_ViewTestBase):
                 self.assertIn(f"Lease {_PREFIX}/56 was not deleted", messages[0])
         self.assertEqual(received.calls, [])
 
+    def test_one_refused_lease_shows_one_message(self):
+        for name, change in {
+            "conflict": lambda held: held.put(_prefix(iaid=31)),
+            "absent": lambda held: held.leases.clear(),
+        }.items():
+            with self.subTest(refused=name):
+                self._fresh_client()
+                daemon = LeaseDaemon(6, _prefix())
+                selected = self._list(daemon, _PREFIX)
+                change(daemon)
+
+                _kea, response = self._delete(daemon, selected)
+
+                self.assertEqual(len(_messages(response)), 1, _messages(response))
+
     def test_a_renewal_alone_still_deletes(self):
         daemon = LeaseDaemon(4, _address4())
         selected = self._list(daemon, "192.0.2.40")
@@ -361,6 +398,52 @@ class LeaseAddTest(_ViewTestBase):
         self.assertEqual(str(call["creation"].address), "192.0.2.50")
         self.assertIsNone(call["lease"])
 
+    def test_a_readback_that_contradicts_the_request_is_not_an_observation(self):
+        from ipam.models import IPAddress
+
+        received = _Received(self, signals.lease_added)
+        changes = {
+            "hardware address": {"hw-address": "aa:bb:cc:00:00:99"},
+            "Subnet": {"subnet-id": 11},
+            "hostname": {"hostname": "other.example.org"},
+        }
+        for name, change in changes.items():
+            with self.subTest(changed=name):
+                self._fresh_client()
+                received.calls.clear()
+                daemon = LeaseDaemon(4)
+                daemon.before(
+                    "lease4-get", lambda held, change=change: held.leases[("V4", "192.0.2.50")].update(change)
+                )
+                data = {
+                    "ip_address": "192.0.2.50",
+                    "hw_address": "aa:bb:cc:00:00:50",
+                    "subnet_id": "10",
+                    "hostname": "new.example.org",
+                    "sync_to_netbox": "on",
+                }
+                responses = {**_catalogue_responses_for_subnets(4, _SUBNETS[4]), **daemon.responses()}
+                with stub_kea(responses):
+                    response = self.client.post(self._url(), data)
+
+                (call,) = received.calls
+                self.assertIsNone(call["lease"])
+                self.assertFalse(IPAddress.objects.filter(address__net_host="192.0.2.50").exists())
+                self.assertTrue(
+                    any("does not match" in message for message in _messages(response)), _messages(response)
+                )
+
+    def test_a_dhcpv6_readback_with_another_iaid_is_not_an_observation(self):
+        received = _Received(self, signals.lease_added)
+        daemon = LeaseDaemon(6)
+        daemon.before("lease6-get", lambda held: held.leases[("IA_NA", "2001:db8:1::50")].update({"iaid": 6}))
+        data = {"ip_address": "2001:db8:1::50", "duid": "00:01:02:03", "iaid": "5"}
+        with stub_kea(daemon.responses()):
+            self.client.post(self._url(6), data)
+
+        (call,) = received.calls
+        self.assertIsNone(call["lease"])
+
     def test_a_refused_creation_emits_nothing(self):
         received = _Received(self, signals.lease_added)
         daemon = LeaseDaemon(4, lease_record("192.0.2.50", subnet_id=10))
@@ -418,6 +501,7 @@ class LeaseReserveTest(_ViewTestBase):
                 {"by": "subnet_id", "q": "10"},
                 HTTP_HX_REQUEST="true",
             )
+        self.last_response = response
         return {row.record["kind"]: row.record for row in response.context["table"].rows}
 
     def test_a_delegated_prefix_offers_a_prefix_reservation_and_an_edit(self):
@@ -478,3 +562,36 @@ class LeaseReserveTest(_ViewTestBase):
         self.assertFalse(row["is_reserved"])
         self.assertTrue(row["pending_ip_change"])
         self.assertEqual(row["pending_reservation_ip"], "2001:db8:100:700::/56")
+
+    def _identity_host(self, lease: dict, *, addresses: list[str], prefixes: list[str]):
+        host = {"subnet-id": 10, "duid": lease["duid"], "hostname": "", "ip-addresses": addresses, "prefixes": prefixes}
+
+        def reservation_get(body):
+            if body["arguments"].get("identifier") == lease["duid"]:
+                return {"result": 0, "text": "Host found.", "arguments": host}
+            return {"result": 3, "text": "Host not found."}
+
+        return reservation_get
+
+    def test_a_reservation_that_holds_only_the_other_kind_is_shown_but_not_reserved(self):
+        cases = {
+            "delegated-prefix": (_prefix(), {"addresses": ["2001:db8:1::99"], "prefixes": []}),
+            "address": (
+                lease_record("2001:db8:1::10", subnet_id=10),
+                {"addresses": [], "prefixes": ["2001:db8:100:700::/56"]},
+            ),
+        }
+        for kind, (lease, held) in cases.items():
+            with self.subTest(kind=kind):
+                rows = self._rows([lease], self._identity_host(lease, **held))
+
+                row = rows[kind]
+                self.assertFalse(row["is_reserved"])
+                self.assertFalse(row["pending_ip_change"])
+                self.assertTrue(row["reservation_url"])
+                self.assertIsNone(row["create_reservation_url"])
+                cell = self.last_response.content.decode()
+                self.assertIn(f'href="{escape(row["reservation_url"])}"', cell)
+                self.assertNotIn("Reserved</a>", cell)
+                self.assertNotIn('text-bg-success">Reserved</span>', cell)
+                self.assertNotIn("+ Reserve", cell)

@@ -683,7 +683,7 @@ class TestReservationScopedPrefix(SimpleTestCase):
 
     def test_a_host_that_reserves_another_length_at_the_base_fails_closed(self):
         with stub_kea({"reservation-get": _res_get(self._host("2001:db8:100:800::/60"))}):
-            with self.assertRaisesRegex(ValueError, "scoped prefix target"):
+            with self.assertRaisesRegex(ValueError, "scoped target 2001:db8:100:800::/56"):
                 self.kea.reservation_by_prefix(self.catalogue, self.scope, ip_network("2001:db8:100:800::/56"))
 
     def test_no_host_is_none(self):

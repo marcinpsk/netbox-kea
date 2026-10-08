@@ -680,6 +680,23 @@ def test_shown_facts_hold_a_prefix_length_only_for_a_delegated_prefix():
         ShownLease.model_validate({**shown_lease(_parsed(6, "2001:db8:1::10")).model_dump(), "prefix_length": 64})
 
 
+def test_a_creation_compares_only_the_facts_that_the_request_names():
+    lease = _parsed(4, "192.0.2.10")
+    request = DHCPv4LeaseRequest(address=lease.address, hw_address="aa:bb:cc:00:00:10")
+    assert leases.creation_mismatches(request, lease) == ()
+    named = request.model_copy(update={"client_id": "01:00", "subnet_id": 11, "hostname": "other"})
+    assert leases.creation_mismatches(named, lease) == ("binding", "subnet_id", "hostname")
+    v6 = _parsed(6, "2001:db8:1::10")
+    request6 = DHCPv6LeaseRequest(address=v6.address, duid=v6.duid, iaid=v6.iaid + 1)
+    assert leases.creation_mismatches(request6, v6) == ("binding",)
+
+
+def test_a_conflict_names_at_least_one_known_fact():
+    for fields in ((), ("owner",)):
+        with pytest.raises(ValidationError):
+            leases.LeaseConflict(fields=fields)
+
+
 def test_a_change_reply_is_applied_only_on_success():
     assert leases.read_lease_change([{"result": 0, "text": "IPv6 lease updated."}], refused=4)
     assert not leases.read_lease_change([_recorded(6)["changes"]["update-absent"]], refused=4)

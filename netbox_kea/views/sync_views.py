@@ -29,6 +29,7 @@ from ..reservation_transfer import (
 )
 from ..subnet_catalogue import CatalogueUnavailable, MutationScope, for_synchronization
 from ..utilities import (
+    LeaseCSVError,
     kea_error_hint,
     parse_lease_csv,
 )
@@ -496,14 +497,14 @@ class _BaseBulkLeaseImportView(_KeaChangeMixin, ConditionalLoginRequiredMixin, V
 
         try:
             rows = parse_lease_csv(self.dhcp_version, content)
-        except ValueError as exc:
+        except LeaseCSVError as exc:
             # The message names the row and the column, never a value of the file.
             logger.info("Refused a lease CSV import: %s", exc)
             form.add_error("csv_file", str(exc))
             return self._render(request, instance, form, None)
-        except csv.Error:
-            logger.info("Refused a lease CSV import that is not valid CSV")
-            form.add_error("csv_file", "CSV parsing failed — check the file format and column headers.")
+        except (ValueError, csv.Error):
+            logger.exception("CSV parse error in lease bulk import")
+            form.add_error("csv_file", "CSV parsing failed. Check the file format and column headers.")
             return self._render(request, instance, form, None)
 
         try:
@@ -524,10 +525,10 @@ class _BaseBulkLeaseImportView(_KeaChangeMixin, ConditionalLoginRequiredMixin, V
                 error_rows.append({**failed, "error": kea_error_hint(exc)})
             except requests.RequestException:
                 logger.exception("Connection error importing lease CSV row %s", row_num)
-                error_rows.append({**failed, "error": "Connection error — could not reach Kea server."})
+                error_rows.append({**failed, "error": "Connection error: could not reach the Kea server."})
             except (RuntimeError, ValueError):
                 logger.exception("Data error importing lease CSV row %s", row_num)
-                error_rows.append({**failed, "error": "Invalid response from Kea — could not parse server reply."})
+                error_rows.append({**failed, "error": "Invalid response from Kea: could not parse the server reply."})
 
         result = {
             "created": created,
