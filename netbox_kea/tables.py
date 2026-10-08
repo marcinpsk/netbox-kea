@@ -430,6 +430,7 @@ class BaseLeaseTable(GenericTable):
             ' style="cursor:pointer"'
             ' aria-label="Delete lease {{ record.ip_address|escapejs }} held by {{ record.stale_lease_mac|escapejs }}"'
             ' hx-post="{{ record.delete_lease_url }}"'
+            ' {% include "netbox_kea/inc/row_action_htmx.html" %}'
             ' hx-confirm="Delete lease {{ record.ip_address|escapejs }} held by {{ record.stale_lease_mac|escapejs }}?'
             ' The old device must re-request this IP via DORA."'
             ' hx-vals=\'{"pk":"{{ record.selection|escapejs }}","_confirm":"1"}\'>'
@@ -487,10 +488,7 @@ class BaseLeaseTable(GenericTable):
             ' hx-post="{{ record.sync_url }}"'
             # The label is the address, or address/length for a delegated prefix.
             ' hx-vals=\'{"ip_address":"{{ record.label|escapejs }}","hostname":"{{ record.hostname|default:""|escapejs }}"}\''
-            ' hx-target="closest td"'
-            ' hx-swap="innerHTML"'
-            # The lease search container pushes its URL; a Sync POST must not replace the page URL.
-            ' hx-push-url="false"'
+            ' {% include "netbox_kea/inc/row_action_htmx.html" %}'
             ' class="badge text-bg-secondary border-0"'
             ' style="cursor:pointer">'
             '<i class="mdi mdi-sync"></i> Sync</button>'

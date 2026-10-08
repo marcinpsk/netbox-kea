@@ -375,3 +375,25 @@ class TestHtmxTableContainer(SimpleTestCase):
     def test_every_htmx_table_has_a_container_for_its_sortable_header(self):
         missing = sorted(name for name, text in _plugin_templates().items() if _htmx_tables_outside_a_container(text))
         self.assertEqual(missing, [], "Without an .htmx-container ancestor, a click on a column header swaps nothing")
+
+
+class TestRowActionButtons(SimpleTestCase):
+    """Every htmx POST button is a table row button, so each takes the shared row attributes."""
+
+    @staticmethod
+    def _button_tags(text: str) -> list[str]:
+        """Return the source from the start of each tag with ``hx-post=`` to the end of that tag."""
+        return [
+            text[text.rindex("<", 0, found.start()) : text.index(">", found.end())]
+            for found in re.finditer("hx-post=", text)
+        ]
+
+    def test_every_hx_post_button_includes_the_row_action_attributes(self):
+        sources = _plugin_templates()
+        sources["tables.py"] = (Path(netbox_kea.__file__).parent / "tables.py").read_text()
+        include = 'include "netbox_kea/inc/row_action_htmx.html"'
+        missing = sorted(
+            name for name, text in sources.items() for tag in self._button_tags(text) if include not in tag
+        )
+        # The lease search pushes its URL and swaps itself; a row button without the include does both.
+        self.assertEqual(missing, [])

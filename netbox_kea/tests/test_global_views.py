@@ -1148,6 +1148,47 @@ class TestCombinedReservations4Enrichment(_CombinedViewBase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Synchronized 1/1")
 
+    def test_only_a_managed_address_in_the_sync_vrf_counts_as_synchronized(self):
+        from ipam.models import VRF
+
+        sync_vrf = VRF.objects.create(name="reservation-sync-vrf")
+        self.v4_server.sync_vrf = sync_vrf
+        self.v4_server.save()
+        IPAddress.objects.create(address="10.0.0.5/32", description="[kea-sync: reservation]")
+        other = VRF.objects.create(name="reservation-other-vrf")
+        IPAddress.objects.create(address="10.0.0.5/32", vrf=other, description="[kea-sync: reservation]")
+        stub = {
+            "reservation-get-page": _res_page([dict(_MOCK_RESERVATION_ENRICHED)]),
+            "lease4-get-by-state": _leases([]),
+        }
+        with _reservation_stub(4, stub):
+            response = self.client.get(self._url())
+        self.assertContains(response, "Not Synchronized 0/1")
+
+        synced = IPAddress.objects.create(address="10.0.0.5/32", vrf=sync_vrf, description="[kea-sync: reservation]")
+        with _reservation_stub(4, stub):
+            response = self.client.get(self._url())
+        self.assertContains(response, "Synchronized 1/1")
+        self.assertContains(response, f'href="{synced.get_absolute_url()}"')
+
+    def test_an_unreadable_ipam_state_is_unknown(self):
+        from django.db import DatabaseError
+
+        stub = {
+            "reservation-get-page": _res_page([dict(_MOCK_RESERVATION_ENRICHED)]),
+            "lease4-get-by-state": _leases([]),
+        }
+        with (
+            _reservation_stub(4, stub),
+            patch("netbox_kea.sync.bulk_fetch_netbox_ips", autospec=True, side_effect=DatabaseError("read failed")),
+            self.assertLogs("netbox_kea.views.reservations", level="ERROR"),
+        ):
+            response = self.client.get(self._url())
+
+        row = next(iter(response.context["table"].rows)).record
+        self.assertEqual(row["sync_state"].code, "unknown")
+        self.assertEqual(row["sync_state"].reason, "NetBox IPAM state could not be read.")
+
     def test_blank_description_row_is_not_synchronized_and_stays_unchanged(self):
         from netbox_kea.models import IPAMOwnershipLink
 

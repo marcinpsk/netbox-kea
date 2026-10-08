@@ -466,7 +466,7 @@ def _enrich_reservations_with_badges(
 
     addresses = [str(address) for row in reservations for address in row["reservation"].addresses]
     try:
-        netbox_ips = bulk_fetch_netbox_ips(addresses)
+        netbox_ips = bulk_fetch_netbox_ips(addresses, vrf_id=server.sync_vrf_id)
         synchronized = frozenset(address for address, ip in netbox_ips.items() if is_kea_managed_ip(ip))
     except DatabaseError:
         logger.exception("Could not read NetBox IPAM state for Reservation badges")
@@ -481,7 +481,8 @@ def _enrich_reservations_with_badges(
                 "NetBox IPAM state could not be read.",
             )
         else:
-            state = reservation_synchronization_state(reservation, synchronized)
+            # Without the IPAM state only a Reservation that is not applicable reaches here; it reads no address.
+            state = reservation_synchronization_state(reservation, synchronized or frozenset())
         row["sync_state"] = state
         matched = [
             netbox_ips[str(address)]

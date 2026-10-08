@@ -96,7 +96,7 @@ A time-bounded observation of Reservations for one Server, address family, and r
 _Avoid_: Reservation response, host list
 
 **Reservation Synchronization State**:
-The relationship between all addresses in one Reservation and their corresponding NetBox IP addresses. It is Not Applicable, Not Synchronized, Partially Synchronized, Synchronized, or Unknown.
+The relationship between all addresses in one Reservation and their corresponding NetBox IP addresses in the sync VRF of the Server. It is Not Applicable, Not Synchronized, Partially Synchronized, Synchronized, or Unknown.
 _Avoid_: Lease status, sync badge
 
 **Reservation Transfer Document**:
