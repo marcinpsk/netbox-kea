@@ -4,11 +4,11 @@
 <a href="{{ prefix.get_absolute_url }}"
    class="badge text-bg-success text-decoration-none"
    title="{{ prefix.prefix }} ({{ prefix.get_status_display }})">
-  <i class="mdi mdi-link-variant"></i>&nbsp;{{ prefix.prefix }}
+  <i class="mdi mdi-link-variant" aria-hidden="true"></i>&nbsp;{{ prefix.prefix }}
 </a>
 {% else %}
 <span class="badge text-bg-warning text-decoration-none"
       title="Sync error: could not resolve the prefix">
-  <i class="mdi mdi-alert-circle-outline"></i>&nbsp;Sync error
+  <i class="mdi mdi-alert-circle-outline" aria-hidden="true"></i>&nbsp;Sync error
 </span>
 {% endif %}
