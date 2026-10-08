@@ -13,7 +13,7 @@ from netbox_kea import server_configuration
 from netbox_kea.subnet_catalogue import display
 
 from .kea_stub import _res_get, _res_page, _reservation_mutation_commands, _subnet_list, queued, stub_kea
-from .utils import _ViewTestBase
+from .utils import _ViewTestBase, active_tabs
 
 
 def _live_config(version: int, subnet_id: int, cidr: str, identifiers: list[str], pools: list | None = None) -> dict:
@@ -1287,6 +1287,16 @@ class TestReservationMutationViews(_ViewTestBase):
 class TestReservationDocumentImport(_ViewTestBase):
     def _url(self):
         return reverse("plugins:netbox_kea:server_reservation4_bulk_import", args=[self.server.pk])
+
+    def test_the_import_page_selects_the_reservations_tab(self):
+        for version in (4, 6):
+            url = reverse(f"plugins:netbox_kea:server_reservation{version}_bulk_import", args=[self.server.pk])
+            with self.subTest(version=version, method="GET"):
+                self.assertEqual(active_tabs(self.client.get(url)), ["Reservations"])
+            with self.subTest(version=version, method="POST"), stub_kea({}):
+                self.assertEqual(
+                    active_tabs(self.client.post(url, {"format": "yaml", "document": ""})), ["Reservations"]
+                )
 
     def test_validation_reports_all_errors_before_any_live_request(self):
         document = """version: 1

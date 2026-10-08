@@ -42,6 +42,14 @@ User = get_user_model()
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+_ACTIVE_TAB = re.compile(r'<a [^>]*class="nav-link active"[^>]*>\s*([^<]+?)\s*<')
+
+
+def active_tabs(response) -> list[str]:
+    """Return the label of each object tab that the rendered page marks active."""
+    return _ACTIVE_TAB.findall(response.content.decode())
+
+
 def linked_dhcp_targets(server):
     """Create linked Subnets and a Global Reservation with colliding object IDs."""
     from django.apps import apps

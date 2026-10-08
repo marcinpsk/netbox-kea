@@ -52,7 +52,7 @@ from .kea_stub import (
     stub_kea,
     typed_lease,
 )
-from .utils import _PLUGINS_CONFIG, _make_db_server, _ViewTestBase, plugins_config
+from .utils import _PLUGINS_CONFIG, _make_db_server, _ViewTestBase, active_tabs, plugins_config
 
 #: The HTMX error template renders a uuid4 reference ID, so a test that stops at the
 #: label also passes when that ID is missing.
@@ -2028,6 +2028,13 @@ class TestBulkLeaseImportView(_ViewTestBase):
         f = _io.BytesIO(csv_bytes)
         f.name = "leases.csv"
         return {"csv_file": f}
+
+    def test_the_import_page_selects_the_leases_tab(self):
+        for version in (4, 6):
+            with self.subTest(version=version, method="GET"):
+                self.assertEqual(active_tabs(self.client.get(self._url(version=version))), ["Leases"])
+            with self.subTest(version=version, method="POST"):
+                self.assertEqual(active_tabs(self.client.post(self._url(version=version), {})), ["Leases"])
 
     def test_get_v4_returns_200(self):
         """GET lease4 bulk import page returns 200."""

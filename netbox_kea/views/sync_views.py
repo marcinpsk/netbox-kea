@@ -34,7 +34,9 @@ from ..utilities import (
     parse_lease_csv,
 )
 from ._base import ConditionalLoginRequiredMixin, _KeaChangeMixin
+from .leases import _LEASES_TAB
 from .reservation_mutations import _confirmed_side_effects, _identity_from_request, _reservation_target_scope
+from .reservations import _RESERVATIONS_TAB
 
 logger = logging.getLogger(__name__)
 
@@ -290,6 +292,7 @@ class _BaseBulkReservationImportView(_KeaChangeMixin, ConditionalLoginRequiredMi
                 "dhcp_version": self.dhcp_version,
                 "return_url": reverse(f"plugins:netbox_kea:server_reservations{self.dhcp_version}", args=[instance.pk]),
                 "result": result,
+                "tab": _RESERVATIONS_TAB,
             },
         )
 
@@ -460,8 +463,9 @@ class _BaseBulkLeaseImportView(_KeaChangeMixin, ConditionalLoginRequiredMixin, V
     def get(self, request: HttpRequest, pk: int) -> HttpResponse:
         """Render the CSV upload form."""
         instance = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
-        form = self.form_class()
-        return_url = reverse(f"plugins:netbox_kea:server_leases{self.dhcp_version}", args=[pk])
+        return self._render(request, instance, self.form_class(), None)
+
+    def _render(self, request: HttpRequest, instance: Server, form: Any, result: dict[str, Any] | None) -> HttpResponse:
         return render(
             request,
             self.template_name,
@@ -469,80 +473,40 @@ class _BaseBulkLeaseImportView(_KeaChangeMixin, ConditionalLoginRequiredMixin, V
                 "object": instance,
                 "form": form,
                 "dhcp_version": self.dhcp_version,
-                "return_url": return_url,
-                "result": None,
+                "return_url": reverse(f"plugins:netbox_kea:server_leases{self.dhcp_version}", args=[instance.pk]),
+                "result": result,
+                "tab": _LEASES_TAB,
             },
         )
 
     def post(self, request: HttpRequest, pk: int) -> HttpResponse:
         """Parse uploaded CSV and create leases in Kea."""
         instance = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
-        return_url = reverse(f"plugins:netbox_kea:server_leases{self.dhcp_version}", args=[pk])
         form = self.form_class(request.POST, request.FILES)
 
         if not form.is_valid():
-            return render(
-                request,
-                self.template_name,
-                {
-                    "object": instance,
-                    "form": form,
-                    "dhcp_version": self.dhcp_version,
-                    "return_url": return_url,
-                    "result": None,
-                },
-            )
+            return self._render(request, instance, form, None)
 
         csv_file = form.cleaned_data["csv_file"]
         try:
             content = csv_file.read().decode("utf-8-sig")
         except UnicodeDecodeError:
             form.add_error("csv_file", "File must be UTF-8 encoded.")
-            return render(
-                request,
-                self.template_name,
-                {
-                    "object": instance,
-                    "form": form,
-                    "dhcp_version": self.dhcp_version,
-                    "return_url": return_url,
-                    "result": None,
-                },
-            )
+            return self._render(request, instance, form, None)
 
         try:
             rows = parse_lease_csv(self.dhcp_version, content)
         except (ValueError, csv.Error):
             logger.exception("CSV parse error in lease bulk import")
             form.add_error("csv_file", "CSV parsing failed — check the file format and column headers.")
-            return render(
-                request,
-                self.template_name,
-                {
-                    "object": instance,
-                    "form": form,
-                    "dhcp_version": self.dhcp_version,
-                    "return_url": return_url,
-                    "result": None,
-                },
-            )
+            return self._render(request, instance, form, None)
 
         try:
             client = instance.get_client(version=self.dhcp_version)
         except ValueError:
             logger.exception("Failed to get Kea client for server %s", instance.pk)
             form.add_error(None, "Failed to connect to Kea server.")
-            return render(
-                request,
-                self.template_name,
-                {
-                    "object": instance,
-                    "form": form,
-                    "dhcp_version": self.dhcp_version,
-                    "return_url": return_url,
-                    "result": None,
-                },
-            )
+            return self._render(request, instance, form, None)
         created = 0
         error_rows: list[dict[str, Any]] = []
 
@@ -568,17 +532,7 @@ class _BaseBulkLeaseImportView(_KeaChangeMixin, ConditionalLoginRequiredMixin, V
             "error_rows": error_rows,
             "total": created + len(error_rows),
         }
-        return render(
-            request,
-            self.template_name,
-            {
-                "object": instance,
-                "form": self.form_class(),
-                "dhcp_version": self.dhcp_version,
-                "return_url": return_url,
-                "result": result,
-            },
-        )
+        return self._render(request, instance, self.form_class(), result)
 
 
 @register_model_view(Server, "lease4_bulk_import")

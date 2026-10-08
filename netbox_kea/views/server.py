@@ -155,12 +155,15 @@ class ServerBulkImportView(generic.BulkImportView):
     table = tables.ServerTable
 
 
+_STATUS_TAB = ViewTab(label="Status", weight=1000)
+
+
 @register_model_view(Server, "status")
 class ServerStatusView(generic.ObjectView):
     """Server status tab: shows daemon uptime, versions and HA state."""
 
     queryset = Server.objects.all()
-    tab = ViewTab(label="Status", weight=1000)
+    tab = _STATUS_TAB
     template_name = "netbox_kea/server_status.html"
 
     def _get_ca_status(self, client: KeaClient) -> dict[str, Any]:
