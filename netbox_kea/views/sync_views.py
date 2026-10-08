@@ -36,6 +36,7 @@ from ..reservation_transfer import (
     parse_reservation_document,
     resolve_import_proposal,
 )
+from ..signals import lease_added
 from ..subnet_catalogue import CatalogueUnavailable, MutationScope, for_synchronization
 from ..utilities import (
     LeaseCSVError,
@@ -550,7 +551,6 @@ class _BaseBulkLeaseImportView(_KeaChangeMixin, ConditionalLoginRequiredMixin, V
             failed = {"line": line, "address": str(creation.address)}
             try:
                 client.lease_add(creation)
-                created.append(str(creation.address))
             except KeaException as exc:
                 error_rows.append({**failed, "error": kea_error_hint(exc)})
             except requests.RequestException:
@@ -559,6 +559,17 @@ class _BaseBulkLeaseImportView(_KeaChangeMixin, ConditionalLoginRequiredMixin, V
             except (RuntimeError, ValueError):
                 logger.exception("Data error importing lease CSV line %s", line)
                 error_rows.append({**failed, "error": "Invalid response from Kea: could not parse the server reply."})
+            else:
+                created.append(str(creation.address))
+                # A bulk import reads nothing back, so no observed Lease goes with the confirmed request.
+                lease_added.send_robust(
+                    sender=None,
+                    server=instance,
+                    creation=creation,
+                    lease=None,
+                    dhcp_version=self.dhcp_version,
+                    request=request,
+                )
 
         if created:
             try:

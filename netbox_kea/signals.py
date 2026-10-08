@@ -20,18 +20,20 @@ They *are* fired when the change was applied but Kea could not write it to disk
 Signals
 -------
 lease_added
-    Fired when Kea confirms a lease that the plugin UI added.
-    kwargs: ``server``, ``creation`` (the ``LeaseRequest`` that Kea confirmed),
+    Fired when Kea confirms a lease that the plugin UI added, once for each created row of a
+    lease CSV import. kwargs: ``server``, ``creation`` (the ``LeaseRequest`` that Kea confirmed),
     ``lease`` (the ``Lease`` that a fresh read observed after the creation, or ``None``
     when that read failed, found no lease, found a malformed one, or found one whose client
-    binding, Subnet or hostname differs from the request), ``dhcp_version``, ``request``
+    binding, Subnet or hostname differs from the request; a CSV import reads nothing back and
+    always sends ``None``), ``dhcp_version``, ``request``
 
 leases_deleted
     Fired when Kea confirms the deletion of one or more leases selected in the plugin UI.
     kwargs: ``server``, ``leases`` (a tuple of the ``Lease`` values that the fresh read before
     each deletion observed; a delegated prefix is a ``DHCPv6PrefixLease`` with its prefix length),
     ``dhcp_version``, ``request``. A lease that changed after the list was shown, or that Kea
-    no longer holds, is not deleted and is not in ``leases``.
+    no longer holds, is not deleted and is not in ``leases``. Wiping the leases of a Subnet
+    sends no signal, because Kea does not report which leases it removed.
 
 reservation_created
     Fired when a host reservation is created via the plugin UI.

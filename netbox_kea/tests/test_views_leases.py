@@ -39,6 +39,7 @@ from ipam.models import IPAddress as NbIP
 
 from netbox_kea.kea import KeaClient, KeaException
 from netbox_kea.models import Server
+from netbox_kea.signals import lease_added
 from netbox_kea.utilities import lease_rows, parse_lease_csv
 
 from .kea_stub import (
@@ -2463,6 +2464,34 @@ class TestBulkLeaseImportView(_ViewTestBase):
         result = response.context["result"]
         self.assertEqual(result["created"], 1)
         self.assertEqual(result["errors"], 1)
+
+    def test_each_created_row_sends_lease_added_without_a_read_back(self):
+        received: list[dict] = []
+
+        def receive(sender, **kwargs):
+            received.append(kwargs)
+
+        lease_added.connect(receive)
+        self.addCleanup(lease_added.disconnect, receive)
+        csv_bytes = self._csv4(
+            rows=[
+                "10.0.0.10,aa:bb:cc:dd:ee:01,1,3600,h1\n",
+                "10.0.0.11,aa:bb:cc:dd:ee:02,1,3600,h2\n",
+                "10.0.0.12,aa:bb:cc:dd:ee:03,1,3600,h3\n",
+            ]
+        )
+        refused = {"result": 1, "text": "address in use"}
+        with _lease_stub({"lease4-add": queued({"result": 0}, refused, {"result": 0})}) as kea:
+            response = self.client.post(self._url(version=4), self._post(version=4, csv_bytes=csv_bytes))
+
+        self.assertEqual(response.context["result"]["created"], 2)
+        self.assertNotIn("lease4-get", kea.commands())
+        self.assertEqual(
+            [(str(call["creation"].address), call["lease"], call["dhcp_version"]) for call in received],
+            [("10.0.0.10", None, 4), ("10.0.0.12", None, 4)],
+        )
+        self.assertEqual({call["server"] for call in received}, {self.server})
+        self.assertEqual({call["creation"].hostname for call in received}, {"h1", "h3"})
 
     def test_a_kea_failure_names_the_file_line_after_comment_and_blank_lines(self):
         """A Kea failure names the physical line of its row, so comment and blank lines count."""
