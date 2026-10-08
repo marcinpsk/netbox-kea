@@ -383,7 +383,7 @@ def test_a_fully_quarantined_page_still_continues_from_a_valid_raw_cursor():
         {"result": 0, "text": "page", "arguments": {"leases": [], "count": True}},
         {"result": 0, "text": "page", "arguments": []},
         {"result": 0, "text": "page"},
-        [],
+        [{"result": 3, "text": "page"}, {"result": 3, "text": "page"}],
     ],
 )
 def test_an_unusable_page_envelope_or_cursor_fails_the_read(reply):

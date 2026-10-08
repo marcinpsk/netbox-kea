@@ -28,6 +28,7 @@ from .kea import (
     CandidateConfiguration,
     KeaCommand,
     KeaException,
+    MalformedReply,
     SharedNetworkEdit,
     SubnetDefinition,
     SubnetEdit,
@@ -234,6 +235,14 @@ def _read_live(server: Server, family: Family) -> ServerConfigurationSnapshot:
             "configuration-unavailable",
             f"Kea configuration facts are unavailable. {kea_error_hint(exc)}",
         )
+    except MalformedReply:
+        logger.warning("Server configuration read failed for DHCPv%s", family, exc_info=True)
+        return _unavailable(
+            server,
+            family,
+            "malformed-configuration-response",
+            "Kea returned a malformed configuration response.",
+        )
     except (OSError, ValueError, RuntimeError):
         logger.warning("Server configuration read failed for DHCPv%s", family, exc_info=True)
         return _unavailable(
@@ -243,13 +252,6 @@ def _read_live(server: Server, family: Family) -> ServerConfigurationSnapshot:
             "Kea configuration facts are unavailable.",
         )
 
-    if not response or not isinstance(response[0], dict):
-        return _unavailable(
-            server,
-            family,
-            "malformed-configuration-response",
-            "Kea returned a malformed configuration response.",
-        )
     arguments = response[0].get("arguments")
     if not isinstance(arguments, dict):
         return _unavailable(

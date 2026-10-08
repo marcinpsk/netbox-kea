@@ -15,7 +15,7 @@ from django.utils import timezone
 
 from . import constants, server_configuration
 from .constants import MAX_SUBNET_ID, MIN_SUBNET_ID, Family, IPNetworkValue
-from .kea import SUBNET_LIST, KeaClient, KeaException, subnet_network
+from .kea import SUBNET_LIST, KeaClient, KeaException, MalformedReply, subnet_network
 
 if TYPE_CHECKING:
     from .models import Server
@@ -305,14 +305,15 @@ def _read_identity(client: KeaClient, family: Family) -> _IdentityObservation:
             )
         logger.warning("Subnet identity read failed for DHCPv%s", family, exc_info=True)
         return _unavailable_identity("identity-unavailable", "Kea subnet identity facts are unavailable.")
+    except MalformedReply:
+        logger.warning("Subnet identity read failed for DHCPv%s", family, exc_info=True)
+        return _unavailable_identity(
+            "malformed-identity-response", "Kea returned a malformed subnet identity response."
+        )
     except (requests.RequestException, OSError, ValueError, RuntimeError):
         logger.warning("Subnet identity read failed for DHCPv%s", family, exc_info=True)
         return _unavailable_identity("identity-unavailable", "Kea subnet identity facts are unavailable.")
 
-    if not response or not isinstance(response[0], dict):
-        return _unavailable_identity(
-            "malformed-identity-response", "Kea returned a malformed subnet identity response."
-        )
     if response[0].get("result") == 3:
         return _IdentityObservation(facts=(), diagnostics=(), available=True, complete=True)
     arguments = response[0].get("arguments")

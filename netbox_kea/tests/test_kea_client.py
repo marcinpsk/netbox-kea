@@ -28,6 +28,7 @@ from netbox_kea.kea import (
     LeaseQueryPreflightUnavailable,
     LeaseQueryTooBroad,
     MalformedConfiguration,
+    MalformedReply,
     SubnetEdit,
     SubnetFields,
     check_response,
@@ -308,7 +309,7 @@ class TestKeaClientCommand(TestCase):
         }
         for name, reply in cases.items():
             with self.subTest(name), stub_kea({"version-get": reply}):
-                with self.assertRaises(RuntimeError) as ctx:
+                with self.assertRaises(MalformedReply) as ctx:
                     self.client.command(KeaCommand.VERSION_GET, None)
                 self.assertNotIn("private", str(ctx.exception))
 
@@ -396,8 +397,10 @@ class TestCheckResponse(TestCase):
         with self.assertRaises(KeaException):
             check_response(resp, (0, 3))
 
-    def test_empty_response_list_passes(self):
-        check_response([], (0,))  # no items to check — passes trivially
+    def test_empty_response_list_raises_malformed_reply(self):
+        """An empty reply carries no result, so it cannot confirm the command."""
+        with self.assertRaises(MalformedReply):
+            check_response([], (0,))
 
     def test_non_dict_entry_raises_runtime_error(self):
         """A non-dict entry must raise RuntimeError, not TypeError, so callers' handlers catch it."""
@@ -583,6 +586,18 @@ class TestLeaseWipe(TestCase):
             with self.assertRaises(KeaException):
                 self.client.lease_wipe(version=4, subnet_id=99)
 
+    def test_lease_wipe_of_an_empty_subnet_succeeds(self):
+        """Kea 3.2.0 answers result 3 ("Deleted 0 IPv4 lease(s)") when the Subnet has no lease."""
+        with stub_kea({"lease4-wipe": {"result": 3, "text": "Deleted 0 IPv4 lease(s) from subnet(s) 1"}}) as kea:
+            self.client.lease_wipe(version=4, subnet_id=1)
+        self.assertEqual(kea.commands(), ["lease4-wipe"])
+
+    def test_lease_wipe_refuses_a_reply_that_is_not_one_result(self):
+        ok = {"result": 0, "text": "Deleted 1 IPv4 lease(s) from subnet(s) 1"}
+        for reply in ([], [ok, ok], [{"result": "0"}]):
+            with self.subTest(reply=reply), stub_kea({"lease4-wipe": reply}), self.assertRaises(RuntimeError):
+                self.client.lease_wipe(version=4, subnet_id=1)
+
     def test_lease_wipe_returns_none_on_success(self):
         """lease_wipe returns None on success."""
         with patch.object(
@@ -663,6 +678,12 @@ class TestDHCPDisable(TestCase):
         payload = self._payload(mock_post)
         self.assertEqual(payload["service"], ["dhcp6"])
 
+    def test_dhcp_disable_refuses_a_reply_that_is_not_one_result(self):
+        ok = {"result": 0, "text": "ok"}
+        for reply in ([], [ok, ok], [{"result": "0"}]):
+            with self.subTest(reply=reply), stub_kea({"dhcp-disable": reply}), self.assertRaises(RuntimeError):
+                self.client.dhcp_disable(4)
+
     def test_dhcp_disable_returns_none_on_success(self):
         """dhcp_disable returns None on success."""
         with patch.object(
@@ -726,6 +747,12 @@ class TestDHCPEnable(TestCase):
             self.client.dhcp_enable(6)
         payload = self._payload(mock_post)
         self.assertEqual(payload["service"], ["dhcp6"])
+
+    def test_dhcp_enable_refuses_a_reply_that_is_not_one_result(self):
+        ok = {"result": 0, "text": "ok"}
+        for reply in ([], [ok, ok], [{"result": "0"}]):
+            with self.subTest(reply=reply), stub_kea({"dhcp-enable": reply}), self.assertRaises(RuntimeError):
+                self.client.dhcp_enable(4)
 
     def test_dhcp_enable_returns_none_on_success(self):
         """dhcp_enable returns None on success."""
@@ -1345,7 +1372,7 @@ class TestLeaseSearch(TestCase):
     def test_malformed_statistics_are_rejected(self):
         columns = ["subnet-id", "assigned-addresses", "declined-addresses"]
         cases = (
-            ([], "malformed response"),
+            ([], "empty reply"),
             ({"result": 0, "arguments": {}}, "malformed statistics"),
             (
                 {"result": 0, "arguments": {"result-set": {"columns": ["subnet-id"], "rows": [[12]]}}},
@@ -2079,7 +2106,7 @@ class TestLeaseGetAllPagination(TestCase):
 
     def test_an_unusable_envelope_fails_the_read(self):
         cases = (
-            ([], "malformed lease response"),
+            ([{"result": 0}, {"result": 0}], "malformed lease response"),
             ({"result": 0, "arguments": "unexpected"}, "leases collection"),
             ({"result": 0, "arguments": {"leases": "bad"}}, "leases collection"),
             ({"result": 0, "arguments": {"leases": [lease_record("10.0.0.1")], "count": "1"}}, "count"),

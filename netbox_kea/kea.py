@@ -570,6 +570,10 @@ def _set_shared_network_description(network: dict[str, Any], description: str) -
         network.pop("user-context", None)
 
 
+class MalformedReply(RuntimeError):
+    """Kea answered with a 2xx status, but the reply is not a list of entries that each carry a result."""
+
+
 class MalformedConfiguration(RuntimeError):
     """The running configuration from ``config-get`` has a shape that NetBox cannot edit safely."""
 
@@ -916,7 +920,7 @@ class KeaClient:
             BranchActive: If *command* is a write and the write guard refuses it, for example in a branch.
             KeaTLSFileError: If requests cannot find a TLS file of the client. It is a ``RequestException``.
             requests.HTTPError: If the HTTP response status is not 2xx.
-            RuntimeError: If the reply body is not JSON or not a list, or a reply entry is malformed.
+            MalformedReply: If the reply body is not JSON or not a list, is empty, or has a malformed entry.
             KeaException: If any response result code is not in *check*.
 
         """
@@ -944,9 +948,9 @@ class KeaClient:
         try:
             resp_json = resp.json()
         except requests.JSONDecodeError as exc:
-            raise RuntimeError("Kea returned a reply body that is not JSON.") from exc
+            raise MalformedReply("Kea returned a reply body that is not JSON.") from exc
         if not isinstance(resp_json, list):
-            raise RuntimeError(f"Kea returned a reply that is not a list: {type(resp_json).__name__}")
+            raise MalformedReply(f"Kea returned a reply that is not a list: {type(resp_json).__name__}")
         if check is not None:
             check_response(resp_json, check)
         return resp_json
@@ -1717,11 +1721,13 @@ class KeaClient:
             subnet_id: Kea subnet ID whose leases should be wiped.
 
         Raises:
-            KeaException: If Kea returns a non-zero result code (including result=1
+            KeaException: If Kea returns a failure result (including result=1
                 when ``lease_cmds`` is not loaded).
+            RuntimeError: If the reply is malformed.
 
         """
-        self.command(LEASE_WIPE[version], version, arguments={"subnet-id": subnet_id})
+        # Kea answers result 3 when the Subnet holds no lease to delete.
+        self._one_command(LEASE_WIPE[version], version, {"subnet-id": subnet_id}, (0, 3))
 
     def lease_add(self, version: Family, lease: dict) -> None:
         """Create a new lease in the Kea lease database using ``lease{v}-add``.
@@ -2108,21 +2114,23 @@ class KeaClient:
 
         Raises:
             KeaException: If Kea returns a non-zero result code.
+            RuntimeError: If the reply is malformed.
 
         """
         arguments: dict[str, Any] | None = None
         if max_period is not None:
             arguments = {"max-period": max_period}
-        self.command(KeaCommand.DHCP_DISABLE, family, arguments=arguments)
+        self._one_command(KeaCommand.DHCP_DISABLE, family, arguments)
 
     def dhcp_enable(self, family: Family) -> None:
         """Re-enable DHCP processing on the daemon of *family* after a :meth:`dhcp_disable` call.
 
         Raises:
             KeaException: If Kea returns a non-zero result code.
+            RuntimeError: If the reply is malformed.
 
         """
-        self.command(KeaCommand.DHCP_ENABLE, family)
+        self._one_command(KeaCommand.DHCP_ENABLE, family)
 
     def pool_change(self, version: Family, action: PoolAction, subnet_id: int, declared_cidr: str, pool: str) -> None:
         """Send one ``subnet{v}-delta-{action}`` for the Pool of the Subnet. It does not persist.
@@ -2297,7 +2305,7 @@ def _one_reply(
         or not isinstance(response[0].get("result"), int)
         or isinstance(response[0].get("result"), bool)
     ):
-        raise RuntimeError(f"{command.value} did not return one valid result for dhcp{family}.")
+        raise MalformedReply(f"{command.value} did not return one valid result for dhcp{family}.")
     check_response(response, ok_codes)
     return response[0]
 
@@ -2306,14 +2314,16 @@ def check_response(resp: list[KeaResponse], ok_codes: Sequence[int]) -> None:
     """Raise a KeaException for any non 0 responses.
 
     Raises:
-        RuntimeError: If an entry is not a dict or has no ``result``. Reading
+        MalformedReply: If the reply is empty, or an entry is not a dict or has no ``result``. Reading
             ``kr["result"]`` unguarded would raise TypeError/KeyError instead,
             which no caller catches, so a malformed payload became an HTTP 500.
         KeaException: If a result code is not in *ok_codes*.
 
     """
+    if not resp:
+        raise MalformedReply("Kea returned an empty reply.")
     for idx, kr in enumerate(resp):
         if not isinstance(kr, dict) or "result" not in kr:
-            raise RuntimeError(f"Kea returned a malformed response entry at index {idx}: {kr!r}")
+            raise MalformedReply(f"Kea returned a malformed response entry at index {idx}: {kr!r}")
         if kr["result"] not in ok_codes:
             raise KeaException(kr, index=idx)

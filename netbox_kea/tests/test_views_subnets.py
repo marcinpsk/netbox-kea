@@ -474,6 +474,15 @@ class TestServerSubnet4WipeView(_ViewTestBase):
         self.assertIn("lease4-wipe", kea.commands())
         self.assertEqual(kea.bodies("lease4-wipe")[0]["arguments"]["subnet-id"], 10)
 
+    def test_post_on_a_subnet_without_leases_reports_success(self):
+        """Kea 3.2.0 answers result 3 when there is no lease to delete; the Subnet is still empty."""
+        empty = {"result": 3, "text": "Deleted 0 IPv4 lease(s) from subnet(s) 10"}
+        with stub_kea({**_ABSENT_READ_HOOKS, "config-get": _EMPTY_CONFIG4, "lease4-wipe": empty}):
+            response = self.client.post(self._url(subnet_id=10), follow=True)
+        shown = [(message.level, str(message)) for message in response.context["messages"]]
+        self.assertIn((django_messages.SUCCESS, "All leases in subnet 10 wiped."), shown)
+        self.assertNotIn(django_messages.ERROR, [level for level, _text in shown])
+
     def test_post_on_kea_exception_shows_error_message(self):
         """POST that causes a KeaException must flash an error and redirect (no 500)."""
         with stub_kea({**_ABSENT_READ_HOOKS, "lease4-wipe": {"result": 1, "text": "hook not loaded"}}):

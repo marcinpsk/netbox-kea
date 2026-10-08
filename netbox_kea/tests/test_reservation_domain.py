@@ -412,7 +412,7 @@ class TestReservationPage(SimpleTestCase):
 
     def test_rejects_a_malformed_response_envelope(self):
         with stub_kea({"reservation-get-page": []}):
-            with self.assertRaisesRegex(RuntimeError, "malformed response"):
+            with self.assertRaisesRegex(RuntimeError, "empty reply"):
                 self.kea.reservation_page(4, _catalogue(4, 10, "198.18.0.0/24"))
 
     def test_rejects_a_malformed_page_cursor(self):
