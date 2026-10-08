@@ -1187,7 +1187,7 @@ def test_lease_deleted_invalid_ip(
     pk.evaluate('node => node.value = "notanip"')
     pk.check()
     page.get_by_role("button", name="Delete Selected").click()
-    expect(page.locator(".toast-body")).to_contain_text("Invalid IP")
+    expect(page.locator(".toast-body")).to_contain_text("Invalid lease selection")
 
 
 @pytest.mark.parametrize("family", (6, 4))
@@ -1207,7 +1207,7 @@ def test_lease_deleted_invalid_ip_confirm(
     page.locator("#id_pk_0").evaluate('node => node.value = "notanip"')
     page.locator('button[name="_confirm"]').click()
 
-    expect(page.locator(".toast-body")).to_contain_text("Invalid IP")
+    expect(page.locator(".toast-body")).to_contain_text("Invalid lease selection")
 
 
 @pytest.mark.parametrize(

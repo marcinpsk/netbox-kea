@@ -4,13 +4,14 @@
 # SPDX-License-Identifier: Apache-2.0
 import copy
 import ipaddress
-from typing import Any, Generic, TypeVar, cast
+from typing import Any, ClassVar, Generic, TypeVar, cast
 
 from django import forms
 from django.core.exceptions import NON_FIELD_ERRORS, ValidationError
 from ipam.models import VRF
 from netaddr import EUI, AddrFormatError, IPAddress, IPNetwork, mac_unix_expanded
 from netbox.forms import NetBoxModelBulkEditForm, NetBoxModelFilterSetForm, NetBoxModelForm, NetBoxModelImportForm
+from pydantic import ValidationError as PydanticValidationError
 from utilities.forms import BOOLEAN_WITH_BLANK_CHOICES
 from utilities.forms.fields import CSVModelChoiceField, TagFilterField
 from utilities.forms.rendering import FieldSet
@@ -21,7 +22,14 @@ from .constants import MAX_SUBNET_ID, MIN_SUBNET_ID, Family, IPNetworkValue
 from .decimal_text import parse_decimal
 from .dhcp_options import InvalidAddress, address_list, parse_dhcp_option
 from .kea import SharedNetworkEdit, SubnetEdit, SubnetFields, description_as_shown, subnet_network
-from .leases import LeaseIdentity, parse_selection
+from .leases import (
+    DHCPv4LeaseRequest,
+    DHCPv6LeaseRequest,
+    LeaseIdentity,
+    ShownLease,
+    lease_edit,
+    request_errors,
+)
 from .models import Server
 from .pools import Pool, parse_pool
 from .reservation_transfer import MAX_DOCUMENT_BYTES as MAX_TRANSFER_DOCUMENT_BYTES
@@ -606,26 +614,40 @@ class Leases6SearchForm(BaseLeasesSarchForm):
         ip_version = 6
 
 
+_INVALID_SELECTION = "Invalid lease selection. Reload the lease list and try again."
+
+
+def _shown_lease(token: Any, version: Family) -> ShownLease:
+    """Return the shown Lease facts that a page carried, or refuse a value that is not a Lease of *version*."""
+    if not isinstance(token, str):
+        raise forms.ValidationError(_INVALID_SELECTION)
+    try:
+        shown = ShownLease.model_validate_json(token)
+    except ValueError as exc:
+        raise forms.ValidationError(_INVALID_SELECTION) from exc
+    if shown.identity.family != version:
+        raise forms.ValidationError(_INVALID_SELECTION)
+    return shown
+
+
 class LeaseSelectionField(forms.MultipleChoiceField):
-    """Form field accepting a list of lease selection labels; cleans to identities keyed by canonical label."""
+    """The shown facts of each selected Lease row; cleans to one ``ShownLease`` per Lease Identity."""
 
     def __init__(self, version: Family, *args, **kwargs) -> None:
         """Initialise with the required IP *version* (4 or 6)."""
         self._version = version
         super().__init__(*args, widget=forms.MultipleHiddenInput, **kwargs)
 
-    def clean(self, value: Any) -> dict[str, LeaseIdentity]:
-        """Validate each label and return the identity it names, once per canonical label."""
-        if not isinstance(value, list):
-            raise forms.ValidationError(f"Expected a list, got {type(value)}.")
-
-        if len(value) == 0:
-            raise forms.ValidationError("IP address list is empty.")
-
-        try:
-            return dict(parse_selection(self._version, label) for label in value)
-        except (TypeError, ValueError) as e:
-            raise forms.ValidationError("Invalid IP address or delegated prefix.") from e
+    def clean(self, value: Any) -> tuple[ShownLease, ...]:
+        """Read each selected row, once per Lease Identity."""
+        if not isinstance(value, list) or not value:
+            raise forms.ValidationError("Select at least one lease.")
+        selected: dict[LeaseIdentity, ShownLease] = {}
+        for token in value:
+            shown = _shown_lease(token, self._version)
+            if selected.setdefault(shown.identity, shown) != shown:
+                raise forms.ValidationError(_INVALID_SELECTION)
+        return tuple(selected.values())
 
 
 class BaseLeaseDeleteForm(forms.Form):
@@ -1511,8 +1533,8 @@ class _BaseBulkLeaseImportForm(forms.Form):
 class Lease4BulkImportForm(_BaseBulkLeaseImportForm):
     """Bulk import form for DHCPv4 leases.
 
-    Required column: ``ip-address``.
-    Optional: ``hw-address``, ``subnet-id``, ``valid-lft``, ``hostname``.
+    Required columns: ``ip-address``, ``hw-address``.
+    Optional: ``subnet-id``, ``valid-lft``, ``hostname``.
     """
 
 
@@ -1589,89 +1611,128 @@ class ReservationOptionsForm(SubnetOptionsForm):
 ReservationOptionsFormSet = forms.formset_factory(ReservationOptionsForm, extra=1, can_delete=True)
 
 
-class Lease4EditForm(forms.Form):
-    """Form for editing a DHCPv4 lease in-place."""
-
-    hostname = forms.CharField(
-        max_length=255,
-        required=False,
-        help_text="Client hostname (leave blank to keep current).",
-    )
-    hw_address = forms.CharField(
-        max_length=17,
-        required=False,
-        label="Hardware address",
-        help_text="MAC address in xx:xx:xx:xx:xx:xx format (leave blank to keep current).",
-    )
-    valid_lft = forms.IntegerField(
-        min_value=0,
-        required=False,
-        label="Valid lifetime (s)",
-        help_text="Lease lifetime in seconds (leave blank to keep current).",
-    )
-
-    def clean_hw_address(self) -> str:  # noqa: D102
-        value = self.cleaned_data.get("hw_address", "").strip()
-        if not value:
-            return value
+def _clean_mac(value: str) -> str:
+    """Return a submitted MAC address, or refuse one that is not a MAC address; blank stays blank."""
+    value = value.strip()
+    if value:
         try:
             EUI(value, version=48)
         except (AddrFormatError, ValueError) as exc:
             raise ValidationError("Enter a valid MAC address (e.g. aa:bb:cc:dd:ee:ff).") from exc
-        return value
+    return value
 
 
-class Lease6EditForm(forms.Form):
-    """Form for editing a DHCPv6 lease in-place."""
+def _clean_duid(value: str) -> str:
+    """Return a submitted DUID, or refuse one that is not colon-separated hex; blank stays blank."""
+    value = value.strip()
+    if value and not is_hex_string(value, constants.DUID_MIN_OCTETS, constants.DUID_MAX_OCTETS):
+        raise ValidationError("Enter a valid DUID as colon-separated hex octets.")
+    return value
 
-    hostname = forms.CharField(
-        max_length=255,
+
+_KEEP = "Leave blank to keep the current value."
+
+
+class _LeaseEditForm(forms.Form):
+    """Edit one shown Lease: the written fields come from the shown values and the submitted ones."""
+
+    version: ClassVar[Family]
+    #: The form field of the client identifier: the hardware address for DHCPv4, the DUID for DHCPv6.
+    identifier_field: ClassVar[str]
+
+    shown = forms.CharField(widget=forms.HiddenInput)
+    hostname = forms.CharField(max_length=255, required=False, help_text="Leave blank to clear the hostname.")
+    valid_lft = forms.IntegerField(
+        min_value=0,
+        max_value=constants.UINT32_MAX,
         required=False,
-        help_text="Client hostname (leave blank to keep current).",
+        label="Valid lifetime (s)",
+        help_text=f"Lease lifetime in seconds. {_KEEP}",
     )
+
+    def clean_shown(self) -> ShownLease:
+        """Read the shown Lease facts that the page carried."""
+        return _shown_lease(self.cleaned_data["shown"], self.version)
+
+    def clean(self) -> dict[str, Any]:
+        """Add ``edit``: the fields that the submission writes, as a ``LeaseEdit``."""
+        super().clean()
+        data = self.cleaned_data
+        if self.errors:
+            return data
+        try:
+            data["edit"] = lease_edit(
+                data["shown"],
+                hostname=data["hostname"],
+                client_identifier=data[self.identifier_field],
+                valid_lifetime=data["valid_lft"],
+            )
+        except ValueError:
+            self.add_error(self.identifier_field, "Enter a client identifier that can identify a client.")
+        return data
+
+
+class Lease4EditForm(_LeaseEditForm):
+    """Form for editing a DHCPv4 lease in-place."""
+
+    version = 4
+    identifier_field = "hw_address"
+    field_order = ("hostname", "hw_address", "valid_lft")
+
+    hw_address = forms.CharField(
+        max_length=17,
+        required=False,
+        label="Hardware address",
+        help_text=f"MAC address in xx:xx:xx:xx:xx:xx format. {_KEEP}",
+    )
+
+    def clean_hw_address(self) -> str:  # noqa: D102
+        return _clean_mac(self.cleaned_data.get("hw_address", ""))
+
+
+class Lease6EditForm(_LeaseEditForm):
+    """Form for editing a DHCPv6 lease or delegated prefix in-place."""
+
+    version = 6
+    identifier_field = "duid"
+    field_order = ("hostname", "duid", "valid_lft")
+
     duid = forms.CharField(
         max_length=3 * constants.DUID_MAX_OCTETS - 1,
         required=False,
         label="DUID",
-        help_text="Client DUID in hex (leave blank to keep current).",
-    )
-    valid_lft = forms.IntegerField(
-        min_value=0,
-        required=False,
-        label="Valid lifetime (s)",
-        help_text="Lease lifetime in seconds (leave blank to keep current).",
+        help_text=f"Client DUID in hex. {_KEEP}",
     )
 
     def clean_duid(self) -> str:  # noqa: D102
-        value = self.cleaned_data.get("duid", "").strip()
-        if not value:
-            return value
-        if not is_hex_string(value, constants.DUID_MIN_OCTETS, constants.DUID_MAX_OCTETS):
-            raise ValidationError("Enter a valid DUID as colon-separated hex octets.")
-        return value
+        return _clean_duid(self.cleaned_data.get("duid", ""))
 
 
-class Lease4AddForm(_SyncToNetBoxForm):
-    """Form for manually creating a new DHCPv4 lease."""
+# The form field of each creation request field.
+_REQUEST_FORM_FIELDS = {
+    "address": "ip_address",
+    "hw_address": "hw_address",
+    "duid": "duid",
+    "iaid": "iaid",
+    "subnet_id": "subnet_id",
+    "valid_lifetime": "valid_lft",
+    "hostname": "hostname",
+}
 
-    ip_address = forms.CharField(
-        label="IP Address",
-        help_text="IPv4 address to assign.",
-    )
+
+class _LeaseAddForm(_SyncToNetBoxForm):
+    """Create one address Lease from a typed creation request."""
+
     subnet_id = forms.IntegerField(
         label="Subnet ID",
-        min_value=1,
+        min_value=MIN_SUBNET_ID,
+        max_value=MAX_SUBNET_ID,
         required=False,
         help_text="Kea subnet ID (optional; Kea will infer from IP if omitted).",
     )
-    hw_address = forms.CharField(
-        max_length=17,
-        label="Hardware address",
-        required=False,
-        help_text="Client MAC address in xx:xx:xx:xx:xx:xx format.",
-    )
     valid_lft = forms.IntegerField(
         min_value=0,
+        max_value=constants.UINT32_MAX,
         label="Valid lifetime (s)",
         required=False,
         help_text="Lease lifetime in seconds.",
@@ -1687,23 +1748,59 @@ class Lease4AddForm(_SyncToNetBoxForm):
         help_text="Create/update IPAddress in NetBox with status=active.",
     )
 
+    def _request(self, data: dict[str, Any]) -> DHCPv4LeaseRequest | DHCPv6LeaseRequest:
+        raise NotImplementedError
+
+    def clean(self) -> dict[str, Any]:
+        """Add ``request``: the typed creation request, or a form error for each value that it refuses."""
+        super().clean()
+        data = self.cleaned_data
+        if self.errors:
+            return data
+        try:
+            data["request"] = self._request(data)
+        except PydanticValidationError as exc:
+            for field, message in request_errors(exc):
+                self.add_error(_REQUEST_FORM_FIELDS.get(field or ""), message)
+        return data
+
+
+class Lease4AddForm(_LeaseAddForm):
+    """Form for manually creating a new DHCPv4 lease."""
+
+    field_order = ("ip_address", "subnet_id", "hw_address", "valid_lft", "hostname", "sync_to_netbox")
+
+    ip_address = forms.CharField(
+        label="IP Address",
+        help_text="IPv4 address to assign.",
+    )
+    hw_address = forms.CharField(
+        max_length=17,
+        label="Hardware address",
+        help_text="Client MAC address in xx:xx:xx:xx:xx:xx format. Kea requires it for a DHCPv4 lease.",
+    )
+
     def clean_ip_address(self) -> str:
         """Validate that the value is a valid IPv4 address."""
         return _validate_ip(self.cleaned_data["ip_address"], version=4)
 
     def clean_hw_address(self) -> str:  # noqa: D102
-        value = self.cleaned_data.get("hw_address", "").strip()
-        if not value:
-            return value
-        try:
-            EUI(value, version=48)
-        except (AddrFormatError, ValueError) as exc:
-            raise ValidationError("Enter a valid MAC address (e.g. aa:bb:cc:dd:ee:ff).") from exc
-        return value
+        return _clean_mac(self.cleaned_data.get("hw_address", ""))
+
+    def _request(self, data: dict[str, Any]) -> DHCPv4LeaseRequest:
+        return DHCPv4LeaseRequest(
+            address=ipaddress.IPv4Address(data["ip_address"]),
+            hw_address=data["hw_address"],
+            subnet_id=data["subnet_id"],
+            valid_lifetime=data["valid_lft"],
+            hostname=data["hostname"] or None,
+        )
 
 
-class Lease6AddForm(_SyncToNetBoxForm):
-    """Form for manually creating a new DHCPv6 lease."""
+class Lease6AddForm(_LeaseAddForm):
+    """Form for manually creating a new DHCPv6 address lease."""
+
+    field_order = ("ip_address", "duid", "iaid", "subnet_id", "valid_lft", "hostname", "sync_to_netbox")
 
     ip_address = forms.CharField(
         label="IPv6 Address",
@@ -1720,40 +1817,23 @@ class Lease6AddForm(_SyncToNetBoxForm):
         max_value=constants.UINT32_MAX,
         help_text="Identity Association ID (32-bit unsigned integer).",
     )
-    subnet_id = forms.IntegerField(
-        label="Subnet ID",
-        min_value=1,
-        required=False,
-        help_text="Kea subnet ID (optional; Kea will infer from IP if omitted).",
-    )
-    valid_lft = forms.IntegerField(
-        min_value=0,
-        label="Valid lifetime (s)",
-        required=False,
-        help_text="Lease lifetime in seconds.",
-    )
-    hostname = forms.CharField(
-        max_length=255,
-        required=False,
-        help_text="Client hostname (optional).",
-    )
-    sync_to_netbox = forms.BooleanField(
-        label="Sync to NetBox IPAM",
-        required=False,
-        help_text="Create/update IPAddress in NetBox with status=active.",
-    )
 
     def clean_ip_address(self) -> str:
         """Validate that the value is a valid IPv6 address."""
         return _validate_ip(self.cleaned_data["ip_address"], version=6)
 
     def clean_duid(self) -> str:  # noqa: D102
-        value = self.cleaned_data.get("duid", "").strip()
-        if not value:
-            return value
-        if not is_hex_string(value, constants.DUID_MIN_OCTETS, constants.DUID_MAX_OCTETS):
-            raise ValidationError("Enter a valid DUID as colon-separated hex octets.")
-        return value
+        return _clean_duid(self.cleaned_data.get("duid", ""))
+
+    def _request(self, data: dict[str, Any]) -> DHCPv6LeaseRequest:
+        return DHCPv6LeaseRequest(
+            address=ipaddress.IPv6Address(data["ip_address"]),
+            duid=data["duid"],
+            iaid=data["iaid"],
+            subnet_id=data["subnet_id"],
+            valid_lifetime=data["valid_lft"],
+            hostname=data["hostname"] or None,
+        )
 
 
 class SharedNetworkForm(forms.Form):

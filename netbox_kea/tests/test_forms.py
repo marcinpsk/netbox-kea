@@ -20,10 +20,11 @@ from netbox_kea.forms import (
     ServerImportForm,
     SubnetConfirmForm,
 )
-from netbox_kea.leases import LeaseIdentity
+from netbox_kea.leases import DHCPv4LeaseRequest, LeaseEdit, shown_lease
 from netbox_kea.models import Server
 from netbox_kea.reservations import ReservationCapabilities, reservation_identifier_types
 from netbox_kea.subnet_catalogue import MAX_SUBNET_ID
+from netbox_kea.tests.kea_stub import lease_record, shown_token, typed_lease
 
 
 def _reservation_capabilities(family, identifiers=None):
@@ -224,24 +225,24 @@ class TestLeases6SearchFormValidation(SimpleTestCase):
 
 
 class TestLeaseSelectionField(SimpleTestCase):
-    """Tests for LeaseSelectionField validation."""
+    """LeaseSelectionField reads the shown facts that each selected lease row carries."""
 
-    def test_an_address_and_a_prefix_clean_to_their_identities(self):
-        field = LeaseSelectionField(version=6)
-        result = field.clean(["2001:DB8::1", "2001:db8:100:100::/56"])
-        self.assertEqual(
-            result,
-            {
-                "2001:db8::1": LeaseIdentity(family=6, kind="address", address=ipaddress.ip_address("2001:db8::1")),
-                "2001:db8:100:100::/56": LeaseIdentity(
-                    family=6, kind="delegated-prefix", address=ipaddress.ip_address("2001:db8:100:100::")
-                ),
-            },
-        )
+    _ADDRESS = lease_record("2001:db8::1", subnet_id=10)
+    _PREFIX = lease_record("2001:db8:100:100::", type="IA_PD", prefix_len=56, subnet_id=10)
 
-    def test_a_repeated_label_selects_one_lease(self):
-        field = LeaseSelectionField(version=4)
-        self.assertEqual(list(field.clean(["192.168.1.1", "192.168.1.1", "10.0.0.2"])), ["192.168.1.1", "10.0.0.2"])
+    def test_an_address_and_a_prefix_clean_to_their_shown_facts(self):
+        result = LeaseSelectionField(version=6).clean([shown_token(self._ADDRESS), shown_token(self._PREFIX)])
+        self.assertEqual(result, (shown_lease(typed_lease(self._ADDRESS)), shown_lease(typed_lease(self._PREFIX))))
+        self.assertEqual([shown.label for shown in result], ["2001:db8::1", "2001:db8:100:100::/56"])
+
+    def test_a_repeated_row_selects_one_lease(self):
+        token = shown_token(self._ADDRESS)
+        self.assertEqual(len(LeaseSelectionField(version=6).clean([token, token])), 1)
+
+    def test_one_lease_with_two_sets_of_facts_fails(self):
+        other = shown_token({**self._ADDRESS, "iaid": 99})
+        with self.assertRaises(ValidationError):
+            LeaseSelectionField(version=6).clean([shown_token(self._ADDRESS), other])
 
     def test_empty_list_fails(self):
         field = LeaseSelectionField(version=4)
@@ -251,12 +252,20 @@ class TestLeaseSelectionField(SimpleTestCase):
     def test_non_list_fails(self):
         field = LeaseSelectionField(version=4)
         with self.assertRaises(ValidationError):
-            field.clean("192.168.1.1")
+            field.clean(shown_token(lease_record("192.168.1.1")))
 
-    def test_invalid_label_fails(self):
-        for label, version in (("notanip", 4), ("192.0.2.0/24", 4), ("2001:db8::1/64", 6), ("192.0.2.1", 6)):
-            with self.subTest(label=label), self.assertRaises(ValidationError):
-                LeaseSelectionField(version=version).clean([label])
+    def test_a_value_that_is_not_the_shown_facts_of_a_lease_of_the_family_fails(self):
+        token = shown_token(self._ADDRESS)
+        for value, version in (
+            ("notanip", 4),
+            ("192.0.2.1", 4),
+            (token, 4),
+            (token.replace('"iaid":', '"iaid":"'), 6),
+            (token[:-1] + ',"extra":1}', 6),
+            (shown_token(self._PREFIX).replace('"prefix_length":56', '"prefix_length":null'), 6),
+        ):
+            with self.subTest(value=value), self.assertRaises(ValidationError):
+                LeaseSelectionField(version=version).clean([value])
 
 
 class TestServerFormFields(TestCase):
@@ -1002,14 +1011,24 @@ class TestLease4AddForm(SimpleTestCase):
         return Lease4AddForm(data=data)
 
     def _valid_data(self, **overrides):
-        base = {"ip_address": "10.0.0.100"}
+        base = {"ip_address": "10.0.0.100", "hw_address": "AA:BB:CC:DD:EE:FF"}
         base.update(overrides)
         return base
 
-    def test_valid_with_ip_only(self):
-        """Form is valid with only ip_address provided (all other fields optional)."""
+    def test_valid_with_ip_and_hardware_address_only(self):
+        """The form builds the typed request with only the facts that the operator supplied."""
         form = self._form(self._valid_data())
         self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(
+            form.cleaned_data["request"],
+            DHCPv4LeaseRequest(address=ipaddress.IPv4Address("10.0.0.100"), hw_address="aa:bb:cc:dd:ee:ff"),
+        )
+
+    def test_a_hardware_address_is_required(self):
+        """Kea refuses a DHCPv4 lease without a hardware address, so the form does too."""
+        form = self._form({"ip_address": "10.0.0.100"})
+        self.assertFalse(form.is_valid())
+        self.assertIn("hw_address", form.errors)
 
     def test_valid_with_all_fields(self):
         """Form is valid when all optional fields are provided."""
@@ -1127,6 +1146,48 @@ class TestLease6AddForm(SimpleTestCase):
         form = self._form(self._valid_data(iaid=-1))
         self.assertFalse(form.is_valid())
         self.assertIn("iaid", form.errors)
+
+
+class TestLeaseCreationRequestErrors(SimpleTestCase):
+    """A value that the typed creation request refuses is an error on the form field that holds it."""
+
+    def test_kea_empty_duid_is_an_error_on_the_duid_field(self):
+        from netbox_kea.forms import Lease6AddForm
+
+        form = Lease6AddForm(data={"ip_address": "2001:db8::1", "duid": "00:00:00", "iaid": 1})
+        self.assertFalse(form.is_valid())
+        self.assertEqual(form.errors["duid"], ["A client identifier of the lease is not valid."])
+        self.assertNotIn("request", form.cleaned_data)
+
+
+class TestLeaseEditForm(SimpleTestCase):
+    """The edit form derives the written fields from the shown values; help text states the blank rules."""
+
+    _RECORD = lease_record("192.0.2.10", subnet_id=10, hostname="host10", hw_address="aa:bb:cc:00:00:10")
+
+    def _form(self, **data):
+        from netbox_kea.forms import Lease4EditForm
+
+        values = {"shown": shown_token(self._RECORD), "hostname": "host10", "hw_address": "", "valid_lft": ""}
+        return Lease4EditForm(data={**values, **data})
+
+    def test_the_prefilled_values_write_nothing(self):
+        form = self._form(hw_address="AA:BB:CC:00:00:10", valid_lft="3600")
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["edit"], LeaseEdit())
+
+    def test_blank_hostname_clears_and_blank_identifier_or_lifetime_keeps(self):
+        form = self._form(hostname="")
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["edit"], LeaseEdit(hostname=""))
+        self.assertEqual(form.fields["hostname"].help_text, "Leave blank to clear the hostname.")
+        for name in ("hw_address", "valid_lft"):
+            self.assertIn("Leave blank to keep the current value.", form.fields[name].help_text)
+
+    def test_shown_facts_of_another_family_are_refused(self):
+        form = self._form(shown=shown_token(lease_record("2001:db8::1", subnet_id=10)))
+        self.assertFalse(form.is_valid())
+        self.assertIn("shown", form.errors)
 
 
 # ---------------------------------------------------------------------------

@@ -231,10 +231,18 @@ class TestLeaseAddSync(_PermissionTestBase):
     def test_a_constrained_user_creates_the_lease_without_a_sync(self):
         self._grant_address_writes(user=self.user, constraints=_CONSTRAINT)
         data = {"ip_address": "10.0.0.200", "subnet_id": "1", "hw_address": "aa:bb:cc:dd:ee:ff", "sync_to_netbox": "on"}
-        with _lease_stub({"lease4-add": {"result": 0}, "subnet4-list": self._SUBNETS4}) as kea:
+        readback = {
+            "result": 0,
+            "arguments": complete_lease(
+                {"ip-address": "10.0.0.200", "hw-address": "aa:bb:cc:dd:ee:ff", "subnet-id": 1}
+            ),
+        }
+        responses = {"lease4-add": {"result": 0}, "lease4-get": readback, "subnet4-list": self._SUBNETS4}
+        with _lease_stub(responses) as kea:
             response = self.client.post(self._url(), data)
         self.assertEqual(response.status_code, 302)
-        self.assertEqual(kea.commands(), ["lease4-add"])
+        # The view reads the created Lease back for the lease_added signal, and claims nothing.
+        self.assertEqual(kea.commands(), ["lease4-add", "lease4-get"])
         self.assertFalse(IPAddress.objects.exists())
         self.assertIn(
             f"Lease created, but it was not synced to NetBox. {_reason(_ADDRESS_WRITES)}",
