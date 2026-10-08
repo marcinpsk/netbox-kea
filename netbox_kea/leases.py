@@ -403,11 +403,6 @@ class LeaseQuery(_Value):
             raise ValueError("Only a Subnet query can filter by state, and only by a state that Kea can count.")
         return self
 
-    @property
-    def covers_family(self) -> bool:
-        """Return whether the query asks for every Lease of the family."""
-        return self.selector == ALL_LEASES and self.state is None
-
 
 LeaseCoverage = Literal["page", "exhaustive"]
 
@@ -460,15 +455,6 @@ class LeaseSnapshot(_Value):
     def current_records(self) -> tuple[Lease, ...]:
         """Return the Current Leases at the evaluation time."""
         return tuple(record for record in self.records if is_current(record, self.evaluated_at))
-
-    def attests_absence(self, identity: LeaseIdentity) -> bool:
-        """Return whether the Snapshot proves that Kea had no Lease with *identity*."""
-        return (
-            self.complete
-            and self.query.covers_family
-            and identity.family == self.family
-            and identity not in self._identities
-        )
 
 
 class LeaseFound(_Value):

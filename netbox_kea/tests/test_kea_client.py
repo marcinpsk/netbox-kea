@@ -2024,7 +2024,7 @@ class TestLeaseGetAllPagination(TestCase):
         snapshot, requests_sent = self._all(records, per_page=2)
 
         self.assertEqual(snapshot.records, _typed(*records))
-        self.assertTrue(snapshot.attests_absence(_identity("10.0.0.9")))
+        self.assertTrue(snapshot.complete)
         self.assertEqual([body["from"] for body in requests_sent], ["0.0.0.0", "10.0.0.2"])  # noqa: S104
 
     def test_a_page_with_zero_accepted_records_still_reaches_later_valid_data(self):
@@ -2041,7 +2041,6 @@ class TestLeaseGetAllPagination(TestCase):
         self.assertEqual([body["from"] for body in requests_sent], ["0.0.0.0", "10.0.0.2"])  # noqa: S104
         self.assertEqual(snapshot.coverage, "exhaustive")
         self.assertFalse(snapshot.complete)
-        self.assertFalse(snapshot.attests_absence(_identity("10.0.0.9")))
 
     def test_a_page_that_repeats_the_cursor_fails_the_read(self):
         page = lease_page(lease_record("198.18.0.10"))
