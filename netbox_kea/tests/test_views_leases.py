@@ -3280,25 +3280,29 @@ class TestLeaseJournalExceptionNarrowing(_ViewTestBase):
 
     @patch("netbox_kea.views.leases._add_lease_journal", autospec=True)
     def test_database_error_does_not_fail_request(self, mock_journal):
-        """DatabaseError from _add_lease_journal must be caught; lease add still redirects."""
+        """DatabaseError from _add_lease_journal must be caught; the lease is still reported created."""
         from django.db import DatabaseError
 
         mock_journal.side_effect = DatabaseError("DB error")
         url = reverse("plugins:netbox_kea:server_lease4_add", args=[self.server.pk])
         with _lease_stub(LeaseDaemon(4).responses()):
-            response = self.client.post(url, {"ip_address": "10.0.0.55"})
-        self.assertIn(response.status_code, [200, 302])
+            response = self.client.post(url, {"ip_address": "10.0.0.55", "hw_address": "aa:bb:cc:00:00:55"})
+        self.assertEqual(response.status_code, 302)
+        mock_journal.assert_called_once()
+        self.assertIn("Lease for 10.0.0.55 created.", [str(m) for m in get_messages(response.wsgi_request)])
 
     @patch("netbox_kea.views.leases._add_lease_journal", autospec=True)
     def test_operational_error_does_not_fail_request(self, mock_journal):
-        """OperationalError from _add_lease_journal must be caught; lease add still redirects."""
+        """OperationalError from _add_lease_journal must be caught; the lease is still reported created."""
         from django.db import OperationalError
 
         mock_journal.side_effect = OperationalError("DB lock")
         url = reverse("plugins:netbox_kea:server_lease4_add", args=[self.server.pk])
         with _lease_stub(LeaseDaemon(4).responses()):
-            response = self.client.post(url, {"ip_address": "10.0.0.56"})
-        self.assertIn(response.status_code, [200, 302])
+            response = self.client.post(url, {"ip_address": "10.0.0.56", "hw_address": "aa:bb:cc:00:00:56"})
+        self.assertEqual(response.status_code, 302)
+        mock_journal.assert_called_once()
+        self.assertIn("Lease for 10.0.0.56 created.", [str(m) for m in get_messages(response.wsgi_request)])
 
 
 # ---------------------------------------------------------------------------
