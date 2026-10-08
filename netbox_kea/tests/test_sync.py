@@ -8,7 +8,7 @@ import logging
 
 from django.test import TestCase, override_settings
 
-from .kea_stub import _catalogue_responses_for_subnets, _typed_reservation, stub_kea
+from .kea_stub import _catalogue_responses_for_subnets, _typed_reservation, complete_lease, stub_kea, typed_lease
 from .utils import _make_db_server, plugins_config
 
 
@@ -182,45 +182,6 @@ class TestSyncMacAddressErrors(TestCase):
         self.assertNotIn("aa:bb:cc:dd:ee:zz", logging.Formatter().format(logs.records[0]))
 
 
-class TestSyncMacAddressImportErrors(TestCase):
-    """sync_mac_address: ImportError for dcim.models and netaddr."""
-
-    def test_dcim_import_error_returns_silently(self):
-        """When dcim.models cannot be imported, sync_mac_address returns without raising."""
-        import sys
-        from unittest.mock import patch
-
-        # Remove cached module so the import inside sync_mac_address triggers ImportError
-        with patch.dict(sys.modules, {"dcim.models": None}):
-            # Need to reload sync so the inner import runs fresh
-            import importlib
-
-            import netbox_kea.sync as sync_mod
-
-            importlib.reload(sync_mod)
-            # Should not raise even when dcim is unavailable
-            sync_mod.sync_mac_address("aa:bb:cc:dd:ee:ff", hostname="test")
-
-    def test_netaddr_import_error_returns_silently(self):
-        """When netaddr cannot be imported, sync_mac_address logs debug and returns."""
-        import sys
-        import types
-        from unittest.mock import patch
-
-        # Inject a fake dcim.models so that import inside sync succeeds for the
-        # dcim path but netaddr import fails, exercising the netaddr fallback.
-        fake_dcim = types.ModuleType("dcim.models")
-        fake_dcim.MACAddress = type("MACAddress", (), {})
-        with patch.dict(sys.modules, {"netaddr": None, "netaddr.core": None, "dcim.models": fake_dcim}):
-            import importlib
-
-            import netbox_kea.sync as sync_mod
-
-            importlib.reload(sync_mod)
-            # Should not raise even when netaddr is unavailable
-            sync_mod.sync_mac_address("aa:bb:cc:dd:ee:ff", hostname="test")
-
-
 class TestDuplicateRowsListUrl(TestCase):
     """The list URL in DuplicateNetBoxRowsError shows exactly the duplicates, and only to a viewer with permission."""
 
@@ -371,7 +332,7 @@ class TestOwnershipClaimBehavior(TestCase):
             "hw-address": "aa:bb:cc:dd:ee:ff",
         }
         with stub_kea(_catalogue_responses_for_subnets(4, [{"id": 1, "subnet": "198.18.0.0/24"}])):
-            return claim(self.server, 4, [record], force=force).addresses["198.18.0.20"]
+            return claim(self.server, 4, [typed_lease(complete_lease(record))], force=force).addresses["198.18.0.20"]
 
     def _reservation(self, *, force=False):
         from netbox_kea.ipam_reconciliation import claim

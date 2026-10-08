@@ -8,12 +8,13 @@ from urllib.parse import urlencode
 import requests
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.urls import reverse
+from django.utils.html import escape
 
 from netbox_kea import server_configuration
 from netbox_kea.subnet_catalogue import display
 
 from .kea_stub import _res_get, _res_page, _reservation_mutation_commands, _subnet_list, queued, stub_kea
-from .utils import _ViewTestBase
+from .utils import _ViewTestBase, active_tabs
 
 
 def _live_config(version: int, subnet_id: int, cidr: str, identifiers: list[str], pools: list | None = None) -> dict:
@@ -1214,6 +1215,31 @@ class TestReservationMutationViews(_ViewTestBase):
         self.assertIsNotNone(received[0]["before"])
         self.assertIsNone(received[0]["after"])
 
+    def test_delete_returns_to_the_reservation_search(self):
+        responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
+        raw = {"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:ff", "ip-address": "198.18.0.20"}
+        url = reverse("plugins:netbox_kea:server_reservation4_delete", args=[self.server.pk, 20])
+        reservations = reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk])
+        search = f"{reservations}?q=aa%3Abb&cursor=next"
+
+        def target(return_url):
+            return f"{url}?{_identity_query()}&{urlencode({'return_url': return_url})}"
+
+        with stub_kea({**responses, "reservation-get": _res_get(raw)}):
+            confirmation = self.client.get(target(search))
+        self.assertContains(confirmation, f'href="{escape(search)}" class="btn btn-secondary me-2">Cancel</a>')
+
+        for return_url, expected in ((search, search), ("https://evil.example/", reservations)):
+            with self.subTest(return_url=return_url):
+                deleting = {
+                    **responses,
+                    "reservation-get": queued(_res_get(raw), _res_get(raw), {"result": 3}),
+                    "reservation-del": {"result": 0},
+                }
+                with stub_kea(deleting):
+                    response = self.client.post(target(return_url))
+                self.assertRedirects(response, expected, fetch_redirect_response=False)
+
     def test_delete_invalidates_a_catalogue_cached_during_the_mutation(self):
         responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
         current = {
@@ -1287,6 +1313,16 @@ class TestReservationMutationViews(_ViewTestBase):
 class TestReservationDocumentImport(_ViewTestBase):
     def _url(self):
         return reverse("plugins:netbox_kea:server_reservation4_bulk_import", args=[self.server.pk])
+
+    def test_the_import_page_selects_the_reservations_tab(self):
+        for version in (4, 6):
+            url = reverse(f"plugins:netbox_kea:server_reservation{version}_bulk_import", args=[self.server.pk])
+            with self.subTest(version=version, method="GET"):
+                self.assertEqual(active_tabs(self.client.get(url)), ["Reservations"])
+            with self.subTest(version=version, method="POST"), stub_kea({}):
+                self.assertEqual(
+                    active_tabs(self.client.post(url, {"format": "yaml", "document": ""})), ["Reservations"]
+                )
 
     def test_validation_reports_all_errors_before_any_live_request(self):
         document = """version: 1

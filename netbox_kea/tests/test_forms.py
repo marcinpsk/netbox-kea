@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Unit tests for netbox_kea.forms — validation logic for all form classes."""
 
+import ipaddress
 import re
 
 from django.core.exceptions import ValidationError
@@ -13,12 +14,13 @@ from netbox_kea import constants
 from netbox_kea.forms import (
     Leases4SearchForm,
     Leases6SearchForm,
-    MultipleIPField,
+    LeaseSelectionField,
     PoolAddForm,
     ServerForm,
     ServerImportForm,
     SubnetConfirmForm,
 )
+from netbox_kea.leases import LeaseIdentity
 from netbox_kea.models import Server
 from netbox_kea.reservations import ReservationCapabilities, reservation_identifier_types
 from netbox_kea.subnet_catalogue import MAX_SUBNET_ID
@@ -221,33 +223,40 @@ class TestLeases6SearchFormValidation(SimpleTestCase):
         self.assertEqual(form.cleaned_data["page"], 3)
 
 
-class TestMultipleIPField(SimpleTestCase):
-    """Tests for MultipleIPField validation."""
+class TestLeaseSelectionField(SimpleTestCase):
+    """Tests for LeaseSelectionField validation."""
 
-    def test_valid_ipv4_list(self):
-        field = MultipleIPField(version=4)
-        result = field.clean(["192.168.1.1", "10.0.0.2"])
-        self.assertEqual(result, ["192.168.1.1", "10.0.0.2"])
+    def test_an_address_and_a_prefix_clean_to_their_identities(self):
+        field = LeaseSelectionField(version=6)
+        result = field.clean(["2001:DB8::1", "2001:db8:100:100::/56"])
+        self.assertEqual(
+            result,
+            {
+                "2001:db8::1": LeaseIdentity(family=6, kind="address", address=ipaddress.ip_address("2001:db8::1")),
+                "2001:db8:100:100::/56": LeaseIdentity(
+                    family=6, kind="delegated-prefix", address=ipaddress.ip_address("2001:db8:100:100::")
+                ),
+            },
+        )
 
-    def test_valid_ipv6_list(self):
-        field = MultipleIPField(version=6)
-        result = field.clean(["2001:db8::1", "::1"])
-        self.assertIn("2001:db8::1", result)
+    def test_a_repeated_label_selects_one_lease(self):
+        field = LeaseSelectionField(version=4)
+        self.assertEqual(list(field.clean(["192.168.1.1", "192.168.1.1", "10.0.0.2"])), ["192.168.1.1", "10.0.0.2"])
 
     def test_empty_list_fails(self):
-        field = MultipleIPField(version=4)
+        field = LeaseSelectionField(version=4)
         with self.assertRaises(ValidationError):
             field.clean([])
 
     def test_non_list_fails(self):
-        field = MultipleIPField(version=4)
+        field = LeaseSelectionField(version=4)
         with self.assertRaises(ValidationError):
             field.clean("192.168.1.1")
 
-    def test_invalid_ip_fails(self):
-        field = MultipleIPField(version=4)
-        with self.assertRaises(ValidationError):
-            field.clean(["notanip"])
+    def test_invalid_label_fails(self):
+        for label, version in (("notanip", 4), ("192.0.2.0/24", 4), ("2001:db8::1/64", 6), ("192.0.2.1", 6)):
+            with self.subTest(label=label), self.assertRaises(ValidationError):
+                LeaseSelectionField(version=version).clean([label])
 
 
 class TestServerFormFields(TestCase):

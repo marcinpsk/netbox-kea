@@ -19,6 +19,7 @@ from ..utilities import (
     kea_error_hint,
 )
 from ._base import _KeaChangeMixin
+from .server import _STATUS_TAB
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +32,7 @@ class _BaseServerDHCPEnableView(_KeaChangeMixin, generic.ObjectView):
     template_name = "netbox_kea/server_dhcp_enable.html"
 
     def get_extra_context(self, request: HttpRequest, instance: Server) -> dict[str, Any]:
-        return {"dhcp_version": self.dhcp_version}
+        return {"dhcp_version": self.dhcp_version, "tab": _STATUS_TAB}
 
     def post(self, request: HttpRequest, pk: int, **kwargs: Any) -> HttpResponse:
         instance = self.get_object(pk=pk)
@@ -68,7 +69,7 @@ class _BaseServerDHCPDisableView(_KeaChangeMixin, generic.ObjectView):
 
     def get_extra_context(self, request: HttpRequest, instance: Server) -> dict[str, Any]:
         form = forms.DHCPDisableForm(request.POST or None)
-        return {"dhcp_version": self.dhcp_version, "form": form}
+        return {"dhcp_version": self.dhcp_version, "form": form, "tab": _STATUS_TAB}
 
     def post(self, request: HttpRequest, pk: int, **kwargs: Any) -> HttpResponse:
         instance = self.get_object(pk=pk)

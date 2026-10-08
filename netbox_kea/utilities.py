@@ -2,14 +2,13 @@
 # SPDX-FileCopyrightText: 2023-2024 Devon Mar <devon-mar@users.noreply.github.com>
 # SPDX-FileCopyrightText: 2026 Andrew Backeby <andrew@backeby.eu>
 # SPDX-License-Identifier: Apache-2.0
-import contextlib
 import csv
 import io
 import ipaddress
 import logging
 import re
-from collections.abc import Callable
-from datetime import datetime, timezone
+from collections.abc import Callable, Iterable
+from datetime import datetime
 from typing import Any
 
 from django.http import HttpResponse
@@ -20,6 +19,7 @@ from utilities.views import ViewTab
 
 from . import constants
 from .constants import Family
+from .leases import DHCPv4AddressLease, Lease, LeaseDiagnostic, LeaseSnapshot, lease_record_data, selection_label
 from .models import Server
 
 logger = logging.getLogger(__name__)
@@ -34,49 +34,108 @@ def format_duration(s: int | None) -> str | None:
     return f"{hours:02}:{minutes:02}:{seconds:02}"
 
 
-def _enrich_lease(now: datetime, lease: dict[str, Any]) -> dict[str, Any]:
-    """Add expires at, expires in, state_label, _ip_sort_key, and expiry_class to a lease."""
-    # Need to replace "-" so we can access the values in a template
-    lease = {k.replace("-", "_"): v for k, v in lease.items()}
-
-    # Human-readable state label — map Kea state int to text.
-    lease["state_label"] = constants.LEASE_STATE_LABELS.get(lease.get("state"), "Unknown")
-
-    # F1: inject numeric sort key so django-tables2 sorts IPs as integers, not strings.
-    if ip_str := lease.get("ip_address"):
-        with contextlib.suppress(ValueError):
-            lease["_ip_sort_key"] = int(ipaddress.ip_address(ip_str))
-
-    # F10: default expiry CSS class; updated below once we know the expiry time.
-    lease["expiry_class"] = ""
-
-    if "cltt" not in lease or "valid_lft" not in lease:
-        return lease
-
-    # https://kea.readthedocs.io/en/kea-2.2.0/arm/hooks.html?highlight=cltt#the-lease4-get-lease6-get-commands
-    cltt = lease["cltt"]
-    valid_lft = lease["valid_lft"]
-    if not isinstance(cltt, int) or not isinstance(valid_lft, int):
-        logger.warning("Unexpected non-integer cltt/valid_lft in lease: %s", lease.get("ip_address", "?"))
-        return lease
-    expires_at = datetime.fromtimestamp(cltt + valid_lft, tz=timezone.utc)
-    lease["expires_at"] = expires_at
-    lease["expires_in"] = max(0, int((expires_at - now).total_seconds()))
-    lease["cltt"] = datetime.fromtimestamp(cltt, tz=timezone.utc)
-
-    # F10: set expiry_class based on how close the lease is to expiring.
-    if expires_at < now:
-        lease["expiry_class"] = "text-danger"
-    elif lease["expires_in"] < 300:
-        lease["expiry_class"] = "text-warning"
-
-    return lease
+def snapshot_leases(snapshot: LeaseSnapshot, state_filter: int | None) -> tuple[Lease, ...]:
+    """Return the valid Leases of *snapshot*, or only those with the Kea state code *state_filter*."""
+    if state_filter is None:
+        return snapshot.records
+    return tuple(lease for lease in snapshot.records if constants.LEASE_STATE_CODES[lease.state] == state_filter)
 
 
-def format_leases(leases: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Enrich a list of raw Kea lease dicts with expiry metadata."""
-    now = datetime.now(tz=timezone.utc)
-    return [_enrich_lease(now, ls) for ls in leases]
+def snapshot_rows(snapshot: LeaseSnapshot, state_filter: int | None) -> list[dict[str, Any]]:
+    """Return the presentation rows of :func:`snapshot_leases`."""
+    return lease_rows(snapshot_leases(snapshot, state_filter), evaluated_at=snapshot.evaluated_at)
+
+
+def diagnostic_reasons(diagnostics: Iterable[LeaseDiagnostic]) -> str:
+    """Return each distinct safe reason of *diagnostics* once, in order."""
+    return "; ".join(dict.fromkeys(diagnostic.message for diagnostic in diagnostics))
+
+
+#: The columns of a complete Lease CSV export, by family. The README documents them.
+LEASE_CSV_COLUMNS: dict[int, tuple[str, ...]] = {
+    family: (
+        "family",
+        "kind",
+        "address",
+        "prefix_length",
+        "subnet_id",
+        "state",
+        "current",
+        "hostname",
+        "valid_lifetime",
+        "last_transaction",
+        "infinite",
+        "expires_at",
+        *extra,
+    )
+    for family, extra in ((4, ("hw_address", "client_id")), (6, ("duid", "iaid", "hw_address", "preferred_lifetime")))
+}
+
+
+def _csv_value(value: Any) -> Any:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return "" if value is None else value
+
+
+def lease_csv_response(
+    leases: Iterable[Lease], *, family: Family, evaluated_at: datetime, filename: str
+) -> HttpResponse:
+    """Return a complete Lease export: the public Lease facts, with no display label or rounding."""
+    response = HttpResponse(content_type="text/csv; charset=utf-8")
+    response["Content-Disposition"] = f'attachment; filename="{filename}"'
+    writer = csv.writer(response)
+    columns = LEASE_CSV_COLUMNS[family]
+    writer.writerow(columns)
+    for lease in leases:
+        data = lease_record_data(lease, evaluated_at=evaluated_at)
+        values = {**data, **data["binding"], **data["expiration"], "hw_address": lease.hw_address}
+        if not isinstance(lease, DHCPv4AddressLease):
+            values["preferred_lifetime"] = lease.preferred_lifetime
+        writer.writerow([_csv_value(values[column]) for column in columns])
+    return response
+
+
+def lease_rows(leases: Iterable[Lease], *, evaluated_at: datetime) -> list[dict[str, Any]]:
+    """Return the presentation rows of typed Leases, evaluated at the aware time *evaluated_at*.
+
+    Each row keeps its typed Lease under ``lease``; the other keys are display values only.
+    """
+    return [_lease_row(lease, evaluated_at) for lease in leases]
+
+
+def _lease_row(lease: Lease, now: datetime) -> dict[str, Any]:
+    address = lease.identity.address
+    expires_at = lease.expires_at
+    expires_in = None if expires_at is None else max(0, int((expires_at - now).total_seconds()))
+    expiry_class = ""
+    if expires_at is not None and expires_at < now:
+        expiry_class = "text-danger"
+    elif expires_in is not None and expires_in < 300:
+        expiry_class = "text-warning"
+    row: dict[str, Any] = {
+        "lease": lease,
+        "selection": selection_label(lease),
+        "ip_address": str(address),
+        "_ip_sort_key": int(address),
+        "family": lease.family,
+        "kind": lease.kind,
+        "prefix_length": lease.prefix_length,
+        "subnet_id": lease.subnet_id,
+        "hostname": lease.hostname,
+        "hw_address": lease.hw_address,
+        "state_label": constants.LEASE_STATE_LABELS[lease.state],
+        "valid_lft": lease.valid_lifetime,
+        "cltt": lease.last_transaction,
+        "expires_at": expires_at,
+        "expires_in": expires_in,
+        "expiry_class": expiry_class,
+    }
+    if isinstance(lease, DHCPv4AddressLease):
+        row["client_id"] = lease.client_id
+    else:
+        row.update({"duid": lease.duid, "iaid": lease.iaid, "preferred_lft": lease.preferred_lifetime})
+    return row
 
 
 def export_table(
@@ -286,6 +345,7 @@ def kea_error_hint(exc: Any) -> str:
         1  — generic error
         2  — command not supported (hook library not loaded)
         3  — empty result / not found
+        4  — conflict with the server state (lease_cmds: the lease exists, or a concurrent change)
         128 — service not connected / daemon unreachable
     """
     result = getattr(exc, "response", {}).get("result", -1)
@@ -296,6 +356,11 @@ def kea_error_hint(exc: Any) -> str:
         )
     if result == 3:
         return "No matching records found in Kea."
+    if result == 4:
+        return (
+            "The change conflicts with the current state of the Kea server: for example, the lease already exists,"
+            " or another request changed it at the same time. Check the current state and try again."
+        )
     if result == 128:
         return "Cannot reach the Kea daemon. Check that the service is running and the server URL is reachable."
     if result == 0:

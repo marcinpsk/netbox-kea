@@ -131,6 +131,20 @@ class TestServerSubnets4View(_ViewTestBase):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
 
+    def test_page_controls_render_outside_the_bulk_action_container(self):
+        """NetBox renders its bulk-action container only for a view with bulk actions (netbox#23240)."""
+        url = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
+        with stub_kea({**_ABSENT_READ_HOOKS, "config-get": _EMPTY_CONFIG4, "stat-lease4-get": _STAT_ABSENT4}):
+            response = self.client.get(url)
+        add_url = reverse("plugins:netbox_kea:server_subnet4_add", args=[self.server.pk])
+        self.assertContains(response, f'href="{add_url}"')
+        self.assertContains(response, 'href="?export"')
+        content = response.content.decode()
+        start = content.find('data-sticky-when="selection"')
+        bulk_region = content[start : content.index("</form>", start)] if start != -1 else ""
+        self.assertNotIn(add_url, bulk_region)
+        self.assertNotIn("?export", bulk_region)
+
     def test_get_sets_tab_in_context(self):
         """F2: GET response must include 'tab' in context for tab bar highlighting."""
         from netbox_kea.views.subnets import ServerDHCP4SubnetsView

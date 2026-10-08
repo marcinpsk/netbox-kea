@@ -798,7 +798,7 @@ class _BaseSubnetWipeView(_KeaChangeMixin, generic.ObjectView):
         return_url = self._subnets_url(pk)
         try:
             client = server.get_client(version=self.dhcp_version)
-        except (requests.RequestException, ValueError):
+        except ValueError:
             logger.exception("Failed to connect to Kea for lease wipe on server %s", pk)
             messages.error(request, "Failed to connect to Kea: see server logs.")
             return redirect(return_url)

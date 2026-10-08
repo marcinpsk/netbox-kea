@@ -154,6 +154,12 @@ class TestServerSharedNetworks4View(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(kea.commands(), ["config-get"])
 
+    def test_shows_the_add_shared_network_link(self):
+        with stub_kea({"config-get": _SHARED_NETWORKS_CONFIG_V4}):
+            response = self.client.get(self._url())
+        add_url = reverse("plugins:netbox_kea:server_shared_network4_add", args=[self.server.pk])
+        self.assertContains(response, f'href="{add_url}"')
+
     def test_shows_shared_network_name(self):
         with stub_kea({"config-get": _SHARED_NETWORKS_CONFIG_V4}):
             response = self.client.get(self._url())

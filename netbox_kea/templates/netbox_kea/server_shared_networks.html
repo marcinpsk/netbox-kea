@@ -7,6 +7,7 @@
   <style type="text/css">
     div.quicksearch { display: none }
     nav.text-end[aria-label="Pagination options"] { display: none }
+    div.sticky-actions[data-sticky-when="selection"] { display: none }
   </style>
 {% endblock %}
 
@@ -14,11 +15,6 @@
 {% include "netbox_kea/inc/subnets_nav.html" %}
 {% include "netbox_kea/includes/persist_config_warning.html" %}
 {{ block.super }}
-{% endblock content %}
-
-{% block bulk_controls %}{% endblock bulk_controls %}
-
-{% block content_bottom %}
 <div class="row mt-3">
   <div class="col text-end">
     <a href="{{ add_url }}" class="btn btn-primary btn-sm">
@@ -27,4 +23,6 @@
     </a>
   </div>
 </div>
-{% endblock content_bottom %}
+{% endblock content %}
+
+{% block bulk_controls %}{% endblock bulk_controls %}

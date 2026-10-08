@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
 
+from urllib.parse import parse_qs, urlencode, urlsplit
+
 import requests
 import yaml
 from bs4 import BeautifulSoup
@@ -8,13 +10,66 @@ from django.urls import reverse
 
 from netbox_kea.views.reservations import _RESERVATION_PAGE_SIZE
 
-from .kea_stub import _catalogue_responses, _res_get, _res_page, _reservation_mutation_commands, queued, stub_kea
+from .kea_stub import (
+    _catalogue_responses,
+    _res_get,
+    _res_page,
+    _reservation_mutation_commands,
+    complete_lease,
+    queued,
+    stub_kea,
+)
 from .utils import _ViewTestBase
+
+
+def _return_url(url: str) -> list[str]:
+    return parse_qs(urlsplit(url).query).get("return_url", [])
 
 
 class TestPerServerReservationSnapshots(_ViewTestBase):
     def _url(self, version: int = 4) -> str:
         return reverse(f"plugins:netbox_kea:server_reservations{version}", args=[self.server.pk])
+
+    def _searched_row(self, url: str, query: dict) -> tuple[dict, str]:
+        responses = _catalogue_responses(4, 20, "198.18.0.0/24")
+        host = {"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:ff", "hostname": "searched.example.invalid"}
+        responses.update(
+            {
+                "reservation-get-page": _res_page([host]),
+                "lease4-get-by-state": {"result": 0, "arguments": {"leases": []}},
+                "list-commands": _reservation_mutation_commands(),
+            }
+        )
+        with stub_kea(responses):
+            response = self.client.get(url, query)
+        self.assertContains(response, "searched.example.invalid")
+        return response.context["table"].data.data[0], response.wsgi_request.get_full_path()
+
+    def test_row_actions_return_to_the_reservation_search(self):
+        row, search = self._searched_row(self._url(), {"q": "searched"})
+        self.assertEqual(_return_url(row["edit_url"]), [search])
+        self.assertEqual(_return_url(row["delete_url"]), [search])
+
+    def test_the_add_button_returns_to_the_reservation_search(self):
+        responses = _catalogue_responses(4, 20, "198.18.0.0/24")
+        responses.update(
+            {
+                "reservation-get-page": _res_page([]),
+                "lease4-get-by-state": {"result": 0, "arguments": {"leases": []}},
+                "list-commands": _reservation_mutation_commands(),
+            }
+        )
+        with stub_kea(responses):
+            page = self.client.get(self._url(), {"q": "searched"})
+        search = page.wsgi_request.get_full_path()
+        add = reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk])
+        self.assertContains(page, f'href="{add}?{urlencode({"return_url": search})}"')
+
+    def test_combined_row_actions_return_to_the_combined_search(self):
+        url = reverse("plugins:netbox_kea:combined_reservations4")
+        row, search = self._searched_row(url, {"server": self.server.pk, "q": "searched"})
+        self.assertEqual(_return_url(row["edit_url"]), [search])
+        self.assertEqual(_return_url(row["delete_url"]), [search])
 
     def test_configured_only_subnet_filter_does_not_authorize_a_scoped_read(self):
         responses = _catalogue_responses(4, 20, "198.18.0.0/24")
@@ -315,12 +370,14 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
                     "result": 0,
                     "arguments": {
                         "leases": [
-                            {
-                                "subnet-id": 20,
-                                "hw-address": "AA-BB-CC-DD-EE-FF",
-                                "ip-address": "198.18.0.21",
-                                "state": 0,
-                            }
+                            complete_lease(
+                                {
+                                    "subnet-id": 20,
+                                    "hw-address": "AA-BB-CC-DD-EE-FF",
+                                    "ip-address": "198.18.0.21",
+                                    "state": 0,
+                                }
+                            )
                         ]
                     },
                 },
@@ -616,16 +673,27 @@ class TestCombinedReservationSnapshots(_ViewTestBase):
         self.assertEqual(len(kea.bodies("reservation-get-page")), 2)
 
 
+_HOST_RESERVATION_TITLE = "This Reservation holds no address, so Kea assigns this lease from the pool."
+
+
+def _reserved_badges(response) -> list:
+    """Return the badges in the Reserved cell of the first lease row."""
+    cell = next(iter(response.context["table"].rows)).get_cell("reserved")
+    return BeautifulSoup(str(cell), "html.parser").select(".badge")
+
+
 class TestLeaseReservationIdentityMatching(_ViewTestBase):
-    lease = {
-        "ip-address": "198.18.0.20",
-        "hw-address": "aa:bb:cc:dd:ee:ff",
-        "subnet-id": 20,
-        "hostname": "lease.example.invalid",
-        "cltt": 1_700_000_000,
-        "valid-lft": 3600,
-        "state": 0,
-    }
+    lease = complete_lease(
+        {
+            "ip-address": "198.18.0.20",
+            "hw-address": "aa:bb:cc:dd:ee:ff",
+            "subnet-id": 20,
+            "hostname": "lease.example.invalid",
+            "cltt": 1_700_000_000,
+            "valid-lft": 3600,
+            "state": 0,
+        }
+    )
 
     def _get(self, reservation_responses):
         responses = _catalogue_responses(4, 20, "198.18.0.0/24")
@@ -655,20 +723,58 @@ class TestLeaseReservationIdentityMatching(_ViewTestBase):
         self.assertIsNone(row["create_reservation_url"])
         self.assertIsNone(row.get("sync_url"))
 
-    def test_addressless_reservation_matches_normalized_identity_in_the_same_subnet(self):
+    def test_the_reserve_link_returns_to_the_lease_search(self):
+        response = self._get({"result": 3})
+
+        row = response.context["table"].data.data[0]
+        self.assertEqual(_return_url(row["create_reservation_url"]), [response.wsgi_request.get_full_path()])
+
+    def test_the_reservation_link_returns_to_the_lease_search(self):
         response = self._get(
-            queued(
-                {"result": 3},
-                _res_get({"subnet-id": 20, "hw-address": "AA-BB-CC-DD-EE-FF", "hostname": "classified"}),
-            )
+            _res_get({"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:ff", "ip-address": "198.18.0.20"})
         )
+
+        row = response.context["table"].data.data[0]
+        self.assertEqual(_return_url(row["reservation_url"]), [response.wsgi_request.get_full_path()])
+
+    _HOSTNAME_ONLY = {"subnet-id": 20, "hw-address": "AA-BB-CC-DD-EE-FF", "hostname": "classified"}
+
+    def test_addressless_reservation_matches_normalized_identity_in_the_same_subnet(self):
+        response = self._get(queued({"result": 3}, _res_get(self._HOSTNAME_ONLY)))
 
         self.assertEqual(response.status_code, 200)
         row = response.context["table"].data.data[0]
-        self.assertTrue(row["is_reserved"])
+        self.assertFalse(row["is_reserved"], "the Reservation holds no address, so the lease is from the pool")
+        self.assertTrue(row["host_reservation"])
         self.assertFalse(row["pending_ip_change"])
         self.assertIn("identifier_type=hw-address", row["reservation_url"])
         self.assertIn("identifier=aa%3Abb%3Acc%3Add%3Aee%3Aff", row["reservation_url"])
+        [badge] = _reserved_badges(response)
+        self.assertEqual(
+            (badge.name, badge["class"], badge.get_text(strip=True)),
+            ("a", ["badge", "text-bg-secondary", "text-decoration-none"], "Host reservation"),
+        )
+        self.assertEqual(badge["href"], row["reservation_url"])
+        self.assertEqual(badge["title"], _HOST_RESERVATION_TITLE)
+
+    def test_a_hostname_only_reservation_without_change_permission_is_a_plain_badge(self):
+        from django.contrib.auth import get_user_model
+        from django.contrib.contenttypes.models import ContentType
+        from users.models import ObjectPermission
+
+        viewer = get_user_model().objects.create_user(username="lease_viewer")
+        permission = ObjectPermission.objects.create(name="view-server-for-leases", actions=["view"])
+        permission.object_types.add(ContentType.objects.get_for_model(type(self.server)))
+        permission.users.add(viewer)
+        self.client.force_login(viewer)
+
+        response = self._get(queued({"result": 3}, _res_get(self._HOSTNAME_ONLY)))
+
+        [badge] = _reserved_badges(response)
+        self.assertEqual(
+            (badge.name, badge["class"], badge.get_text(strip=True), badge["title"]),
+            ("span", ["badge", "text-bg-secondary"], "Host reservation", _HOST_RESERVATION_TITLE),
+        )
 
     def test_global_reservation_matches_by_identity_and_has_no_mutation_link(self):
         response = self._get(
@@ -681,8 +787,11 @@ class TestLeaseReservationIdentityMatching(_ViewTestBase):
 
         row = response.context["table"].data.data[0]
         self.assertTrue(row["is_reserved"])
+        self.assertFalse(row["host_reservation"], "a global Reservation keeps the Reserved badge")
         self.assertIsNone(row["reservation_url"])
         self.assertIsNone(row["create_reservation_url"])
+        [badge] = _reserved_badges(response)
+        self.assertEqual((badge["class"], badge.get_text(strip=True)), (["badge", "text-bg-success"], "Reserved"))
 
     def test_wrong_subnet_address_result_is_indeterminate_and_offers_no_action(self):
         response = self._get(

@@ -13,6 +13,7 @@ from django.contrib.auth.models import PermissionsMixin
 from django.http import Http404, HttpResponse, HttpResponseForbidden
 from django.http.request import HttpRequest
 from django.urls import reverse
+from django.utils.http import url_has_allowed_host_and_scheme
 from netbox.tables import BaseTable
 
 from ..config_write import ConfigChangeOutcome, ConfigChangeRejected, RejectionReason
@@ -48,6 +49,15 @@ _REJECTED: dict[RejectionReason, str] = {
 }
 
 
+def _safe_return_url(request: HttpRequest, fallback: str) -> str:
+    """Return the request's ``return_url`` when it is a local absolute path, else *fallback*."""
+    return_url = request.GET.get("return_url", "")
+    # redirect() reverses a value without "/" as a view name, so only a path is safe.
+    if return_url.startswith("/") and url_has_allowed_host_and_scheme(return_url, allowed_hosts=None):
+        return return_url
+    return fallback
+
+
 def _strip_empty_params(path: str) -> str:
     """Return *path* with blank query-string parameters removed.
 
@@ -55,9 +65,10 @@ def _strip_empty_params(path: str) -> str:
     sending them in the actual HTTP request.  Using this helper when building
     ``return_url`` ensures the URL we redirect to after bulk-delete matches
     the URL Playwright (and real browsers) see in the address bar.
+    A blank ``q`` stays: the lease page runs a search only when ``q`` is present.
     """
     parsed = urlparse(path)
-    params = parse_qsl(parsed.query, keep_blank_values=False)
+    params = [(key, value) for key, value in parse_qsl(parsed.query, keep_blank_values=True) if value or key == "q"]
     query = _urlencode(params) if params else ""
     return parsed._replace(query=query).geturl()
 

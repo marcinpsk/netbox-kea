@@ -20,7 +20,7 @@ from rest_framework.test import APIClient
 from netbox_kea.models import Server
 from netbox_kea.subnet_catalogue import invalidate
 
-from .kea_stub import _catalogue_responses, _res_get, _res_page, stub_kea
+from .kea_stub import _catalogue_responses, _http_response, _raw_http_response, _res_get, _res_page, stub_kea
 from .utils import plugins_config
 
 User = get_user_model()
@@ -470,11 +470,13 @@ class TestReservation4API(_APITestBase):
                     response = self.api_client.get(self._url(), params)
                 self.assertEqual(response.status_code, 502)
 
-    def test_a_value_error_transport_failure_is_not_reported_as_a_bad_selector(self):
-        """A malformed Kea body is an upstream failure, not an invalid client selector."""
+    def test_a_malformed_reply_body_is_a_bad_gateway_in_every_query_mode(self):
+        """A Kea body that is not a JSON list is an upstream failure, not an invalid client selector."""
         cases = (
+            ("page", "reservation-get-page", {"page": "1"}),
             (
                 "identity",
+                "reservation-get",
                 {
                     "scope": "in-subnet",
                     "subnet_id": "20",
@@ -482,17 +484,23 @@ class TestReservation4API(_APITestBase):
                     "identifier": "aa:bb:cc:dd:ee:ff",
                 },
             ),
-            ("address", {"ip_address": "198.18.0.20", "subnet_id": "20"}),
+            ("address", "reservation-get", {"ip_address": "198.18.0.20", "subnet_id": "20"}),
+            ("hostname", "reservation-get-by-hostname", {"hostname": "host.example.invalid"}),
         )
+        bodies = {
+            "not a list": lambda: _http_response({"result": 0}),
+            "not JSON": lambda: _raw_http_response(b"<html>"),
+        }
 
-        for query_mode, params in cases:
-            with self.subTest(query_mode=query_mode):
-                responses = _catalogue_responses(4, 20, "198.18.0.0/24")
-                # JSONDecodeError subclasses both RequestException and ValueError.
-                responses["reservation-get"] = requests.exceptions.JSONDecodeError("bad", "doc", 0)
-                with stub_kea(responses):
-                    response = self.api_client.get(self._url(), params)
-                self.assertEqual(response.status_code, 502)
+        for query_mode, command, params in cases:
+            for body_name, body in bodies.items():
+                with self.subTest(query_mode=query_mode, body=body_name):
+                    responses = _catalogue_responses(4, 20, "198.18.0.0/24")
+                    responses[command] = body()
+                    with stub_kea(responses):
+                        response = self.api_client.get(self._url(), params)
+                    self.assertEqual(response.status_code, 502)
+                    self.assertEqual(response.json(), {"detail": "An internal error occurred"})
 
     def test_identity_requires_both_parts_and_a_valid_scope(self):
         with stub_kea({}) as kea:

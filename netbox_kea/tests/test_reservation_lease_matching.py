@@ -5,50 +5,69 @@ import requests
 from django.test import SimpleTestCase
 from django.urls import reverse
 
-from netbox_kea.reservations import ReservationIdentity, lease_identifier_types, lease_identities
+from netbox_kea.reservations import LeaseIdentities, ReservationIdentity, lease_identifier_types, lease_identities
 
-from .kea_stub import _catalogue_responses_for_subnets, _leases_per_subnet, _res_page, stub_kea
+from .kea_stub import (
+    _catalogue_responses_for_subnets,
+    _leases_per_subnet,
+    _res_page,
+    complete_lease,
+    lease_record,
+    stub_kea,
+    typed_lease,
+)
 from .utils import _ViewTestBase
 
 _SUBNETS4 = [{"id": 20, "subnet": "198.18.0.0/24"}, {"id": 21, "subnet": "198.18.1.0/24"}]
 _SUBNETS6 = [{"id": 30, "subnet": "2001:db8::/64"}]
 
 
+def _with_state(record: dict, state_fields: dict) -> dict:
+    """Return a complete lease *record* whose state is exactly *state_fields*: an empty one drops it."""
+    complete = complete_lease(record)
+    del complete["state"]
+    return {**complete, **state_fields}
+
+
 class TestSharedLeaseIdentityRules(SimpleTestCase):
-    """Lease enrichment and Reservation enrichment read one identity rule set.
+    """Lease enrichment and Reservation enrichment read the identities of one typed Lease."""
 
-    They receive the same lease from different sources: Kea's own spelling
-    (``hw-address``) and the template-safe spelling (``hw_address``). Two rule sets
-    would let one side accept an identifier the other silently ignores.
-    """
+    def test_a_lease_yields_its_normalized_identities_in_match_order(self):
+        lease = typed_lease({**lease_record("198.18.0.20"), "hw-address": "AA-BB-CC-DD-EE-FF", "client-id": "01:AA:BB"})
 
-    def test_both_lease_spellings_yield_the_same_normalized_identities(self):
-        raw = {"hw-address": "AA-BB-CC-DD-EE-FF", "client-id": "01:AA:BB"}
-        enriched = {"hw_address": "AA-BB-CC-DD-EE-FF", "client_id": "01:AA:BB"}
-
-        self.assertEqual(lease_identities(raw, 4), lease_identities(enriched, 4))
         self.assertEqual(
-            lease_identities(raw, 4),
-            (ReservationIdentity("hw-address", "aa:bb:cc:dd:ee:ff"), ReservationIdentity("client-id", "01:aa:bb")),
+            lease_identities(lease),
+            LeaseIdentities(
+                (ReservationIdentity("hw-address", "aa:bb:cc:dd:ee:ff"), ReservationIdentity("client-id", "01:aa:bb")),
+                foreign=False,
+            ),
         )
 
-    def test_identifiers_a_lease_cannot_carry_are_never_matched(self):
-        """Kea leases carry no circuit-id or flex-id, so neither can match from a lease."""
-        self.assertEqual(lease_identities({"flex-id": "port-7", "circuit-id": "eth0"}, 4), ())
-        self.assertEqual(lease_identities({"client-id": "01:aa:bb"}, 6), ())
+    def test_the_identifier_order_of_each_lease_kind_is_the_published_order(self):
+        for record in (lease_record("198.18.0.20"), lease_record("2001:db8:1::10")):
+            lease = typed_lease(record)
+            with self.subTest(family=lease.family):
+                types = [identity.identifier_type for identity in lease_identities(lease).identities]
+                self.assertEqual(tuple(types), lease_identifier_types(lease.family))
 
-    def test_a_malformed_identifier_is_dropped_instead_of_matching(self):
-        self.assertEqual(lease_identities({"hw-address": "not-a-mac"}, 4), ())
+    def test_empty_identifiers_are_no_identity(self):
+        """Kea's empty DUID of a declined DHCPv6 lease is no identity, so it matches nothing."""
+        declined = typed_lease(lease_record("2001:db8::12", duid="00:00:00", state=1, drop=("hw-address",)))
+        self.assertEqual(lease_identities(declined), LeaseIdentities((), foreign=False))
+
+    def test_an_identifier_that_no_reservation_can_hold_is_reported_not_dropped(self):
+        long_client_id = ":".join(["01"] * 129)
+        lease = typed_lease(lease_record("198.18.0.20", client_id=long_client_id))
+        carried = lease_identities(lease)
+        self.assertEqual(carried.identities, (ReservationIdentity("hw-address", "aa:bb:cc:00:00:10"),))
+        self.assertTrue(carried.foreign)
 
     def test_lease_identifier_types_validate_the_family(self):
         self.assertEqual(lease_identifier_types(4), ("hw-address", "client-id"))
         self.assertEqual(lease_identifier_types(6), ("duid", "hw-address"))
         for family in (True, False, 4.0, 6.0, "4", 5):
-            with self.subTest(family=family):
-                with self.assertRaises(ValueError):
-                    lease_identifier_types(family)
-                with self.assertRaises(ValueError):
-                    lease_identities({}, family)
+            with self.subTest(family=family), self.assertRaises(ValueError):
+                lease_identifier_types(family)
 
 
 class TestReservationLeaseRelationship(_ViewTestBase):
@@ -77,7 +96,10 @@ class TestReservationLeaseRelationship(_ViewTestBase):
                 response, rows, _kea = self._rows(
                     {
                         "reservation-get-page": _res_page([{"subnet-id": subnet_id, identifier_type: identifier}]),
-                        f"lease{version}-get-by-state": _leases_per_subnet({subnet_id: []}),
+                        # DHCPv6 reads the whole Subnet, because a registered lease is current too.
+                        f"lease{version}-get-by-state" if version == 4 else "lease6-get-all": _leases_per_subnet(
+                            {subnet_id: []}
+                        ),
                     },
                     version=version,
                     subnets=_SUBNETS4 if version == 4 else _SUBNETS6,
@@ -94,12 +116,14 @@ class TestReservationLeaseRelationship(_ViewTestBase):
                 "lease4-get-by-state": _leases_per_subnet(
                     {
                         20: [
-                            {
-                                "subnet-id": 20,
-                                "hw-address": "aa:bb:cc:dd:ee:ff",
-                                "ip-address": "198.18.0.20",
-                                "state": 0,
-                            }
+                            complete_lease(
+                                {
+                                    "subnet-id": 20,
+                                    "hw-address": "aa:bb:cc:dd:ee:ff",
+                                    "ip-address": "198.18.0.20",
+                                    "state": 0,
+                                }
+                            )
                         ],
                     }
                 ),
@@ -146,12 +170,14 @@ class TestReservationLeaseRelationship(_ViewTestBase):
                         "lease4-get-by-state": _leases_per_subnet(
                             {
                                 20: [
-                                    {
-                                        "subnet-id": 20,
-                                        "hw-address": identifier,
-                                        "ip-address": "198.18.0.20",
-                                        "state": 0,
-                                    }
+                                    complete_lease(
+                                        {
+                                            "subnet-id": 20,
+                                            "hw-address": identifier,
+                                            "ip-address": "198.18.0.20",
+                                            "state": 0,
+                                        }
+                                    )
                                 ]
                             }
                         ),
@@ -160,9 +186,10 @@ class TestReservationLeaseRelationship(_ViewTestBase):
                 self.assertIsNone(rows[0]["has_active_lease"])
                 self.assertNotContains(response, "No Lease")
                 self.assertNotContains(response, "Active Lease")
+                self.assertContains(response, "Lease Unknown")
 
-    def test_subnet_lease_identity_aliases_must_agree(self):
-        for native, expected in (("aa:bb:cc:dd:ee:ff", None), ("11-22-33-44-55-66", True)):
+    def test_a_template_style_key_in_a_kea_record_is_not_an_identity(self):
+        for native, expected in (("aa:bb:cc:dd:ee:ff", False), ("11-22-33-44-55-66", True)):
             with self.subTest(native=native):
                 response, rows, _kea = self._rows(
                     {
@@ -170,24 +197,22 @@ class TestReservationLeaseRelationship(_ViewTestBase):
                         "lease4-get-by-state": _leases_per_subnet(
                             {
                                 20: [
-                                    {
-                                        "subnet-id": 20,
-                                        "hw-address": native,
-                                        "hw_address": "11:22:33:44:55:66",
-                                        "ip-address": "198.18.0.20",
-                                        "state": 0,
-                                    }
+                                    complete_lease(
+                                        {
+                                            "subnet-id": 20,
+                                            "hw-address": native,
+                                            "hw_address": "11:22:33:44:55:66",
+                                            "ip-address": "198.18.0.20",
+                                            "state": 0,
+                                        }
+                                    )
                                 ]
                             }
                         ),
                     }
                 )
                 self.assertIs(rows[0]["has_active_lease"], expected)
-                self.assertNotContains(response, "No Lease")
-                if expected:
-                    self.assertContains(response, "Active Lease")
-                else:
-                    self.assertNotContains(response, "Active Lease")
+                self.assertContains(response, "Active Lease" if expected else "No Lease")
 
     def test_a_missing_lease_hook_reports_no_relationship(self):
         """Without lease_cmds the plugin cannot observe leases, so it must claim nothing."""
@@ -278,7 +303,13 @@ class TestReservationLeaseRelationship(_ViewTestBase):
                     [{"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:ff", "ip-address": "198.18.0.20"}]
                 ),
                 "lease4-get-by-state": _leases_per_subnet(
-                    {21: [{"subnet-id": 21, "hw-address": "aa:bb:cc:dd:ee:ff", "ip-address": "198.18.1.20"}]}
+                    {
+                        21: [
+                            complete_lease(
+                                {"subnet-id": 21, "hw-address": "aa:bb:cc:dd:ee:ff", "ip-address": "198.18.1.20"}
+                            )
+                        ]
+                    }
                 ),
             }
         )
@@ -294,12 +325,14 @@ class TestReservationLeaseRelationship(_ViewTestBase):
                     "result": 0,
                     "arguments": {
                         "leases": [
-                            {
-                                "subnet-id": 21,
-                                "hw-address": "AA-BB-CC-DD-EE-FF",
-                                "ip-address": "198.18.1.20",
-                                "state": 0,
-                            }
+                            complete_lease(
+                                {
+                                    "subnet-id": 21,
+                                    "hw-address": "AA-BB-CC-DD-EE-FF",
+                                    "ip-address": "198.18.1.20",
+                                    "state": 0,
+                                }
+                            )
                         ]
                     },
                 },
@@ -329,12 +362,14 @@ class TestReservationLeaseRelationship(_ViewTestBase):
                             "result": 0,
                             "arguments": {
                                 "leases": [
-                                    {
-                                        "subnet-id": 21,
-                                        "hw-address": "AA-BB-CC-DD-EE-FF",
-                                        "ip-address": "198.18.1.20",
-                                        **state_fields,
-                                    }
+                                    _with_state(
+                                        {
+                                            "subnet-id": 21,
+                                            "hw-address": "AA-BB-CC-DD-EE-FF",
+                                            "ip-address": "198.18.1.20",
+                                        },
+                                        state_fields,
+                                    )
                                 ]
                             },
                         },
@@ -346,10 +381,9 @@ class TestReservationLeaseRelationship(_ViewTestBase):
                 self.assertNotContains(response, "Active Lease")
 
     def test_a_malformed_subnet_lease_state_reports_no_relationship(self):
-        """A filtered Subnet response still requires an assigned lease state."""
+        """A malformed state excludes the record, so the observation cannot answer either way."""
         cases = [
             ("missing", {}),
-            ("released", {"state": 1}),
             ("string", {"state": "0"}),
             ("boolean", {"state": True}),
             ("out of range", {"state": 99}),
@@ -365,12 +399,14 @@ class TestReservationLeaseRelationship(_ViewTestBase):
                         "lease4-get-by-state": _leases_per_subnet(
                             {
                                 20: [
-                                    {
-                                        "subnet-id": 20,
-                                        "hw-address": "aa:bb:cc:dd:ee:ff",
-                                        "ip-address": "198.18.0.20",
-                                        **state_fields,
-                                    }
+                                    _with_state(
+                                        {
+                                            "subnet-id": 20,
+                                            "hw-address": "aa:bb:cc:dd:ee:ff",
+                                            "ip-address": "198.18.0.20",
+                                        },
+                                        state_fields,
+                                    )
                                 ]
                             }
                         ),
@@ -411,12 +447,14 @@ class TestReservationLeaseRelationship(_ViewTestBase):
                 "lease4-get-by-state": _leases_per_subnet(
                     {
                         20: [
-                            {
-                                "subnet-id": 20,
-                                "hw-address": "aa:bb:cc:dd:ee:ff",
-                                "ip-address": "198.18.0.77",
-                                "state": 0,
-                            }
+                            complete_lease(
+                                {
+                                    "subnet-id": 20,
+                                    "hw-address": "aa:bb:cc:dd:ee:ff",
+                                    "ip-address": "198.18.0.77",
+                                    "state": 0,
+                                }
+                            )
                         ]
                     }
                 ),
@@ -440,15 +478,17 @@ class TestReservationLeaseRelationship(_ViewTestBase):
                         }
                     ]
                 ),
-                "lease6-get-by-state": _leases_per_subnet(
+                "lease6-get-all": _leases_per_subnet(
                     {
                         30: [
-                            {
-                                "subnet-id": 30,
-                                "duid": "00:01:02:04",
-                                "ip-address": "2001:db8::21",
-                                "state": 0,
-                            }
+                            complete_lease(
+                                {
+                                    "subnet-id": 30,
+                                    "duid": "00:01:02:04",
+                                    "ip-address": "2001:db8::21",
+                                    "state": 0,
+                                }
+                            )
                         ]
                     }
                 ),

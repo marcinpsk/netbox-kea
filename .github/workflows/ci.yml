@@ -18,6 +18,8 @@ env:
   # The NetBox release of the unit-test jobs and of the branching browser job. Keep it equal to
   # QUERY_COUNT_NETBOX_VERSION in netbox_kea/tests/conftest.py.
   NETBOX_RELEASE: v4.7.0
+  # The supported floor, for the event-rollback job only. It runs no query-count assertion.
+  NETBOX_FLOOR_RELEASE: v4.3.7
   # The netbox-branching release of the branching jobs; tests/docker/docker-compose.branching.yml reads it.
   NETBOX_BRANCHING_VERSION: 1.2.1
 
@@ -114,6 +116,59 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: false
 
+  # NetBox 4.3 is the supported floor, and its event_tracking cannot nest, so event_scope.atomic() runs every
+  # block as a plain transaction there. This leg runs the event-rollback tests with the 4.3 expectations.
+  event-rollback-test-netbox-4-3:
+    runs-on: ubuntu-latest
+
+    services: *netbox-test-services
+
+    steps:
+      - *checkout-repository
+
+      - name: Checkout NetBox 4.3
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          repository: netbox-community/netbox
+          ref: ${{ env.NETBOX_FLOOR_RELEASE }}
+          path: netbox
+          persist-credentials: false
+
+      - *setup-uv
+
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          # NetBox 4.3 supports Python 3.10 to 3.12.
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          uv export --native-tls --frozen --only-group dev --no-emit-project --format requirements-txt | \
+            uv pip install --native-tls --system -r /dev/stdin
+          uv pip install --native-tls --system -r netbox/requirements.txt
+          uv pip install --native-tls --system -e .
+
+      - name: Set up NetBox configuration
+        working-directory: netbox/netbox
+        run: |
+          python "${{ github.workspace }}/scripts/write_netbox_ci_configuration.py" \
+            --output netbox/configuration.py --plugin netbox_kea
+
+      - name: Run the event-rollback tests
+        working-directory: netbox/netbox
+        env:
+          TEST_DB_NAME: test_netbox_kea_netbox43_ci
+          TEST_REDIS_HOST: localhost
+        run: |
+          pytest ${{ github.workspace }}/netbox_kea/tests/test_event_scope.py \
+            --override-ini="DJANGO_SETTINGS_MODULE=netbox_kea.tests.isolated_settings" \
+            --override-ini="pythonpath=${{ github.workspace }}/netbox/netbox" \
+            -n auto \
+            --maxschedchunk=1 \
+            --reuse-db \
+            --no-header -q
+
   dhcp-plugin-test:
     runs-on: ubuntu-latest
 
@@ -145,6 +200,7 @@ jobs:
           TEST_REDIS_HOST: localhost
         run: |
           pytest ${{ github.workspace }}/netbox_kea/tests/test_integration_dhcp_plugin.py \
+            ${{ github.workspace }}/netbox_kea/tests/test_event_scope.py \
             --override-ini="DJANGO_SETTINGS_MODULE=netbox_kea.tests.isolated_settings" \
             --override-ini="pythonpath=${{ github.workspace }}/netbox/netbox" \
             -n 1 \

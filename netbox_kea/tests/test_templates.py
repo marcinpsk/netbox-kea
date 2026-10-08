@@ -9,6 +9,11 @@ import re
 from pathlib import Path
 
 from django.apps import apps
+from django.conf import settings
+from django.template import Engine
+from django.template.base import TextNode
+from django.template.loader_tags import BlockNode, ExtendsNode
+from django.template.utils import get_app_template_dirs
 from django.test import SimpleTestCase
 
 import netbox_kea
@@ -230,3 +235,113 @@ class TestSeedScriptNamesRealServerFields(SimpleTestCase):
     def test_the_seed_scan_reads_a_real_script(self):
         """No kwargs found would make the test above pass without checking anything."""
         self.assertIn("ca_url", _seed_script_server_kwargs())
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Blocks the plugin templates override
+# ─────────────────────────────────────────────────────────────────────────────
+
+_BLOCK = re.compile(r"\{%-?\s*block\s+([\w-]+)")
+_EXTENDS = re.compile(r"\{%-?\s*extends\s+[\"']([^\"']+)[\"']")
+# NetBox renders these only for a view with bulk actions (netbox-community/netbox#23240).
+_CONDITIONAL_BULK_BLOCKS = {"bulk_controls", "bulk_buttons", "bulk_extra_controls"}
+
+
+def _plugin_templates() -> dict[str, str]:
+    return {
+        path.relative_to(_TEMPLATES_DIR).as_posix(): path.read_text(encoding="utf-8")
+        for path in sorted(_TEMPLATES_DIR.rglob("*.html"))
+    }
+
+
+def _top_level_blocks(name: str) -> list[BlockNode]:
+    """Return the blocks *name* overrides in its parent, or nothing when it extends no template."""
+    extends = next(
+        (node for node in Engine.get_default().get_template(name).nodelist if isinstance(node, ExtendsNode)), None
+    )
+    return [] if extends is None else [node for node in extends.nodelist if isinstance(node, BlockNode)]
+
+
+def _blocks_netbox_defines() -> set[str]:
+    """Every block a NetBox template, or a plugin template another plugin template extends, defines."""
+    netbox = Path(settings.BASE_DIR).resolve()
+    dirs = [Path(d) for d in settings.TEMPLATES[0]["DIRS"]] + [Path(d) for d in get_app_template_dirs("templates")]
+    defined = {
+        block
+        for directory in dirs
+        if directory.resolve().is_relative_to(netbox)
+        for path in directory.rglob("*.html")
+        for block in _BLOCK.findall(path.read_text(encoding="utf-8"))
+    }
+    plugin = _plugin_templates()
+    parents = {parent for text in plugin.values() for parent in _EXTENDS.findall(text)}
+    defined.update(block for name in parents if name in plugin for block in _BLOCK.findall(plugin[name]))
+    return defined
+
+
+class TestOverriddenBlocksRender(SimpleTestCase):
+    """A page control in a block that NetBox does not render is lost without an error."""
+
+    def test_every_overridden_block_exists_in_netbox(self):
+        defined = _blocks_netbox_defines()
+        unknown = sorted(
+            f"{name}: {node.name}"
+            for name in _plugin_templates()
+            for node in _top_level_blocks(name)
+            if node.name not in defined
+        )
+        self.assertEqual(unknown, [], "These blocks exist in no parent template, so Django never renders them")
+
+    def test_no_template_puts_controls_in_a_bulk_action_block(self):
+        filled = sorted(
+            f"{name}: {node.name}"
+            for name in _plugin_templates()
+            for node in _top_level_blocks(name)
+            if node.name in _CONDITIONAL_BULK_BLOCKS
+            and any(not isinstance(child, TextNode) or child.s.strip() for child in node.nodelist)
+        )
+        self.assertEqual(filled, [], "NetBox drops these blocks on a view without bulk actions")
+
+    def test_the_block_scan_reads_netbox_templates(self):
+        """No NetBox template found would make every override look unknown, or the scan vacuous."""
+        self.assertTrue({"content", "head", "modals", "bulk_controls"} <= _blocks_netbox_defines())
+
+
+def _card_header_icons_without_gap(text: str) -> list[str]:
+    """Return the class of each card header icon that text follows directly, without a margin class."""
+    from bs4 import BeautifulSoup, NavigableString
+
+    offenders = []
+    for header in BeautifulSoup(text, "html.parser").select(".card-header"):
+        for icon in header.find_all("i", class_="mdi", recursive=False):
+            following = icon.next_sibling
+            if (
+                isinstance(following, NavigableString)
+                and following.strip()
+                and not any(name.startswith("me-") for name in icon["class"])
+            ):
+                offenders.append(" ".join(icon["class"]))
+    return offenders
+
+
+class TestCardHeaderIconGap(SimpleTestCase):
+    """NetBox draws .card-header as a flex box, which drops the space between an icon and the text after it."""
+
+    def test_detector_flags_an_icon_directly_before_header_text(self):
+        bad = '<h5 class="card-header">\n  <i class="mdi mdi-plus"></i>\n  Add {{ thing }}\n</h5>'
+        self.assertEqual(_card_header_icons_without_gap(bad), ["mdi mdi-plus"])
+
+    def test_detector_accepts_a_margin_class_or_an_inline_wrapper(self):
+        good = (
+            '<h5 class="card-header"><i class="mdi mdi-plus me-1"></i> Add</h5>'
+            '<div class="card-header"><strong><i class="mdi mdi-magnify"></i> Search</strong></div>'
+        )
+        self.assertEqual(_card_header_icons_without_gap(good), [])
+
+    def test_every_card_header_icon_has_a_gap(self):
+        offenders = sorted(
+            f"{name}: {icon}"
+            for name, text in _plugin_templates().items()
+            for icon in _card_header_icons_without_gap(text)
+        )
+        self.assertEqual(offenders, [], "Add me-1 to these icons, or the header shows the icon against the text")

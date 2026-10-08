@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Validate live connectivity when a submission creates or changes a Server connection."""
 
-import json
 import logging
 from typing import TYPE_CHECKING
 
@@ -52,7 +51,7 @@ def validate_connection_change(server: "Server", before: ConnectionValues | None
             continue
         try:
             server.get_client(version=family).command(KeaCommand.VERSION_GET, family)
-        except (json.JSONDecodeError, RuntimeError) as exc:
+        except RuntimeError as exc:
             logger.exception("Malformed response during DHCPv%s connectivity check", family)
             raise ValidationError({field: "An internal error occurred."}) from exc
         except (KeaException, OSError, ValueError) as exc:

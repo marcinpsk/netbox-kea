@@ -91,6 +91,43 @@ NetBox plugin for the [Kea DHCP](https://www.isc.org/kea/) server. Manage your D
 - Add and edit individual leases
 - Bulk import leases from CSV
 
+**Lease observations**
+- The plugin validates each lease record that Kea returns. A malformed record is left out and the
+  page shows a safe reason for it (a code, the Kea field and the record position, never the rejected value).
+  The other leases stay visible. A malformed record never counts as "no lease".
+- Only a Current Lease is live evidence: an assigned address or delegated prefix, or a registered
+  DHCPv6 address, whose valid lifetime has not ended. An infinite lifetime never ends. The
+  Reservation **Lease** column shows *No Lease* only when the lease query of that Reservation is
+  complete; otherwise it shows *Lease Unknown* with the reason.
+- The lease REST actions (`/api/plugins/kea/servers/<pk>/leases4/` and `leases6/`) return one
+  normalized observation: `count`, `results`, `diagnostics`, `complete`, `next_cursor`, `query`
+  (`family`, `selector`, `value`, `state`), `coverage` (`exhaustive` or `page`) and `evaluated_at`.
+  Each result has `family`, `kind` (`address` or `delegated-prefix`), `address`, `prefix_length`,
+  `subnet_id`, `state` (the Kea state name), `current`, `binding`, `hostname`, `valid_lifetime`,
+  `last_transaction` and `expiration` (`infinite`, `expires_at`). Each diagnostic has `code`, `field`,
+  `message`, `source_position` and `kinds`. The response contains no Kea extension values, such as
+  `user-context`, and no display labels. A search covers its own query scope only, so `complete`
+  never means that the daemon has no other leases.
+- A DHCPv6 *IP Address* search reads the address and the delegated prefix at that address. It is
+  complete only when Kea confirms both. A *Subnet* search for a CIDR that Kea does not configure is
+  refused, because Kea can keep leases under a Subnet ID that is no longer configured: search by
+  *Subnet ID* instead. When `lease_query_max_unpaged_leases` is set, a Subnet read that returns more
+  leases than the limit is refused too, because Kea's statistics do not count every lease state.
+- *Export All Leases* and *All Data* are complete exports. They refuse an incomplete observation (a
+  malformed record, or more leases than the export limit) and show the reason. Their columns are:
+  - DHCPv4: `family`, `kind`, `address`, `prefix_length`, `subnet_id`, `state`, `current`, `hostname`,
+    `valid_lifetime`, `last_transaction`, `infinite`, `expires_at`, `hw_address`, `client_id`.
+  - DHCPv6: `family`, `kind`, `address`, `prefix_length`, `subnet_id`, `state`, `current`, `hostname`,
+    `valid_lifetime`, `last_transaction`, `infinite`, `expires_at`, `duid`, `iaid`, `hw_address`,
+    `preferred_lifetime`.
+
+  `kind` is `address` or `delegated-prefix`. `state` is the Kea state name (`assigned`, `declined`,
+  `expired-reclaimed`, `released`, `registered`) and `current` is `true` or `false`. Lifetimes are
+  in seconds. `last_transaction` and `expires_at` are ISO 8601 times in UTC; `expires_at` is empty
+  when `infinite` is `true`. An empty cell is a value that the lease does not have.
+- *Current View (limited coverage)* exports the readable leases of the search, in the columns that
+  the table shows, as `leases_limited_coverage.csv`. It is not a complete export.
+
 ---
 
 ## Requirements
@@ -429,6 +466,44 @@ expire after adoption. Rows already stale before the upgrade get no link, stay u
 To change the sync interval, edit it on the **Sync Jobs** page. You do not need to restart the worker: the new interval applies after the next scheduled run.
 
 ---
+
+## Event rules and webhooks
+
+NetBox queues an event for each change and sends the queue to event rules and webhooks when the request or
+job ends. The plugin writes each sync row, each DHCP-plugin import family and each import receipt in its own
+transaction. On NetBox 4.6.9 and later, when such a transaction starts with no other transaction open in a request or in the
+IPAM sync job, NetBox dispatches its events right after its COMMIT, and none when it rolls back. A failed row or
+family then sends no event for the changes that it reverted. This has these consequences:
+
+- Events dispatch once per transaction, not once per request or job. An object that two transactions change
+  sends two events (for example `created`, then `updated`), where one request sends one combined event. This can
+  change which event rules match.
+- The events of these transactions dispatch before the other events of the same request.
+- A sync job that fails still dispatches the events of the rows that it committed before the failure.
+- Each dispatch reads the enabled event rules once per event type and object type, about two reads for each
+  synchronized address. On a development host, 10,000 such transactions took 151 s, against 127 s for the same
+  changes in one transaction.
+- When the dispatch fails after a COMMIT (for example, the events pipeline cannot reach Redis), the operation
+  stops with an error and the committed rows stay. The IPAM sync job logs the error for that server and counts it.
+
+The sync refuses a Reservation row before its first IP address or MAC address write when a hardware address
+is not an EUI-48 or EUI-64 address, or when NetBox has more than one MAC address row for it. A row whose address
+is a conflict is reported as a conflict. The exception is a legacy address in the global table: the sync moves it
+into its VRF before it finds that its description cannot fit, so a bad hardware address refuses that row.
+
+Known limits. NetBox gives a plugin no public way to remove one event from its queue, so these remain:
+
+- Inside a transaction that something else owns, a plugin transaction is a savepoint. When it rolls back,
+  NetBox still dispatches the events of its reverted changes. This applies to the rows of a DHCP-plugin
+  import when a database error, another app's signal receiver, or a MAC address row that another writer
+  duplicated during the row fails it after a change. It also applies to a DHCP-plugin import that a caller
+  runs in its own transaction, and to a deletion that the DHCP mapping guard refuses after NetBox queued the
+  delete event.
+- On NetBox 4.3 to 4.6.8, `event_tracking` cannot be nested, so every plugin transaction is plain and the events
+  of a failed row dispatch with the request. On these releases a failed request also dispatches its events.
+- An `on_commit` hook of another app that raises after a COMMIT drops the events of that transaction.
+- A netbox-branching merge or revert dispatches the events of each change inside its own transaction. When a
+  later change fails, the merge rolls back, but the events of the earlier changes have already dispatched.
 
 ## DNS Integration
 

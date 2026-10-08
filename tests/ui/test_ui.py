@@ -884,7 +884,7 @@ def test_dhcp_lease_all_columns(
             "subnet_id",
             "valid_lft",
             "duid",
-            "type",
+            "kind",
             "preferred_lft",
             "expires_at",
             "expires_in",
@@ -907,7 +907,7 @@ def test_dhcp_lease_all_columns(
                     str(lease["subnet-id"]),
                     "01:00:00",
                     lease["duid"],
-                    lease["type"],
+                    "address",
                     "02:00:00",
                     re.compile(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}"),
                     re.compile(r"\d{2}:\d{2}:\d{2}"),
@@ -964,10 +964,10 @@ def test_dhcp_lease_all_columns(
             6,
             True,
             (
-                ("IP Address", "ip-address"),
-                ("Hardware Address", "hw-address"),
-                ("DUID", "duid"),
-                ("IAID", "iaid"),
+                ("address", "ip-address"),
+                ("hw_address", "hw-address"),
+                ("duid", "duid"),
+                ("iaid", "iaid"),
             ),
         ),
         (
@@ -983,10 +983,10 @@ def test_dhcp_lease_all_columns(
             4,
             True,
             (
-                ("IP Address", "ip-address"),
-                ("Hardware Address", "hw-address"),
-                ("Client ID", "client-id"),
-                ("Hostname", "hostname"),
+                ("address", "ip-address"),
+                ("hw_address", "hw-address"),
+                ("client_id", "client-id"),
+                ("hostname", "hostname"),
             ),
         ),
         (
@@ -1028,7 +1028,8 @@ def test_dhcp_export_csv_all(
 
     with open(dl.path()) as f:
         r = csv.DictReader(f)
-        have_rows = sorted(r, key=lambda x: x["IP Address"])
+        # The complete export has the documented Kea columns; Current View follows the table.
+        have_rows = sorted(r, key=lambda x: x["address" if all_data else "IP Address"])
 
     want_rows = sorted(leases, key=lambda x: x["ip-address"])
 
@@ -1166,8 +1167,8 @@ def test_lease_deleted_before_delete(
     kea.command(f"lease{family}-del", family, arguments={"ip-address": ip})
 
     page.locator('button[name="_confirm"]').click()
-    # Kea will return status 3
-    expect(page.locator(".toast-body")).to_have_text(re.compile(f"Deleted 1 DHCPv{family} lease\\(s\\)"))
+    # Kea returns result 3, so nothing is reported as deleted.
+    expect(page.locator(".toast-body")).to_have_text(f"Lease {ip} was not found in Kea; nothing was deleted.")
 
 
 @pytest.mark.parametrize("family", (6, 4))

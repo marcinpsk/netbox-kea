@@ -401,14 +401,14 @@ class BaseServerOptionDefView(ConditionalLoginRequiredMixin, View):
         return render(request, "netbox_kea/server_option_def_list.html", ctx)
 
 
-@register_model_view(Server, "option_def6")
+@register_model_view(Server, "option_def6", path="dhcp6/option-def")
 class ServerOptionDef6View(BaseServerOptionDefView):
     """DHCPv6 Option Definition view under the shared Config tab."""
 
     dhcp_version = 6
 
 
-@register_model_view(Server, "option_def4")
+@register_model_view(Server, "option_def4", path="dhcp4/option-def")
 class ServerOptionDef4View(BaseServerOptionDefView):
     """DHCPv4 Option Definition view that owns the shared Config tab."""
 

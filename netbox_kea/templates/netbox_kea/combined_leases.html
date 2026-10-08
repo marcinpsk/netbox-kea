@@ -27,7 +27,7 @@
             <i class="mdi mdi-download"></i> Export
           </button>
           <ul class="dropdown-menu dropdown-menu-end">
-            <li><a class="dropdown-item" href="?{% if request.GET.urlencode %}{{ request.GET.urlencode }}&{% endif %}export=table">Current View (CSV)</a></li>
+            <li><a class="dropdown-item" href="?{% if request.GET.urlencode %}{{ request.GET.urlencode }}&{% endif %}export=table">Current View (CSV, limited coverage)</a></li>
           </ul>
         </div>
         {% endif %}
@@ -41,6 +41,17 @@
   <strong>Some servers could not be reached:</strong>
   <ul class="mb-0 mt-1">
     {% for name, msg in errors %}
+    <li><strong>{{ name }}</strong>: {{ msg }}</li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}
+
+{% if incomplete_servers %}
+<div class="alert alert-warning">
+  <strong>Some lease records could not be read.</strong> The table shows the other leases.
+  <ul class="mb-0 mt-1">
+    {% for name, msg in incomplete_servers %}
     <li><strong>{{ name }}</strong>: {{ msg }}</li>
     {% endfor %}
   </ul>

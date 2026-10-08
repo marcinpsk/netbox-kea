@@ -17,12 +17,13 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypeVar, cast
 
-from django.db import DatabaseError, connection, transaction
+from dcim.models import MACAddress
+from django.db import DatabaseError, connection
 from django.utils import timezone
 from ipam.models import IPAddress, IPRange, Prefix
-from netaddr import IPNetwork
+from netaddr import AddrFormatError, IPNetwork
 
-from . import subnet_catalogue
+from . import event_scope, subnet_catalogue
 from .constants import IP_RANGE_MAX_SIZE, Family, IPNetworkValue, StaleCleanupMode
 from .dhcp_mapping_lifecycle import MetadataBusy
 from .integrations import dhcp_plugin
@@ -35,17 +36,16 @@ from .ipam_marker import (
     rewrite_marker,
     status_kind,
 )
-from .kea import KeaException, lease_fields
+from .kea import KeaException
+from .leases import LEASE_VARIANTS, Lease
 from .models import IPAMOwnershipLink, IPAMOwnershipSource, Server, SyncConfig, next_confirmation_number
 from .plugin_settings import plugin_setting
 from .pools import Pool
 from .reservations import TRAVERSAL_DIAGNOSTIC_CODES, InSubnetReservationScope, Reservation, ReservationSnapshot
 from .subnet_catalogue import CatalogueUnavailable
-from .sync import sync_mac_address
+from .sync import normalized_mac, sync_mac_address
 
 if TYPE_CHECKING:
-    from dcim.models import MACAddress
-
     from .subnet_catalogue import CompleteCatalogueSnapshot
 
 logger = logging.getLogger(__name__)
@@ -78,16 +78,6 @@ def _ip_fields(status: str, hostname: str, description: str) -> dict[str, str]:
     if hostname:
         fields["dns_name"] = hostname
     return fields
-
-
-def _record_hostname(record: dict) -> str:
-    """Validate a raw Kea record's optional hostname before synchronization."""
-    hostname = record.get("hostname")
-    if hostname is None:
-        return ""
-    if not isinstance(hostname, str):
-        raise RuntimeError("Kea record hostname must be a string or null.")
-    return hostname
 
 
 class DuplicateNetBoxRowsError(Exception):
@@ -405,7 +395,7 @@ def complete_import_observation(server: Server, reports: Mapping[Family, SyncRep
 
 
 def _complete_observation(server: Server, workflow: Workflow, observed: SourceScope) -> None:
-    with transaction.atomic():
+    with event_scope.atomic():
         current = Server.objects.select_for_update(no_key=True).get(pk=server.pk)
         required = effective_sources(current)
         if not required[workflow] or not required[workflow] <= observed:
@@ -582,7 +572,7 @@ class ClaimResult:
 def claim(
     server: Server,
     family: Family,
-    records: Sequence[dict[str, Any]] | Sequence[Reservation] | Sequence[SubnetClaim] | Sequence[PoolClaim],
+    records: Sequence[Lease] | Sequence[Reservation] | Sequence[SubnetClaim] | Sequence[PoolClaim],
     force: bool,
 ) -> ClaimResult:
     """Claim one source's records in the Server's VRF, with per-address outcomes and no stale cleanup.
@@ -599,9 +589,9 @@ def claim(
         return _claim_network_records(server, family, records, force=force)
     if any(isinstance(record, (SubnetClaim, PoolClaim)) for record in records):
         raise ValueError("A claim takes one homogeneous source")
-    address_records = cast("Sequence[dict[str, Any] | Reservation]", records)
-    lease_records = isinstance(records[0], dict)
-    if any(isinstance(record, dict) != lease_records for record in records):
+    address_records = cast("Sequence[Lease | Reservation]", records)
+    lease_records = isinstance(records[0], LEASE_VARIANTS)
+    if any(isinstance(record, LEASE_VARIANTS) != lease_records for record in records):
         raise ValueError("A claim takes one source: leases or Reservations, not both")
     source = LEASE if lease_records else RESERVATION
     subnet_prefix_lengths = {}
@@ -614,16 +604,25 @@ def claim(
     conflicts: set[str] = set()
 
     def apply(row: _Report) -> AddressClaim:
-        outcome = _claim(server, family, source, row, force=force, conflicts=conflicts)
+        checked = False
+
+        def before_write() -> None:
+            nonlocal checked
+            _require_one_mac_each(row)
+            checked = True
+
+        required = source == RESERVATION
+        outcome = _claim(
+            server,
+            family,
+            source,
+            row,
+            force=force,
+            conflicts=conflicts,
+            before_write=before_write if required else None,
+        )
         ip = IPAddress.objects.filter(vrf_id=server.sync_vrf_id, address__net_host=row.address).first()
-        resolved_macs = {}
-        if outcome != "conflict":
-            for hardware, hostname in row.mac_addresses:
-                mac = sync_mac_address(hardware, hostname)
-                if mac is None and source == RESERVATION:
-                    raise _RowRefused("The required hardware address could not be resolved")
-                if mac is not None:
-                    resolved_macs[hardware, hostname] = mac
+        resolved_macs = {} if outcome == "conflict" else _sync_row_macs(row, required=required, checked=checked)
         if row.facts is None and not row.disagreement and outcome == "unchanged":
             if ip is not None and not _is_owned_description(ip.description):
                 return AddressClaim(row.address, "conflict", ip)
@@ -636,51 +635,73 @@ def claim(
     return ClaimResult(addresses=outcomes, conflicts=conflicts)
 
 
+def _require_one_mac_each(row: _Report) -> None:
+    """Refuse a Reservation row before its first IP or MAC write when a hardware address cannot resolve to one MAC row."""
+    for hardware, _hostname in row.mac_addresses:
+        try:
+            mac = normalized_mac(hardware)
+        except AddrFormatError as exc:
+            raise _RowRefused("The required hardware address is not an EUI-48 or EUI-64 address") from exc
+        if len(MACAddress.objects.filter(mac_address=mac).values_list("pk", flat=True)[:2]) > 1:
+            raise _RowRefused("NetBox has more than one MAC address row for the required hardware address")
+
+
+def _sync_row_macs(row: _Report, *, required: bool, checked: bool) -> dict[tuple[str, str], MACAddress]:
+    """Synchronize the MAC rows of *row*; a required one that does not resolve refuses the row.
+
+    *checked* is true when the claim already ran the duplicate check before its IP address write.
+    """
+    if required and not checked:
+        _require_one_mac_each(row)
+    resolved = {}
+    for hardware, hostname in row.mac_addresses:
+        mac = sync_mac_address(hardware, hostname)
+        if mac is None and required:
+            raise _RowRefused("The required hardware address could not be resolved")
+        if mac is not None:
+            resolved[hardware, hostname] = mac
+    return resolved
+
+
 def _claim_reports(
     server: Server,
     family: Family,
-    records: Sequence[dict[str, Any] | Reservation],
+    records: Sequence[Lease | Reservation],
     subnet_prefix_lengths: Mapping[int, int],
 ) -> dict[str, _Report]:
     """Validate and aggregate one call before acquiring locks or changing objects."""
     reports: dict[str, _Report] = {}
     for record in records:
-        if isinstance(record, dict):
+        if not isinstance(record, Reservation):
             _add_report(reports, _lease_report(server, family, record, subnet_prefix_lengths))
-        else:
-            if record.family != family:
-                raise ValueError("The Reservation does not match the claim family")
-            facts = None
-            mac_addresses: tuple[tuple[str, str], ...] = ()
-            if isinstance(record.scope, InSubnetReservationScope):
-                facts = _Facts(record.hostname, record.scope.subnet.network.prefixlen)
-                if (hardware := record.identity.hardware_address) is not None:
-                    mac_addresses = ((hardware, record.hostname),)
-            for address in record.addresses:
-                _add_report(reports, _Report(str(address), facts, mac_addresses))
+            continue
+        if record.family != family:
+            raise ValueError("The Reservation does not match the claim family")
+        facts = None
+        mac_addresses: tuple[tuple[str, str], ...] = ()
+        if isinstance(record.scope, InSubnetReservationScope):
+            facts = _Facts(record.hostname, record.scope.subnet.network.prefixlen)
+            if (hardware := record.identity.hardware_address) is not None:
+                mac_addresses = ((hardware, record.hostname),)
+        for address in record.addresses:
+            _add_report(reports, _Report(str(address), facts, mac_addresses))
     return reports
 
 
 def _lease_report(
-    server: Server, family: Family, lease: dict[str, Any], subnet_prefix_lengths: Mapping[int, int] | None
+    server: Server, family: Family, lease: Lease, subnet_prefix_lengths: Mapping[int, int] | None
 ) -> _Report:
-    """Resolve lease facts from Kea, or the job's explicit unavailable-catalogue fallback."""
-    fields = lease_fields(lease)
-    address = ipaddress.ip_address(fields.address)
-    if address.version != family:
+    """Resolve lease facts from Kea, or the job's explicit unavailable-catalogue fallback.
+
+    A delegated prefix reports its base address, as the lease source always has.
+    """
+    if lease.family != family:
         raise ValueError("The lease address does not match the claim family")
-    subnet_id = fields.subnet_id
-    if (
-        isinstance(subnet_id, bool)
-        or not isinstance(subnet_id, int)
-        or not subnet_catalogue.MIN_SUBNET_ID <= subnet_id <= subnet_catalogue.MAX_SUBNET_ID
-    ):
-        raise ValueError("The lease Subnet ID must be an integer in the Kea Subnet ID range")
-    hostname = _record_hostname(lease)
+    address = lease.identity.address
     if subnet_prefix_lengths is not None:
-        if subnet_id not in subnet_prefix_lengths:
+        if lease.subnet_id not in subnet_prefix_lengths:
             raise ValueError("The lease Subnet ID is absent from the Subnet Catalogue")
-        prefix_length = subnet_prefix_lengths[subnet_id]
+        prefix_length = subnet_prefix_lengths[lease.subnet_id]
     else:
         prefix = (
             Prefix.objects.filter(vrf_id=server.sync_vrf_id, prefix__net_contains_or_equals=str(address))
@@ -688,8 +709,8 @@ def _lease_report(
             .first()
         )
         prefix_length = prefix.prefix.prefixlen if prefix is not None else address.max_prefixlen
-    mac_addresses = ((fields.hw_address, hostname),) if fields.hw_address else ()
-    return _Report(str(address), _Facts(hostname, prefix_length), mac_addresses)
+    mac_addresses = ((lease.hw_address, lease.hostname),) if lease.hw_address else ()
+    return _Report(str(address), _Facts(lease.hostname, prefix_length), mac_addresses)
 
 
 def reconcile(server: Server, family: Family, phases: Sequence[Phase]) -> SyncReport:
@@ -750,7 +771,7 @@ def _each_row(
     """Run *work* for each row in its own transaction or savepoint; a database error or refusal fails only that row."""
     for row in rows:
         try:
-            with transaction.atomic():
+            with event_scope.atomic():
                 outcome = work(row)
         except (DatabaseError, _RowRefused, DuplicateNetBoxRowsError, MetadataBusy) as exc:
             report.fail_row(source, name(row), exc)
@@ -788,16 +809,20 @@ def _run_phase(server: Server, family: Family, phase: Phase, report: SyncReport)
 
 
 def _lease_reports(server: Server, family: Family, phase: LeasePhase, report: SyncReport) -> dict[str, _Report]:
-    """Read the lease snapshot and group its valid records by canonical address."""
+    """Read the lease Snapshot and group its valid records by canonical address.
+
+    A Snapshot that reached its cap or excluded a record leaves the phase incomplete, so it removes no stale link.
+    """
+    what = f"Server {server.name} (v{family}): the lease snapshot"
     try:
         client = server.get_client(version=family)
-        collection = client.lease_get_all(version=family, max_leases=phase.max_leases)
+        snapshot = client.lease_get_all(version=family, max_leases=phase.max_leases, server_id=server.pk)
     # OSError covers each requests error, KeaTLSFileError included.
     except (KeaException, OSError, ValueError, RuntimeError) as exc:
-        report.fail_snapshot(LEASE, f"Server {server.name} (v{family}): the lease snapshot", exc)
+        report.fail_snapshot(LEASE, what, exc)
         return {}
-    logger.info("Server %s (v%s): fetched %d leases", server.name, family, len(collection.leases))
-    if collection.truncated:
+    logger.info("Server %s (v%s): fetched %d leases", server.name, family, len(snapshot.records))
+    if snapshot.coverage != "exhaustive":
         logger.warning(
             "Server %s (v%s): lease fetch truncated at %d: increase sync_max_leases_per_server",
             server.name,
@@ -805,16 +830,17 @@ def _lease_reports(server: Server, family: Family, phase: LeasePhase, report: Sy
             phase.max_leases,
         )
         report.incomplete.add(LEASE)
+    if snapshot.diagnostics:
+        report.errors += len(snapshot.diagnostics)
+        report.incomplete.add(LEASE)
+        logger.warning("%s is incomplete: %d excluded lease record(s)", what, len(snapshot.diagnostics))
 
     reports: dict[str, _Report] = {}
-    for lease in collection.leases:
-        fields = lease_fields(lease)
-        # The snapshot already validated each address.
-        address = str(ipaddress.ip_address(fields.address))
+    for lease in snapshot.records:
         try:
             row = _lease_report(server, family, lease, phase.subnet_prefix_lengths)
         except (ValueError, RuntimeError) as exc:
-            report.fail_row(LEASE, f"lease {address}", exc)
+            report.fail_row(LEASE, f"lease {lease.identity.address}", exc)
             continue
         _add_report(reports, row)
     return reports
@@ -936,8 +962,12 @@ def _claim(
     *,
     force: bool = False,
     conflicts: set[str] | None = None,
+    before_write: Callable[[], None] | None = None,
 ) -> _Outcome:
-    """Link one reported address under its identity lock, and apply the report when no owner disagrees."""
+    """Link one reported address under its identity lock, and apply the report when no owner disagrees.
+
+    *before_write* runs immediately before the first IP address write; a row that writes no IP address skips it.
+    """
     vrf_id = server.sync_vrf_id
     _lock_identity(None, report.address)
     if vrf_id is not None:
@@ -965,6 +995,9 @@ def _claim(
         elif eligible and report.facts is not None:
             legacy[0].snapshot()
             legacy[0].vrf_id = vrf_id
+            if before_write is not None:
+                before_write()
+                before_write = None  # The row passed; a later write in this call does not check again.
             legacy[0].save()
             rows = legacy
     facts = report.facts
@@ -980,6 +1013,8 @@ def _claim(
             dns_name=facts.hostname,
             description=render_marker(status_kind(status)),
         )
+        if before_write is not None:
+            before_write()
         ip.save()
         _store_link(None, server, family, source, ip, facts.stored(), stale_mark=None)
         return "created"
@@ -995,7 +1030,7 @@ def _claim(
             # A Global Reservation does not change an object that it never linked.
             return "unchanged" if facts is None and not links else "conflict"
         links = []
-    return _apply_claim(server, family, source, report, ip, links)
+    return _apply_claim(server, family, source, report, ip, links, before_write)
 
 
 def _apply_claim(
@@ -1005,6 +1040,7 @@ def _apply_claim(
     report: _Report,
     ip: IPAddress,
     links: list[IPAMOwnershipLink],
+    before_write: Callable[[], None] | None = None,
 ) -> _Outcome:
     """Compare owners before applying facts or an explicit takeover to the locked row."""
     facts = report.facts
@@ -1035,6 +1071,8 @@ def _apply_claim(
     fields["address"] = f"{report.address}/{applied.prefix_length}"
     changed = any(str(getattr(ip, name)) != value for name, value in fields.items())
     if changed:
+        if before_write is not None:
+            before_write()
         ip.snapshot()
         for name, value in fields.items():
             setattr(ip, name, value)
@@ -1501,7 +1539,7 @@ def _network_result(server: Server, source: str, row: _NetworkReport, outcome: _
 def _claim_network_records(
     server: Server,
     family: Family,
-    records: Sequence[dict[str, Any] | Reservation | SubnetClaim | PoolClaim],
+    records: Sequence[Lease | Reservation | SubnetClaim | PoolClaim],
     *,
     force: bool,
 ) -> ClaimResult:
