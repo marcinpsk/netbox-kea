@@ -953,53 +953,6 @@ class Reservation6Form(_SyncToNetBoxForm):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Phase 6: Global multi-server filter forms
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-class GlobalServer4FilterForm(forms.Form):
-    """Server multi-select for the global DHCPv4 views."""
-
-    server = forms.ModelMultipleChoiceField(
-        queryset=Server.objects.none(),
-        required=False,
-        label="Servers",
-        widget=forms.CheckboxSelectMultiple,
-        help_text="Leave blank to query all DHCPv4-enabled servers.",
-    )
-
-    def __init__(self, *args, **kwargs):
-        """Evaluate queryset at instantiation time, not class definition time."""
-        user = kwargs.pop("user", None)
-        super().__init__(*args, **kwargs)
-        qs = Server.objects.filter(dhcp4=True)
-        if user is not None:
-            qs = qs.restrict(user, "view")
-        self.fields["server"].queryset = qs
-
-
-class GlobalServer6FilterForm(forms.Form):
-    """Server multi-select for the global DHCPv6 views."""
-
-    server = forms.ModelMultipleChoiceField(
-        queryset=Server.objects.none(),
-        required=False,
-        label="Servers",
-        widget=forms.CheckboxSelectMultiple,
-        help_text="Leave blank to query all DHCPv6-enabled servers.",
-    )
-
-    def __init__(self, *args, **kwargs):
-        """Evaluate queryset at instantiation time, not class definition time."""
-        user = kwargs.pop("user", None)
-        super().__init__(*args, **kwargs)
-        qs = Server.objects.filter(dhcp6=True)
-        if user is not None:
-            qs = qs.restrict(user, "view")
-        self.fields["server"].queryset = qs
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # Phase 10: Pool management forms
 # ─────────────────────────────────────────────────────────────────────────────
 
