@@ -457,6 +457,14 @@ class BaseLeaseTable(GenericTable):
             ' <span class="badge text-bg-success ms-1">View</span>'
             "{% endif %}"
             "{% endif %}"
+            "{% elif record.other_kind_reservation %}"
+            "{% if record.can_change_reservation %}"
+            '<a href="{{ record.reservation_url }}" class="badge text-bg-secondary text-decoration-none"'
+            ' title="The Reservation of this client holds no allocation of this kind">Reservation</a>'
+            "{% else %}"
+            '<span class="badge text-bg-secondary"'
+            ' title="The Reservation of this client holds no allocation of this kind">Reservation</span>'
+            "{% endif %}"
             "{% elif record.create_reservation_url %}"
             '<a href="{{ record.create_reservation_url }}" class="badge text-bg-warning text-decoration-none">'
             "+ Reserve</a>"

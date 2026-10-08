@@ -110,11 +110,15 @@ NetBox plugin for the [Kea DHCP](https://www.isc.org/kea/) server. Manage your D
 - An edit writes only the fields that you change. A blank hostname clears the hostname; a blank
   client identifier or valid lifetime keeps the current value.
 - After an add, the plugin reads the new lease back from Kea. *Sync to NetBox IPAM* claims it only
-  when that read shows a current lease.
+  when that read shows a current lease whose client binding, and Subnet and hostname when the form
+  gave them, match the request.
+- A Reservation of the client that holds only the other kind (addresses for a delegated prefix, or
+  prefixes for an address) shows as *Reservation*, not *Reserved*, and the row offers no *+ Reserve*.
 - The `lease_added` and `leases_deleted` signals carry typed values (see `netbox_kea/signals.py`).
   `lease_added` sends `creation`, the request that Kea confirmed, and `lease`, the lease that the read
-  back observed, or `None` when that read failed. `leases_deleted` sends `leases`, the leases whose
-  deletion Kea confirmed. A refused, changed or failed action sends no signal.
+  back observed, or `None` when that read failed or does not match the request. `leases_deleted`
+  sends `leases`, the leases whose deletion Kea confirmed. A refused, changed or failed action sends
+  no signal.
 
 **Lease observations**
 - The plugin validates each lease record that Kea returns. A malformed record is left out and the

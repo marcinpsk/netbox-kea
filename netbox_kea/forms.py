@@ -660,13 +660,13 @@ class BaseLeaseDeleteForm(forms.Form):
 
 
 class Lease6DeleteForm(BaseLeaseDeleteForm):
-    """Delete form for DHCPv6 leases; validates a list of IPv6 addresses and delegated prefixes."""
+    """Delete form for DHCPv6 leases; reads the shown facts of each selected address or delegated-prefix row."""
 
     pk = LeaseSelectionField(6)
 
 
 class Lease4DeleteForm(BaseLeaseDeleteForm):
-    """Delete form for DHCPv4 leases; validates a list of IPv4 addresses."""
+    """Delete form for DHCPv4 leases; reads the shown facts of each selected lease row."""
 
     pk = LeaseSelectionField(4)
 
@@ -1760,8 +1760,8 @@ class _LeaseAddForm(_SyncToNetBoxForm):
         try:
             data["request"] = self._request(data)
         except PydanticValidationError as exc:
-            for field, message in request_errors(exc):
-                self.add_error(_REQUEST_FORM_FIELDS.get(field or ""), message)
+            for error in request_errors(exc):
+                self.add_error(_REQUEST_FORM_FIELDS.get(error.field or ""), error.message)
         return data
 
 

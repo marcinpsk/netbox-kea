@@ -14,7 +14,7 @@ import math
 from collections import Counter
 from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Literal, TypeAlias, get_args
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Literal, NamedTuple, TypeAlias, get_args
 
 from pydantic import (
     AwareDatetime,
@@ -550,20 +550,30 @@ class LeaseChanged(_Value):
     lease: Lease
 
 
-class LeaseConflict(_Value):
-    """Nothing changed: the fresh Lease contradicts the shown facts, or Kea refused the change itself.
+#: Each Lease fact that a fresh read can contradict, in the order of comparison.
+LeaseFact = Literal["identity", "prefix_length", "subnet_id", "binding", "hostname", "valid_lifetime"]
+# The facts that a change compares only when it writes them.
+_WRITTEN_FACTS = frozenset({"hostname", "valid_lifetime"})
 
-    ``fields`` names each shown fact that the fresh read contradicts. It is empty when Kea refused the update
-    because the Lease was deleted or changed after the read.
-    """
+
+class LeaseConflict(_Value):
+    """Nothing changed: the fresh Lease contradicts each shown fact in ``fields``."""
 
     outcome: Literal["conflict"] = "conflict"
-    fields: tuple[str, ...]
+    fields: Annotated[tuple[LeaseFact, ...], Field(min_length=1)]
+
+
+class LeaseChangeRefused(_Value):
+    """Nothing changed: Kea refused the update because the Lease was deleted or changed after the fresh read."""
+
+    outcome: Literal["refused"] = "refused"
+    identity: LeaseIdentity
 
 
 #: The outcome of one Lease change or deletion; only ``LeaseChanged`` changed Kea.
 LeaseChangeResult: TypeAlias = Annotated[
-    LeaseChanged | LeaseConflict | LeaseAbsent | LeaseLookupFailed, Field(discriminator="outcome")
+    LeaseChanged | LeaseConflict | LeaseChangeRefused | LeaseAbsent | LeaseLookupFailed,
+    Field(discriminator="outcome"),
 ]
 
 
@@ -605,15 +615,43 @@ class DHCPv6LeaseRequest(_Value):
 LeaseRequest: TypeAlias = Annotated[DHCPv4LeaseRequest | DHCPv6LeaseRequest, Field(discriminator="variant")]
 
 
-def request_errors(exc: ValidationError) -> tuple[tuple[str | None, str], ...]:
-    """Return the request field and the message of each error of a refused creation request.
+class RequestError(NamedTuple):
+    """One reason why a creation request was refused."""
 
-    The field is ``None`` for an error of the whole request.
-    """
+    #: The request field, or ``None`` for an error of the whole request.
+    field: str | None
+    #: The Pydantic error type, such as ``missing``.
+    code: str
+    message: str
+
+
+def request_errors(exc: ValidationError) -> tuple[RequestError, ...]:
+    """Return each reason why a creation request was refused."""
     return tuple(
-        (str(error["loc"][0]) if error["loc"] else error.get("ctx", {}).get("field"), error["msg"])
+        RequestError(
+            str(error["loc"][0]) if error["loc"] else error.get("ctx", {}).get("field"), error["type"], error["msg"]
+        )
         for error in exc.errors(include_url=False)
     )
+
+
+def creation_mismatches(request: LeaseRequest, lease: Lease) -> tuple[LeaseFact, ...]:
+    """Return the facts of *request* that the Lease read after its creation contradicts.
+
+    A fact that the request left to Kea is not compared.
+    """
+    if isinstance(request, DHCPv4LeaseRequest):
+        binding = isinstance(lease, DHCPv4AddressLease) and (
+            lease.hw_address == request.hw_address and request.client_id in (None, lease.client_id)
+        )
+    else:
+        binding = isinstance(lease, DHCPv6AddressLease) and (lease.duid, lease.iaid) == (request.duid, request.iaid)
+    differs: dict[LeaseFact, bool] = {
+        "binding": not binding,
+        "subnet_id": request.subnet_id not in (None, lease.subnet_id),
+        "hostname": request.hostname not in (None, lease.hostname),
+    }
+    return tuple(name for name, differ in differs.items() if differ)
 
 
 class MalformedLeaseResponse(RuntimeError):
@@ -674,11 +712,10 @@ def lease_edit(shown: ShownLease, *, hostname: str, client_identifier: str, vali
     )
 
 
-def lease_edit_conflicts(shown: ShownLease, fresh: Lease, edit: LeaseEdit) -> tuple[str, ...]:
+def lease_edit_conflicts(shown: ShownLease, fresh: Lease, edit: LeaseEdit) -> tuple[LeaseFact, ...]:
     """Return the shown facts that a fresh read contradicts; a renewal alone is no conflict."""
     current = shown_lease(fresh)
-    compared = ["identity", "prefix_length", "subnet_id", "binding"]
-    compared += [name for name in ("hostname", "valid_lifetime") if getattr(edit, name) is not None]
+    compared = [name for name in get_args(LeaseFact) if name not in _WRITTEN_FACTS or getattr(edit, name) is not None]
     return tuple(name for name in compared if getattr(current, name) != getattr(shown, name))
 
 

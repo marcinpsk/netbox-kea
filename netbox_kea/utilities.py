@@ -335,6 +335,10 @@ def kea_error_hint(exc: Any) -> str:
     return f"Kea returned an unexpected result code ({result}). Check the server logs for details."
 
 
+class LeaseCSVError(ValueError):
+    """A lease CSV row is not a valid creation request; the message names the row and the column, never a value."""
+
+
 def parse_lease_csv(version: Family, content: str) -> list[tuple[int, LeaseRequest]]:
     """Parse a lease CSV file into typed creation requests, each with its row number.
 
@@ -345,8 +349,7 @@ def parse_lease_csv(version: Family, content: str) -> list[tuple[int, LeaseReque
     **Optional columns**: ``subnet-id``, ``valid-lft``, ``hostname``.
 
     Raises:
-        ValueError: For the first row that is not a valid request. The message names the row and the
-            column, never the value.
+        LeaseCSVError: For the first row that is not a valid request.
 
     """
     fields = {"ip-address": "address", "subnet-id": "subnet_id", "valid-lft": "valid_lifetime", "hostname": "hostname"}
@@ -354,7 +357,6 @@ def parse_lease_csv(version: Family, content: str) -> list[tuple[int, LeaseReque
         fields["hw-address"] = "hw_address"
     else:
         fields.update({"duid": "duid", "iaid": "iaid"})
-    required = ("ip-address", "hw-address") if version == 4 else ("ip-address", "duid", "iaid")
     integers = {"subnet-id", "valid-lft", "iaid"}
     columns = {field: column for column, field in fields.items()}
     model = DHCPv4LeaseRequest if version == 4 else DHCPv6LeaseRequest
@@ -366,9 +368,6 @@ def parse_lease_csv(version: Family, content: str) -> list[tuple[int, LeaseReque
     parsed: list[tuple[int, LeaseRequest]] = []
     for row_num, raw in enumerate(reader, start=2):
         row = {key.strip(): (value or "").strip() for key, value in raw.items() if key is not None}
-        for column in required:
-            if not row.get(column):
-                raise ValueError(f"Row {row_num}: missing required field '{column}'.")
         values: dict[str, Any] = {}
         for column, field in fields.items():
             text = row.get(column, "")
@@ -378,20 +377,22 @@ def parse_lease_csv(version: Family, content: str) -> list[tuple[int, LeaseReque
                 try:
                     values[field] = parse_decimal(text)
                 except ValueError:
-                    raise ValueError(f"Row {row_num}: '{column}' must be an integer.") from None
+                    raise LeaseCSVError(f"Row {row_num}: '{column}' must be an integer.") from None
             elif column == "ip-address":
                 try:
                     values[field] = ipaddress.ip_address(text)
                 except ValueError:
-                    raise ValueError(f"Row {row_num}: '{column}' is not an IPv{version} address.") from None
+                    raise LeaseCSVError(f"Row {row_num}: '{column}' is not an IPv{version} address.") from None
             else:
                 values[field] = text
         try:
             parsed.append((row_num, model.model_validate(values)))
         except PydanticValidationError as exc:
-            refused, _message = request_errors(exc)[0]
-            column = columns.get(refused or "", "row")
-            raise ValueError(f"Row {row_num}: '{column}' is not valid for a DHCPv{version} lease.") from None
+            refused = request_errors(exc)[0]
+            column = columns.get(refused.field or "", "row")
+            if refused.code == "missing":
+                raise LeaseCSVError(f"Row {row_num}: missing required field '{column}'.") from None
+            raise LeaseCSVError(f"Row {row_num}: '{column}' is not valid for a DHCPv{version} lease.") from None
     return parsed
 
 
