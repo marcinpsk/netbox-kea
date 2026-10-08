@@ -75,6 +75,7 @@ from ..reservations import (
     InSubnetReservationScope,
     Reservation,
 )
+from ..subnet_catalogue import CatalogueUnavailable
 
 logger = logging.getLogger(__name__)
 
@@ -201,7 +202,11 @@ def _reservation_addresses(
     hardware = reservation.identity.hardware_address
     mac_obj = None
     if hardware:
-        hostname = reservation_published_name(reservation, catalogue)
+        try:
+            hostname = reservation_published_name(reservation, catalogue)
+        except CatalogueUnavailable:
+            # The MAC description gets no name that the plugin cannot know; the DHCP row needs only the MAC.
+            hostname = ""
         for address in reservation.addresses:
             mac_obj = claims.addresses[str(address)].resolved_macs.get((hardware, hostname))
             if mac_obj is not None:
