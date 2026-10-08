@@ -13,7 +13,7 @@ from django.shortcuts import render
 from django.views import View
 
 from .. import constants, forms, server_configuration, tables
-from ..constants import Family
+from ..constants import Family, LeaseState
 from ..decimal_text import parse_decimal
 from ..kea import KeaException, LeaseQueryGuardError, lease_query_guard_message
 from ..leases import LeaseSnapshot
@@ -47,7 +47,7 @@ def _fetch_leases_from_server(
     by: str,
     version: Family,
     *,
-    state: int | None = None,
+    state: LeaseState | None = None,
 ) -> LeaseSnapshot:
     """Read the leases matching *q*/*by* from one server."""
     client = server.get_client(version=version)
@@ -61,7 +61,9 @@ def _fetch_all_leases_from_server(server: "Server", version: Family, max_leases:
     return client.lease_get_all(version, max_leases=max_leases, server_id=server.pk)
 
 
-def _server_lease_rows(server: Server, snapshot: LeaseSnapshot, state_filter: int | None) -> list[dict[str, Any]]:
+def _server_lease_rows(
+    server: Server, snapshot: LeaseSnapshot, state_filter: LeaseState | None
+) -> list[dict[str, Any]]:
     """Return the presentation rows of one server's Snapshot, tagged with the server."""
     rows = snapshot_rows(snapshot, state_filter)
     for row in rows:
@@ -79,7 +81,7 @@ class _CombinedLeaseRead:
     truncated_servers: list[str] = field(default_factory=list)
     incomplete_servers: list[tuple[str, str]] = field(default_factory=list)
 
-    def add(self, server: Server, snapshot: LeaseSnapshot, state_filter: int | None) -> None:
+    def add(self, server: Server, snapshot: LeaseSnapshot, state_filter: LeaseState | None) -> None:
         """Add the valid Leases of one server, and its excluded records as a safe reason."""
         self.rows.extend(_server_lease_rows(server, snapshot, state_filter))
         if snapshot.diagnostics:
@@ -92,7 +94,7 @@ class _CombinedLeaseRead:
 
 
 def _read_combined_leases(
-    servers: list[Server], version: Family, q: Any, by: str | None, state_filter: int | None
+    servers: list[Server], version: Family, q: Any, by: str | None, state_filter: LeaseState | None
 ) -> _CombinedLeaseRead:
     """Search each server, or read each one up to its cap for a state-only filter."""
     read = _CombinedLeaseRead()

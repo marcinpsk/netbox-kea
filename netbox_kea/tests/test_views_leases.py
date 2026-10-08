@@ -2465,7 +2465,7 @@ class TestBulkLeaseImportView(_ViewTestBase):
         self.assertEqual(result["created"], 1)
         self.assertEqual(result["errors"], 1)
 
-    def test_each_created_row_sends_lease_added_without_a_read_back(self):
+    def test_each_created_row_sends_lease_added_without_a_read_back(self) -> None:
         received: list[dict] = []
 
         def receive(sender, **kwargs):
@@ -2853,7 +2853,7 @@ class TestFetchLeasesFromServer(_ViewTestBase):
                 1,
                 constants.BY_SUBNET_ID,
                 4,
-                state=1,
+                state="declined",
             )
 
         self.assertEqual(len(snapshot.records), 1)

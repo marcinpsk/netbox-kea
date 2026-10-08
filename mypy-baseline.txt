@@ -2,8 +2,6 @@ netbox_kea/tests/isolated_settings.py:0: error: Name "DATABASES" is not defined 
 netbox_kea/sync.py:0: error: "object" has no attribute "description"  [attr-defined]
 netbox_kea/sync.py:0: error: "object" has no attribute "description"  [attr-defined]
 netbox_kea/sync.py:0: error: "object" has no attribute "description"  [attr-defined]
-netbox_kea/kea.py:0: error: Dict entry 0 has incompatible type "str": "int"; expected "str": "list[int]"  [dict-item]
-netbox_kea/kea.py:0: error: Dict entry 1 has incompatible type "str": "int"; expected "str": "list[int]"  [dict-item]
 netbox_kea/models.py:0: error: Need type annotation for "name"  [var-annotated]
 netbox_kea/models.py:0: error: Need type annotation for "ca_url"  [var-annotated]
 netbox_kea/models.py:0: error: Need type annotation for "ca_username"  [var-annotated]

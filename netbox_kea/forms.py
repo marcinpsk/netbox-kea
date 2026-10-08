@@ -549,9 +549,9 @@ class BaseLeasesSarchForm(forms.Form):
                 raise ValidationError({"q": "Invalid client ID."})
             cleaned_data["q"] = q.replace("-", "")
 
-        # Convert state to int or None for the view to use.
+        # The choice value is the Kea state code; the view takes the state name.
         state_str = cleaned_data.get("state", "")
-        cleaned_data["state"] = parse_decimal(state_str) if state_str != "" else None
+        cleaned_data["state"] = constants.LEASE_STATES[parse_decimal(state_str)] if state_str != "" else None
 
         page = cleaned_data["page"]
         if page:
