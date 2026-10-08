@@ -8,7 +8,15 @@ from django.urls import reverse
 
 from netbox_kea.views.reservations import _RESERVATION_PAGE_SIZE
 
-from .kea_stub import _catalogue_responses, _res_get, _res_page, _reservation_mutation_commands, queued, stub_kea
+from .kea_stub import (
+    _catalogue_responses,
+    _res_get,
+    _res_page,
+    _reservation_mutation_commands,
+    complete_lease,
+    queued,
+    stub_kea,
+)
 from .utils import _ViewTestBase
 
 
@@ -315,12 +323,14 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
                     "result": 0,
                     "arguments": {
                         "leases": [
-                            {
-                                "subnet-id": 20,
-                                "hw-address": "AA-BB-CC-DD-EE-FF",
-                                "ip-address": "198.18.0.21",
-                                "state": 0,
-                            }
+                            complete_lease(
+                                {
+                                    "subnet-id": 20,
+                                    "hw-address": "AA-BB-CC-DD-EE-FF",
+                                    "ip-address": "198.18.0.21",
+                                    "state": 0,
+                                }
+                            )
                         ]
                     },
                 },
@@ -617,15 +627,17 @@ class TestCombinedReservationSnapshots(_ViewTestBase):
 
 
 class TestLeaseReservationIdentityMatching(_ViewTestBase):
-    lease = {
-        "ip-address": "198.18.0.20",
-        "hw-address": "aa:bb:cc:dd:ee:ff",
-        "subnet-id": 20,
-        "hostname": "lease.example.invalid",
-        "cltt": 1_700_000_000,
-        "valid-lft": 3600,
-        "state": 0,
-    }
+    lease = complete_lease(
+        {
+            "ip-address": "198.18.0.20",
+            "hw-address": "aa:bb:cc:dd:ee:ff",
+            "subnet-id": 20,
+            "hostname": "lease.example.invalid",
+            "cltt": 1_700_000_000,
+            "valid-lft": 3600,
+            "state": 0,
+        }
+    )
 
     def _get(self, reservation_responses):
         responses = _catalogue_responses(4, 20, "198.18.0.0/24")

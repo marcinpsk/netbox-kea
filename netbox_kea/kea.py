@@ -4,10 +4,12 @@
 # SPDX-License-Identifier: Apache-2.0
 import base64
 import ipaddress
+import itertools
 import json
 import logging
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Literal, NamedTuple, Protocol, TypedDict, cast
 
@@ -15,7 +17,7 @@ import requests
 from requests.models import HTTPBasicAuth
 
 from . import constants
-from .constants import Family, IPNetworkValue, Persistence
+from .constants import Family, IPAddressValue, IPNetworkValue, Persistence
 from .decimal_text import parse_decimal
 from .dhcp_options import (
     DHCPOption,
@@ -26,6 +28,26 @@ from .dhcp_options import (
     form_shows,
     merge_option_form_rows,
     parse_dhcp_options,
+)
+from .leases import (
+    ALL_LEASES,
+    ExactLeaseResult,
+    LeaseAbsent,
+    LeaseCoverage,
+    LeaseDiagnostic,
+    LeaseFound,
+    LeaseIdentity,
+    LeaseLookupFailed,
+    LeaseQuery,
+    LeaseRead,
+    LeaseSnapshot,
+    allocation_identities,
+    lookup_arguments,
+    read_deletion,
+    read_exact_lease,
+    read_lease_collection,
+    read_lease_page,
+    read_lease_page_count,
 )
 from .pools import parse_pool
 from .reservations import (
@@ -291,33 +313,6 @@ class PersistResult(NamedTuple):
     diagnostics: tuple[str, ...] = ()
 
 
-class LeasePage(NamedTuple):
-    """One validated Kea lease page and its next cursor."""
-
-    leases: list[dict[str, Any]]
-    next_cursor: str | None
-
-
-class LeaseCollection(NamedTuple):
-    """A bounded validated lease collection."""
-
-    leases: list[dict[str, Any]]
-    truncated: bool
-
-
-class LeaseFields(NamedTuple):
-    """The fields of one lease record from a validated collection that the IPAM synchronization reads."""
-
-    address: str
-    subnet_id: Any
-    hw_address: Any
-
-
-def lease_fields(lease: dict[str, Any]) -> LeaseFields:
-    """Return the IPAM synchronization fields of one lease record; the collection already validated the address."""
-    return LeaseFields(lease["ip-address"], lease.get("subnet-id"), lease.get("hw-address"))
-
-
 class LeaseQueryGuardError(Exception):
     """Base class for a lease query rejected before an unbounded Kea response."""
 
@@ -347,8 +342,15 @@ class LeaseQueryPreflightUnavailable(LeaseQueryGuardError):
         super().__init__(reason)
 
 
+class LeaseQueryUnknownSubnet(LeaseQueryGuardError):
+    """Raised when a Subnet CIDR query names no configured Subnet, so no Subnet ID scopes the read."""
+
+
 def lease_query_guard_message(exc: LeaseQueryGuardError, state: int | None) -> str:
     """Return safe, actionable guidance for one rejected lease query."""
+    if isinstance(exc, LeaseQueryUnknownSubnet):
+        # Kea can hold leases under a Subnet ID that its configuration no longer has.
+        return "This Subnet CIDR is not configured on the Kea server. Search by Subnet ID instead."
     if isinstance(exc, LeaseQueryNotMeasurable):
         return "Kea cannot safely measure this lease state. Use an exact IP or client identifier search."
     if isinstance(exc, LeaseQueryPreflightUnavailable):
@@ -379,46 +381,51 @@ class _SubnetLeaseCounts(NamedTuple):
     declined: int
 
 
-def _lease_page_start(version: int, cursor: str | None) -> str:
-    """Return the validated Kea page cursor for one DHCP family."""
-    if cursor is not None:
-        try:
-            parsed_cursor = ipaddress.ip_address(cursor)
-        except (TypeError, ValueError) as exc:
-            raise ValueError(f"Invalid DHCPv{version} lease cursor.") from exc
-        if parsed_cursor.version != version:
-            raise ValueError(f"Lease cursor family IPv{parsed_cursor.version} does not match DHCPv{version}.")
-        return str(parsed_cursor)
-    return "0.0.0.0" if version == 4 else "::"  # noqa: S104  Kea pagination cursor
+def _lease_cursor(version: int, cursor: str | None) -> IPAddressValue | None:
+    """Return the parsed page cursor of one DHCP family, or ``None`` for the start of the scope."""
+    if cursor is None:
+        return None
+    try:
+        parsed = ipaddress.ip_address(cursor)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Invalid DHCPv{version} lease cursor.") from exc
+    if parsed.version != version:
+        raise ValueError(f"Lease cursor family IPv{parsed.version} does not match DHCPv{version}.")
+    return parsed
 
 
-def _lease_address_values(leases: list[Any], command: str) -> list[str]:
-    """Return non-empty lease address strings or reject a malformed page."""
-    values: list[str] = []
-    for index, lease in enumerate(leases):
-        raw_address = lease.get("ip-address") if isinstance(lease, dict) else None
-        if not isinstance(raw_address, str) or not raw_address:
-            raise RuntimeError(f"{command} returned an invalid ip-address at lease index {index}.")
-        values.append(raw_address)
-    return values
+def _subnet_id_value(value: Any) -> int:
+    """Return the Subnet ID in the Kea range of a lease query value, an integer or its decimal text."""
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        raise ValueError("subnet_id must be a positive integer.")
+    try:
+        subnet_id = value if isinstance(value, int) else parse_decimal(value)
+    except ValueError as exc:
+        raise ValueError("subnet_id must be a positive integer.") from exc
+    if not constants.MIN_SUBNET_ID <= subnet_id <= constants.MAX_SUBNET_ID:
+        raise ValueError(f"subnet_id must be from {constants.MIN_SUBNET_ID} to {constants.MAX_SUBNET_ID}.")
+    return subnet_id
 
 
-def _validated_lease_addresses(
-    leases: list[Any],
-    version: int,
-    command: str,
-) -> list[ipaddress.IPv4Address | ipaddress.IPv6Address]:
-    """Return parsed lease addresses that match the requested DHCP family."""
-    addresses: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
-    for index, raw_address in enumerate(_lease_address_values(leases, command)):
-        try:
-            address = ipaddress.ip_address(raw_address)
-        except ValueError as exc:
-            raise RuntimeError(f"{command} returned an invalid ip-address at lease index {index}.") from exc
-        if address.version != version:
-            raise RuntimeError(f"{command} returned a lease for the wrong address family at index {index}.")
-        addresses.append(address)
-    return addresses
+def _lease_snapshot(
+    server_id: int, query: LeaseQuery, started: datetime, read: LeaseRead, coverage: LeaseCoverage
+) -> LeaseSnapshot:
+    """Return the Snapshot of *read*, observed between *started* and now."""
+    return LeaseSnapshot(
+        server_id=server_id,
+        family=query.family,
+        query=query,
+        read_started=started,
+        read_finished=_now(),
+        records=read.records,
+        diagnostics=read.diagnostics,
+        coverage=coverage,
+        next_cursor=read.next_cursor,
+    )
+
+
+def _now() -> datetime:
+    return datetime.now(tz=timezone.utc)
 
 
 def subnet_network(value: Any, family: int) -> IPNetworkValue:
@@ -909,6 +916,7 @@ class KeaClient:
             BranchActive: If *command* is a write and the write guard refuses it, for example in a branch.
             KeaTLSFileError: If requests cannot find a TLS file of the client. It is a ``RequestException``.
             requests.HTTPError: If the HTTP response status is not 2xx.
+            RuntimeError: If the reply body is not JSON or not a list, or a reply entry is malformed.
             KeaException: If any response result code is not in *check*.
 
         """
@@ -933,9 +941,12 @@ class KeaClient:
         except OSError as exc:
             raise KeaTLSFileError("A TLS CA, certificate or key file of the client could not be found.") from exc
         resp.raise_for_status()
-        resp_json = resp.json()
+        try:
+            resp_json = resp.json()
+        except requests.JSONDecodeError as exc:
+            raise RuntimeError("Kea returned a reply body that is not JSON.") from exc
         if not isinstance(resp_json, list):
-            raise ValueError(f"Expected list response from Kea API, got {type(resp_json).__name__}")
+            raise RuntimeError(f"Kea returned a reply that is not a list: {type(resp_json).__name__}")
         if check is not None:
             check_response(resp_json, check)
         return resp_json
@@ -1774,24 +1785,31 @@ class KeaClient:
             lease["duid"] = duid
         self.command(LEASE_UPDATE[version], version, arguments=lease)
 
-    def lease_get_by_ip(self, version: Family, ip_address: str) -> dict | None:
-        """Fetch a single lease through the canonical lease-search interface.
-
-        Args:
-            version: DHCP version (4 or 6).
-            ip_address: IP address to look up.
-
-        Returns:
-            The first lease returned by :meth:`lease_search`, or ``None`` when no lease matches.
+    def lease_get(self, identity: LeaseIdentity) -> ExactLeaseResult:
+        """Read the one Lease with *identity*: found, confirmed absent, or a failed observation.
 
         Raises:
-            ValueError: If the DHCP version is invalid or the address value is empty.
-            KeaException: If the Kea lease search fails.
-            RuntimeError: If Kea returns a malformed lease response.
+            KeaException: If Kea returns a result other than success or not found.
+            MalformedLeaseResponse: If the reply envelope is unusable.
 
         """
-        leases = self.lease_search(version, constants.BY_IP, ip_address)
-        return leases[0] if leases else None
+        response = self.command(
+            LEASE_GET[identity.family], identity.family, arguments=lookup_arguments(identity), check=(0, 3)
+        )
+        return read_exact_lease(response, identity)
+
+    def lease_delete(self, identity: LeaseIdentity) -> bool:
+        """Delete the one Lease with *identity*; return ``False`` when Kea has no such Lease.
+
+        Raises:
+            KeaException: If Kea returns a result other than success or not found.
+            MalformedLeaseResponse: If the reply envelope is unusable.
+
+        """
+        response = self.command(
+            LEASE_DEL[identity.family], identity.family, arguments=lookup_arguments(identity), check=(0, 3)
+        )
+        return read_deletion(response)
 
     def lease_search(
         self,
@@ -1800,54 +1818,91 @@ class KeaClient:
         value: Any,
         *,
         state: int | None = None,
-    ) -> list[dict[str, Any]]:
-        """Return raw leases that match one supported selector."""
+        server_id: int,
+    ) -> LeaseSnapshot:
+        """Return the Lease Snapshot of one supported selector; it covers the query scope, never the whole daemon.
+
+        Raises:
+            ValueError: If the selector, value or state does not fit the family.
+            LeaseQueryGuardError: If a Subnet query is unsafe or cannot be measured.
+            KeaException: If Kea returns a failure result.
+            MalformedLeaseResponse: If the reply envelope is unusable.
+
+        """
         selector_specs = {
-            constants.BY_IP: (LEASE_GET, "ip-address", False),
-            constants.BY_HW_ADDRESS: (LEASE_GET_BY_HW_ADDRESS, "hw-address", True),
-            constants.BY_HOSTNAME: (LEASE_GET_BY_HOSTNAME, "hostname", True),
-            constants.BY_CLIENT_ID: (LEASE_GET_BY_CLIENT_ID, "client-id", True),
-            constants.BY_SUBNET: (LEASE_GET_ALL, "subnets", True),
-            constants.BY_SUBNET_ID: (LEASE_GET_ALL, "subnets", True),
-            constants.BY_DUID: (LEASE_GET_BY_DUID, "duid", True),
+            constants.BY_HW_ADDRESS: (LEASE_GET_BY_HW_ADDRESS, "hw-address"),
+            constants.BY_HOSTNAME: (LEASE_GET_BY_HOSTNAME, "hostname"),
+            constants.BY_CLIENT_ID: (LEASE_GET_BY_CLIENT_ID, "client-id"),
+            constants.BY_DUID: (LEASE_GET_BY_DUID, "duid"),
         }
         if version not in (4, 6):
             raise ValueError(f"version must be 4 or 6, got {version!r}")
-        spec = selector_specs.get(selector)
-        if spec is None or version not in spec[0]:
-            raise ValueError(f"Lease selector {selector!r} is not supported for DHCPv{version}.")
-
-        commands, argument_name, multiple = spec
-        command = commands[version]
+        if state is not None and selector not in (constants.BY_SUBNET, constants.BY_SUBNET_ID):
+            raise ValueError("state can only be combined with a Subnet ID search.")
+        started = _now()
+        if selector == constants.BY_IP:
+            return self._exact_lease_snapshot(version, value, started=started, server_id=server_id)
         if selector in (constants.BY_SUBNET, constants.BY_SUBNET_ID):
+            if state is not None and (isinstance(state, bool) or state not in constants.LEASE_QUERY_STATE_CODES):
+                raise LeaseQueryNotMeasurable(state)
             if selector == constants.BY_SUBNET:
                 if not isinstance(value, str) or not value:
                     raise ValueError("subnet must be a non-empty CIDR string.")
+                query = self._lease_query(version, selector, value, state)
                 subnet_id = self.configured_subnet_id_from_cidr(version, value)
                 if subnet_id is None:
-                    return []
-                value = subnet_id
-            command, arguments = self._subnet_lease_search_spec(version, value, state)
+                    raise LeaseQueryUnknownSubnet
+            else:
+                subnet_id = _subnet_id_value(value)
+                query = self._lease_query(version, selector, subnet_id, state)
+            command, arguments = self._subnet_lease_search_spec(version, subnet_id, state)
         else:
-            if state is not None:
-                raise ValueError("state can only be combined with a Subnet ID search.")
+            spec = selector_specs.get(selector)
+            if spec is None or version not in spec[0]:
+                raise ValueError(f"Lease selector {selector!r} is not supported for DHCPv{version}.")
             if not isinstance(value, str) or not value:
                 raise ValueError(f"{selector} must be a non-empty string.")
-            arguments = {argument_name: value}
+            query = self._lease_query(version, selector, value, None)
+            command, arguments = spec[0][version], {spec[1]: value}
 
         response = self._lease_search_response(version, command, arguments)
-        if not response or not isinstance(response[0], dict):
-            raise RuntimeError(f"{command.value} returned a malformed response.")
-        if response[0].get("result") == 3:
-            return []
-        response_arguments = response[0].get("arguments")
-        if not isinstance(response_arguments, dict):
-            raise RuntimeError(f"{command.value} returned malformed arguments.")
-        raw_leases = response_arguments.get("leases") if multiple else [response_arguments]
-        if not isinstance(raw_leases, list):
-            raise RuntimeError(f"{command.value} returned a malformed leases collection.")
-        _validated_lease_addresses(raw_leases, version, command.value)
-        return raw_leases
+        read = read_lease_collection(response, family=version)
+        # Kea's statistics do not count every state, so the measured size can be smaller than the reply.
+        subnet_query = query.selector in (constants.BY_SUBNET, constants.BY_SUBNET_ID)
+        if subnet_query and self.max_unpaged_leases is not None and read.raw_count > self.max_unpaged_leases:
+            raise LeaseQueryTooBroad(read.raw_count, self.max_unpaged_leases)
+        return _lease_snapshot(server_id, query, started, read, coverage="exhaustive")
+
+    @staticmethod
+    def _lease_query(version: Family, selector: str, value: Any, state: int | None) -> LeaseQuery:
+        return LeaseQuery(
+            family=version,
+            selector=selector,
+            value=value,
+            state=None if state is None else constants.LEASE_STATES[state],
+        )
+
+    def _exact_lease_snapshot(self, version: Family, value: Any, *, started: datetime, server_id: int) -> LeaseSnapshot:
+        """Return the Snapshot of every allocation at one address: each kind is read on its own.
+
+        A malformed record is a diagnostic, so absence is complete only when Kea confirms it for every kind.
+        """
+        if not isinstance(value, str) or not value:
+            raise ValueError("ip must be a non-empty string.")
+        results = [self.lease_get(identity) for identity in allocation_identities(version, value)]
+        records = tuple(result.lease for result in results if isinstance(result, LeaseFound))
+        diagnostics = tuple(
+            diagnostic
+            for result in results
+            if isinstance(result, LeaseLookupFailed)
+            for diagnostic in result.diagnostics
+        )
+        raw_count = sum(not isinstance(result, LeaseAbsent) for result in results)
+        read = LeaseRead(
+            family=version, records=records, diagnostics=diagnostics, raw_count=raw_count, next_cursor=None
+        )
+        query = LeaseQuery(family=version, selector=constants.BY_IP, value=str(ipaddress.ip_address(value)))
+        return _lease_snapshot(server_id, query, started, read, coverage="exhaustive")
 
     def _lease_search_response(
         self,
@@ -1864,19 +1919,9 @@ class KeaClient:
             raise LeaseQueryPreflightUnavailable("state-command") from exc
 
     def _subnet_lease_search_spec(
-        self, version: Family, value: Any, state: int | None
+        self, version: Family, subnet_id: int, state: int | None
     ) -> tuple[KeaCommand, dict[str, Any]]:
-        """Validate and guard one Subnet lease query before selecting its command."""
-        if isinstance(value, bool) or not isinstance(value, (int, str)):
-            raise ValueError("subnet_id must be a positive integer.")
-        try:
-            subnet_id = value if isinstance(value, int) else parse_decimal(value)
-        except (TypeError, ValueError) as exc:
-            raise ValueError("subnet_id must be a positive integer.") from exc
-        if subnet_id < 1:
-            raise ValueError("subnet_id must be a positive integer.")
-        if state is not None and (isinstance(state, bool) or state not in constants.LEASE_QUERY_STATE_CODES):
-            raise LeaseQueryNotMeasurable(state)
+        """Guard one Subnet lease query before selecting its command."""
         if self.max_unpaged_leases is None:
             if state is None:
                 return LEASE_GET_ALL[version], {"subnets": [subnet_id]}
@@ -1960,72 +2005,54 @@ class KeaClient:
         *,
         limit: int,
         cursor: str | None = None,
-    ) -> LeasePage:
-        """Return one validated global lease page."""
-        if version not in (4, 6):
-            raise ValueError(f"version must be 4 or 6, got {version!r}")
-        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
-            raise ValueError(f"limit must be a positive integer, got {limit!r}")
-
-        return self._request_lease_page(
-            version,
-            limit=limit,
-            cursor=_lease_page_start(version, cursor),
-        )
-
-    def _request_lease_page(self, version: Family, *, limit: int, cursor: str) -> LeasePage:
-        """Request one structurally valid lease page from Kea."""
-        command = LEASE_GET_PAGE[version].value
-        response = self.command(
-            LEASE_GET_PAGE[version], version, arguments={"from": cursor, "limit": limit}, check=(0, 3)
-        )
-        if not response or not isinstance(response[0], dict):
-            raise RuntimeError(f"{command} returned a malformed response.")
-        if response[0].get("result") == 3:
-            return LeasePage(leases=[], next_cursor=None)
-        arguments = response[0].get("arguments")
-        if not isinstance(arguments, dict):
-            raise RuntimeError(f"{command} returned malformed arguments.")
-        leases = arguments.get("leases")
-        if not isinstance(leases, list):
-            raise RuntimeError(f"{command} returned a malformed leases collection.")
-        count = arguments.get("count")
-        if isinstance(count, bool) or not isinstance(count, int) or count < 0 or count > limit or count != len(leases):
-            raise RuntimeError(f"{command} returned an invalid count.")
-
-        lease_address_values = _lease_address_values(leases, command)
-        next_cursor = None
-        if count == limit and lease_address_values:
-            try:
-                last_address = ipaddress.ip_address(lease_address_values[-1])
-            except ValueError as exc:
-                raise RuntimeError(f"{command} returned an invalid final ip-address.") from exc
-            if last_address.version != version:
-                raise RuntimeError(f"{command} returned a final lease for the wrong address family.")
-            next_cursor = str(last_address)
-        _validated_lease_addresses(leases, version, command)
-        return LeasePage(leases=leases, next_cursor=next_cursor)
-
-    def lease_get_all(self, version: Family, *, per_page: int = 250, max_leases: int | None = None) -> LeaseCollection:
-        """Return a bounded collection of all leases on the daemon.
-
-        Uses ``lease{v}-get-page`` under the hood so it works with very large
-        lease tables without loading everything into RAM at once.
-
-        Args:
-            version: DHCP version (4 or 6).
-            per_page: Number of leases to fetch per API call (default 250).
-            max_leases: Optional cap on the total number of leases returned.
-                ``None`` means no cap.
-
-        Returns:
-            A validated LeaseCollection. Its ``truncated`` field is true only
-            when the cap omitted leases or a full page indicates more can exist.
+        server_id: int,
+    ) -> LeaseSnapshot:
+        """Return one validated page of every Lease of the family, after *cursor* or from the start.
 
         Raises:
-            KeaException: On a non-0/3 result code.
-            RuntimeError: On a malformed response envelope.
-            ValueError: If *per_page* is less than 1 or *max_leases* is less than 1.
+            ValueError: If *limit* or *cursor* is not valid for the family.
+            KeaException: If Kea returns a failure result.
+            MalformedLeaseResponse: If the envelope, count or continuation is unusable.
+
+        """
+        if version not in (4, 6):
+            raise ValueError(f"version must be 4 or 6, got {version!r}")
+        after = _lease_cursor(version, cursor)
+        started = _now()
+        read = self._lease_page(version, limit=limit, after=after)
+        coverage: LeaseCoverage = "exhaustive" if after is None and read.next_cursor is None else "page"
+        return _lease_snapshot(server_id, LeaseQuery(family=version, selector=ALL_LEASES), started, read, coverage)
+
+    def _lease_page(self, version: Family, *, limit: int, after: IPAddressValue | None) -> LeaseRead:
+        """Request and read one ``lease{v}-get-page`` reply."""
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+            raise ValueError(f"limit must be a positive integer, got {limit!r}")
+        start = str(after) if after is not None else ("0.0.0.0" if version == 4 else "::")  # noqa: S104  page cursor
+        response = self.command(
+            LEASE_GET_PAGE[version], version, arguments={"from": start, "limit": limit}, check=(0, 3)
+        )
+        return read_lease_page(response, family=version, limit=limit, after=after)
+
+    def _lease_page_count(self, version: Family, *, after: IPAddressValue) -> int:
+        """Return how many raw records follow *after*, at most one; a record counts whatever its shape."""
+        response = self.command(
+            LEASE_GET_PAGE[version], version, arguments={"from": str(after), "limit": 1}, check=(0, 3)
+        )
+        return read_lease_page_count(response, limit=1)
+
+    def lease_get_all(
+        self, version: Family, *, per_page: int = 250, max_leases: int | None = None, server_id: int
+    ) -> LeaseSnapshot:
+        """Return a bounded Snapshot of every Lease of the family, read page by page.
+
+        Pages continue from the last raw record, so a page whose every record is excluded still continues.
+        *max_leases* caps the raw records read; a Snapshot that reaches the cap before Kea proves the end
+        has ``page`` coverage and keeps the continuation.
+
+        Raises:
+            ValueError: If *per_page* or *max_leases* is not a positive integer.
+            KeaException: If Kea returns a failure result.
+            MalformedLeaseResponse: If a page envelope, count or continuation is unusable, or a page does not advance.
 
         """
         if version not in (4, 6):
@@ -2036,30 +2063,37 @@ class KeaClient:
             isinstance(max_leases, bool) or not isinstance(max_leases, int) or max_leases < 1
         ):
             raise ValueError(f"max_leases must be >= 1 (or None for no cap), got {max_leases!r}")
-        cursor: str | None = None
-        all_leases: list[dict[str, Any]] = []
-        seen_cursors: set[str] = set()
-
-        while True:
-            page = self._request_lease_page(
-                version,
-                limit=per_page,
-                cursor=_lease_page_start(version, cursor),
+        started = _now()
+        records: list[Any] = []
+        diagnostics: list[LeaseDiagnostic] = []
+        raw_count = 0
+        cursor: IPAddressValue | None = None
+        for page in itertools.count():
+            limit = per_page if max_leases is None else min(per_page, max_leases - raw_count)
+            read = self._lease_page(version, limit=limit, after=cursor)
+            records.extend(read.records)
+            diagnostics.extend(
+                diagnostic.model_copy(update={"source_position": f"pages[{page}].{diagnostic.source_position}"})
+                for diagnostic in read.diagnostics
             )
-            all_leases.extend(page.leases)
-            if max_leases is not None and len(all_leases) >= max_leases:
-                truncated = len(all_leases) > max_leases
-                if not truncated and page.next_cursor is not None:
-                    overflow_page = self._request_lease_page(version, limit=1, cursor=page.next_cursor)
-                    truncated = bool(overflow_page.leases)
-                all_leases = all_leases[:max_leases]
-                return LeaseCollection(leases=all_leases, truncated=truncated)
-            if page.next_cursor is None:
-                return LeaseCollection(leases=all_leases, truncated=False)
-            if page.next_cursor in seen_cursors:
-                raise RuntimeError("Lease page cursor did not advance.")
-            seen_cursors.add(page.next_cursor)
-            cursor = page.next_cursor
+            raw_count += read.raw_count
+            cursor = read.next_cursor
+            if cursor is not None and max_leases is not None and raw_count >= max_leases:
+                # The cap is reached: one more raw record decides whether the end is proven.
+                if self._lease_page_count(version, after=cursor) == 0:
+                    cursor = None
+                break
+            if cursor is None:
+                break
+        read = LeaseRead(
+            family=version,
+            records=tuple(records),
+            diagnostics=tuple(diagnostics),
+            raw_count=raw_count,
+            next_cursor=cursor,
+        )
+        coverage: LeaseCoverage = "exhaustive" if cursor is None else "page"
+        return _lease_snapshot(server_id, LeaseQuery(family=version, selector=ALL_LEASES), started, read, coverage)
 
     def dhcp_disable(self, family: Family, max_period: int | None = None) -> None:
         """Temporarily disable DHCP processing on the daemon of *family*.

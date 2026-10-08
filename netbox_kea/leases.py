@@ -14,7 +14,7 @@ import math
 from collections import Counter
 from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Literal, TypeAlias
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Literal, TypeAlias, get_args
 
 from pydantic import (
     AwareDatetime,
@@ -42,6 +42,8 @@ from .constants import (
     LEASE_HW_ADDRESS_OCTETS,
     LEASE_QUERY_STATES,
     LEASE_STATES,
+    MAX_SUBNET_ID,
+    MIN_SUBNET_ID,
     UINT32_MAX,
     Family,
     IPAddressValue,
@@ -130,6 +132,7 @@ ClientIdentifier = Annotated[str, _hex_identifier(LEASE_CLIENT_ID_OCTETS)]
 Duid = Annotated[str, _hex_identifier(LEASE_DUID_OCTETS)]
 Uint32 = Annotated[int, Field(ge=0, le=UINT32_MAX)]
 PositiveUint32 = Annotated[int, Field(ge=1, le=UINT32_MAX)]
+SubnetId = Annotated[int, Field(ge=MIN_SUBNET_ID, le=MAX_SUBNET_ID)]
 Timestamp = Annotated[int, Field(ge=1, le=_MAX_TIMESTAMP)]
 PrefixLength = Annotated[int, Field(ge=1, le=128)]
 
@@ -159,6 +162,46 @@ class LeaseIdentity(_Value):
         return self
 
 
+def address_identity(family: Family, address: str) -> LeaseIdentity:
+    """Return the identity of the address Lease at *address*.
+
+    Raises:
+        ValueError: If *address* is not an address of *family*.
+
+    """
+    return LeaseIdentity(family=family, kind="address", address=ipaddress.ip_address(address))
+
+
+def allocation_identities(family: Family, address: str) -> tuple[LeaseIdentity, ...]:
+    """Return the identity of each allocation kind that *family* can hold at *address*.
+
+    Raises:
+        ValueError: If *address* is not an address of *family*.
+
+    """
+    kinds = _EVERY_KIND if family == 6 else ("address",)
+    return tuple(LeaseIdentity(family=family, kind=kind, address=ipaddress.ip_address(address)) for kind in kinds)
+
+
+def selection_label(lease: Lease) -> str:
+    """Return the label that selects *lease*: its address, or its prefix for a delegated prefix."""
+    return str(lease.prefix) if isinstance(lease, DHCPv6PrefixLease) else str(lease.identity.address)
+
+
+def parse_selection(family: Family, label: str) -> tuple[str, LeaseIdentity]:
+    """Return the canonical form of a :func:`selection_label` and the identity it names.
+
+    Raises:
+        ValueError: If *label* is not an address or a delegated prefix of *family*.
+
+    """
+    if "/" not in label:
+        identity = address_identity(family, label)
+        return str(identity.address), identity
+    prefix = ipaddress.ip_network(label)
+    return str(prefix), LeaseIdentity(family=family, kind="delegated-prefix", address=prefix.network_address)
+
+
 class DHCPv4Binding(_Value):
     """The DHCPv4 client identifiers of one Lease; ``None`` is an identifier that Kea left empty or omitted."""
 
@@ -176,7 +219,7 @@ class DHCPv6Binding(_Value):
 class _Lease(_Value):
     family: ClassVar[Family]
     kind: ClassVar[AllocationKind]
-    subnet_id: PositiveUint32
+    subnet_id: SubnetId
     # Kea omits a zero pool ID.
     pool_id: PositiveUint32 | None = None
     state: LeaseState
@@ -310,9 +353,10 @@ class DHCPv6PrefixLease(_DHCPv6Lease):
         return self
 
 
-Lease: TypeAlias = Annotated[
-    DHCPv4AddressLease | DHCPv6AddressLease | DHCPv6PrefixLease, Field(discriminator="variant")
-]
+_LeaseVariant: TypeAlias = DHCPv4AddressLease | DHCPv6AddressLease | DHCPv6PrefixLease
+Lease: TypeAlias = Annotated[_LeaseVariant, Field(discriminator="variant")]
+#: The Lease variant classes, for an ``isinstance`` check.
+LEASE_VARIANTS: tuple[type[_LeaseVariant], ...] = get_args(_LeaseVariant)
 
 
 class LeaseDiagnostic(_Value):
@@ -355,7 +399,7 @@ class LeaseQuery(_Value):
         if self.selector == ALL_LEASES:
             valid = self.value is None
         elif self.selector == BY_SUBNET_ID:
-            valid = isinstance(self.value, int) and self.value >= 1
+            valid = isinstance(self.value, int) and MIN_SUBNET_ID <= self.value <= MAX_SUBNET_ID
         else:
             valid = isinstance(self.value, str) and bool(self.value)
         if not valid:
@@ -462,7 +506,7 @@ class ShownLease(_Value):
 
     identity: LeaseIdentity
     prefix_length: PrefixLength | None
-    subnet_id: PositiveUint32
+    subnet_id: SubnetId
     binding: DHCPv4Binding | DHCPv6Binding
     hostname: str
     valid_lifetime: Uint32
@@ -494,7 +538,7 @@ class DHCPv4LeaseRequest(_Value):
     # lease4-add requires it.
     hw_address: HardwareAddress
     # None lets Kea select the Subnet and take its valid lifetime.
-    subnet_id: PositiveUint32 | None = None
+    subnet_id: SubnetId | None = None
     valid_lifetime: Uint32 | None = None
     client_id: ClientIdentifier | None = None
     hostname: str | None = None
@@ -507,7 +551,7 @@ class DHCPv6LeaseRequest(_Value):
     address: ipaddress.IPv6Address
     duid: Duid
     iaid: Uint32
-    subnet_id: PositiveUint32 | None = None
+    subnet_id: SubnetId | None = None
     valid_lifetime: Uint32 | None = None
     hostname: str | None = None
 
@@ -841,6 +885,31 @@ def read_lease_collection(response: Any, *, family: Family) -> LeaseRead:
     )
 
 
+def _page_records(response: Any, limit: int) -> list[Any]:
+    """Return the raw records of one ``lease{4,6}-get-page`` reply after its envelope and count are checked."""
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+        raise ValueError("The lease page limit must be a positive integer.")
+    result, arguments = _reply(response)
+    raw_leases = [] if result == 3 and arguments is None else _leases_argument(arguments)
+    count = len(raw_leases) if arguments is None else arguments.get("count")
+    if isinstance(count, bool) or not isinstance(count, int) or count != len(raw_leases) or count > limit:
+        raise MalformedLeaseResponse("Kea returned an invalid lease page count.")
+    if result == 3 and count:
+        raise MalformedLeaseResponse("Kea reported no leases and returned some.")
+    return raw_leases
+
+
+def read_lease_page_count(response: Any, *, limit: int) -> int:
+    """Return how many raw records one ``lease{4,6}-get-page`` reply holds, whatever their shape.
+
+    Raises:
+        ValueError: If *limit* is not a positive integer.
+        MalformedLeaseResponse: If the envelope or count is unusable.
+
+    """
+    return len(_page_records(response, limit))
+
+
 def read_lease_page(response: Any, *, family: Family, limit: int, after: IPAddressValue | None) -> LeaseRead:
     """Read one ``lease{4,6}-get-page`` reply that continued after *after*, or started when it is ``None``.
 
@@ -853,17 +922,10 @@ def read_lease_page(response: Any, *, family: Family, limit: int, after: IPAddre
             after the cursor and the record before it.
 
     """
-    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
-        raise ValueError("The lease page limit must be a positive integer.")
     if after is not None and after.version != family:
         raise ValueError("The lease page cursor must belong to the requested family.")
-    result, arguments = _reply(response)
-    raw_leases = [] if result == 3 and arguments is None else _leases_argument(arguments)
-    count = len(raw_leases) if arguments is None else arguments.get("count")
-    if isinstance(count, bool) or not isinstance(count, int) or count != len(raw_leases) or count > limit:
-        raise MalformedLeaseResponse("Kea returned an invalid lease page count.")
-    if result == 3 and count:
-        raise MalformedLeaseResponse("Kea reported no leases and returned some.")
+    raw_leases = _page_records(response, limit)
+    count = len(raw_leases)
     addresses = [_raw_address(raw, family) for raw in raw_leases]
     previous = after
     # Each page continues strictly after the last one, so no record repeats across pages.
@@ -888,17 +950,17 @@ def _raw_address(raw: Any, family: int) -> IPAddressValue | None:
         return None
 
 
-def _lookup_arguments(identity: LeaseIdentity) -> dict[str, Any]:
-    """Return the ``lease{4,6}-get`` arguments for *identity*."""
+def lookup_arguments(identity: LeaseIdentity) -> dict[str, Any]:
+    """Return the ``lease{4,6}-get`` and ``lease{4,6}-del`` arguments for *identity*."""
     arguments: dict[str, Any] = {"ip-address": str(identity.address)}
-    # Without the type, Kea 3.2 reports a delegated prefix as not found.
+    # Without the type, Kea 3.2 reports a delegated prefix as not found and deletes nothing.
     if identity.kind == "delegated-prefix":
         arguments["type"] = _PREFIX_TYPE
     return arguments
 
 
 def read_exact_lease(response: Any, identity: LeaseIdentity) -> ExactLeaseResult:
-    """Read one ``lease{4,6}-get`` reply sent with ``_lookup_arguments(identity)``.
+    """Read one ``lease{4,6}-get`` reply sent with ``lookup_arguments(identity)``.
 
     A malformed record or another target is a failed observation, never a confirmed absence.
 
@@ -924,6 +986,17 @@ def read_exact_lease(response: Any, identity: LeaseIdentity) -> ExactLeaseResult
         mismatch = _diagnostics([("target-mismatch", field)], (lease.kind,), "arguments")
         return LeaseLookupFailed(identity=identity, diagnostics=mismatch)
     return LeaseFound(lease=lease)
+
+
+def read_deletion(response: Any) -> bool:
+    """Read one ``lease{4,6}-del`` reply: ``True`` when Kea deleted the Lease, ``False`` when it held none.
+
+    Raises:
+        MalformedLeaseResponse: If the envelope is unusable.
+
+    """
+    result, _arguments = _reply(response)
+    return result == 0
 
 
 def _edited_arguments(raw: Mapping[str, Any], fresh: Lease, edit: LeaseEdit) -> dict[str, Any]:

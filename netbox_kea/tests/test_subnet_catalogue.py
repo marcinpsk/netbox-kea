@@ -9,9 +9,9 @@ import requests
 from django.test import TestCase, override_settings
 
 from netbox_kea import server_configuration
+from netbox_kea.constants import MAX_SUBNET_ID
 from netbox_kea.models import Server
 from netbox_kea.subnet_catalogue import (
-    MAX_SUBNET_ID,
     CatalogueUnavailable,
     CompleteCatalogueSnapshot,
     ConfigurationOnlyCatalogueSnapshot,

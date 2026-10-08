@@ -5,13 +5,14 @@ from __future__ import annotations
 import hashlib
 import ipaddress
 import json
-from collections.abc import Collection, Mapping
+from collections.abc import Collection
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Generic, Literal, TypeVar, cast
 
 from .constants import Family, IPAddressValue, Persistence
 from .dhcp_options import DHCPOption, parse_dhcp_options
 from .identifiers import normalize_hex
+from .leases import DHCPv4AddressLease, Lease
 
 if TYPE_CHECKING:
     from .subnet_catalogue import CatalogueSnapshot, SubnetIdentity
@@ -95,36 +96,34 @@ def lease_identifier_types(family: int) -> tuple[IdentifierType, ...]:
     return _LEASE_IDENTIFIERS[cast(Family, family)]
 
 
-def lease_identities(lease: Mapping[str, Any], family: int, *, strict: bool = False) -> tuple[ReservationIdentity, ...]:
-    """Return the normalized Reservation Identities one Kea lease carries, in match order.
+def _lease_identifiers(lease: Lease) -> tuple[tuple[IdentifierType, str | None], ...]:
+    """Return each identifier that *lease* carries, in the order of ``lease_identifier_types``."""
+    if isinstance(lease, DHCPv4AddressLease):
+        return (("hw-address", lease.hw_address), ("client-id", lease.client_id))
+    return (("duid", lease.duid), ("hw-address", lease.hw_address))
 
-    Both Kea's own spelling (``hw-address``) and the template-safe spelling
-    (``hw_address``) are accepted, so lease enrichment and Reservation enrichment
-    read one rule set instead of one each.
-    Strict observations reject present malformed identifiers instead of dropping them.
-    """
+
+@dataclass(frozen=True)
+class LeaseIdentities:
+    """The Reservation Identities that one Lease carries, in match order."""
+
+    identities: tuple[ReservationIdentity, ...]
+    #: The Lease also carries an identifier that no Reservation can hold, so no match proves "no Reservation".
+    foreign: bool
+
+
+def lease_identities(lease: Lease) -> LeaseIdentities:
+    """Return the normalized Reservation Identities that one typed Lease carries, in match order."""
     identities: list[ReservationIdentity] = []
-    for identifier_type in lease_identifier_types(family):
-        keys = (identifier_type, identifier_type.replace("-", "_"))
-        values = [lease[key] for key in keys if key in lease] if strict else [lease.get(keys[0]) or lease.get(keys[1])]
-        observed: ReservationIdentity | None = None
-        for value in values:
-            if not strict and not value:
-                continue
-            try:
-                if not isinstance(value, str):
-                    raise ValueError("Reservation identifier value must be a string.")
-                identity = ReservationIdentity(identifier_type, value)
-            except ValueError as exc:
-                if strict:
-                    raise RuntimeError(f"Kea returned a lease with an invalid {identifier_type}.") from exc
-                continue
-            if strict and observed is not None and identity != observed:
-                raise RuntimeError(f"Kea returned a lease with conflicting {identifier_type} aliases.")
-            observed = identity
-            if identity not in identities:
-                identities.append(identity)
-    return tuple(identities)
+    foreign = False
+    for identifier_type, value in _lease_identifiers(lease):
+        if value is None:
+            continue
+        try:
+            identities.append(ReservationIdentity(identifier_type, value))
+        except ValueError:
+            foreign = True
+    return LeaseIdentities(tuple(identities), foreign)
 
 
 def reservation_identifier_choices(family: int) -> tuple[tuple[IdentifierType, str], ...]:

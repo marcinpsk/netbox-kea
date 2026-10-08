@@ -35,7 +35,13 @@ from netbox_kea.models import (
     IPAMOwnershipLink,
     next_confirmation_number,
 )
-from netbox_kea.tests.kea_stub import _catalogue_responses_for_subnets, _res_page, stub_kea
+from netbox_kea.tests.kea_stub import (
+    _catalogue_responses_for_subnets,
+    _res_page,
+    complete_lease,
+    stub_kea,
+    typed_lease,
+)
 from netbox_kea.tests.test_jobs import _PLUGINS_CONFIG_CLEANUP, _lease_page, _make_job, _patch_kea
 from netbox_kea.tests.utils import _make_db_server, plugins_config
 
@@ -53,7 +59,7 @@ def _server(name: str, **fields):
 
 
 def _lease(address: str = ADDRESS, hostname: str = "", **fields) -> dict:
-    return {"ip-address": address, "hostname": hostname, "subnet-id": 1, "valid-lft": 3600, "state": 0, **fields}
+    return complete_lease({"ip-address": address, "hostname": hostname, "subnet-id": 1, **fields})
 
 
 def _reservation(address: str = ADDRESS, hostname: str = "", *, subnet_id: int = 1) -> dict:
@@ -71,6 +77,12 @@ def _kea(leases: Sequence[dict] = (), reservations: Sequence[dict] = (), *, subn
             **(responses or {}),
         }
     )
+
+
+def _claim_disagreeing(server, *hostnames: str) -> ClaimResult:
+    """Claim the lease address once with each of *hostnames*, so the lease facts disagree and the link has none."""
+    with _kea():
+        return claim(server, 4, [typed_lease(_lease(hostname=hostname)) for hostname in hostnames], force=False)
 
 
 def _lease_phase(max_leases: int | None = None) -> LeasePhase:
@@ -476,8 +488,8 @@ class LeasePhaseOwnersTest(TestCase):
     def test_a_link_without_facts_takes_part_in_no_fact_comparison(self):
         first, second = _server("first"), _server("second")
         _reconcile(first, [_lease(hostname="host-a")])
-        # One phase that reports the address twice with different facts keeps a link without facts.
-        _reconcile(second, [_lease(hostname="host-b"), _lease(hostname="host-c")])
+        # One claim that reports the address twice with different facts keeps a link without facts.
+        _claim_disagreeing(second, "host-b", "host-c")
         self.assertIsNone(_links(_row())["second"].facts)
 
         agreeing = _reconcile(first, [_lease(hostname="host-a2")])
@@ -494,7 +506,7 @@ class LeasePhaseOwnersTest(TestCase):
             with connection.cursor() as cursor:
                 cursor.execute("SELECT currval(%s)", [CONFIRMATION_SEQUENCE])
                 (seen["cutoff"],) = cursor.fetchone()
-            return _lease_page([_lease()])
+            return _lease_page([_lease()])(body)
 
         with stub_kea({"lease4-get-page": lease_page}):
             reconcile(server, 4, [_lease_phase()])
@@ -607,17 +619,17 @@ class LeasePhaseDeprecateTest(TestCase):
     def test_a_confirmation_without_an_applied_report_keeps_the_mark_and_the_status(self):
         mark = self._mark()
 
-        report = _reconcile(self.first, [_lease(hostname="host-a"), _lease(hostname="host-c")])
+        result = _claim_disagreeing(self.first, "host-a", "host-c")
 
         link = _links(self.ip)["first"]
-        self.assertEqual(report.disagreements, {ADDRESS})
+        self.assertEqual(result.addresses[ADDRESS].outcome, "disagreement")
         self.assertEqual(link.stale_mark, mark)
         self.assertGreater(link.confirmation, mark)
         self.assertEqual(_row().status, "deprecated")
         self.assertEqual(_row().dns_name, "host")
 
     def test_a_stale_link_that_its_owner_confirmed_after_the_mark_stays_when_another_server_links_the_object(self):
-        _reconcile(self.first, [_lease(hostname="host-a"), _lease(hostname="host-c")])
+        _claim_disagreeing(self.first, "host-a", "host-c")
 
         _reconcile(self.second, [_lease(hostname="host-b")])
 
@@ -627,7 +639,7 @@ class LeasePhaseDeprecateTest(TestCase):
         self.assertEqual(_row().status, "dhcp")
 
     def test_an_owner_disagreement_keeps_the_mark_of_a_stale_link(self):
-        _reconcile(self.first, [_lease(hostname="host-a"), _lease(hostname="host-c")])
+        _claim_disagreeing(self.first, "host-a", "host-c")
         _reconcile(self.second, [_lease(hostname="host-b")])
         mark = self._mark()
 
@@ -832,7 +844,8 @@ class LeasePhaseRowFailureTest(TestCase):
     def test_repeated_bad_rows_bound_logs_and_preserve_stale_ownership(self):
         server = _server("owner")
         _reconcile(server, [_lease("198.18.0.99")])
-        leases = [_lease(f"198.18.0.{index}", ["invalid"]) for index in range(1, 13)]
+        # A Subnet ID outside the Subnet Catalogue fails only its own row.
+        leases = [_lease(f"198.18.0.{index}", **{"subnet-id": 2}) for index in range(1, 13)]
         leases.append(_lease("198.18.0.50", "valid.example"))
         with self.assertLogs("netbox_kea.ipam_reconciliation", level="WARNING") as logs:
             report = _reconcile(server, leases)
@@ -854,16 +867,18 @@ class LeasePhaseRowFailureTest(TestCase):
         self.assertEqual(list(NbIP.objects.values()), before)
         self.assertEqual(list(IPAMOwnershipLink.objects.values()), links)
 
-    def test_unexpected_hardware_type_preserves_ip_sync_and_sanitizes_logs(self):
+    def test_an_unexpected_hardware_type_excludes_the_record_and_keeps_its_value_out_of_logs(self):
         from dcim.models import MACAddress
 
         server = _server("owner")
-        with self.assertLogs("netbox_kea.sync", level="DEBUG") as logs:
-            report = _reconcile(server, [_lease("198.18.0.42", **{"hw-address": {"private-value": "invalid"}})])
-        self.assertEqual((report.created, report.errors), (1, 0))
-        self.assertEqual(set(_links(_row("198.18.0.42"))), {"owner"})
+        _reconcile(server, [_lease("198.18.0.99")])
+        malformed = _lease("198.18.0.42", **{"hw-address": {"private-value": "invalid"}})
+        with self.assertLogs("netbox_kea", level="DEBUG") as logs:
+            report = _reconcile(server, [malformed, _lease("198.18.0.43")])
+        self.assertEqual((report.created, report.errors, report.incomplete), (1, 1, {"lease"}))
+        self.assertFalse(NbIP.objects.filter(address__net_host="198.18.0.42").exists())
+        self.assertEqual(set(_links(_row("198.18.0.99"))), {"owner"})
         self.assertFalse(MACAddress.objects.exists())
-        self.assertTrue(any("TypeError" in line for line in logs.output))
         self.assertFalse(any("private-value" in line for line in logs.output))
 
     def test_link_label_identifies_owner_family_source_and_address(self):
@@ -1340,26 +1355,41 @@ class OwnerFactsTest(TestCase):
             return {"ip-address": ADDRESS, "flex-id": identifier, "hostname": hostname, "subnet-id": 1}
 
         cases = {
-            "leases": ([_lease(), _lease(hostname="host")], []),
-            "leases, the hostname first": ([_lease(hostname="host"), _lease()], []),
-            "Reservations": ([], [host("", "host-a"), host("host", "host-b")]),
+            "Reservations": [host("", "host-a"), host("host", "host-b")],
+            "Reservations, the hostname first": [host("host", "host-b"), host("", "host-a")],
         }
-        for case, (leases, reservations) in cases.items():
+        for case, reservations in cases.items():
             with self.subTest(case):
                 NbIP.objects.all().delete()
 
-                report = _reconcile(self.server, leases, reservations)
+                report = _reconcile(self.server, [], reservations)
 
                 self.assertEqual((report.disagreements, report.created), (set(), 1))
-                source = "lease" if leases else "reservation"
                 self.assertEqual(_row().dns_name, "host")
-                self.assertEqual(_links(_row(), source)["owner"].facts, {"hostname": "host", "prefix_length": 24})
+                self.assertEqual(
+                    _links(_row(), "reservation")["owner"].facts, {"hostname": "host", "prefix_length": 24}
+                )
 
-    def test_one_phase_that_reports_an_address_with_two_hostnames_disagrees(self):
-        report = _reconcile(self.server, [_lease(hostname="host-a"), _lease(hostname="host-b")])
+    def test_one_claim_that_reports_an_address_with_two_hostnames_disagrees(self):
+        leases = [typed_lease(_lease(hostname="host-a")), typed_lease(_lease(hostname="host-b"))]
+        with _kea():
+            result = claim(self.server, 4, leases, force=False)
 
-        self.assertEqual((report.disagreements, report.created), ({ADDRESS}, 0))
+        self.assertEqual(result.addresses[ADDRESS].outcome, "disagreement")
         self.assertFalse(NbIP.objects.exists())
+
+    def test_a_lease_page_that_repeats_an_address_fails_the_phase_and_cleans_up_nothing(self):
+        _reconcile(self.server, [_lease("10.0.0.6", hostname="old")])
+        page = {
+            "result": 0,
+            "arguments": {"count": 2, "leases": [_lease(hostname="host-a"), _lease(hostname="host-b")]},
+        }
+
+        report = _reconcile(self.server, responses={"lease4-get-page": page})
+
+        self.assertEqual(report.incomplete, {"lease"})
+        self.assertFalse(NbIP.objects.filter(address__net_host=ADDRESS).exists())
+        self.assertEqual(set(_links(_row("10.0.0.6"))), {"owner"})
 
     def test_a_lease_and_a_reservation_with_different_prefix_lengths_disagree_and_leave_the_row_unchanged(self):
         _reconcile(self.server, [_lease(hostname="host")], subnets=OVERLAPPING)
@@ -2062,9 +2092,9 @@ class IPAMPhaseConcurrencyTest(TransactionTestCase):
         legacy = NbIP.objects.create(address=f"{ADDRESS}/32", description="[kea-sync: lease]")
         holder = self._hold("SELECT id FROM ipam_ipaddress WHERE id = %s FOR UPDATE", [legacy.pk])
         with _kea():
-            self._start("first", lambda: claim(first, 4, [_lease()], force=False))
+            self._start("first", lambda: claim(first, 4, [typed_lease(_lease())], force=False))
             self._wait_for_lock_waits(1)
-            self._start("second", lambda: claim(second, 4, [_lease()], force=False))
+            self._start("second", lambda: claim(second, 4, [typed_lease(_lease())], force=False))
             self._wait_for_lock_waits(2)
             holder.commit()
             self._join()
@@ -2164,7 +2194,7 @@ class IPAMPhaseConcurrencyTest(TransactionTestCase):
 
         def lease_page(body):
             reported = [_lease(hostname="host")] if threading.current_thread().name == "claim" else []
-            return _lease_page(reported)
+            return _lease_page(reported)(body)
 
         with _kea(responses={"lease4-get-page": lease_page}):
             # Both phases run, so the cleanup may remove the last link of the Server.
@@ -2329,7 +2359,7 @@ class IPAMPhaseConcurrencyTest(TransactionTestCase):
         first, second = _server("claim-owner"), _server("reconcile-owner")
         holder = self._hold("LOCK TABLE ipam_ipaddress IN SHARE MODE", [])
         with _kea([_lease(hostname="host")]):
-            self._start("claim", lambda: claim(first, 4, [_lease(hostname="host")], force=False))
+            self._start("claim", lambda: claim(first, 4, [typed_lease(_lease(hostname="host"))], force=False))
             self._start("reconcile", lambda: reconcile(second, 4, [_lease_phase()]))
             self._wait_for_lock_waits(2)
             holder.commit()
@@ -2349,7 +2379,7 @@ class IPAMPhaseConcurrencyTest(TransactionTestCase):
         holder = self._hold("SELECT id FROM ipam_ipaddress WHERE id = %s FOR UPDATE", [ip.pk])
         with _kea():
             phases = _phases(server)
-            self._start("claim", lambda: claim(server, 4, [_lease(hostname="host")], force=False))
+            self._start("claim", lambda: claim(server, 4, [typed_lease(_lease(hostname="host"))], force=False))
             self._wait_for_lock_waits(1)
             self._start("cleanup", lambda: reconcile(server, 4, phases))
             self._wait_for_lock_waits(2)
@@ -2366,7 +2396,7 @@ class IPAMPhaseConcurrencyTest(TransactionTestCase):
         ip = _row()
         operator = self._hold("UPDATE ipam_ipaddress SET description = 'Printer on floor 2' WHERE id = %s", [ip.pk])
         with _kea():
-            self._start("claim", lambda: claim(server, 4, [_lease(hostname="renamed")], force=False))
+            self._start("claim", lambda: claim(server, 4, [typed_lease(_lease(hostname="renamed"))], force=False))
             self._wait_for_lock_waits(1)
             operator.commit()
             committed = NbIP.objects.values().get(pk=ip.pk)
@@ -2386,7 +2416,12 @@ class IPAMPhaseConcurrencyTest(TransactionTestCase):
         def run():
             with connection.cursor() as cursor:
                 cursor.execute("SET lock_timeout = '500ms'")
-            return claim(server, 4, [_lease("10.0.0.1", "one-b"), _lease("10.0.0.2", "two-b")], force=False)
+            return claim(
+                server,
+                4,
+                [typed_lease(_lease("10.0.0.1", "one-b")), typed_lease(_lease("10.0.0.2", "two-b"))],
+                force=False,
+            )
 
         with _kea():
             self._start("claim", run)

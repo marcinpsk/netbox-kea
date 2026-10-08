@@ -198,7 +198,7 @@ def test_recorded_exact_replies_give_found_or_confirmed_absence():
         with stub_kea({f"lease{family}-get": reply}) as kea:
             client = kea_client("http://kea.example.com")
             response = client.command(
-                LEASE_GET[family], family, arguments=leases._lookup_arguments(identity), check=(0, 3)
+                LEASE_GET[family], family, arguments=leases.lookup_arguments(identity), check=(0, 3)
             )
         result = read_exact_lease(response, identity)
         assert isinstance(result, outcome), (family, name, result)
@@ -207,7 +207,7 @@ def test_recorded_exact_replies_give_found_or_confirmed_absence():
     # Kea answers an exact DHCPv6 get without the IA_PD type as not found, so the kind travels with the lookup.
     assert kea.bodies("lease6-get")[0]["arguments"] == {"ip-address": "2001:db8:100:100::", "type": "IA_PD"}
     address = LeaseIdentity(family=6, kind="address", address=ipaddress.ip_address("2001:db8:1::10"))
-    assert leases._lookup_arguments(address) == {"ip-address": "2001:db8:1::10"}
+    assert leases.lookup_arguments(address) == {"ip-address": "2001:db8:1::10"}
 
 
 def test_recorded_refusals_ground_the_value_rules():
@@ -245,6 +245,8 @@ def test_recorded_refusals_ground_the_value_rules():
         (4, "192.0.2.10", {"valid-lft": -1}, ("out-of-range", "valid-lft")),
         (4, "192.0.2.10", {"valid-lft": INFINITE_LIFETIME + 1}, ("out-of-range", "valid-lft")),
         (4, "192.0.2.10", {"subnet-id": 0}, ("out-of-range", "subnet-id")),
+        # Kea's largest Subnet ID is one less than the uint32 maximum.
+        (4, "192.0.2.10", {"subnet-id": 4_294_967_295}, ("out-of-range", "subnet-id")),
         (4, "192.0.2.10", {"pool-id": 0}, ("out-of-range", "pool-id")),
         (4, "192.0.2.10", {"cltt": 0}, ("out-of-range", "cltt")),
         (4, "192.0.2.10", {"cltt": 253402300799, "valid-lft": 1}, ("invalid-lifetime", "valid-lft")),
@@ -451,13 +453,19 @@ def test_a_snapshot_requires_an_aware_read_interval_and_its_own_family():
         LeaseQuery(family=4, selector=constants.BY_SUBNET_ID, value=True)
 
 
+def test_a_subnet_id_query_stays_in_the_kea_range():
+    assert LeaseQuery(family=4, selector=constants.BY_SUBNET_ID, value=constants.MAX_SUBNET_ID).value
+    with pytest.raises(ValidationError):
+        LeaseQuery(family=4, selector=constants.BY_SUBNET_ID, value=constants.MAX_SUBNET_ID + 1)
+
+
 # --- exact lookups ---
 
 
 def _exact(family: Family, reply: Any, identity: LeaseIdentity):
     with stub_kea({f"lease{family}-get": reply}):
         response = kea_client("http://kea.example.com").command(
-            LEASE_GET[family], family, arguments=leases._lookup_arguments(identity), check=(0, 3)
+            LEASE_GET[family], family, arguments=leases.lookup_arguments(identity), check=(0, 3)
         )
     return read_exact_lease(response, identity)
 
@@ -765,7 +773,7 @@ def test_query_selectors_and_state_filters_match_lease_search():
                 LeaseQuery(family=family, selector=selector, value=value)
             except ValidationError:
                 with pytest.raises(ValueError, match="not supported"):
-                    client.lease_search(family, selector, value)
+                    client.lease_search(family, selector, value, server_id=1)
             else:
                 assert selector in leases._QUERY_SELECTORS[family]
     assert leases._QUERY_SELECTORS[4] - {leases.ALL_LEASES} == {

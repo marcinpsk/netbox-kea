@@ -22,7 +22,16 @@ from ipam.models import IPRange, Prefix
 from netbox_kea.jobs import KeaIpamSyncJob
 from netbox_kea.models import SyncConfig
 
-from .kea_stub import _catalogue_responses_for_subnets, _res_page, _reservation_family, _subnet_list, queued, stub_kea
+from .kea_stub import (
+    _catalogue_responses_for_subnets,
+    _res_page,
+    _reservation_family,
+    _subnet_list,
+    complete_lease,
+    lease_pages,
+    queued,
+    stub_kea,
+)
 from .utils import plugins_config
 
 _PLUGINS_CONFIG = plugins_config(stale_ip_cleanup="none")
@@ -34,7 +43,6 @@ _LEASE4 = {
     "ip-address": "10.0.0.1",
     "hw-address": "aa:bb:cc:dd:ee:ff",
     "hostname": "host1",
-    "cltt": 0,
     "valid-lft": 3600,
     "subnet-id": 1,
     "state": 0,
@@ -43,7 +51,6 @@ _LEASE6 = {
     "ip-address": "2001:db8::1",
     "duid": "00:01:02:03",
     "hostname": "host2",
-    "cltt": 0,
     "valid-lft": 3600,
     "subnet-id": 1,
     "state": 0,
@@ -68,17 +75,13 @@ def _make_job() -> MagicMock:
     return mock_job
 
 
-def _lease_page(leases: list[dict] | None) -> dict:
-    """A ``lease{v}-get-page`` payload holding *leases* as a single page.
+def _lease_page(leases: list[dict] | None):
+    """A ``lease{v}-get-page`` responder that pages *leases* as Kea does.
 
-    ``count == len(leases) < per_page`` (250) so the real ``lease_get_all``
-    pagination loop stops after this one page. An empty list is reported with
-    Kea's "no leases" result code 3, exactly as a live daemon answers.
+    Each record gets the mandatory fields it does not state from a recorded real lease.
+    No lease is Kea's "no leases" result code 3, as a live daemon answers.
     """
-    leases = list(leases or [])
-    if not leases:
-        return {"result": 3, "text": "0 lease(s) found"}
-    return {"result": 0, "arguments": {"leases": leases, "count": len(leases)}}
+    return lease_pages([complete_lease(lease) for lease in leases or []])
 
 
 def _reservation_subnets(reservations: list[dict], version: int) -> list[dict]:
@@ -510,8 +513,8 @@ class TestKeaIpamSyncJobRun(TestCase):
         # server2's lease was still synced despite server1 failing.
         self.assertTrue(IPAddress.objects.filter(address__net_host="10.0.0.1").exists())
 
-    def test_invalid_lease_page_does_not_sync_a_partial_batch(self):
-        """An invalid paged response is rejected before any lease is synced."""
+    def test_an_invalid_lease_record_fails_the_job_and_keeps_its_valid_sibling(self):
+        """A malformed record is excluded with a diagnostic; its valid sibling still syncs."""
         self._make_db_server()
         bad_lease = {**_LEASE4, "ip-address": "not-an-ip"}
         good_lease = {**_LEASE4, "ip-address": "10.0.0.2"}
@@ -519,7 +522,7 @@ class TestKeaIpamSyncJobRun(TestCase):
             self._run_raises()  # errors > 0 → JobFailed
         from ipam.models import IPAddress
 
-        self.assertFalse(IPAddress.objects.filter(address__net_host="10.0.0.2").exists())
+        self.assertTrue(IPAddress.objects.filter(address__net_host="10.0.0.2").exists())
 
     # ── idempotency ────────────────────────────────────────────────────────
 

@@ -53,7 +53,7 @@ from django.db.migrations.loader import MigrationLoader  # noqa: E402
 from django.db.migrations.operations.base import Operation  # noqa: E402
 from django.db.migrations.operations.models import ModelOperation  # noqa: E402
 from django.db.models import ProtectedError  # noqa: E402
-from django.db.models.signals import pre_delete, pre_save  # noqa: E402
+from django.db.models.signals import post_save, pre_delete, pre_save  # noqa: E402
 from django.test import Client, RequestFactory, SimpleTestCase, TransactionTestCase, override_settings  # noqa: E402
 from django.test.utils import CaptureQueriesContext, isolate_apps  # noqa: E402
 from django.urls import (  # noqa: E402
@@ -83,7 +83,14 @@ from netbox_kea import server_configuration  # noqa: E402
 from netbox_kea.jobs import KeaIpamSyncJob  # noqa: E402
 from netbox_kea.kea import KeaCommand, KeaException  # noqa: E402
 from netbox_kea.models import IPAMOwnershipLink, KeaDhcpLink, Server, SyncConfig, next_confirmation_number  # noqa: E402
-from netbox_kea.tests.kea_stub import _leases_per_subnet, _res_get, _res_page, _subnet_stats, stub_kea  # noqa: E402
+from netbox_kea.tests.kea_stub import (  # noqa: E402
+    _leases_per_subnet,
+    _res_get,
+    _res_page,
+    _subnet_stats,
+    complete_lease,
+    stub_kea,
+)
 from netbox_kea.tests.utils import (  # noqa: E402
     _WRITE_VERBS,
     DISPATCHED_EVENTS,
@@ -483,6 +490,39 @@ class OptionalMappingReplayTest(TransactionTestCase):
                         self.assertEqual(vrf.description, "original")
                 finally:
                     holder.close()
+
+
+@override_settings(EVENTS_PIPELINE=["netbox_kea.tests.utils.record_dispatched_events"])
+class NativeMergeEventsTest(TransactionTestCase):
+    """Accepted limit (#302): netbox-branching tracks each merged change on its own, inside the merge transaction."""
+
+    def test_a_merge_that_fails_late_dispatches_the_events_of_its_reverted_earlier_changes(self):
+        user = get_user_model().objects.create_superuser("merge-events-admin")
+        branch = _provisioned_branch(self, "merge events")
+        branch.merge_strategy = "iterative"
+        branch.save(provision=False)
+        with activate_branch(branch), event_tracking(_change_request(user)):
+            first = Site.objects.create(name="merge-events-first", slug="merge-events-first")
+            Site.objects.create(name="merge-events-second", slug="merge-events-second")
+
+        def refuse_the_second(sender, instance, using, **kwargs):
+            if using == "default" and instance.slug == "merge-events-second":
+                raise RuntimeError("the second merged change fails")
+
+        DISPATCHED_EVENTS.clear()
+        self.addCleanup(DISPATCHED_EVENTS.clear)
+        post_save.connect(refuse_the_second, sender=Site, weak=False)
+        try:
+            with self.assertRaisesMessage(RuntimeError, "the second merged change fails"):
+                branch.merge(user=user)
+        finally:
+            post_save.disconnect(refuse_the_second, sender=Site)
+        self.assertFalse(Site.objects.filter(slug__startswith="merge-events-").exists())
+        self.assertIn(
+            (first.pk, "object_created"),
+            [(event["object_id"], event["event_type"]) for event in DISPATCHED_EVENTS],
+            "netbox-branching no longer dispatches per merged change: remove this accepted limit",
+        )
 
 
 class ProvisionedBranchTest(TransactionTestCase):
@@ -1533,15 +1573,17 @@ _KEA_OBJECTS = {
         network_name="office",
         option_code=224,
         option_space="dhcp4",
-        lease={
-            "ip-address": "192.0.2.15",
-            "hw-address": "aa:bb:cc:dd:ee:01",
-            "subnet-id": 10,
-            "hostname": "lease4.example.com",
-            "cltt": 1_700_000_000,
-            "valid-lft": 4000,
-            "state": 0,
-        },
+        lease=complete_lease(
+            {
+                "ip-address": "192.0.2.15",
+                "hw-address": "aa:bb:cc:dd:ee:01",
+                "subnet-id": 10,
+                "hostname": "lease4.example.com",
+                "cltt": 1_700_000_000,
+                "valid-lft": 4000,
+                "state": 0,
+            }
+        ),
         reservation={"subnet-id": 10, "hw-address": "aa:bb:cc:dd:ee:02", "ip-address": "192.0.2.16", "hostname": "r4"},
     ),
     6: _KeaObjects(
@@ -1550,19 +1592,21 @@ _KEA_OBJECTS = {
         network_name="office",
         option_code=1000,
         option_space="dhcp6",
-        lease={
-            "ip-address": "2001:db8:1::15",
-            "duid": "00:01:02:03:04:05",
-            "iaid": 1,
-            "type": "IA_NA",
-            "prefix-len": 128,
-            "subnet-id": 10,
-            "hostname": "lease6.example.com",
-            "cltt": 1_700_000_000,
-            "valid-lft": 4000,
-            "preferred-lft": 3000,
-            "state": 0,
-        },
+        lease=complete_lease(
+            {
+                "ip-address": "2001:db8:1::15",
+                "duid": "00:01:02:03:04:05",
+                "iaid": 1,
+                "type": "IA_NA",
+                "prefix-len": 128,
+                "subnet-id": 10,
+                "hostname": "lease6.example.com",
+                "cltt": 1_700_000_000,
+                "valid-lft": 4000,
+                "preferred-lft": 3000,
+                "state": 0,
+            }
+        ),
         reservation={
             "subnet-id": 10,
             "duid": "00:01:02:03:04:06",
@@ -1632,6 +1676,7 @@ def _recorded_kea() -> dict:
             f"network{family}-get": network_get,
             f"lease{family}-get-page": lease_page,
             f"lease{family}-get": lease_get,
+            f"lease{family}-get-all": _leases_per_subnet({objects.subnet_id: [objects.lease]}),
             f"lease{family}-get-by-state": _leases_per_subnet({objects.subnet_id: [objects.lease]}),
             f"stat-lease{family}-get": _subnet_stats(family, objects.subnet_id),
         }
@@ -1756,6 +1801,11 @@ class UrlTreeBuilderTest(SimpleTestCase):
 
     def _route(self, name: str, pattern: str, parameters: tuple[str, ...]) -> _Route:
         return _Route(f"plugins:netbox_kea:{name}", pattern, parameters, callback=None)
+
+    def test_the_recorded_kea_answers_only_read_commands(self):
+        writes = [name for name in _recorded_kea() if KeaCommand(name).is_write]
+
+        self.assertEqual(writes, [], "guard 1 takes each command that the stub answers as a read")
 
     def test_an_unknown_parameter_fails_by_name(self):
         route = self._route("server_widget", "servers/<int:pk>/widgets/<int:widget_id>/", ("pk", "widget_id"))

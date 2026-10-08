@@ -7,6 +7,11 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from dcim.models import MACAddress
+from django.db.utils import IntegrityError, OperationalError, ProgrammingError
+from netaddr import EUI, AddrFormatError, mac_unix_expanded
+
+from . import event_scope
 from .ipam_marker import parse_marker
 from .reservations import GlobalReservationScope, Reservation, ReservationSynchronizationState
 
@@ -80,6 +85,11 @@ def _update_mac_description(mac_obj: object, hostname: str) -> bool:
     return False
 
 
+def normalized_mac(hw_address: str) -> str:
+    """Return NetBox's spelling of *hw_address*; raise ``AddrFormatError`` when it is not an EUI-48 or EUI-64."""
+    return str(EUI(hw_address, dialect=mac_unix_expanded))
+
+
 def sync_mac_address(hw_address: str, hostname: str = ""):
     """Create or update a NetBox ``MACAddress`` entry for *hw_address* and return it.
 
@@ -87,30 +97,25 @@ def sync_mac_address(hw_address: str, hostname: str = ""):
     a ``dhcp_hostname: {hostname}`` token (smart append/replace that preserves
     any existing manual description text when the MAC has an assigned interface).
 
-    Returns ``None`` when no row can exist: NetBox older than 4.1 has no
-    ``dcim.MACAddress`` model, and a malformed address or a database error is caught
-    and logged at DEBUG level so MAC sync failures never surface to the user.
+    A call makes at most one event-producing write, so a failed write queues no event. Returns ``None`` when no
+    row can exist: a malformed address or a database error is caught and logged at DEBUG level, so MAC sync
+    failures never surface to the user. An ``EventDispatchError`` is raised, because the row committed.
     """
     try:
-        from dcim.models import MACAddress
-    except ImportError:
-        return None  # NetBox < 4.1 — MACAddress model not available
-    try:
-        from netaddr import EUI, AddrFormatError, mac_unix_expanded
-    except ImportError:
-        logger.debug("netaddr not available — skipping MAC sync")
-        return None
-    try:
-        from django.db import transaction
-        from django.db.utils import IntegrityError, OperationalError, ProgrammingError
-
-        mac_str = str(EUI(hw_address, dialect=mac_unix_expanded))
-        with transaction.atomic():
-            mac_obj, _ = MACAddress.objects.get_or_create(mac_address=mac_str)
-            if hostname:
+        mac_str = normalized_mac(hw_address)
+        new = MACAddress(mac_address=mac_str)
+        if hostname:
+            _update_mac_description(new, hostname)
+        with event_scope.atomic():
+            mac_obj, created = MACAddress.objects.get_or_create(
+                mac_address=mac_str, defaults={"description": new.description}
+            )
+            if hostname and not created:
                 mac_obj.snapshot()
                 if _update_mac_description(mac_obj, hostname):
                     mac_obj.save()
+    except event_scope.EventDispatchError:
+        raise
     # The exception text can repeat the MAC address, so only its type goes to the log.
     except (ProgrammingError, OperationalError, IntegrityError) as exc:
         logger.debug("DB error while syncing a MAC address to NetBox DCIM: %s", type(exc).__name__)

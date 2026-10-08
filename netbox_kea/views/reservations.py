@@ -8,8 +8,8 @@ from __future__ import annotations
 import concurrent.futures
 import ipaddress
 import logging
-from dataclasses import replace
-from typing import Any, cast
+from dataclasses import dataclass, replace
+from typing import Any
 from urllib.parse import urlencode
 
 import requests
@@ -25,6 +25,7 @@ from utilities.views import register_model_view
 from .. import constants, forms, tables
 from ..constants import Family
 from ..kea import KeaClient, KeaException, LeaseQueryGuardError
+from ..leases import LeaseSnapshot
 from ..models import Server
 from ..reservation_transfer import export_reservation_document
 from ..reservations import (
@@ -62,40 +63,62 @@ def _build_reservation_options_formset(post_data: Any) -> tuple[Any, bool]:
     return forms.ReservationOptionsFormSet(prefix="options"), True
 
 
-#: One Subnet observation: its assigned lease addresses and normalized lease identities.
-_SubnetLeaseFacts = tuple[set[str], set[ReservationIdentity]]
+@dataclass(frozen=True)
+class _CurrentLeaseFacts:
+    """The Current Leases of one complete or partial lease observation."""
+
+    addresses: frozenset[str]
+    identities: frozenset[ReservationIdentity]
+    #: Why the observation cannot attest that a Reservation has no Lease; empty when it can.
+    unknown_reason: str
+
+
 #: A lookup that Kea could not answer. Distinct from a confirmed empty result.
 _INDETERMINATE = object()
 #: The lease hook is absent, so no Reservation on this Server has an observable lease.
 _HOOK_UNAVAILABLE = object()
+#: Why a lease observation cannot attest that a Reservation has no Lease.
+_PARTIAL_LEASE_REASON = "Kea returned lease records that could not be read, so a missing Lease cannot be confirmed."
+_FOREIGN_IDENTIFIER_REASON = (
+    "A current lease carries a client identifier that no Reservation can hold, so a missing Lease cannot be confirmed."
+)
 
 
-def _assigned(lease: dict[str, Any]) -> bool:
-    """Return whether Kea reports this lease as assigned (state 0)."""
-    state = lease.get("state")
-    if not isinstance(state, int) or isinstance(state, bool) or state not in constants.LEASE_STATE_LABELS:
-        raise RuntimeError("Kea returned a lease with an invalid state.")
-    return state == 0
+def _current_lease_facts(snapshot: LeaseSnapshot) -> _CurrentLeaseFacts:
+    """Return the Current Leases of *snapshot*; only they are live evidence of a relationship."""
+    current = snapshot.current_records
+    identities: set[ReservationIdentity] = set()
+    unknown_reason = "" if snapshot.complete else _PARTIAL_LEASE_REASON
+    for lease in current:
+        carried = lease_identities(lease)
+        identities.update(carried.identities)
+        if carried.foreign:
+            unknown_reason = unknown_reason or _FOREIGN_IDENTIFIER_REASON
+    return _CurrentLeaseFacts(
+        addresses=frozenset(str(lease.identity.address) for lease in current if lease.kind == "address"),
+        identities=frozenset(identities),
+        unknown_reason=unknown_reason,
+    )
 
 
-def _lease_facts_in_subnet(client: KeaClient, version: Family, subnet_id: int) -> Any:
-    """Observe every assigned lease in one Subnet, or report why it could not be read."""
+def _lease_facts_in_subnet(client: KeaClient, version: Family, subnet_id: int, server_id: int) -> Any:
+    """Observe the Current Leases in one Subnet, or report why they could not be read."""
+    # DHCPv6 registered leases are current too, and only an unfiltered Subnet query returns them.
+    state = constants.LEASE_STATE_CODES["assigned"] if version == 4 else None
     with client.clone() as worker_client:
         try:
-            leases = worker_client.lease_search(version, constants.BY_SUBNET_ID, subnet_id, state=0)
-            if not all(_assigned(lease) for lease in leases):
-                return _INDETERMINATE
-            addresses = {lease["ip-address"] for lease in leases if isinstance(lease.get("ip-address"), str)}
-            identities = {identity for lease in leases for identity in lease_identities(lease, version, strict=True)}
+            snapshot = worker_client.lease_search(
+                version, constants.BY_SUBNET_ID, subnet_id, state=state, server_id=server_id
+            )
         except KeaException as exc:
             return _HOOK_UNAVAILABLE if exc.unsupported_command else _INDETERMINATE
         except (LeaseQueryGuardError, requests.RequestException, RuntimeError, ValueError):
             return _INDETERMINATE
-    return addresses, identities
+    return _current_lease_facts(snapshot)
 
 
-def _identity_holds_a_lease(client: KeaClient, version: Family, identity: ReservationIdentity) -> Any:
-    """Ask Kea whether one identity holds an assigned lease in any Subnet.
+def _identity_holds_a_lease(client: KeaClient, version: Family, identity: ReservationIdentity, server_id: int) -> Any:
+    """Ask Kea whether one identity holds a Current Lease in any Subnet.
 
     A Global Reservation has no Subnet, so its address cannot imply one. Only a
     Subnet-free identity query can answer it.
@@ -105,25 +128,25 @@ def _identity_holds_a_lease(client: KeaClient, version: Family, identity: Reserv
         return _INDETERMINATE
     with client.clone() as worker_client:
         try:
-            leases = worker_client.lease_search(version, selector, identity.value)
-            assigned = [_assigned(lease) for lease in leases]
+            snapshot = worker_client.lease_search(version, selector, identity.value, server_id=server_id)
         except KeaException as exc:
             return _HOOK_UNAVAILABLE if exc.unsupported_command else _INDETERMINATE
         except (LeaseQueryGuardError, requests.RequestException, RuntimeError, ValueError):
             return _INDETERMINATE
-    return any(assigned)
+    return _current_lease_facts(snapshot)
 
 
 def _enrich_reservations_with_lease_status(
     client: KeaClient,
     reservations: list[dict[str, Any]],
     version: Family,
+    server_id: int,
 ) -> None:
     """Report one lease relationship per Reservation, and none where Kea could not be read.
 
-    Rows arrive with ``has_active_lease`` at ``None``, which renders no badge. Only a
-    complete observation replaces it with a definite answer, so an unreadable Kea never
-    renders as a confirmed "No Lease".
+    Rows arrive with ``has_active_lease`` at ``None``, which renders no badge. Only a Current
+    Lease is a positive answer, and only a complete observation of the relevant query is a
+    negative one, so an unreadable or partial observation never renders as "No Lease".
     """
     scoped_rows: list[tuple[dict[str, Any], InSubnetReservationScope]] = []
     global_rows: list[dict[str, Any]] = []
@@ -144,11 +167,12 @@ def _enrich_reservations_with_lease_status(
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=min(lookups, 10)) as executor:
             subnet_futures = {
-                executor.submit(_lease_facts_in_subnet, client, version, subnet_id): subnet_id
+                executor.submit(_lease_facts_in_subnet, client, version, subnet_id, server_id): subnet_id
                 for subnet_id in subnet_ids
             }
             identity_futures = {
-                executor.submit(_identity_holds_a_lease, client, version, identity): identity for identity in identities
+                executor.submit(_identity_holds_a_lease, client, version, identity, server_id): identity
+                for identity in identities
             }
             for future in concurrent.futures.as_completed([*subnet_futures, *identity_futures]):
                 if future in subnet_futures:
@@ -166,24 +190,32 @@ def _enrich_reservations_with_lease_status(
     for row, scope in scoped_rows:
         reservation: Reservation = row["reservation"]
         facts = subnet_facts.get(scope.subnet.subnet_id, _INDETERMINATE)
-        if facts is _INDETERMINATE:
+        if not isinstance(facts, _CurrentLeaseFacts):
             continue
-        addresses, subnet_identities = cast(_SubnetLeaseFacts, facts)
-        matched = next((address for address in reservation.addresses if str(address) in addresses), None)
-        if matched is None and reservation.identity not in subnet_identities:
-            if reservation.addresses or reservation.identity.identifier_type in lease_identifier_types(version):
-                row["has_active_lease"] = False
-            continue
-        row["has_active_lease"] = True
-        row["lease_url"] = _lease_search_url(reservation, row["server_pk"], version, matched)
+        matched = next((address for address in reservation.addresses if str(address) in facts.addresses), None)
+        if matched is not None or reservation.identity in facts.identities:
+            row["has_active_lease"] = True
+            row["lease_url"] = _lease_search_url(reservation, row["server_pk"], version, matched)
+        elif reservation.addresses or reservation.identity.identifier_type in lease_identifier_types(version):
+            _set_negative_relationship(row, facts)
     for row in global_rows:
         reservation = row["reservation"]
-        holds_a_lease = identity_facts.get(reservation.identity, _INDETERMINATE)
-        if holds_a_lease is _INDETERMINATE:
+        facts = identity_facts.get(reservation.identity, _INDETERMINATE)
+        if not isinstance(facts, _CurrentLeaseFacts):
             continue
-        row["has_active_lease"] = bool(holds_a_lease)
-        if holds_a_lease:
+        if reservation.identity in facts.identities:
+            row["has_active_lease"] = True
             row["lease_url"] = _lease_search_url(reservation, row["server_pk"], version, None)
+        else:
+            _set_negative_relationship(row, facts)
+
+
+def _set_negative_relationship(row: dict[str, Any], facts: _CurrentLeaseFacts) -> None:
+    """Report "no Lease" only from a complete observation; a partial one stays unknown with its reason."""
+    if facts.unknown_reason:
+        row["lease_status_reason"] = facts.unknown_reason
+    else:
+        row["has_active_lease"] = False
 
 
 def _lease_search_url(
@@ -260,6 +292,7 @@ def _reservation_table_record(reservation: Reservation, server: Server) -> dict[
         "scope_kind": scope_kind,
         # Set by lease enrichment. None means Kea was not read, so no badge renders.
         "has_active_lease": None,
+        "lease_status_reason": "",
         "lease_url": None,
         "subnet_id": subnet_id,
         "subnet_cidr": subnet_cidr,
@@ -418,7 +451,7 @@ def _enrich_reservations_with_badges(
 
     try:
         client = server.get_client(version=version)
-        _enrich_reservations_with_lease_status(client, reservations, version)
+        _enrich_reservations_with_lease_status(client, reservations, version, server.pk)
     except (KeaException, requests.RequestException, RuntimeError, ValueError):
         logger.debug("Failed to enrich Reservation lease state for server %s", server.pk, exc_info=True)
 

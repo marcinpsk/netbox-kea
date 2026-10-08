@@ -20,6 +20,7 @@ import ipaddress
 import json
 import socket
 import threading
+import time
 from collections import deque
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager
@@ -36,6 +37,7 @@ from requests.adapters import HTTPAdapter
 from netbox_kea import branching
 from netbox_kea.constants import Family
 from netbox_kea.kea import KeaClient
+from netbox_kea.leases import Lease, read_lease_collection
 from netbox_kea.plugin_settings import DEFAULT_SETTINGS
 from netbox_kea.reservations import (
     GlobalReservationScope,
@@ -60,12 +62,17 @@ def kea_client(url: str, **options: Any) -> KeaClient:
 
 def _http_response(payload: Any, status: int = 200, url: str = "") -> requests.Response:
     """Build a concrete ``requests.Response`` with a JSON body."""
+    return _raw_http_response(json.dumps(payload).encode("utf-8"), status=status, url=url)
+
+
+def _raw_http_response(body: bytes, status: int = 200, url: str = "") -> requests.Response:
+    """Build a concrete ``requests.Response`` whose body is *body*, which does not have to be JSON."""
     response = requests.Response()
     response.status_code = status
     response.url = url
     response.encoding = "utf-8"
     response.headers["Content-Type"] = "application/json"
-    response._content = json.dumps(payload).encode(response.encoding)
+    response._content = body
     return response
 
 
@@ -141,6 +148,112 @@ def queued(*responses: Any) -> ResponseQueue:
 
 
 _RECORDINGS = Path(__file__).with_name("kea_recordings")
+
+
+@cache
+def _recorded_lease_templates() -> dict[int, dict[str, Any]]:
+    """Return one assigned finite lease record of each family, from the replies recorded from a real Kea."""
+    templates = {}
+    for family, address in ((4, "192.0.2.10"), (6, "2001:db8:1::10")):
+        recorded = json.loads((_RECORDINGS / f"dhcp{family}.json").read_text())["leases"]
+        records = recorded[f"lease{family}-get-all"]["arguments"]["leases"]
+        templates[family] = next(record for record in records if record["ip-address"] == address)
+    return templates
+
+
+def lease_record(address: str, *, drop: Sequence[str] = (), **changes: Any) -> dict[str, Any]:
+    """Return a Current Kea lease record of the family of *address*, copied from a recorded real reply.
+
+    Its transaction time is now. Each keyword in *changes* sets one wire key, with ``_`` for ``-``,
+    and *drop* removes wire keys, so a test can build a malformed record from a valid one.
+    """
+    family = ipaddress.ip_address(address).version
+    record = json.loads(json.dumps(_recorded_lease_templates()[family]))
+    for key in drop:
+        del record[key]
+    record.update({"ip-address": address, "cltt": int(time.time())})
+    record.update({key.replace("_", "-"): value for key, value in changes.items()})
+    return record
+
+
+def complete_lease(record: dict[str, Any]) -> dict[str, Any]:
+    """Return *record* with each missing mandatory lease field taken from a recorded real lease.
+
+    The added fields carry no MAC address, hostname or extension, so a test keeps the facts it states.
+    A record without a valid address stays as it is.
+    """
+    address = record.get("ip-address")
+    try:
+        family = ipaddress.ip_address(address).version if isinstance(address, str) else None
+    except ValueError:
+        family = None
+    if family is None:
+        return record
+    base = lease_record(
+        record["ip-address"],
+        drop=("hw-address", "user-context", "pool-id"),
+        subnet_id=1,
+        hostname="",
+        fqdn_fwd=False,
+        fqdn_rev=False,
+    )
+    if family == 4:
+        # Kea always sends a DHCPv4 hardware address, empty when only a client ID identifies the client.
+        base["hw-address"] = ""
+        if "hw-address" in record or "client-id" in record:
+            del base["client-id"]
+    return {**base, **record}
+
+
+def typed_lease(record: dict[str, Any]) -> Lease:
+    """Return the typed Lease that the real reader makes of one valid Kea lease *record*."""
+    read = read_lease_collection([lease_reply(record)], family=ipaddress.ip_address(record["ip-address"]).version)
+    if read.diagnostics:
+        raise AssertionError(f"The test lease record is not valid: {read.diagnostics}")
+    (lease,) = read.records
+    return lease
+
+
+def lease_reply(*records: dict[str, Any]) -> dict[str, Any]:
+    """Return a ``lease{4,6}-get-all`` style reply; no record is Kea's empty-result code 3."""
+    if not records:
+        return {"result": 3, "text": "0 IPv4 lease(s) found.", "arguments": {"leases": []}}
+    return {"result": 0, "text": f"{len(records)} lease(s) found.", "arguments": {"leases": list(records)}}
+
+
+def lease_page(*records: dict[str, Any]) -> dict[str, Any]:
+    """Return a ``lease{4,6}-get-page`` reply with its count."""
+    if not records:
+        return {"result": 3, "text": "0 lease(s) found.", "arguments": {"leases": [], "count": 0}}
+    return {
+        "result": 0,
+        "text": f"{len(records)} lease(s) found.",
+        "arguments": {"leases": list(records), "count": len(records)},
+    }
+
+
+def _address_order(record: Any) -> int:
+    try:
+        return int(ipaddress.ip_address(record["ip-address"]))
+    except (KeyError, TypeError, ValueError):
+        return -1
+
+
+def lease_pages(records: Sequence[Any]) -> Callable[[dict[str, Any]], dict[str, Any]]:
+    """Return a ``lease{4,6}-get-page`` responder that pages *records* as Kea does.
+
+    It answers in address order, strictly after ``from``, and with at most ``limit`` records.
+    A record without a valid address sorts first, so a test can still place a malformed one on a page.
+    """
+    ordered = sorted(records, key=_address_order)
+
+    def respond(body: dict[str, Any]) -> dict[str, Any]:
+        arguments = body["arguments"]
+        start = int(ipaddress.ip_address(arguments["from"]))
+        remaining = ordered if start == 0 else [record for record in ordered if _address_order(record) > start]
+        return lease_page(*remaining[: arguments["limit"]])
+
+    return respond
 
 
 @cache

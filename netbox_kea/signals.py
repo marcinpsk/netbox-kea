@@ -26,7 +26,8 @@ lease_added
 
 leases_deleted
     Fired when one or more DHCP leases are deleted via the plugin UI.
-    kwargs: ``server``, ``ip_addresses`` (list[str]), ``dhcp_version``, ``request``
+    kwargs: ``server``, ``ip_addresses`` (list[str]; a delegated prefix is ``address/length``),
+    ``dhcp_version``, ``request``
 
 reservation_created
     Fired when a host reservation is created via the plugin UI.

@@ -19,7 +19,7 @@ from netbox_kea.ipam_reconciliation import LeasePhase, PoolPhase, SubnetPhase, r
 from netbox_kea.jobs import KeaIpamSyncJob
 from netbox_kea.mappers.kea_to_dhcp import parse_dhcp_config
 from netbox_kea.models import IPAMOwnershipLink
-from netbox_kea.tests.kea_stub import _catalogue_responses_for_subnets, stub_kea
+from netbox_kea.tests.kea_stub import _catalogue_responses_for_subnets, complete_lease, stub_kea
 from netbox_kea.tests.test_integration_dhcp_plugin import _reservation_snapshot
 from netbox_kea.tests.test_ipam_reconciliation import _kea, _lease, _reconcile, _reservation
 from netbox_kea.tests.test_jobs import _patch_kea
@@ -143,13 +143,15 @@ class IPAMChangeRecordTest(TestCase):
                         "arguments": {
                             "count": 1,
                             "leases": [
-                                {
-                                    "ip-address": "198.18.0.42",
-                                    "hostname": "new.example.invalid",
-                                    "subnet-id": 1,
-                                    "valid-lft": 3600,
-                                    "state": 0,
-                                }
+                                complete_lease(
+                                    {
+                                        "ip-address": "198.18.0.42",
+                                        "hostname": "new.example.invalid",
+                                        "subnet-id": 1,
+                                        "valid-lft": 3600,
+                                        "state": 0,
+                                    }
+                                )
                             ],
                         },
                     }
@@ -189,14 +191,16 @@ class IPAMChangeRecordTest(TestCase):
                         "arguments": {
                             "count": 1,
                             "leases": [
-                                {
-                                    "ip-address": "198.18.0.42",
-                                    "hostname": "new.example.invalid",
-                                    "hw-address": "02:00:00:00:00:42",
-                                    "subnet-id": 1,
-                                    "valid-lft": 3600,
-                                    "state": 0,
-                                }
+                                complete_lease(
+                                    {
+                                        "ip-address": "198.18.0.42",
+                                        "hostname": "new.example.invalid",
+                                        "hw-address": "02:00:00:00:00:42",
+                                        "subnet-id": 1,
+                                        "valid-lft": 3600,
+                                        "state": 0,
+                                    }
+                                )
                             ],
                         },
                     }

@@ -8,8 +8,21 @@ from django.urls import reverse
 from ipam.models import IPAddress
 
 from netbox_kea.models import Server
-from netbox_kea.tests.kea_stub import _catalogue_responses, _catalogue_responses_for_subnets, stub_kea
+from netbox_kea.tests.kea_stub import (
+    _catalogue_responses,
+    _catalogue_responses_for_subnets,
+    complete_lease,
+    stub_kea,
+    typed_lease,
+)
 from netbox_kea.tests.utils import plugins_config
+
+_LEASE = {"ip-address": "198.18.0.10", "hostname": "host.example.com", "subnet-id": 1}
+
+
+def _typed(**changes):
+    """Return the typed Lease of the test lease with *changes* to its wire keys."""
+    return typed_lease(complete_lease({**_LEASE, **changes}))
 
 
 @override_settings(PLUGINS_CONFIG=plugins_config(stale_ip_cleanup="remove"))
@@ -27,7 +40,7 @@ class PerRowLeaseCleanupTest(TestCase):
         second = Server.objects.create(
             name="second-owner", ca_url="https://second.example.com", dhcp4=True, dhcp6=False
         )
-        lease = {"ip-address": "198.18.0.10", "hostname": "", "subnet-id": 1, "valid-lft": 3600, "state": 0}
+        lease = complete_lease({"ip-address": "198.18.0.10", "hostname": "", "subnet-id": 1})
         phase = LeasePhase(max_leases=None, subnet_prefix_lengths={1: 24})
         with stub_kea({"lease4-get-page": _lease_page([lease])}):
             reconcile(second, 4, [phase])
@@ -56,7 +69,7 @@ class PerRowLeaseCleanupTest(TestCase):
             description="Synced from Kea DHCP reservation",
         )
         before = IPAddress.objects.values().get(pk=reserved.pk)
-        lease = {"ip-address": "198.18.0.10", "hostname": "host.example.com", "subnet-id": 1, "valid-lft": 3600}
+        lease = complete_lease({"ip-address": "198.18.0.10", "hostname": "host.example.com", "subnet-id": 1})
         with stub_kea({**_catalogue_responses(4, 1, "198.18.0.0/24"), "lease4-get": {"result": 0, "arguments": lease}}):
             response = self.client.post(
                 reverse("plugins:netbox_kea:server_lease4_sync", args=[server.pk]), {"ip_address": "198.18.0.10"}
@@ -71,7 +84,7 @@ class PerRowLeaseCleanupTest(TestCase):
 class ClaimOwnershipTest(TestCase):
     def setUp(self):
         self.server = Server.objects.create(name="claim-server", ca_url="https://kea.example.com")
-        self.lease = {"ip-address": "198.18.0.10", "hostname": "host.example.com", "subnet-id": 1}
+        self.lease = _typed()
         transport = stub_kea(_catalogue_responses(4, 1, "198.18.0.0/24"))
         self.kea = transport.__enter__()
         self.addCleanup(transport.__exit__, None, None, None)
@@ -105,6 +118,29 @@ class ClaimOwnershipTest(TestCase):
         self.assertEqual(result.addresses["198.18.0.11"].outcome, "created")
         self.assertEqual(result.synchronized_addresses, frozenset({"198.18.0.11"}))
         self.assertEqual(str(IPAMOwnershipLink.objects.get().ip_address.address.ip), "198.18.0.11")
+
+    def test_a_created_reservation_row_checks_its_mac_once_with_a_bounded_query(self):
+        from dcim.models import MACAddress
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        from netbox_kea.ipam_reconciliation import claim
+        from netbox_kea.tests.test_integration_dhcp_plugin import _reservation_snapshot
+
+        observation = _reservation_snapshot(
+            {"subnet4": [{"id": 1, "subnet": "198.18.0.0/24"}]},
+            4,
+            [{"subnet-id": 1, "hw-address": "02:00:00:00:00:03", "ip-address": "198.18.0.12"}],
+        )
+        table = f'FROM "{MACAddress._meta.db_table}"'
+
+        with CaptureQueriesContext(connection) as queries:
+            result = claim(self.server, 4, observation.snapshot.records, force=False)
+
+        self.assertEqual(result.addresses["198.18.0.12"].outcome, "created")
+        mac_reads = [q["sql"] for q in queries if table in q["sql"] and not q["sql"].startswith("INSERT")]
+        self.assertEqual(sum("COUNT(" in sql for sql in mac_reads), 0, "use a bounded read, not a full count")
+        self.assertEqual(sum(sql.endswith("LIMIT 2") for sql in mac_reads), 1, "check each MAC once per row")
 
     def test_empty_claim_and_addressless_reservation_do_not_write(self):
         from netbox_kea.ipam_reconciliation import claim
@@ -168,7 +204,7 @@ class ClaimOwnershipTest(TestCase):
 
         ip = IPAddress.objects.create(address="198.18.0.10/24", description="Operator row")
         before = IPAddress.objects.values().get(pk=ip.pk)
-        result = claim(self.server, 4, [self.lease, {**self.lease, "hostname": "other.example.com"}], force=True)
+        result = claim(self.server, 4, [self.lease, _typed(hostname="other.example.com")], force=True)
         self.assertEqual(result.addresses["198.18.0.10"].outcome, "disagreement")
         self.assertEqual(IPAddress.objects.values().get(pk=ip.pk), before)
         self.assertFalse(IPAMOwnershipLink.objects.exists())
@@ -193,14 +229,14 @@ class ClaimOwnershipTest(TestCase):
         for subnets in ([], [{"id": 1, "subnet": "198.18.0.0/24"}]):
             with self.subTest(subnets=subnets), stub_kea(_catalogue_responses_for_subnets(4, subnets)):
                 with self.assertRaisesMessage(ValueError, "Subnet ID"):
-                    claim(self.server, 4, [self.lease, {**self.lease, "subnet-id": 2}], force=True)
+                    claim(self.server, 4, [self.lease, _typed(**{"subnet-id": 2})], force=True)
             self.assertFalse(IPAddress.objects.exists())
             self.assertFalse(IPAMOwnershipLink.objects.exists())
 
     def test_one_catalogue_read_supplies_all_lease_facts(self):
         from netbox_kea.ipam_reconciliation import claim
 
-        result = claim(self.server, 4, [self.lease, {**self.lease, "ip-address": "198.18.0.11"}], force=False)
+        result = claim(self.server, 4, [self.lease, _typed(**{"ip-address": "198.18.0.11"})], force=False)
         self.assertEqual(len(result.synchronized_addresses), 2)
         self.assertEqual(self.kea.commands().count("subnet4-list"), 1)
         self.assertEqual(self.kea.commands().count("config-get"), 1)
@@ -250,7 +286,7 @@ class ClaimOwnershipTest(TestCase):
         from netbox_kea.models import IPAMOwnershipLink
 
         with self.assertRaisesMessage(ValueError, "family"):
-            claim(self.server, 4, [self.lease, {"ip-address": "2001:db8::10"}], force=True)
+            claim(self.server, 4, [self.lease, _typed(**{"ip-address": "2001:db8::10"})], force=True)
         self.assertFalse(IPAddress.objects.exists())
         self.assertFalse(IPAMOwnershipLink.objects.exists())
 
@@ -258,7 +294,7 @@ class ClaimOwnershipTest(TestCase):
         from netbox_kea.ipam_reconciliation import claim
         from netbox_kea.models import IPAMOwnershipLink
 
-        conflicting = {**self.lease, "hostname": "other.example.com"}
+        conflicting = _typed(hostname="other.example.com")
         for force in (False, True):
             result = claim(self.server, 4, [self.lease, conflicting], force=force)
             self.assertEqual(result.addresses["198.18.0.10"].outcome, "disagreement")
@@ -287,7 +323,7 @@ class ClaimOwnershipTest(TestCase):
         other = Server.objects.create(name="other-server", ca_url="https://other.example.com")
         first = claim(other, 4, [self.lease], force=False)
         before = IPAddress.objects.values().get(pk=first.primary.pk)
-        result = claim(self.server, 4, [{**self.lease, "hostname": "other.example.com"}], force=True)
+        result = claim(self.server, 4, [_typed(hostname="other.example.com")], force=True)
         self.assertEqual(result.addresses["198.18.0.10"].outcome, "disagreement")
         self.assertEqual(IPAddress.objects.values().get(pk=first.primary.pk), before)
         self.assertEqual(
@@ -320,7 +356,7 @@ class ClaimOwnershipTest(TestCase):
             hostname="multi.example.com",
         )
         with self.assertRaisesMessage(ValueError, "one source"):
-            claim(self.server, 6, [{"ip-address": "2001:db8::22"}, reservation], force=True)
+            claim(self.server, 6, [_typed(**{"ip-address": "2001:db8::22"}), reservation], force=True)
         self.assertFalse(IPAddress.objects.exists())
         foreign = IPAddress.objects.create(address="2001:db8::20/64", description="Operator row")
         before = IPAddress.objects.values().get(pk=foreign.pk)

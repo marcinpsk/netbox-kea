@@ -8,6 +8,7 @@ from django.utils.html import format_html
 from django.utils.http import urlencode
 from netbox.tables import BaseTable, BooleanColumn, NetBoxTable, ToggleColumn, columns
 
+from netbox_kea.constants import INFINITE_LIFETIME
 from netbox_kea.utilities import format_duration
 
 from .models import Server
@@ -176,7 +177,9 @@ class DurationColumn(tables.Column):
     """Table column that renders integer seconds as ``HH:MM:SS``."""
 
     def render(self, value: int):
-        """Value is in seconds."""
+        """Value is in seconds; Kea's infinite lifetime renders as such."""
+        if value == INFINITE_LIFETIME:
+            return "infinite"
         return format_duration(value)
 
 
@@ -366,8 +369,11 @@ class BaseLeaseTable(GenericTable):
     """Base table for DHCP lease data; subclassed for v4 and v6."""
 
     # This column is for the select checkboxes.
-    pk = ToggleColumn(verbose_name="IP Address", accessor="ip_address", visible=True)
+    pk = ToggleColumn(verbose_name="IP Address", accessor="selection", visible=True)
     ip_address = tables.Column(verbose_name="IP Address", order_by="_ip_sort_key")
+    family = tables.Column(verbose_name="Family")
+    kind = tables.Column(verbose_name="Kind")
+    prefix_length = tables.Column(verbose_name="Prefix Length")
     hostname = tables.Column(verbose_name="Hostname")
     subnet_id = tables.Column(verbose_name="Subnet ID")
     hw_address = MonospaceColumn(verbose_name="Hardware Address")
@@ -393,6 +399,7 @@ class BaseLeaseTable(GenericTable):
     reserved = tables.TemplateColumn(
         verbose_name="Reserved",
         orderable=False,
+        exclude_from_export=True,
         template_code=(
             "{% if record.is_reserved %}"
             "{% if record.can_change_reservation and record.reservation_url %}"
@@ -414,7 +421,7 @@ class BaseLeaseTable(GenericTable):
             ' hx-post="{{ record.delete_lease_url }}"'
             ' hx-confirm="Delete lease {{ record.ip_address|escapejs }} held by {{ record.stale_lease_mac|escapejs }}?'
             ' The old device must re-request this IP via DORA."'
-            ' hx-vals=\'{"pk":"{{ record.ip_address|escapejs }}","_confirm":"1"}\'>'
+            ' hx-vals=\'{"pk":"{{ record.selection|escapejs }}","_confirm":"1"}\'>'
             '<i class="mdi mdi-delete-outline" aria-hidden="true"></i></button>'
             "{% endif %}"
             "{% endif %}"
@@ -441,6 +448,7 @@ class BaseLeaseTable(GenericTable):
     netbox_ip = tables.TemplateColumn(
         verbose_name="NetBox IP",
         orderable=False,
+        exclude_from_export=True,
         template_code=(
             "{% if record.netbox_ip_url %}"
             '<a href="{{ record.netbox_ip_url }}" class="badge text-bg-success text-decoration-none">'
@@ -461,8 +469,11 @@ class BaseLeaseTable(GenericTable):
 
     class Meta(GenericTable.Meta):
         empty_text = "No leases found."
-        fields = (
+        fields: tuple[str, ...] = (
             "ip_address",
+            "family",
+            "kind",
+            "prefix_length",
             "hostname",
             "subnet_id",
             "hw_address",
@@ -488,15 +499,14 @@ class LeaseTable4(BaseLeaseTable):
 
 
 class LeaseTable6(BaseLeaseTable):
-    """Lease table for DHCPv6, adding type, preferred lifetime, DUID and IAID columns."""
+    """Lease table for DHCPv6, adding preferred lifetime, DUID and IAID columns."""
 
-    type = tables.Column(verbose_name="Type", accessor="type")
     preferred_lft = DurationColumn(verbose_name="Preferred Lifetime")
     duid = MonospaceColumn(verbose_name="DUID", additional_classes=["text-break"])
     iaid = MonospaceColumn(verbose_name="IAID")
 
     class Meta(BaseLeaseTable.Meta):
-        fields = ("type", "duid", "iaid", *BaseLeaseTable.Meta.fields)
+        fields = ("duid", "iaid", *BaseLeaseTable.Meta.fields)
 
 
 class LeaseDeleteTable(GenericTable):
@@ -546,6 +556,8 @@ _LEASE_STATUS_LINK = (
     "{% else %}"
     '<span class="badge text-bg-success">Active Lease</span>'
     "{% endif %}"
+    "{% elif record.lease_status_reason %}"
+    '<span class="badge text-bg-warning" title="{{ record.lease_status_reason }}">Lease Unknown</span>'
     "{% endif %}"
 )
 

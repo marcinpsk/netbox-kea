@@ -17,10 +17,10 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 import requests
-from django.db import DatabaseError, OperationalError, connection, transaction
+from django.db import DatabaseError, OperationalError, connection
 from urllib3.exceptions import MaxRetryError, NewConnectionError
 
-from . import server_configuration
+from . import event_scope, server_configuration
 from .constants import Family, IPNetworkValue, Persistence
 from .kea import (
     CandidateConfiguration,
@@ -662,7 +662,7 @@ def _serialized(client: KeaClient, family: Family) -> Iterator[None]:
     """Hold the advisory lock of one Kea daemon and family until the transaction ends."""
     body_done = False
     try:
-        with transaction.atomic():
+        with event_scope.atomic():
             with connection.cursor() as cursor:
                 cursor.execute("SELECT current_setting('lock_timeout')")
                 (previous,) = cursor.fetchone()

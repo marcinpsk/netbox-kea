@@ -24,7 +24,7 @@ from rest_framework import status
 from netbox_kea.api.views import ServerViewSet
 from netbox_kea.models import Server
 
-from .kea_stub import _subnet_stats, stub_kea
+from .kea_stub import _subnet_stats, complete_lease, stub_kea
 from .utils import plugins_config
 
 _PLUGINS_CONFIG = plugins_config(lease_query_max_unpaged_leases=0)
@@ -46,6 +46,8 @@ def _make_view(**server_kwargs):
     view.kwargs = {}
     view.format_kwarg = None
     defaults = {
+        # A Lease Snapshot names its Server, so the unsaved Server still has a primary key.
+        "pk": 1,
         "name": "test-server",
         "ca_url": "https://kea.example.com",
         "dhcp4": True,
@@ -149,7 +151,7 @@ class TestLeaseSearchErrors(SimpleTestCase):
 
     def test_generic_exception_returns_500(self):
         view, _ = _make_view()
-        with stub_kea({"lease4-get": RuntimeError("unexpected internal error")}):
+        with stub_kea({"lease4-get": KeyError("unexpected internal error")}):
             response = view._lease_search(_make_request({"ip_address": "10.0.0.1"}), version=4)
         self.assertEqual(response.status_code, status.HTTP_500_INTERNAL_SERVER_ERROR)
         self.assertIn("internal error", response.data["detail"].lower())
@@ -171,15 +173,15 @@ class TestLeaseSearchIpAddress(SimpleTestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["count"], 0)
 
-    def test_null_arguments_returns_internal_error(self):
+    def test_null_arguments_returns_bad_gateway(self):
         view, _ = _make_view()
         with stub_kea({"lease4-get": [{"result": 0, "arguments": None}]}):
             response = view._lease_search(_make_request({"ip_address": "10.0.0.1"}), version=4)
-        self.assertEqual(response.status_code, status.HTTP_500_INTERNAL_SERVER_ERROR)
+        self.assertEqual(response.status_code, status.HTTP_502_BAD_GATEWAY)
         self.assertIn("internal error", response.data["detail"].lower())
 
     def test_lease_returned_in_results(self):
-        lease = {"ip-address": "10.0.0.1", "subnet-id": 1}
+        lease = complete_lease({"ip-address": "10.0.0.1", "subnet-id": 1})
         view, _ = _make_view()
         with stub_kea({"lease4-get": [{"result": 0, "arguments": lease}]}):
             response = view._lease_search(_make_request({"ip_address": "10.0.0.1"}), version=4)
@@ -199,7 +201,7 @@ class TestLeaseSearchHwAddress(SimpleTestCase):
         self.assertEqual(response.data["count"], 0)
 
     def test_leases_returned_in_results(self):
-        lease = {"ip-address": "10.0.0.1", "hw-address": "aa:bb:cc:dd:ee:ff", "subnet-id": 1}
+        lease = complete_lease({"ip-address": "10.0.0.1", "hw-address": "aa:bb:cc:dd:ee:ff", "subnet-id": 1})
         view, _ = _make_view()
         with stub_kea({"lease4-get-by-hw-address": [{"result": 0, "arguments": {"leases": [lease]}}]}):
             response = view._lease_search(_make_request({"hw_address": "aa:bb:cc:dd:ee:ff"}), version=4)
@@ -219,7 +221,7 @@ class TestLeaseSearchDuid(SimpleTestCase):
         self.assertEqual(response.data["count"], 0)
 
     def test_leases_returned_in_results(self):
-        lease = {"ip-address": "2001:db8::1", "duid": "00:01:02:03", "subnet-id": 10}
+        lease = complete_lease({"ip-address": "2001:db8::1", "duid": "00:01:02:03", "subnet-id": 10})
         view, _ = _make_view()
         with stub_kea({"lease6-get-by-duid": [{"result": 0, "arguments": {"leases": [lease]}}]}):
             response = view._lease_search(_make_request({"duid": "00:01:02:03"}), version=6)
@@ -248,7 +250,7 @@ class TestLeaseSearchHostname(SimpleTestCase):
         self.assertEqual(response.data["count"], 0)
 
     def test_leases_returned_in_results(self):
-        lease = {"ip-address": "10.0.0.1", "hostname": "host1", "subnet-id": 1}
+        lease = complete_lease({"ip-address": "10.0.0.1", "hostname": "host1", "subnet-id": 1})
         view, _ = _make_view()
         with stub_kea({"lease4-get-by-hostname": [{"result": 0, "arguments": {"leases": [lease]}}]}):
             response = view._lease_search(_make_request({"hostname": "host1"}), version=4)
@@ -268,7 +270,7 @@ class TestLeaseSearchSubnetId(SimpleTestCase):
         self.assertEqual(response.data["count"], 0)
 
     def test_leases_returned_in_results(self):
-        lease = {"ip-address": "10.0.0.1", "subnet-id": 1}
+        lease = complete_lease({"ip-address": "10.0.0.1", "subnet-id": 1})
         view, _ = _make_view()
         with stub_kea({"lease4-get-all": [{"result": 0, "arguments": {"leases": [lease]}}]}):
             response = view._lease_search(_make_request({"subnet_id": "1"}), version=4)
@@ -277,7 +279,7 @@ class TestLeaseSearchSubnetId(SimpleTestCase):
 
     @override_settings(PLUGINS_CONFIG=_GUARDED_PLUGINS_CONFIG)
     def test_declined_state_uses_guarded_subnet_state_query(self):
-        lease = {"ip-address": "198.18.0.1", "subnet-id": 1, "state": 1}
+        lease = complete_lease({"ip-address": "198.18.0.1", "subnet-id": 1, "state": 1})
         stats = _subnet_stats(4, 1, assigned=501, declined=1)
         view, _ = _make_view()
         with stub_kea(
@@ -326,7 +328,7 @@ class TestLeaseSearchSubnetId(SimpleTestCase):
         `_PLUGINS_CONFIG` sets `lease_query_max_unpaged_leases` to 0, which disables the
         guard. Nothing else covers that documented setting end to end.
         """
-        lease = {"ip-address": "10.0.0.5", "hw-address": "aa:bb:cc:dd:ee:ff", "state": 0}
+        lease = complete_lease({"ip-address": "10.0.0.5", "hw-address": "aa:bb:cc:dd:ee:ff", "state": 0})
         view, _ = _make_view()
         with stub_kea({"lease4-get-all": {"result": 0, "arguments": {"leases": [lease]}}}) as kea:
             response = view._lease_search(_make_request({"subnet_id": "1"}), version=4)
