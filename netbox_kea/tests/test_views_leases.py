@@ -1057,16 +1057,17 @@ class TestDelegatedPrefixSyncBadges(_ViewTestBase):
         self.server.save()
 
     @staticmethod
-    def _responses(**changes) -> dict:
+    def _responses(*, extra_prefixes=(), **changes) -> dict:
         address = lease_record("2001:db8:1::10", subnet_id=10, **changes)
         prefix = lease_record("2001:db8:100:100::", type="IA_PD", prefix_len=56, subnet_id=10, **changes)
+        extra = [lease_record(base, type="IA_PD", prefix_len=56, subnet_id=10) for base in extra_prefixes]
 
         def lease6_get(body: dict) -> dict:
             return {"result": 0, "arguments": prefix if body["arguments"].get("type") == "IA_PD" else address}
 
         return {
             **_catalogue_responses_for_subnets(6, [{"id": 10, "subnet": "2001:db8:1::/64"}]),
-            "lease6-get-all": lease_reply(address, prefix),
+            "lease6-get-all": lease_reply(address, prefix, *extra),
             "lease6-get": lease6_get,
             "reservation-get": {"result": 3},
         }
@@ -1146,26 +1147,44 @@ class TestDelegatedPrefixSyncBadges(_ViewTestBase):
         from django.test.utils import CaptureQueriesContext
 
         with CaptureQueriesContext(connection) as queries:
-            self._rows()
+            response, _rows = self._rows(extra_prefixes=["2001:db8:100:200::", "2001:db8:100:300::"])
+
+        kinds = [row.record["kind"] for row in response.context["table"].rows]
+        self.assertEqual(kinds.count("delegated-prefix"), 3)
 
         prefix_queries = [query["sql"] for query in queries.captured_queries if '"ipam_prefix"' in query["sql"]]
         self.assertEqual(len(prefix_queries), 1, prefix_queries)
 
-    def test_a_delegated_prefix_row_without_change_permission_offers_no_sync(self):
+    def test_sync_follows_the_ipam_permissions_of_each_kind_not_the_server_change_permission(self):
         from django.contrib.auth import get_user_model
         from django.contrib.contenttypes.models import ContentType
         from users.models import ObjectPermission
 
-        viewer = get_user_model().objects.create_user(username="pd-viewer", password="example-password")
-        permission = ObjectPermission.objects.create(name="pd-view-server", actions=["view"])
-        permission.object_types.add(ContentType.objects.get_for_model(Server))
-        permission.users.add(viewer)
-        self.client.force_login(viewer)
+        cases = (
+            ("prefix-editor", [("ipam", "prefix")], {"delegated-prefix"}),
+            ("address-editor", [("ipam", "ipaddress"), ("dcim", "macaddress")], {"address"}),
+            ("server-editor", [("netbox_kea", "server")], set()),
+            ("constrained-prefix-editor", [("ipam", "prefix", {"vrf__name": "other"})], set()),
+        )
+        for name, grants, offered in cases:
+            with self.subTest(name):
+                user = get_user_model().objects.create_user(username=name, password="example-password")
+                view = ObjectPermission.objects.create(name=f"{name}-view", actions=["view"])
+                view.object_types.add(ContentType.objects.get_for_model(Server))
+                view.users.add(user)
+                for app_label, model, *constraints in grants:
+                    grant = ObjectPermission.objects.create(
+                        name=f"{name}-{model}", actions=["add", "change"], constraints=next(iter(constraints), None)
+                    )
+                    grant.object_types.add(ContentType.objects.get(app_label=app_label, model=model))
+                    grant.users.add(user)
+                self.client.force_login(user)
 
-        _response, rows = self._rows()
+                _response, rows = self._rows()
 
-        self.assertIsNone(rows["delegated-prefix"].get("sync_url"))
-        self.assertIsNone(rows["address"].get("sync_url"))
+                self.assertEqual({kind for kind, row in rows.items() if row.get("sync_url")}, offered)
+                refused = {kind for kind, row in rows.items() if row.get("sync_refusal")}
+                self.assertEqual(refused, set(rows) - offered)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

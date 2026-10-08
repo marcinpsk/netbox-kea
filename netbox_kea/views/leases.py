@@ -1280,6 +1280,7 @@ def _sync_vrf_prefixes(server: "Server", leases: list[Lease]) -> dict[ipaddress.
     return found
 
 
+#: The NetBox model that a Sync of each allocation kind writes.
 def _enrich_leases_with_badges(
     leases: list[dict[str, Any]],
     server: "Server",
@@ -1361,8 +1362,7 @@ def _enrich_leases_with_badges(
             lease[url_key] = synced.get_absolute_url()
         # Sync needs a Current Lease; don't offer it for leases with indeterminate reservation state.
         elif (
-            can_change
-            and is_current(observed, now)
+            is_current(observed, now)
             and host_cmds_available
             and not lease.get("pending_ip_change")
             and not lease.get("stale_mac")

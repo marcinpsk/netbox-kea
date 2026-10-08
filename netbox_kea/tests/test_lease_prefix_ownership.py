@@ -292,6 +292,22 @@ class LegacyPrefixLeaseRepairTest(TestCase):
         _run_job(server, [])
         self.assertFalse(NbIP.objects.filter(pk=ip.pk).exists())
 
+    def test_an_inactive_address_lease_classifies_an_unclassified_link_on_a_complete_run(self):
+        server = _server()
+        ip = NbIP.objects.create(address=f"{ADDRESS6}/64", status="dhcp", description="[kea-sync: lease]")
+        IPAMOwnershipLink.objects.create(
+            server=server,
+            family=6,
+            source="lease",
+            ip_address=ip,
+            facts={"hostname": "", "prefix_length": 64},
+            confirmation=next_confirmation_number(),
+        )
+        # Kea state 3 is released: the address is known, and it is not current.
+        summary = _run_job(server, [_address(state=3)])
+        self.assertEqual((summary["unclassified"], summary["errors"]), (0, 0))
+        self.assertFalse(NbIP.objects.filter(pk=ip.pk).exists())
+
     def test_another_owner_claiming_the_address_keeps_an_already_stale_unclassified_link(self):
         server, other = _server(), _server("other")
         ip = _legacy_pd_ip(server, prefix_length=64)
@@ -349,8 +365,8 @@ class LivePrefixPhaseContractTest(TestCase):
         from netbox_kea.ipam_reconciliation import LeaseObservation
 
         server = _server()
-        first = LeaseObservation(None, next_confirmation_number(), None)
-        second = LeaseObservation(None, next_confirmation_number(), None)
+        first = LeaseObservation(None, next_confirmation_number(), None, RuntimeError("not read"))
+        second = LeaseObservation(None, next_confirmation_number(), None, RuntimeError("not read"))
         for phases in (
             [LeasePrefixPhase(first, None)],
             [LeasePhase(first, {}), LeasePrefixPhase(second, None)],
@@ -359,6 +375,12 @@ class LivePrefixPhaseContractTest(TestCase):
                 reconcile(server, 6, phases)
         with self.assertRaises(ValueError):
             reconcile(server, 4, [LeasePhase(first, {}), LeasePrefixPhase(first, None)])
+
+    def test_a_lease_observation_holds_a_snapshot_or_its_read_failure(self):
+        from netbox_kea.ipam_reconciliation import LeaseObservation
+
+        with self.assertRaises(ValueError):
+            LeaseObservation(None, next_confirmation_number(), None)
 
     def test_a_claim_takes_address_or_delegated_prefix_leases_but_not_both(self):
         server = _server()
@@ -411,6 +433,24 @@ class LivePrefixConcurrencyTest(ConcurrencyHarness):
         prefix = Prefix.objects.get(prefix=PD_NETWORK)
         self.assertEqual(_sources(prefix), {("live-owner", "lease-prefix"), ("import-owner", "delegated-prefix")})
         self.assertEqual(self._report("live").prefix_errors + self._report("import").prefix_errors, 0)
+
+    def test_an_operator_who_moves_the_legacy_address_during_the_repair_keeps_the_moved_row(self):
+        server = _server()
+        ip = _legacy_pd_ip(server)
+        moved = "2001:db8:9::1/64"
+        # The operator's edit holds the row lock; the repair must wait for it, then see the new address.
+        holder = self._hold("UPDATE ipam_ipaddress SET address = %s WHERE id = %s", [moved, ip.pk])
+        with _patch_kea(leases6=[_pd()]):
+            self._start("run", lambda: reconcile(server, 6, self._job_phases(server)))
+            self._wait_for_lock_waits(1, finished="run")
+            holder.commit()
+            self._join()
+
+        self._report("run")
+        row = NbIP.objects.filter(pk=ip.pk).first()
+        self.assertIsNotNone(row)
+        self.assertEqual(str(row.address), moved)
+        self.assertEqual(IPAMOwnershipLink.objects.get(ip_address=row).allocation_kind, "")
 
     def test_an_address_claim_that_confirms_the_link_while_the_repair_waits_keeps_its_address_kind(self):
         server = _server()

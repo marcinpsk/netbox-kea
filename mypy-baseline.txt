@@ -90,7 +90,6 @@ netbox_kea/views/leases.py:0: error: Item "AbstractBaseUser" of "AbstractBaseUse
 netbox_kea/views/leases.py:0: error: "HttpRequest" has no attribute "htmx"  [attr-defined]
 netbox_kea/views/leases.py:0: error: Item "AbstractBaseUser" of "AbstractBaseUser | AnonymousUser" has no attribute "has_perm"  [union-attr]
 netbox_kea/views/leases.py:0: error: Item "AbstractBaseUser" of "AbstractBaseUser | AnonymousUser" has no attribute "has_perm"  [union-attr]
-netbox_kea/views/leases.py:0: error: Item "AbstractBaseUser" of "AbstractBaseUser | AnonymousUser" has no attribute "has_perm"  [union-attr]
 netbox_kea/views/combined.py:0: error: Argument 1 to "_catalogue_subnet_row" has incompatible type "object"; expected "VerifiedSubnet | ConfiguredSubnet"  [arg-type]
 netbox_kea/views/combined.py:0: error: Item "AbstractBaseUser" of "AbstractBaseUser | AnonymousUser" has no attribute "has_perm"  [union-attr]
 netbox_kea/views/combined.py:0: error: Item "AbstractBaseUser" of "AbstractBaseUser | AnonymousUser" has no attribute "has_perm"  [union-attr]

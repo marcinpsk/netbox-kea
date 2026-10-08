@@ -533,7 +533,8 @@ Earlier releases synced a DHCPv6 delegated-prefix lease as an IP address at the 
 the allocation kind on each lease link. DHCPv4 lease links are address links. Existing DHCPv6 lease links start
 unclassified, because the stored facts cannot show the original kind:
 
-- A current address lease at the same address classifies the link as an address link.
+- An address lease that a complete run reads at that address, current or not, classifies the link as an address
+  link.
 - A current delegated prefix at that base classifies the link only after a complete run links its Prefix.
   The normal stale cleanup then retires the old IP address under `stale_ip_cleanup`, and other owners keep it.
 - Prefix sync off, a failed Prefix claim (for example an operator Prefix without the marker) or an incomplete
