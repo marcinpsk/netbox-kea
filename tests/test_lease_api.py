@@ -29,11 +29,12 @@ def kea_clients(kea_control_urls: dict[int, str]) -> Iterator[dict[int, KeaClien
         KeaClient(kea_control_urls[6], timeout=30, max_unpaged_leases=1000, write_guard=NoBranchGuard()) as dhcp6,
     ):
         clients = {4: dhcp4, 6: dhcp6}
+        wipe = {4: KeaCommand.LEASE4_WIPE, 6: KeaCommand.LEASE6_WIPE}
         for family, client in clients.items():
-            client.command(KeaCommand(f"lease{family}-wipe"), family, check=(0, 3))
+            client.command(wipe[family], family, check=(0, 3))
         yield clients
         for family, client in clients.items():
-            client.command(KeaCommand(f"lease{family}-wipe"), family, check=(0, 3))
+            client.command(wipe[family], family, check=(0, 3))
 
 
 @pytest.fixture
