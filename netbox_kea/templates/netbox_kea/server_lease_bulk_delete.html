@@ -1,0 +1,47 @@
+{# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com> #}
+{# SPDX-License-Identifier: Apache-2.0 #}
+{% extends 'generic/bulk_delete.html' %}
+{% load i18n %}
+{% load helpers %}
+{% load render_table from django_tables2 %}
+
+{# A lease delete has no changelog message and no background job, so the form has no meta fields box. #}
+{% block content %}
+  <div class="tab-pane show active" id="delete-form" role="tabpanel" aria-labelledby="delete-form-tab">
+    <div class="alert alert-danger bg-danger-subtle" role="alert">
+      <div class="d-flex">
+        <div>
+          <i class="mdi mdi-alert-octagon p-2"></i>
+        </div>
+        <div>
+          <h4 class="alert-title">{% trans "Confirm Bulk Deletion" %}</h4>
+          {% blocktrans trimmed with count=table.rows|length type_plural=model|meta:"verbose_name_plural" %}
+            The following operation will delete <strong>{{ count }}</strong> {{ type_plural }}. Please
+            carefully review the selected objects and confirm this action.
+          {% endblocktrans %}
+        </div>
+      </div>
+    </div>
+
+    <div class="row mt-3">
+      <form action="" method="post">
+        {% csrf_token %}
+        {% for field in form.hidden_fields %}
+          {{ field }}
+        {% endfor %}
+        <div class="text-end">
+          <a href="{{ return_url }}" class="btn btn-outline-secondary">{% trans "Cancel" %}</a>
+          <button type="submit" name="_confirm" class="btn btn-danger">{% trans "Delete" %} {{ table.rows|length }} {{ model|meta:"verbose_name_plural" }}</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="tab-pane" id="object-list" role="tabpanel" aria-labelledby="object-list-tab">
+    <div class="card">
+      <div class="table-responsive">
+        {% render_table table 'inc/table.html' %}
+      </div>
+    </div>
+  </div>
+{% endblock content %}

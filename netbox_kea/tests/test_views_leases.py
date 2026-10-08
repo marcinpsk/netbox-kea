@@ -841,11 +841,18 @@ class TestLeaseDeleteFullFlow(_ViewTestBase):
         self.assertContains(response, "10.0.0.1")
         self.assertContains(response, "10.0.0.2")
 
-    def test_confirmation_page_shows_no_background_job_label(self):
-        """NetBox renders the label of the hidden background_job field, so the field has no label."""
-        response = self.client.post(self._url(), {"pk": ["10.0.0.1"]})
+    def test_confirmation_page_shows_no_empty_meta_fields_box(self):
+        """A lease delete has no changelog message and no background job, so the page shows no box for them."""
+        from bs4 import BeautifulSoup
+
+        response = self.client.post(self._url(), {"pk": ["10.0.0.1"], "return_url": "/plugins/kea/"})
         self.assertContains(response, "Confirm Bulk Deletion")
-        self.assertNotContains(response, "background_job")
+        form = BeautifulSoup(response.content, "html.parser").select_one("#delete-form form")
+        self.assertIsNone(form.select_one(".bg-primary-subtle"))
+        self.assertNotIn("background_job", str(form))
+        hidden = {(field["name"], field.get("value")) for field in form.select("input[type=hidden]")}
+        self.assertLessEqual({("pk", "10.0.0.1"), ("return_url", "/plugins/kea/")}, hidden)
+        self.assertIsNotNone(form.select_one('button[name="_confirm"]'))
 
     def test_post_confirmed_calls_kea_and_redirects(self):
         """POST with _confirm=1 must call Kea lease4-del and redirect."""
