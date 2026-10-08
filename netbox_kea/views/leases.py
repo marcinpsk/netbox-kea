@@ -1256,12 +1256,13 @@ def _enrich_leases_with_badges(
     sync_url = reverse(f"plugins:netbox_kea:server_lease{version}_sync", args=[server.pk])
     edit_url_name = f"plugins:netbox_kea:server_lease{version}_edit"
     edit_query = f"?{_urlencode({'return_url': return_url})}" if return_url else ""
-    nb_ips = bulk_fetch_netbox_ips([_row_address(lease) for lease in leases])
+    # A delegated prefix is not an IP Address, so only an address Lease links one.
+    nb_ips = bulk_fetch_netbox_ips([_row_address(lease) for lease in leases if lease["lease"].kind == "address"])
     for lease in leases:
         ip = _row_address(lease)
         # Sync and Edit look up an address Lease, so a delegated prefix offers neither.
         is_address = lease["lease"].kind == "address"
-        nb_ip = nb_ips.get(ip)
+        nb_ip = nb_ips.get(ip) if is_address else None
         if nb_ip:
             lease["netbox_ip_url"] = nb_ip.get_absolute_url()
         # Don't offer Sync for leases with indeterminate reservation state.

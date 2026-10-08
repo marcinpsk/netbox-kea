@@ -173,6 +173,29 @@ class LeaseBrowsingTest(_ViewTestBase):
         self.assertIsNone(rows["delegated-prefix"].get("edit_url"))
         self.assertIsNone(rows["delegated-prefix"].get("sync_url"))
 
+    def test_only_an_address_lease_row_links_its_netbox_ip_address(self):
+        # NetBox holds an IP Address at the network address of the prefix, which is not the delegated prefix.
+        from ipam.models import IPAddress
+
+        address = IPAddress.objects.create(address="2001:db8:1::10/64")
+        IPAddress.objects.create(address="2001:db8:100:100::/128")
+        records = [
+            lease_record("2001:db8:1::10", subnet_id=10),
+            lease_record("2001:db8:100:100::", type="IA_PD", prefix_len=56, subnet_id=10),
+        ]
+        responses = {
+            **_catalogue_responses_for_subnets(6, _SUBNETS6),
+            "lease6-get-all": lease_reply(*records),
+            "reservation-get": {"result": 3},
+        }
+        with stub_kea(responses):
+            response = self.client.get(self._url(6), {"by": "subnet_id", "q": "10"}, HTTP_HX_REQUEST="true")
+
+        rows = {row.record["kind"]: row.record for row in response.context["table"].rows}
+        self.assertEqual(rows["address"].get("netbox_ip_url"), address.get_absolute_url())
+        self.assertIsNone(rows["delegated-prefix"].get("netbox_ip_url"))
+        self.assertContains(response, " Synced</a>", count=1)
+
     def test_a_delegated_prefix_row_shows_its_length_and_searches_prefixes(self):
         records = [
             lease_record("2001:db8:1::10", subnet_id=10),
