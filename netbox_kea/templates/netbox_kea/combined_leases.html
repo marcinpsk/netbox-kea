@@ -68,7 +68,9 @@
 {% endif %}
 
 {% if request.GET.q or request.GET.state %}
-  {% render_table table %}
+  <div class="table-responsive">
+    {% render_table table %}
+  </div>
 {% else %}
   <div class="alert alert-info">
     Enter a search query or select a state filter above to find leases across all selected servers.

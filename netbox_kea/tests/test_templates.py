@@ -379,3 +379,16 @@ class TestRowActionButtons(SimpleTestCase):
         )
         # The lease search pushes its URL and swaps itself; a row button without the include does both.
         self.assertEqual(missing, [])
+
+
+class TestTablesScrollInsideTheirContainer(SimpleTestCase):
+    """A wide table must scroll inside a ``.table-responsive`` element, not make the whole page scroll."""
+
+    def test_every_rendered_table_sits_in_a_table_responsive_element(self):
+        missing = []
+        for name, text in _plugin_templates().items():
+            for found in re.finditer(r"{%\s*render_table\b", text):
+                opening = re.findall(r"<div\b[^>]*>", text[: found.start()])
+                if not (opening and "table-responsive" in opening[-1]):
+                    missing.append(name)
+        self.assertEqual(sorted(missing), [])
