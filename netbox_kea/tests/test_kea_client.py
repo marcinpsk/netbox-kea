@@ -960,6 +960,13 @@ class TestLeaseChanges(TestCase):
         with stub_kea({"lease4-add": {"result": 1, "text": "address already in use"}}), self.assertRaises(KeaException):
             self.client.lease_add(creation)
 
+    def test_a_reply_without_one_success_entry_confirms_no_creation(self):
+        creation = DHCPv4LeaseRequest(address=ipaddress.IPv4Address("192.0.2.50"), hw_address="aa:bb:cc:00:00:50")
+        ok = {"result": 0, "text": "Lease added."}
+        for name, reply, error in (("empty", [], MalformedReply), ("two entries", [ok, ok], MalformedLeaseResponse)):
+            with self.subTest(name), stub_kea({"lease4-add": reply}), self.assertRaises(error):
+                self.client.lease_add(creation)
+
 
 # ---------------------------------------------------------------------------
 # TestNetworkSubnetAdd

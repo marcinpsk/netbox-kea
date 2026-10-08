@@ -2493,6 +2493,21 @@ class TestBulkLeaseImportView(_ViewTestBase):
         self.assertEqual({call["server"] for call in received}, {self.server})
         self.assertEqual({call["creation"].hostname for call in received}, {"h1", "h3"})
 
+    def test_an_empty_kea_reply_creates_no_row_and_sends_no_signal(self) -> None:
+        received: list[dict] = []
+
+        def receive(sender, **kwargs):
+            received.append(kwargs)
+
+        lease_added.connect(receive)
+        self.addCleanup(lease_added.disconnect, receive)
+        with _lease_stub({"lease4-add": []}):
+            response = self.client.post(self._url(version=4), self._post(version=4))
+
+        result = response.context["result"]
+        self.assertEqual((result["created"], result["errors"]), (0, 1))
+        self.assertEqual(received, [])
+
     def test_a_kea_failure_names_the_file_line_after_comment_and_blank_lines(self):
         """A Kea failure names the physical line of its row, so comment and blank lines count."""
         csv_bytes = self._csv4(
