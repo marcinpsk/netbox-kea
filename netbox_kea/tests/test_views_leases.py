@@ -2233,6 +2233,25 @@ class TestBulkLeaseImportView(_ViewTestBase):
         self.assertEqual(result["created"], 1)
         self.assertEqual(result["errors"], 1)
 
+    def test_a_kea_failure_names_the_file_line_after_comment_and_blank_lines(self):
+        """A Kea failure names the physical line of its row, so comment and blank lines count."""
+        csv_bytes = self._csv4(
+            rows=[
+                "# first lease\n",
+                "10.0.0.10,aa:bb:cc:dd:ee:01,1,3600,h1\n",
+                "\n",
+                "10.0.0.11,aa:bb:cc:dd:ee:02,1,3600,h2\n",
+            ]
+        )
+        with _lease_stub({"lease4-add": queued({"result": 0}, {"result": 1, "text": "address in use"})}):
+            response = self.client.post(self._url(version=4), self._post(version=4, csv_bytes=csv_bytes))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            [(item["line"], item["address"]) for item in response.context["result"]["error_rows"]], [(5, "10.0.0.11")]
+        )
+        self.assertContains(response, "<th>Line</th>", html=True)
+        self.assertContains(response, "<td>5</td>", html=True)
+
     def test_post_empty_csv_shows_form_error(self):
         """Uploading a CSV with only a header (no data rows) returns 200 with empty result."""
         csv_bytes = b"ip-address,hw-address\n"
@@ -2687,7 +2706,7 @@ class TestLeaseBulkImportEdgeCases(_ViewTestBase):
         self.assertEqual(kea.commands(), [])
         self.assertContains(response, "File must be UTF-8 encoded.")
 
-    def test_a_malformed_row_rejects_the_file_with_its_row_and_column_only(self):
+    def test_a_malformed_row_rejects_the_file_with_its_line_and_column_only(self):
         """A row that is not a valid request rejects the file; neither the page nor the log shows its value."""
         import io
 
@@ -2698,7 +2717,7 @@ class TestLeaseBulkImportEdgeCases(_ViewTestBase):
             response = self.client.post(self._url(), {"csv_file": csv_file})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(kea.commands(), [])
-        self.assertContains(response, "Row 3: &#x27;hw-address&#x27; is not valid for a DHCPv4 lease.")
+        self.assertContains(response, "Line 3: &#x27;hw-address&#x27; is not valid for a DHCPv4 lease.")
         self.assertNotContains(response, "secret")
         self.assertNotIn("secret", "\n".join(logs.output))
 
@@ -2731,7 +2750,7 @@ class TestLeaseBulkImportEdgeCases(_ViewTestBase):
         self.assertContains(response, "Failed to connect to Kea server.")
 
     def test_a_malformed_reply_body_is_an_invalid_response_row_error(self):
-        """A lease4-add body that is not a JSON list is a malformed reply; the log names the row, not its MAC."""
+        """A lease4-add body that is not a JSON list is a malformed reply; the log names the line, not its MAC."""
         import io
 
         for name, reply in (
@@ -2748,7 +2767,7 @@ class TestLeaseBulkImportEdgeCases(_ViewTestBase):
                     response.context["result"]["error_rows"],
                     [
                         {
-                            "row": 2,
+                            "line": 2,
                             "address": "10.0.0.1",
                             "error": "Invalid response from Kea: could not parse the server reply.",
                         }

@@ -98,7 +98,8 @@ NetBox plugin for the [Kea DHCP](https://www.isc.org/kea/) server. Manage your D
 **Lease Add / Edit / Delete / Bulk Import**
 - Add and edit individual leases, and bulk import leases from CSV. A DHCPv4 lease needs a hardware
   address (`hw-address`), because Kea refuses one without it. A CSV row that is not a valid lease
-  rejects the whole file; the message names the row and the column, never the value.
+  rejects the whole file; the message names the file line and the column, never the value. A line number
+  counts every line of the file, also the header, comments and blank lines.
 - Edit, Delete and Reserve act on the allocation that the row shows: an address, or a DHCPv6 delegated
   prefix (`address/length`). Reserve on a delegated prefix fills the Reservation prefix field.
 - Edit and Delete read the lease again before they change it. They change nothing when the client
