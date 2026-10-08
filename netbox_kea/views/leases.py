@@ -709,7 +709,8 @@ _ACTIONS: dict[str, tuple[str, str]] = {"edit": ("changed", "the form"), "delete
 
 
 def _fact_words(facts: tuple[LeaseFact, ...]) -> str:
-    return ", ".join(_FACT_NAMES.get(fact, fact.replace("_", " ")) for fact in facts)
+    *rest, last = (_FACT_NAMES.get(fact, fact.replace("_", " ")) for fact in facts)
+    return f"{', '.join(rest)} and {last}" if rest else last
 
 
 def _report_outcome(
