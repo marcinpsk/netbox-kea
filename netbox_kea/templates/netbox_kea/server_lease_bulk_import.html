@@ -15,8 +15,8 @@
       <div class="card-body">
         {% if dhcp_version == 4 %}
         <div class="alert alert-info" role="alert">
-          <strong>v4 required column:</strong> <code>ip-address</code><br>
-          <strong>Optional columns:</strong> <code>hw-address, subnet-id, valid-lft, hostname</code><br>
+          <strong>v4 required columns:</strong> <code>ip-address, hw-address</code><br>
+          <strong>Optional columns:</strong> <code>subnet-id, valid-lft, hostname</code><br>
           <small>Example: <code>10.0.0.10,aa:bb:cc:dd:ee:ff,1,3600,host1.example.com</code></small>
         </div>
         {% else %}
@@ -67,14 +67,16 @@
         <table class="table table-bordered mb-0">
           <thead>
             <tr>
-              <th>Row data</th>
+              <th>Row</th>
+              <th>Address</th>
               <th>Error</th>
             </tr>
           </thead>
           <tbody>
             {% for item in result.error_rows %}
             <tr class="table-danger">
-              <td><code>{{ item.row }}</code></td>
+              <td>{{ item.row }}</td>
+              <td><code>{{ item.address }}</code></td>
               <td>{{ item.error }}</td>
             </tr>
             {% endfor %}

@@ -8,8 +8,10 @@ These tests mock all HTTP calls and require no running services.
 
 import dataclasses
 import ipaddress
+import json
 import os
 from dataclasses import replace
+from pathlib import Path
 from typing import get_args, get_origin, get_type_hints
 from unittest import TestCase
 from unittest.mock import MagicMock, patch
@@ -35,14 +37,22 @@ from netbox_kea.kea import (
 )
 from netbox_kea.leases import (
     AllocationKind,
+    DHCPv4LeaseRequest,
+    DHCPv6LeaseRequest,
     LeaseAbsent,
+    LeaseChanged,
+    LeaseConflict,
+    LeaseEdit,
     LeaseFound,
     LeaseIdentity,
     LeaseLookupFailed,
     LeaseSnapshot,
     MalformedLeaseResponse,
+    _creation_arguments,
+    shown_lease,
 )
 from netbox_kea.tests.kea_stub import (
+    LeaseDaemon,
     _http_response,
     _raw_http_response,
     _subnet_stats,
@@ -738,202 +748,133 @@ class TestDHCPEnable(TestCase):
         self.assertIsNone(result)
 
 
-# TestLeaseUpdate
+# TestLeaseChanges
 # ---------------------------------------------------------------------------
 
-_LEASE4_GET_RESP = [
-    {
-        "result": 0,
-        "arguments": {
-            "ip-address": "10.0.0.100",
-            "hw-address": "aa:bb:cc:dd:ee:ff",
-            "hostname": "host1.example.com",
-            "subnet-id": 1,
-            "cltt": 1700000000,
-            "valid-lft": 3600,
-            "state": 0,
-        },
-    }
-]
-_LEASE4_NOT_FOUND = [{"result": 3, "text": "Lease not found."}]
-_LEASE_UPDATE_OK = [{"result": 0, "text": "Lease updated."}]
+
+def _recorded_changes(family: int) -> dict:
+    return json.loads((Path(__file__).with_name("kea_recordings") / f"dhcp{family}.json").read_text())["leases"][
+        "changes"
+    ]
 
 
-class TestLeaseUpdate(TestCase):
-    """Tests for KeaClient.lease_update()."""
+class TestLeaseChanges(TestCase):
+    """Edit and delete read the shown Lease again and change only a Lease that agrees with the shown facts.
+
+    The Kea replies are the ones recorded from a real Kea 3.2.0 (the ``changes`` section of the recordings).
+    """
 
     def setUp(self):
         self.client = kea_client(url="http://kea:8000")
+        self.prefix = _recorded_changes(6)["before"]["arguments"]
+        self.shown = shown_lease(typed_lease(self.prefix))
 
-    def _payloads(self, mock_post):
-        return [(c.kwargs.get("json") or c[1]["json"]) for c in mock_post.call_args_list]
+    def test_an_edit_sends_the_fresh_body_with_only_the_written_field_changed(self):
+        daemon = LeaseDaemon(6, self.prefix)
+        with stub_kea(daemon.responses()) as kea:
+            result = self.client.lease_update(self.shown, LeaseEdit(hostname="renamed.example.org"))
 
-    def _cmds(self, mock_post):
-        return [p["command"] for p in self._payloads(mock_post)]
+        self.assertEqual(result, LeaseChanged(lease=typed_lease(self.prefix)))
+        self.assertEqual(kea.commands(), ["lease6-get", "lease6-update"])
+        self.assertEqual(
+            kea.bodies("lease6-get")[0]["arguments"], {"ip-address": "2001:db8:100:600::", "type": "IA_PD"}
+        )
+        expire = self.prefix["cltt"] + self.prefix["valid-lft"]
+        sent = kea.bodies("lease6-update")[0]["arguments"]
+        self.assertEqual(sent, {**self.prefix, "hostname": "renamed.example.org", "expire": expire})
+        self.assertNotIn("force-create", sent)
+        # Kea 3.2.0 kept the prefix kind, its length and the nested user-context on the same update.
+        after = _recorded_changes(6)["after-update"]["arguments"]
+        self.assertEqual({**after, "hostname": self.prefix["hostname"]}, self.prefix)
 
-    def test_fetches_then_updates(self):
-        """lease_update calls lease4-get then lease4-update in sequence."""
-        with patch.object(
-            self.client._session,
-            "post",
-            side_effect=_side_effects(_LEASE4_GET_RESP, _LEASE_UPDATE_OK),
-        ) as mock_post:
-            self.client.lease_update(version=4, ip_address="10.0.0.100")
-        self.assertEqual(self._cmds(mock_post), ["lease4-get", "lease4-update"])
+    def test_a_fresh_read_that_contradicts_the_shown_facts_sends_no_change(self):
+        cases = {
+            ("binding",): {"iaid": 31},
+            ("subnet_id",): {"subnet-id": 11},
+            ("prefix_length",): {"prefix-len": 60},
+            ("hostname",): {"hostname": "changed.example.org"},
+        }
+        for fields, change in cases.items():
+            with self.subTest(fields=fields):
+                with stub_kea(LeaseDaemon(6, {**self.prefix, **change}).responses()) as kea:
+                    result = self.client.lease_update(self.shown, LeaseEdit(hostname="renamed.example.org"))
+                self.assertEqual(result, LeaseConflict(fields=fields))
+                self.assertEqual(kea.commands(), ["lease6-get"])
 
-    def test_merges_hostname(self):
-        """hostname kwarg replaces the existing hostname in the update payload."""
-        with patch.object(
-            self.client._session,
-            "post",
-            side_effect=_side_effects(_LEASE4_GET_RESP, _LEASE_UPDATE_OK),
-        ) as mock_post:
-            self.client.lease_update(version=4, ip_address="10.0.0.100", hostname="new.example.com")
-        payloads = self._payloads(mock_post)
-        update_payload = next(p for p in payloads if p["command"] == "lease4-update")
-        self.assertEqual(update_payload["arguments"]["hostname"], "new.example.com")
+    def test_a_lease_that_is_gone_is_not_created_again(self):
+        with stub_kea(LeaseDaemon(6).responses()) as kea:
+            update = self.client.lease_update(self.shown, LeaseEdit(hostname="renamed.example.org"))
+            delete = self.client.lease_delete(self.shown)
 
-    def test_merges_hw_address(self):
-        """hw_address kwarg replaces the existing hw-address in the update payload."""
-        with patch.object(
-            self.client._session,
-            "post",
-            side_effect=_side_effects(_LEASE4_GET_RESP, _LEASE_UPDATE_OK),
-        ) as mock_post:
-            self.client.lease_update(version=4, ip_address="10.0.0.100", hw_address="11:22:33:44:55:66")
-        payloads = self._payloads(mock_post)
-        update_payload = next(p for p in payloads if p["command"] == "lease4-update")
-        self.assertEqual(update_payload["arguments"]["hw-address"], "11:22:33:44:55:66")
+        self.assertEqual(update, LeaseAbsent(identity=self.shown.identity))
+        self.assertEqual(delete, LeaseAbsent(identity=self.shown.identity))
+        self.assertEqual(kea.commands(), ["lease6-get", "lease6-get"])
 
-    def test_merges_valid_lft(self):
-        """valid_lft kwarg replaces the existing valid-lft in the update payload."""
-        with patch.object(
-            self.client._session,
-            "post",
-            side_effect=_side_effects(_LEASE4_GET_RESP, _LEASE_UPDATE_OK),
-        ) as mock_post:
-            self.client.lease_update(version=4, ip_address="10.0.0.100", valid_lft=7200)
-        payloads = self._payloads(mock_post)
-        update_payload = next(p for p in payloads if p["command"] == "lease4-update")
-        self.assertEqual(update_payload["arguments"]["valid-lft"], 7200)
+    def test_an_update_that_kea_refuses_as_changed_after_the_read_is_a_conflict(self):
+        daemon = LeaseDaemon(6, self.prefix)
+        daemon.before("lease6-update", lambda held: held.leases.clear())
+        with stub_kea(daemon.responses()) as kea:
+            result = self.client.lease_update(self.shown, LeaseEdit(hostname="renamed.example.org"))
 
-    def test_raises_kea_exception_when_lease_not_found(self):
-        """KeaException raised when lease4-get returns result=3 (not found)."""
-        with patch.object(
-            self.client._session,
-            "post",
-            side_effect=_side_effects(_LEASE4_NOT_FOUND),
-        ):
-            with self.assertRaises(KeaException):
-                self.client.lease_update(version=4, ip_address="10.0.0.100")
+        # Kea 3.2.0 answers result 4, and the update did not create the lease again.
+        self.assertEqual(_recorded_changes(6)["update-absent"]["result"], 4)
+        self.assertEqual(result, LeaseConflict(fields=()))
+        self.assertEqual(kea.commands(), ["lease6-get", "lease6-update"])
+        self.assertEqual(daemon.leases, {})
 
-    def test_v6_uses_dhcp6_service(self):
-        """For version=6, both commands use service=['dhcp6']."""
-        lease6_get_resp = [
-            {
-                "result": 0,
-                "arguments": {
-                    "ip-address": "2001:db8::100",
-                    "duid": "00:01:00:01:aa:bb:cc:dd:ee:ff",
-                    "hostname": "v6host.example.com",
-                    "subnet-id": 10,
-                    "cltt": 1700000000,
-                    "valid-lft": 3600,
-                    "state": 0,
-                },
-            }
-        ]
-        with patch.object(
-            self.client._session,
-            "post",
-            side_effect=_side_effects(lease6_get_resp, _LEASE_UPDATE_OK),
-        ) as mock_post:
-            self.client.lease_update(version=6, ip_address="2001:db8::100")
-        payloads = self._payloads(mock_post)
-        for p in payloads:
-            self.assertEqual(p["service"], ["dhcp6"])
-        self.assertEqual(self._cmds(mock_post), ["lease6-get", "lease6-update"])
+    def test_a_malformed_fresh_read_sends_no_change(self):
+        malformed = {"result": 0, "text": "IPv6 lease found.", "arguments": {**self.prefix, "state": "assigned"}}
+        with stub_kea({"lease6-get": malformed}) as kea:
+            result = self.client.lease_delete(self.shown)
 
-    def test_merges_duid_for_v6_lease(self):
-        """lease_update includes duid in the update payload when duid is given."""
-        lease6_get_resp = [
-            {
-                "result": 0,
-                "arguments": {
-                    "ip-address": "2001:db8::100",
-                    "duid": "00:01:00:01:ab:cd:ef:01",
-                    "hostname": "host6.example.com",
-                    "subnet-id": 2,
-                    "cltt": 1700000000,
-                    "valid-lft": 3600,
-                    "state": 0,
-                },
-            }
-        ]
-        new_duid = "00:01:00:01:ff:ee:dd:cc"
-        with patch.object(
-            self.client._session,
-            "post",
-            side_effect=_side_effects(lease6_get_resp, _LEASE_UPDATE_OK),
-        ) as mock_post:
-            self.client.lease_update(version=6, ip_address="2001:db8::100", duid=new_duid)
-        payloads = self._payloads(mock_post)
-        update_payload = next(p for p in payloads if p["command"] == "lease6-update")
-        self.assertEqual(update_payload["arguments"]["duid"], new_duid)
+        self.assertIsInstance(result, LeaseLookupFailed)
+        self.assertEqual(kea.commands(), ["lease6-get"])
 
+    def test_an_edit_that_writes_nothing_is_refused_before_kea(self):
+        with stub_kea({}) as kea, self.assertRaises(ValueError):
+            self.client.lease_update(self.shown, LeaseEdit())
+        self.assertEqual(kea.commands(), [])
 
-# ---------------------------------------------------------------------------
-# TestLeaseAdd
-# ---------------------------------------------------------------------------
+    def test_a_delete_sends_the_kind_of_the_shown_lease(self):
+        daemon = LeaseDaemon(6, self.prefix)
+        with stub_kea(daemon.responses()) as kea:
+            result = self.client.lease_delete(self.shown)
 
-_LEASE_ADD_OK = [{"result": 0, "text": "Lease added."}]
-_LEASE_ADD_FAIL = [{"result": 1, "text": "address already in use"}]
+        self.assertEqual(result, LeaseChanged(lease=typed_lease(self.prefix)))
+        self.assertEqual(
+            kea.bodies("lease6-del")[0]["arguments"], {"ip-address": "2001:db8:100:600::", "type": "IA_PD"}
+        )
+        self.assertEqual(daemon.leases, {})
+        # Kea 3.2.0 deletes a delegated prefix only with its type.
+        self.assertEqual(_recorded_changes(6)["delete-without-type"]["result"], 3)
 
+    def test_a_delete_that_finds_the_lease_gone_after_the_read_is_absent(self):
+        daemon = LeaseDaemon(4, _recorded_changes(4)["before"]["arguments"])
+        shown = shown_lease(typed_lease(_recorded_changes(4)["before"]["arguments"]))
+        daemon.before("lease4-del", lambda held: held.leases.clear())
+        with stub_kea(daemon.responses()) as kea:
+            result = self.client.lease_delete(shown)
 
-class TestLeaseAdd(TestCase):
-    """Tests for KeaClient.lease_add(version, lease) -> None."""
+        self.assertEqual(result, LeaseAbsent(identity=shown.identity))
+        self.assertEqual(kea.commands(), ["lease4-get", "lease4-del"])
 
-    def setUp(self):
-        self.client = kea_client(url="http://kea:8000")
+    def test_a_creation_sends_only_the_facts_of_the_request(self):
+        requests_by_family = {
+            4: DHCPv4LeaseRequest(address=ipaddress.IPv4Address("192.0.2.50"), hw_address="aa:bb:cc:00:00:50"),
+            6: DHCPv6LeaseRequest(address=ipaddress.IPv6Address("2001:db8:1::50"), duid="00:01:02:03", iaid=5),
+        }
+        for family, creation in requests_by_family.items():
+            with self.subTest(family=family):
+                daemon = LeaseDaemon(family)
+                with stub_kea(daemon.responses()) as kea:
+                    self.assertIsNone(self.client.lease_add(creation))
+                self.assertEqual(kea.commands(), [f"lease{family}-add"])
+                self.assertEqual(kea.bodies(f"lease{family}-add")[0]["arguments"], _creation_arguments(creation))
 
-    def _payloads(self, mock_post):
-        return [(c.kwargs.get("json") or c[1]["json"]) for c in mock_post.call_args_list]
-
-    def _cmds(self, mock_post):
-        return [p["command"] for p in self._payloads(mock_post)]
-
-    def test_v4_sends_correct_command_and_payload(self):
-        """lease4-add command is sent with the provided lease dict as arguments."""
-        lease = {"ip-address": "10.0.0.50", "hw-address": "aa:bb:cc:dd:ee:ff", "subnet-id": 1}
-        with patch.object(self.client._session, "post", return_value=_mock_http_response(_LEASE_ADD_OK)) as mock_post:
-            self.client.lease_add(version=4, lease=lease)
-        payload = self._payloads(mock_post)[0]
-        self.assertEqual(payload["command"], "lease4-add")
-        self.assertEqual(payload["service"], ["dhcp4"])
-        self.assertEqual(payload["arguments"], lease)
-
-    def test_v6_uses_dhcp6_service(self):
-        """For version=6, command is lease6-add and service is dhcp6."""
-        lease = {"ip-address": "2001:db8::1", "duid": "00:01:02:03", "iaid": 12345}
-        with patch.object(self.client._session, "post", return_value=_mock_http_response(_LEASE_ADD_OK)) as mock_post:
-            self.client.lease_add(version=6, lease=lease)
-        payload = self._payloads(mock_post)[0]
-        self.assertEqual(payload["command"], "lease6-add")
-        self.assertEqual(payload["service"], ["dhcp6"])
-
-    def test_returns_none_on_success(self):
-        """lease_add returns None on success."""
-        lease = {"ip-address": "10.0.0.50"}
-        with patch.object(self.client._session, "post", return_value=_mock_http_response(_LEASE_ADD_OK)):
-            result = self.client.lease_add(version=4, lease=lease)
-        self.assertIsNone(result)
-
-    def test_raises_kea_exception_on_error(self):
-        """KeaException raised when Kea returns a non-zero result."""
-        lease = {"ip-address": "10.0.0.50"}
-        with patch.object(self.client._session, "post", return_value=_mock_http_response(_LEASE_ADD_FAIL)):
-            with self.assertRaises(KeaException):
-                self.client.lease_add(version=4, lease=lease)
+    def test_a_refused_creation_raises(self):
+        creation = DHCPv4LeaseRequest(address=ipaddress.IPv4Address("192.0.2.50"), hw_address="aa:bb:cc:00:00:50")
+        with stub_kea({"lease4-add": {"result": 1, "text": "address already in use"}}), self.assertRaises(KeaException):
+            self.client.lease_add(creation)
 
 
 # ---------------------------------------------------------------------------
@@ -2142,29 +2083,3 @@ class TestGetAvailableCommandsMalformed(TestCase):
         with patch.object(self.client._session, "post", return_value=_mock_http_response([])):
             with self.assertRaises(RuntimeError):
                 self.client.get_available_commands(4)
-
-
-class TestLeaseUpdateGuards(TestCase):
-    """lease_update guards on result=3 and non-dict arguments."""
-
-    def setUp(self):
-        self.client = kea_client(url="http://kea:8000")
-
-    def test_result3_raises_kea_exception(self):
-        """command() returning result=3 directly (bypassing check_response) raises KeaException."""
-        # check_response would normally raise for result=3; patch command() to bypass it
-        # and test the explicit result=3 guard in lease_update.
-        with patch.object(
-            self.client,
-            "command",
-            return_value=[{"result": 3, "text": "Lease not found."}],
-        ):
-            with self.assertRaises(KeaException):
-                self.client.lease_update(version=4, ip_address="10.0.0.1")
-
-    def test_non_dict_arguments_raises_value_error(self):
-        """result=0 with non-dict arguments raises ValueError."""
-        resp = [{"result": 0, "arguments": None}]
-        with patch.object(self.client._session, "post", return_value=_mock_http_response(resp)):
-            with self.assertRaises(ValueError):
-                self.client.lease_update(version=4, ip_address="10.0.0.1")

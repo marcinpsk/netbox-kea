@@ -6,7 +6,7 @@ External consumers can connect to these signals to react to DHCP changes::
 
     from netbox_kea.signals import lease_added, leases_deleted
 
-    def on_lease_added(sender, server, ip_address, hw_address, hostname, dhcp_version, request, **kwargs):
+    def on_lease_added(sender, server, creation, lease, dhcp_version, request, **kwargs):
         # your logic here
         ...
 
@@ -20,14 +20,18 @@ They *are* fired when the change was applied but Kea could not write it to disk
 Signals
 -------
 lease_added
-    Fired when a single DHCP lease is added via the plugin UI.
-    kwargs: ``server``, ``ip_address``, ``hw_address``, ``hostname``,
-    ``dhcp_version``, ``request``
+    Fired when Kea confirms a lease that the plugin UI added.
+    kwargs: ``server``, ``creation`` (the ``LeaseRequest`` that Kea confirmed),
+    ``lease`` (the ``Lease`` that a fresh read observed after the creation, or ``None``
+    when that read failed, found no lease or found a malformed one), ``dhcp_version``,
+    ``request``
 
 leases_deleted
-    Fired when one or more DHCP leases are deleted via the plugin UI.
-    kwargs: ``server``, ``ip_addresses`` (list[str]; a delegated prefix is ``address/length``),
-    ``dhcp_version``, ``request``
+    Fired when Kea confirms the deletion of one or more leases selected in the plugin UI.
+    kwargs: ``server``, ``leases`` (a tuple of the ``Lease`` values that the fresh read before
+    each deletion observed; a delegated prefix is a ``DHCPv6PrefixLease`` with its prefix length),
+    ``dhcp_version``, ``request``. A lease that changed after the list was shown, or that Kea
+    no longer holds, is not deleted and is not in ``leases``.
 
 reservation_created
     Fired when a host reservation is created via the plugin UI.
@@ -44,8 +48,9 @@ reservation_deleted
     kwargs: ``server``, ``before`` (Reservation), ``after`` (None),
     ``dhcp_version``, ``request``
 
-The ``before`` and ``after`` values use the immutable typed Reservation domain.
-They do not depend on the route or Kea's raw response shape.
+The ``creation``, ``lease``, ``leases``, ``before`` and ``after`` values use the immutable typed
+Lease and Reservation domains (``netbox_kea.leases`` and ``netbox_kea.reservations``). They do not
+depend on the route or Kea's raw response shape.
 """
 
 from django.dispatch import Signal
