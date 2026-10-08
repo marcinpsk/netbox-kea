@@ -95,9 +95,31 @@ NetBox plugin for the [Kea DHCP](https://www.isc.org/kea/) server. Manage your D
 **Global / Cross-Server Views**
 - Combined dashboard, lease, reservation, subnet and shared-network views across all servers
 
-**Lease Add / Edit / Bulk Import**
-- Add and edit individual leases
-- Bulk import leases from CSV
+**Lease Add / Edit / Delete / Bulk Import**
+- Add and edit individual leases, and bulk import leases from CSV. A DHCPv4 lease needs a hardware
+  address (`hw-address`), because Kea refuses one without it. A CSV row that is not a valid lease
+  rejects the whole file; the message names the file line and the column, never the value. A line number
+  counts every line of the file, also the header, comments and blank lines.
+- Edit, Delete and Reserve act on the allocation that the row shows: an address, or a DHCPv6 delegated
+  prefix (`address/length`). Reserve on a delegated prefix fills the Reservation prefix field.
+- Edit and Delete read the lease again before they change it. They change nothing when the client
+  binding (MAC address and client ID, or DUID and IAID), the Subnet, the kind, the prefix length or an
+  edited field differs from the page; reload and try again. A renewal alone does not stop the change,
+  and an edit keeps the renewed times and Kea's extension values, such as `user-context`. This is a
+  check before the change, not an atomic compare-and-write: another writer can still change the lease
+  between the check and the change. A lease that is gone is never created again.
+- An edit writes only the fields that you change. A blank hostname clears the hostname; a blank
+  client identifier or valid lifetime keeps the current value.
+- After an add, the plugin reads the new lease back from Kea. *Sync to NetBox IPAM* claims it only
+  when that read shows a current lease whose client binding, and Subnet and hostname when the form
+  gave them, match the request.
+- A Reservation of the client that holds only the other kind (addresses for a delegated prefix, or
+  prefixes for an address) shows as *Reservation*, not *Reserved*, and the row offers no *+ Reserve*.
+- The `lease_added` and `leases_deleted` signals carry typed values (see `netbox_kea/signals.py`).
+  `lease_added` sends `creation`, the request that Kea confirmed, and `lease`, the lease that the read
+  back observed, or `None` when that read failed or does not match the request. `leases_deleted`
+  sends `leases`, the leases whose deletion Kea confirmed. A refused, changed or failed action sends
+  no signal.
 
 **Lease observations**
 - The plugin validates each lease record that Kea returns. A malformed record is left out and the

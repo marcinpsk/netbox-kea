@@ -32,19 +32,30 @@ from .dhcp_options import (
 from .leases import (
     ALL_LEASES,
     ExactLeaseResult,
+    Lease,
     LeaseAbsent,
+    LeaseChanged,
+    LeaseChangeRefused,
+    LeaseChangeResult,
+    LeaseConflict,
     LeaseCoverage,
     LeaseDiagnostic,
+    LeaseEdit,
     LeaseFound,
     LeaseIdentity,
     LeaseLookupFailed,
     LeaseQuery,
     LeaseRead,
+    LeaseRequest,
     LeaseSnapshot,
+    ShownLease,
+    _creation_arguments,
+    _edited_arguments,
     allocation_identities,
+    lease_edit_conflicts,
     lookup_arguments,
-    read_deletion,
     read_exact_lease,
+    read_lease_change,
     read_lease_collection,
     read_lease_page,
     read_lease_page_count,
@@ -1282,14 +1293,39 @@ class KeaClient:
             raise ValueError(f"Invalid DHCPv{version} Reservation address.") from exc
         if parsed_address.version != version or parsed_address not in scope.subnet.network:
             raise ValueError("The Reservation address must belong to its In-Subnet Scope.")
-        raw = self._reservation_raw_by_address(version, scope, str(parsed_address))
+        return self._reservation_holding(version, catalogue, scope, parsed_address, parsed_address)
+
+    def reservation_by_prefix(
+        self,
+        catalogue,
+        scope: InSubnetReservationScope,
+        prefix: ipaddress.IPv6Network,
+    ) -> Reservation | None:
+        """Resolve one delegated prefix to the In-Subnet Reservation that reserves exactly that prefix.
+
+        Kea finds a host by the base address of a reserved prefix, whatever its length, and the prefix
+        can be outside the Subnet CIDR. A host that reserves another length at that base fails closed.
+        """
+        return self._reservation_holding(6, catalogue, scope, prefix.network_address, prefix)
+
+    def _reservation_holding(
+        self,
+        version: Family,
+        catalogue,
+        scope: InSubnetReservationScope,
+        address: IPAddressValue,
+        target: IPAddressValue | ipaddress.IPv6Network,
+    ) -> Reservation | None:
+        """Return the Reservation that Kea finds at *address* in *scope*, which must reserve exactly *target*."""
+        raw = self._reservation_raw_by_address(version, scope, str(address))
         if raw is None:
             return None
         reservation = _exact_reservation(raw, version, catalogue)
-        if reservation.scope != scope or parsed_address not in reservation.addresses:
+        held = reservation.delegated_prefixes if isinstance(target, ipaddress.IPv6Network) else reservation.addresses
+        if reservation.scope != scope or target not in held:
             raise MalformedReservation(
                 "target-mismatch",
-                "Kea returned a Reservation that does not match the scoped address target.",
+                f"Kea returned a Reservation that does not match the scoped target {target}.",
             )
         return reservation
 
@@ -1723,67 +1759,14 @@ class KeaClient:
         """
         self.command(LEASE_WIPE[version], version, arguments={"subnet-id": subnet_id})
 
-    def lease_add(self, version: Family, lease: dict) -> None:
-        """Create a new lease in the Kea lease database using ``lease{v}-add``.
-
-        Args:
-            version: DHCP version (4 or 6).
-            lease: Full lease dict as expected by the Kea API. For v4, ``ip-address``
-                is required. For v6, ``ip-address``, ``duid``, and ``iaid`` are required.
+    def lease_add(self, request: LeaseRequest) -> None:
+        """Create the Lease of *request* with ``lease{v}-add``; Kea supplies each fact that the request omits.
 
         Raises:
-            KeaException: If Kea returns a non-zero result code (e.g. address already
-                in use, subnet not found).
+            KeaException: If Kea refuses the Lease, for example because the address is in use.
 
         """
-        self.command(LEASE_ADD[version], version, arguments=lease)
-
-    def lease_update(
-        self,
-        version: Family,
-        ip_address: str,
-        hostname: str | None = None,
-        hw_address: str | None = None,
-        valid_lft: int | None = None,
-        duid: str | None = None,
-    ) -> None:
-        """Modify an existing lease in-place using ``lease{v}-update``.
-
-        Fetches the current lease via ``lease{v}-get``, merges the provided
-        non-None overrides, then posts the updated lease back.  No
-        config-test/write cycle is needed because lease mutations go directly
-        to Kea's live lease database.
-
-        Args:
-            version: DHCP version (4 or 6).
-            ip_address: IP address of the lease to update.
-            hostname: Optional new hostname.
-            hw_address: Optional new hardware address (v4 only, ``xx:xx:...`` format).
-            valid_lft: Optional new valid lifetime in seconds.
-            duid: Optional new DUID (v6 only).
-
-        Raises:
-            KeaException: If the lease does not exist (result=3) or Kea returns
-                an error for the update.
-
-        """
-        resp = self.command(LEASE_GET[version], version, arguments={"ip-address": ip_address})
-        if resp[0]["result"] == 3:
-            raise KeaException(resp[0])
-        lease = resp[0]["arguments"]
-        if not isinstance(lease, dict):
-            raise ValueError(
-                f"lease{version}-get returned result=0 but arguments is {type(lease).__name__}, expected dict"
-            )
-        if hostname is not None:
-            lease["hostname"] = hostname
-        if hw_address is not None:
-            lease["hw-address"] = hw_address
-        if valid_lft is not None:
-            lease["valid-lft"] = valid_lft
-        if duid is not None:
-            lease["duid"] = duid
-        self.command(LEASE_UPDATE[version], version, arguments=lease)
+        self.command(LEASE_ADD[request.family], request.family, arguments=_creation_arguments(request))
 
     def lease_get(self, identity: LeaseIdentity) -> ExactLeaseResult:
         """Read the one Lease with *identity*: found, confirmed absent, or a failed observation.
@@ -1798,18 +1781,69 @@ class KeaClient:
         )
         return read_exact_lease(response, identity)
 
-    def lease_delete(self, identity: LeaseIdentity) -> bool:
-        """Delete the one Lease with *identity*; return ``False`` when Kea has no such Lease.
+    def _checked_lease(
+        self, shown: ShownLease, edit: LeaseEdit
+    ) -> tuple[Lease, dict[str, Any]] | LeaseConflict | LeaseAbsent | LeaseLookupFailed:
+        """Read the shown Lease again; return it with its raw body, or the reason to send no change."""
+        family = shown.identity.family
+        response = self.command(LEASE_GET[family], family, arguments=lookup_arguments(shown.identity), check=(0, 3))
+        result = read_exact_lease(response, shown.identity)
+        if not isinstance(result, LeaseFound):
+            return result
+        conflicts = lease_edit_conflicts(shown, result.lease, edit)
+        if conflicts:
+            return LeaseConflict(fields=conflicts)
+        # read_exact_lease found one record object in this reply.
+        return result.lease, cast("dict[str, Any]", response[0]["arguments"])
+
+    def lease_update(self, shown: ShownLease, edit: LeaseEdit) -> LeaseChangeResult:
+        """Write the fields of *edit* to the shown Lease, after a fresh read agrees with the shown facts.
+
+        The update sends the fresh Kea body with only the written fields changed, so renewal fields and
+        extension values stay as Kea holds them. The check is not atomic: another writer can change the
+        Lease between the read and the update. A Lease that is gone is never created again.
+
+        Raises:
+            ValueError: If *edit* writes no field.
+            KeaException: If Kea returns an unexpected result.
+            MalformedLeaseResponse: If a reply envelope is unusable.
+
+        """
+        if not edit.written:
+            raise ValueError("A Lease edit must write at least one field.")
+        checked = self._checked_lease(shown, edit)
+        if not isinstance(checked, tuple):
+            return checked
+        fresh, raw = checked
+        response = self.command(
+            LEASE_UPDATE[fresh.family], fresh.family, arguments=_edited_arguments(raw, fresh, edit), check=(0, 4)
+        )
+        if read_lease_change(response, refused=4):
+            return LeaseChanged(lease=fresh)
+        return LeaseChangeRefused(identity=fresh.identity)
+
+    def lease_delete(self, shown: ShownLease) -> LeaseChangeResult:
+        """Delete the shown Lease, after a fresh read agrees with its binding, Subnet and kind.
+
+        The check is not atomic: another writer can change the Lease between the read and the deletion.
 
         Raises:
             KeaException: If Kea returns a result other than success or not found.
-            MalformedLeaseResponse: If the reply envelope is unusable.
+            MalformedLeaseResponse: If a reply envelope is unusable.
 
         """
+        checked = self._checked_lease(shown, LeaseEdit())
+        if not isinstance(checked, tuple):
+            return checked
+        fresh, _raw = checked
         response = self.command(
-            LEASE_DEL[identity.family], identity.family, arguments=lookup_arguments(identity), check=(0, 3)
+            LEASE_DEL[fresh.family], fresh.family, arguments=lookup_arguments(fresh.identity), check=(0, 3)
         )
-        return read_deletion(response)
+        return (
+            LeaseChanged(lease=fresh)
+            if read_lease_change(response, refused=3)
+            else LeaseAbsent(identity=fresh.identity)
+        )
 
     def lease_search(
         self,

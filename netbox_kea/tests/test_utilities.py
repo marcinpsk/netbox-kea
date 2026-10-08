@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Unit tests for netbox_kea.utilities — pure helper functions."""
 
+import ipaddress
 from datetime import datetime, timezone
 from unittest import TestCase
 from unittest.mock import MagicMock, patch
@@ -10,6 +11,7 @@ from unittest.mock import MagicMock, patch
 from django.http import HttpResponse
 
 from netbox_kea.constants import Family
+from netbox_kea.leases import DHCPv4LeaseRequest, DHCPv6LeaseRequest
 from netbox_kea.models import Server
 from netbox_kea.tests.kea_stub import lease_record, typed_lease
 from netbox_kea.utilities import (
@@ -530,7 +532,7 @@ class TestKeaErrorHint(TestCase):
 
 
 class TestParseLeaseCsv(TestCase):
-    """parse_lease_csv(version, csv_text) → list[dict] ready for lease_add."""
+    """parse_lease_csv(version, csv_text) → (file line number, typed creation request) pairs."""
 
     def _parse(self, content: str, version: Family = 4) -> list:
         from netbox_kea.utilities import parse_lease_csv
@@ -539,82 +541,76 @@ class TestParseLeaseCsv(TestCase):
 
     # v4 happy path
 
-    def test_v4_single_row_ip_only(self):
-        """Minimal v4 row with only ip-address (all optional fields absent)."""
-        rows = self._parse("ip-address\n10.0.0.5")
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["ip-address"], "10.0.0.5")
-        self.assertNotIn("hw-address", rows[0])
-        self.assertNotIn("subnet-id", rows[0])
+    def test_v4_minimal_row(self):
+        """A v4 row needs only ip-address and hw-address; Kea supplies the other facts."""
+        (row,) = self._parse("ip-address,hw-address\n10.0.0.5,AA:BB:CC:DD:EE:FF")
+        self.assertEqual(
+            row, (2, DHCPv4LeaseRequest(address=ipaddress.IPv4Address("10.0.0.5"), hw_address="aa:bb:cc:dd:ee:ff"))
+        )
 
     def test_v4_all_fields(self):
-        """Full v4 row maps to correct dict keys."""
-        rows = self._parse(
+        """A full v4 row maps each column to its request field."""
+        ((_number, request),) = self._parse(
             "ip-address,hw-address,subnet-id,valid-lft,hostname\n10.0.0.10,aa:bb:cc:dd:ee:ff,1,3600,host1.example.com"
         )
-        self.assertEqual(rows[0]["ip-address"], "10.0.0.10")
-        self.assertEqual(rows[0]["hw-address"], "aa:bb:cc:dd:ee:ff")
-        self.assertEqual(rows[0]["subnet-id"], 1)
-        self.assertEqual(rows[0]["valid-lft"], 3600)
-        self.assertEqual(rows[0]["hostname"], "host1.example.com")
+        self.assertEqual(
+            (str(request.address), request.hw_address, request.subnet_id, request.valid_lifetime, request.hostname),
+            ("10.0.0.10", "aa:bb:cc:dd:ee:ff", 1, 3600, "host1.example.com"),
+        )
 
-    def test_v4_optional_fields_empty_absent_from_output(self):
-        """Empty optional fields do not appear in output dict."""
-        rows = self._parse("ip-address,hw-address,subnet-id,valid-lft,hostname\n10.0.0.1,,,,")
-        self.assertNotIn("hw-address", rows[0])
-        self.assertNotIn("subnet-id", rows[0])
-        self.assertNotIn("valid-lft", rows[0])
-        self.assertNotIn("hostname", rows[0])
+    def test_v4_empty_optional_fields_stay_unset(self):
+        """Empty optional fields leave the request field unset."""
+        ((_number, request),) = self._parse(
+            "ip-address,hw-address,subnet-id,valid-lft,hostname\n10.0.0.1,aa:bb:cc:dd:ee:ff,,,"
+        )
+        self.assertEqual((request.subnet_id, request.valid_lifetime, request.hostname), (None, None, None))
 
-    def test_v4_missing_ip_address_raises(self):
-        """Row without ip-address raises ValueError."""
-        with self.assertRaises(ValueError):
-            self._parse("hw-address\naa:bb:cc:dd:ee:ff")
+    def test_v4_missing_required_columns_raise(self):
+        """A v4 row without ip-address or hw-address raises ValueError with its file line number."""
+        for content in ("hw-address\naa:bb:cc:dd:ee:ff", "ip-address\n10.0.0.1"):
+            with self.subTest(content=content), self.assertRaisesRegex(ValueError, "^Line 2: missing required"):
+                self._parse(content)
 
     def test_v4_multiple_rows(self):
-        """Multiple data rows produce multiple dicts."""
+        """Multiple data rows produce one request each, with their file line numbers."""
         rows = self._parse("ip-address,hw-address\n10.0.0.1,aa:bb:cc:00:00:01\n10.0.0.2,aa:bb:cc:00:00:02\n")
-        self.assertEqual(len(rows), 2)
+        self.assertEqual([number for number, _request in rows], [2, 3])
 
-    def test_v4_strips_whitespace_and_skips_blank_lines(self):
-        """Whitespace trimmed; blank lines skipped."""
-        rows = self._parse("ip-address\n\n  10.0.0.1 \n\n")
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["ip-address"], "10.0.0.1")
+    def test_v4_strips_whitespace_skips_blank_and_comment_lines_and_the_bom(self):
+        rows = self._parse("\ufeffip-address,hw-address\n\n# comment\n  10.0.0.1 ,aa:bb:cc:00:00:01\n\n")
+        self.assertEqual([str(request.address) for _number, request in rows], ["10.0.0.1"])
 
-    def test_v4_skips_comment_lines(self):
-        """Lines starting with # are skipped."""
-        rows = self._parse("ip-address\n# comment\n10.0.0.1\n")
-        self.assertEqual(len(rows), 1)
-
-    def test_v4_strips_bom(self):
-        """UTF-8 BOM is stripped."""
-        rows = self._parse("\ufeffip-address\n10.0.0.1")
-        self.assertEqual(rows[0]["ip-address"], "10.0.0.1")
+    def test_numbers_name_the_physical_line_of_each_row(self):
+        """The header, the BOM line, skipped lines and every line of a quoted field count."""
+        rows = self._parse(
+            "\ufeffip-address,hw-address,note\n"
+            '10.0.0.1,aa:bb:cc:00:00:01,"two\nlines"\n'
+            "# comment\n"
+            "\n"
+            "10.0.0.2,aa:bb:cc:00:00:02,one line\n"
+        )
+        self.assertEqual(
+            [(number, str(request.address)) for number, request in rows], [(2, "10.0.0.1"), (6, "10.0.0.2")]
+        )
 
     # v6 happy path
 
     def test_v6_all_required_fields(self):
         """v6 row requires ip-address, duid, iaid."""
-        rows = self._parse(
+        ((_number, request),) = self._parse(
             "ip-address,duid,iaid,subnet-id,hostname\n2001:db8::1,00:01:02:03,12345,1,v6host.example.com",
             version=6,
         )
-        self.assertEqual(rows[0]["ip-address"], "2001:db8::1")
-        self.assertEqual(rows[0]["duid"], "00:01:02:03")
-        self.assertEqual(rows[0]["iaid"], 12345)
-        self.assertEqual(rows[0]["subnet-id"], 1)
-        self.assertEqual(rows[0]["hostname"], "v6host.example.com")
+        self.assertIsInstance(request, DHCPv6LeaseRequest)
+        self.assertEqual(
+            (str(request.address), request.duid, request.iaid, request.subnet_id, request.hostname),
+            ("2001:db8::1", "00:01:02:03", 12345, 1, "v6host.example.com"),
+        )
 
-    def test_v6_missing_duid_raises(self):
-        """v6 row missing duid raises ValueError."""
-        with self.assertRaises(ValueError):
-            self._parse("ip-address,iaid\n2001:db8::1,12345", version=6)
-
-    def test_v6_missing_iaid_raises(self):
-        """v6 row missing iaid raises ValueError."""
-        with self.assertRaises(ValueError):
-            self._parse("ip-address,duid\n2001:db8::1,00:01:02:03", version=6)
+    def test_v6_missing_duid_or_iaid_raises(self):
+        for content in ("ip-address,iaid\n2001:db8::1,12345", "ip-address,duid\n2001:db8::1,00:01:02:03"):
+            with self.subTest(content=content), self.assertRaises(ValueError):
+                self._parse(content, version=6)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -798,59 +794,40 @@ class TestParseSubnetStatsMissingCoverage(TestCase):
         self.assertEqual(stats, {})
 
 
-class TestParseIntRowField(TestCase):
-    """_parse_int_row_field raises ValueError on non-integer values."""
-
-    def test_non_int_value_raises(self):
-        from netbox_kea.utilities import _parse_int_row_field
-
-        with self.assertRaises(ValueError) as ctx:
-            _parse_int_row_field({"field": "not-a-number"}, "field", 5)
-        self.assertIn("5", str(ctx.exception))
-        self.assertIn("field", str(ctx.exception))
-
-    def test_missing_key_raises(self):
-        from netbox_kea.utilities import _parse_int_row_field
-
-        with self.assertRaises(ValueError):
-            _parse_int_row_field({}, "missing_field", 3)
-
-
 class TestParseLeaseCsvValidationPaths(TestCase):
-    """parse_lease_csv: validation error paths for invalid IP, MAC, DUID, and version mismatches."""
+    """parse_lease_csv names the file line and the column of an invalid value, never the value."""
 
-    def _parse(self, content, version=4):
+    def _refused(self, content, version=4) -> str:
         from netbox_kea.utilities import parse_lease_csv
 
-        return parse_lease_csv(version, content)
-
-    def test_v4_invalid_ip_raises(self):
-        """Non-parseable IP address raises ValueError."""
-        csv = "ip-address\nnot-an-ip"
         with self.assertRaises(ValueError) as ctx:
-            self._parse(csv, version=4)
-        self.assertIn("invalid", str(ctx.exception).lower())
+            parse_lease_csv(version, content)
+        return str(ctx.exception)
 
-    def test_v4_ipv6_as_ipv4_raises(self):
-        """IPv6 address in v4 CSV raises ValueError."""
-        csv = "ip-address\n2001:db8::1"
-        with self.assertRaises(ValueError) as ctx:
-            self._parse(csv, version=4)
-        self.assertIn("IPv4", str(ctx.exception))
+    def test_each_invalid_value_names_its_row_and_column_only(self):
+        cases = (
+            ("ip-address,hw-address\nnot-an-ip,aa:bb:cc:00:00:01", 4, "Line 2: 'ip-address' is not an IPv4 address."),
+            (
+                "ip-address,hw-address\n2001:db8::1,aa:bb:cc:00:00:01",
+                4,
+                "Line 2: 'ip-address' is not valid for a DHCPv4 lease.",
+            ),
+            (
+                "ip-address,hw-address\n10.0.0.1,zz:zz:zz:zz:zz:zz",
+                4,
+                "Line 2: 'hw-address' is not valid for a DHCPv4 lease.",
+            ),
+            ("ip-address,duid,iaid\n2001:db8::1,notvalid!!!,1", 6, "Line 2: 'duid' is not valid for a DHCPv6 lease."),
+            ("ip-address,duid,iaid\n2001:db8::1,00:01,-1", 6, "Line 2: 'iaid' must be an integer."),
+            ("ip-address,duid,iaid\n2001:db8::1,00:00:00,1", 6, "Line 2: 'duid' is not valid for a DHCPv6 lease."),
+        )
+        for content, version, message in cases:
+            with self.subTest(content=content):
+                self.assertEqual(self._refused(content, version), message)
 
-    def test_v6_invalid_duid_raises(self):
-        """Invalid DUID format in v6 CSV raises ValueError."""
-        csv = "ip-address,duid,iaid\n2001:db8::1,notvalid!!!,1"
-        with self.assertRaises(ValueError) as ctx:
-            self._parse(csv, version=6)
-        self.assertIn("DUID", str(ctx.exception))
-
-    def test_v4_invalid_mac_raises(self):
-        """Invalid MAC address in v4 CSV raises ValueError."""
-        csv = "ip-address,hw-address\n10.0.0.1,zz:zz:zz:zz:zz:zz"
-        with self.assertRaises(ValueError) as ctx:
-            self._parse(csv, version=4)
-        self.assertIn("MAC", str(ctx.exception))
+    def test_an_invalid_value_after_skipped_lines_names_its_file_line(self):
+        content = "ip-address,hw-address\n# comment\n\n10.0.0.1,zz:zz:zz:zz:zz:zz\n"
+        self.assertEqual(self._refused(content), "Line 4: 'hw-address' is not valid for a DHCPv4 lease.")
 
 
 class TestKeaOptionDatalist(TestCase):
