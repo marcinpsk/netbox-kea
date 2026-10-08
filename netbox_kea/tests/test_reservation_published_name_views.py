@@ -255,6 +255,49 @@ class TestReservationEditPublishedName(_PublishedNameViewTest):
             " ".join(response.context["form"].non_field_errors()),
         )
 
+    def _save_addressless(self, family: int, entered: str):
+        # A Pool of Subnet 21 sets a suffix, so the name of a Reservation without an address depends on the lease.
+        current = _stored(family, 21, "host", address="")
+        with stub_kea({**_recorded(family), "reservation-get": _res_get(current)}):
+            form_page = self.client.get(self._url(family, 21))
+        self.assertEqual(form_page.status_code, 200)
+        self.assertEqual(form_page.context["form"].initial["hostname"], "host")
+        with stub_kea(
+            {
+                **_recorded(family),
+                "reservation-get": queued(_res_get(current), _res_get(current), _res_get(current)),
+                "reservation-update": {"result": 0},
+            }
+        ) as kea:
+            response = self.client.post(
+                self._url(family, 21),
+                self._form_data(
+                    family,
+                    21,
+                    entered,
+                    "",
+                    managed_fingerprint=form_page.context["form"].initial["managed_fingerprint"],
+                ),
+            )
+        return response, kea
+
+    def test_a_reservation_without_an_address_keeps_its_stored_hostname_under_a_pool_suffix(self):
+        for family in (4, 6):
+            with self.subTest(family=family):
+                response, kea = self._save_addressless(family, "host")
+                self.assertEqual(response.status_code, 302)
+                sent = kea.bodies("reservation-update")[0]["arguments"]["reservation"]
+                self.assertEqual(sent["hostname"], "host")
+
+    def test_a_reservation_without_an_address_refuses_a_new_name_under_a_pool_suffix(self):
+        response, kea = self._save_addressless(4, "db")
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("reservation-update", kea.commands())
+        self.assertIn(
+            "Save an address first, then change the hostname.",
+            " ".join(response.context["form"].non_field_errors()),
+        )
+
     def test_an_unknown_suffix_does_not_open_the_form_of_a_named_reservation(self):
         with stub_kea(
             {
