@@ -372,6 +372,9 @@ class SubnetTable(GenericTable):
         default_columns = ("id", "subnet", "pools", "utilization", "options", "shared_network")
 
 
+_HOST_RESERVATION_TITLE = "This Reservation holds no address, so Kea assigns this lease from the pool."
+
+
 class BaseLeaseTable(GenericTable):
     """Base table for DHCP lease data; subclassed for v4 and v6."""
 
@@ -432,6 +435,13 @@ class BaseLeaseTable(GenericTable):
             ' hx-vals=\'{"pk":"{{ record.selection|escapejs }}","_confirm":"1"}\'>'
             '<i class="mdi mdi-delete-outline" aria-hidden="true"></i></button>'
             "{% endif %}"
+            "{% endif %}"
+            "{% elif record.host_reservation %}"
+            "{% if record.can_change_reservation and record.reservation_url %}"
+            '<a href="{{ record.reservation_url }}" class="badge text-bg-secondary text-decoration-none"'
+            f' title="{_HOST_RESERVATION_TITLE}">Host reservation</a>'
+            "{% else %}"
+            f'<span class="badge text-bg-secondary" title="{_HOST_RESERVATION_TITLE}">Host reservation</span>'
             "{% endif %}"
             "{% elif record.pending_ip_change %}"
             '<span class="badge text-bg-info"'

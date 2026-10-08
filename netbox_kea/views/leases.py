@@ -1123,6 +1123,7 @@ def _set_lease_reservation_fields(
     lease.update(
         {
             "is_reserved": reservation is not None,
+            "host_reservation": False,
             "reservation_url": None,
             "create_reservation_url": None,
             "pending_ip_change": False,
@@ -1137,6 +1138,14 @@ def _set_lease_reservation_fields(
     if reservation is not None:
         lease["reservation_url"] = _canonical_reservation_url(server_pk, reservation, return_url)
         lease["can_change_reservation"] = can_change and lease["reservation_url"] is not None
+        if (
+            isinstance(reservation.scope, InSubnetReservationScope)
+            and not reservation.addresses
+            and not reservation.delegated_prefixes
+        ):
+            # Kea assigns this lease from the pool; the Reservation holds only a hostname or options.
+            lease["is_reserved"] = False
+            lease["host_reservation"] = True
         if (
             isinstance(reservation.scope, InSubnetReservationScope)
             and reservation.addresses
@@ -1198,6 +1207,7 @@ def _enrich_leases_with_badges(
     Adds:
     - ``reservation_url``: reservation link if a reservation exists for this IP
     - ``can_change_reservation``: whether the user may edit the reservation (gates link vs plain badge)
+    - ``host_reservation``: an In-Subnet Reservation that holds no address and no delegated prefix matched
     - ``create_reservation_url``: pre-filled add link if host_cmds is loaded
     - ``netbox_ip_url``: absolute URL if IP exists in NetBox IPAM
     - ``sync_url``: POST endpoint URL to create a NetBox IP when absent
