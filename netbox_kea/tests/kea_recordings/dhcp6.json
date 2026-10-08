@@ -471,6 +471,84 @@
   },
   "kea-version": "3.2.0",
   "leases": {
+    "changes": {
+      "after-update": {
+        "arguments": {
+          "cltt": 1791435411,
+          "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
+          "fqdn-fwd": false,
+          "fqdn-rev": false,
+          "hostname": "renamed.example.org",
+          "iaid": 30,
+          "ip-address": "2001:db8:100:600::",
+          "preferred-lft": 3600,
+          "prefix-len": 56,
+          "state": 0,
+          "subnet-id": 10,
+          "type": "IA_PD",
+          "user-context": {
+            "site": {
+              "rack": "r1",
+              "slots": [
+                1,
+                2
+              ]
+            }
+          },
+          "valid-lft": 3600
+        },
+        "result": 0,
+        "text": "IPv6 lease found."
+      },
+      "before": {
+        "arguments": {
+          "cltt": 1791435411,
+          "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
+          "fqdn-fwd": false,
+          "fqdn-rev": false,
+          "hostname": "pd.example.org",
+          "iaid": 30,
+          "ip-address": "2001:db8:100:600::",
+          "preferred-lft": 3600,
+          "prefix-len": 56,
+          "state": 0,
+          "subnet-id": 10,
+          "type": "IA_PD",
+          "user-context": {
+            "site": {
+              "rack": "r1",
+              "slots": [
+                1,
+                2
+              ]
+            }
+          },
+          "valid-lft": 3600
+        },
+        "result": 0,
+        "text": "IPv6 lease found."
+      },
+      "delete": {
+        "result": 0,
+        "text": "IPv6 lease deleted."
+      },
+      "delete-absent": {
+        "result": 3,
+        "text": "IPv6 lease not found."
+      },
+      "delete-without-type": {
+        "result": 3,
+        "text": "IPv6 lease not found."
+      },
+      "update": {
+        "result": 0,
+        "text": "IPv6 lease updated."
+      },
+      "update-absent": {
+        "result": 4,
+        "text": "failed to update the lease with address 2001:db8:100:600:: either because the lease has been deleted or it has changed in the database, in both cases a retry might succeed"
+      }
+    },
     "lease6-get": {
       "absent": {
         "result": 3,
@@ -478,7 +556,7 @@
       },
       "delegated-prefix": {
         "arguments": {
-          "cltt": 1791405004,
+          "cltt": 1791435411,
           "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
           "fqdn-fwd": false,
           "fqdn-rev": false,
@@ -501,7 +579,7 @@
       },
       "present": {
         "arguments": {
-          "cltt": 1791405004,
+          "cltt": 1791435411,
           "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
           "fqdn-fwd": true,
           "fqdn-rev": false,
@@ -533,7 +611,7 @@
       "arguments": {
         "leases": [
           {
-            "cltt": 1791405004,
+            "cltt": 1791435411,
             "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
             "fqdn-fwd": true,
             "fqdn-rev": false,
@@ -558,7 +636,7 @@
             "valid-lft": 3600
           },
           {
-            "cltt": 1791405004,
+            "cltt": 1791435411,
             "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
             "fqdn-fwd": false,
             "fqdn-rev": false,
@@ -572,7 +650,7 @@
             "valid-lft": 3600
           },
           {
-            "cltt": 1791405004,
+            "cltt": 1791435411,
             "duid": "00:00:00",
             "fqdn-fwd": false,
             "fqdn-rev": false,
@@ -586,7 +664,7 @@
             "valid-lft": 3600
           },
           {
-            "cltt": 1791405004,
+            "cltt": 1791435411,
             "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
             "fqdn-fwd": false,
             "fqdn-rev": false,
@@ -600,7 +678,7 @@
             "valid-lft": 3600
           },
           {
-            "cltt": 1791405004,
+            "cltt": 1791435411,
             "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
             "fqdn-fwd": false,
             "fqdn-rev": false,
@@ -614,7 +692,7 @@
             "valid-lft": 3600
           },
           {
-            "cltt": 1791405004,
+            "cltt": 1791435411,
             "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
             "fqdn-fwd": false,
             "fqdn-rev": false,
@@ -628,7 +706,7 @@
             "valid-lft": 4294967295
           },
           {
-            "cltt": 1791405004,
+            "cltt": 1791435411,
             "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
             "fqdn-fwd": false,
             "fqdn-rev": false,
@@ -643,7 +721,7 @@
             "valid-lft": 3600
           },
           {
-            "cltt": 1791405004,
+            "cltt": 1791435411,
             "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
             "fqdn-fwd": false,
             "fqdn-rev": false,
@@ -658,7 +736,7 @@
             "valid-lft": 4294967295
           },
           {
-            "cltt": 1791405004,
+            "cltt": 1791435411,
             "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
             "fqdn-fwd": false,
             "fqdn-rev": false,
@@ -673,7 +751,7 @@
             "valid-lft": 3600
           },
           {
-            "cltt": 1791405004,
+            "cltt": 1791435411,
             "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
             "fqdn-fwd": false,
             "fqdn-rev": false,
@@ -698,7 +776,7 @@
           "count": 4,
           "leases": [
             {
-              "cltt": 1791405004,
+              "cltt": 1791435411,
               "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
               "fqdn-fwd": true,
               "fqdn-rev": false,
@@ -723,7 +801,7 @@
               "valid-lft": 3600
             },
             {
-              "cltt": 1791405004,
+              "cltt": 1791435411,
               "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
               "fqdn-fwd": false,
               "fqdn-rev": false,
@@ -737,7 +815,7 @@
               "valid-lft": 3600
             },
             {
-              "cltt": 1791405004,
+              "cltt": 1791435411,
               "duid": "00:00:00",
               "fqdn-fwd": false,
               "fqdn-rev": false,
@@ -751,7 +829,7 @@
               "valid-lft": 3600
             },
             {
-              "cltt": 1791405004,
+              "cltt": 1791435411,
               "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
               "fqdn-fwd": false,
               "fqdn-rev": false,
@@ -774,7 +852,7 @@
           "count": 4,
           "leases": [
             {
-              "cltt": 1791405004,
+              "cltt": 1791435411,
               "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
               "fqdn-fwd": false,
               "fqdn-rev": false,
@@ -788,7 +866,7 @@
               "valid-lft": 3600
             },
             {
-              "cltt": 1791405004,
+              "cltt": 1791435411,
               "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
               "fqdn-fwd": false,
               "fqdn-rev": false,
@@ -802,7 +880,7 @@
               "valid-lft": 4294967295
             },
             {
-              "cltt": 1791405004,
+              "cltt": 1791435411,
               "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
               "fqdn-fwd": false,
               "fqdn-rev": false,
@@ -817,7 +895,7 @@
               "valid-lft": 3600
             },
             {
-              "cltt": 1791405004,
+              "cltt": 1791435411,
               "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
               "fqdn-fwd": false,
               "fqdn-rev": false,
@@ -841,7 +919,7 @@
           "count": 2,
           "leases": [
             {
-              "cltt": 1791405004,
+              "cltt": 1791435411,
               "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
               "fqdn-fwd": false,
               "fqdn-rev": false,
@@ -856,7 +934,7 @@
               "valid-lft": 3600
             },
             {
-              "cltt": 1791405004,
+              "cltt": 1791435411,
               "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
               "fqdn-fwd": false,
               "fqdn-rev": false,
