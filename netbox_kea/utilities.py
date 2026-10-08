@@ -29,7 +29,9 @@ from .leases import (
     LeaseDiagnostic,
     LeaseRequest,
     LeaseSnapshot,
+    is_current,
     lease_record_data,
+    lifetime_ended,
     request_errors,
     shown_lease,
 )
@@ -122,7 +124,7 @@ def _lease_row(lease: Lease, now: datetime) -> dict[str, Any]:
     expires_at = lease.expires_at
     expires_in = None if expires_at is None else max(0, int((expires_at - now).total_seconds()))
     expiry_class = ""
-    if expires_at is not None and expires_at < now:
+    if lifetime_ended(lease, now):
         expiry_class = "text-danger"
     elif expires_in is not None and expires_in < 300:
         expiry_class = "text-warning"
@@ -146,6 +148,7 @@ def _lease_row(lease: Lease, now: datetime) -> dict[str, Any]:
         "expires_at": expires_at,
         "expires_in": expires_in,
         "expiry_class": expiry_class,
+        "current": is_current(lease, now),
     }
     if isinstance(lease, DHCPv4AddressLease):
         row["client_id"] = lease.client_id

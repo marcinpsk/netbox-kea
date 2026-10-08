@@ -4,7 +4,7 @@
 """Unit tests for netbox_kea.utilities — pure helper functions."""
 
 import ipaddress
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest import TestCase
 from unittest.mock import MagicMock, patch
 
@@ -119,6 +119,18 @@ class TestLeaseRows(TestCase):
         for cltt, expected in cases:
             with self.subTest(cltt=cltt):
                 self.assertEqual(_row(cltt=cltt, valid_lft=3600)["expiry_class"], expected)
+
+    def test_a_lease_in_its_last_second_is_current_and_not_shown_as_expired(self):
+        # Kea compares whole seconds, so the row must not call a Current Lease expired.
+        lease = typed_lease(lease_record("10.0.0.1", cltt=_NOW_TS - 3600, valid_lft=3600))
+        [row] = lease_rows([lease], evaluated_at=_NOW + timedelta(milliseconds=500))
+        self.assertEqual((row["current"], row["expiry_class"]), (True, "text-warning"))
+
+    def test_rows_record_current_use_at_the_evaluation_time(self):
+        cases = ((_NOW_TS - 3601, 0, False), (_NOW_TS - 60, 0, True), (_NOW_TS - 60, 1, False))
+        for cltt, state, expected in cases:
+            with self.subTest(cltt=cltt, state=state):
+                self.assertIs(_row(cltt=cltt, valid_lft=3600, state=state)["current"], expected)
 
 
 class TestIsHexString(TestCase):
