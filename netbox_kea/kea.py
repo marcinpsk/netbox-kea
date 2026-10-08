@@ -35,6 +35,7 @@ from .leases import (
     Lease,
     LeaseAbsent,
     LeaseChanged,
+    LeaseChangeRefused,
     LeaseChangeResult,
     LeaseConflict,
     LeaseCoverage,
@@ -1332,16 +1333,7 @@ class KeaClient:
             raise ValueError(f"Invalid DHCPv{version} Reservation address.") from exc
         if parsed_address.version != version or parsed_address not in scope.subnet.network:
             raise ValueError("The Reservation address must belong to its In-Subnet Scope.")
-        raw = self._reservation_raw_by_address(version, scope, str(parsed_address))
-        if raw is None:
-            return None
-        reservation = _exact_reservation(raw, version, catalogue)
-        if reservation.scope != scope or parsed_address not in reservation.addresses:
-            raise MalformedReservation(
-                "target-mismatch",
-                "Kea returned a Reservation that does not match the scoped address target.",
-            )
-        return reservation
+        return self._reservation_holding(version, catalogue, scope, parsed_address, parsed_address)
 
     def reservation_by_prefix(
         self,
@@ -1354,14 +1346,26 @@ class KeaClient:
         Kea finds a host by the base address of a reserved prefix, whatever its length, and the prefix
         can be outside the Subnet CIDR. A host that reserves another length at that base fails closed.
         """
-        raw = self._reservation_raw_by_address(6, scope, str(prefix.network_address))
+        return self._reservation_holding(6, catalogue, scope, prefix.network_address, prefix)
+
+    def _reservation_holding(
+        self,
+        version: Family,
+        catalogue,
+        scope: InSubnetReservationScope,
+        address: IPAddressValue,
+        target: IPAddressValue | ipaddress.IPv6Network,
+    ) -> Reservation | None:
+        """Return the Reservation that Kea finds at *address* in *scope*, which must reserve exactly *target*."""
+        raw = self._reservation_raw_by_address(version, scope, str(address))
         if raw is None:
             return None
-        reservation = _exact_reservation(raw, 6, catalogue)
-        if reservation.scope != scope or prefix not in reservation.delegated_prefixes:
+        reservation = _exact_reservation(raw, version, catalogue)
+        held = reservation.delegated_prefixes if isinstance(target, ipaddress.IPv6Network) else reservation.addresses
+        if reservation.scope != scope or target not in held:
             raise MalformedReservation(
                 "target-mismatch",
-                "Kea returned a Reservation that does not match the scoped prefix target.",
+                f"Kea returned a Reservation that does not match the scoped target {target}.",
             )
         return reservation
 
@@ -1856,7 +1860,9 @@ class KeaClient:
         response = self.command(
             LEASE_UPDATE[fresh.family], fresh.family, arguments=_edited_arguments(raw, fresh, edit), check=(0, 4)
         )
-        return LeaseChanged(lease=fresh) if read_lease_change(response, refused=4) else LeaseConflict(fields=())
+        if read_lease_change(response, refused=4):
+            return LeaseChanged(lease=fresh)
+        return LeaseChangeRefused(identity=fresh.identity)
 
     def lease_delete(self, shown: ShownLease) -> LeaseChangeResult:
         """Delete the shown Lease, after a fresh read agrees with its binding, Subnet and kind.

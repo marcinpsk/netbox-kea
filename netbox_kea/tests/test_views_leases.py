@@ -1916,7 +1916,14 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
             "lease6-add": {"result": 0},
             "lease6-get": {
                 "result": 0,
-                "arguments": complete_lease({"ip-address": "2001:0db8:0000:0000:0000:0000:0000:0042", "subnet-id": 7}),
+                "arguments": complete_lease(
+                    {
+                        "ip-address": "2001:0db8:0000:0000:0000:0000:0000:0042",
+                        "subnet-id": 7,
+                        "duid": "00:01:02:03",
+                        "iaid": 1,
+                    }
+                ),
             },
             "subnet6-list": _subnet_list(
                 6, [{"id": 7, "subnet": "2001:db8::/64"}, {"id": 8, "subnet": "2001:db8::/80"}]
@@ -2699,6 +2706,21 @@ class TestLeaseBulkImportEdgeCases(_ViewTestBase):
         self.assertNotContains(response, "secret")
         self.assertNotIn("secret", "\n".join(logs.output))
 
+    @patch("netbox_kea.views.sync_views.parse_lease_csv", autospec=True)
+    def test_another_parse_error_does_not_echo_its_text(self, parse):
+        """Only the row-numbered message of the CSV parser reaches the page; any other error text stays out."""
+        import io
+
+        parse.side_effect = ValueError("internal detail 10.0.0.1")
+        csv_file = io.BytesIO(b"ip-address,hw-address\n10.0.0.1,aa:bb:cc:00:00:01")
+        csv_file.name = "leases.csv"
+        with _lease_stub({}) as kea:
+            response = self.client.post(self._url(), {"csv_file": csv_file})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(kea.commands(), [])
+        self.assertNotContains(response, "internal detail")
+        self.assertContains(response, "CSV parsing failed. Check the file format and column headers.")
+
     def test_a_client_that_cannot_be_built_is_reported_on_the_form(self):
         """A key without a certificate makes get_client() raise ValueError; the form reports it."""
         import io
@@ -2732,7 +2754,7 @@ class TestLeaseBulkImportEdgeCases(_ViewTestBase):
                         {
                             "row": 2,
                             "address": "10.0.0.1",
-                            "error": "Invalid response from Kea — could not parse server reply.",
+                            "error": "Invalid response from Kea: could not parse the server reply.",
                         }
                     ],
                 )

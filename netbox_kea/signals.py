@@ -23,8 +23,8 @@ lease_added
     Fired when Kea confirms a lease that the plugin UI added.
     kwargs: ``server``, ``creation`` (the ``LeaseRequest`` that Kea confirmed),
     ``lease`` (the ``Lease`` that a fresh read observed after the creation, or ``None``
-    when that read failed, found no lease or found a malformed one), ``dhcp_version``,
-    ``request``
+    when that read failed, found no lease, found a malformed one, or found one whose client
+    binding, Subnet or hostname differs from the request), ``dhcp_version``, ``request``
 
 leases_deleted
     Fired when Kea confirms the deletion of one or more leases selected in the plugin UI.

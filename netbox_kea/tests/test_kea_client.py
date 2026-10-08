@@ -43,6 +43,7 @@ from netbox_kea.leases import (
     DHCPv6LeaseRequest,
     LeaseAbsent,
     LeaseChanged,
+    LeaseChangeRefused,
     LeaseConflict,
     LeaseEdit,
     LeaseFound,
@@ -901,7 +902,7 @@ class TestLeaseChanges(TestCase):
 
         # Kea 3.2.0 answers result 4, and the update did not create the lease again.
         self.assertEqual(_recorded_changes(6)["update-absent"]["result"], 4)
-        self.assertEqual(result, LeaseConflict(fields=()))
+        self.assertEqual(result, LeaseChangeRefused(identity=self.shown.identity))
         self.assertEqual(kea.commands(), ["lease6-get", "lease6-update"])
         self.assertEqual(daemon.leases, {})
 
