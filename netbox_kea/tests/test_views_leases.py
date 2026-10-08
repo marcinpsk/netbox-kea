@@ -26,7 +26,7 @@ import re
 import threading
 from datetime import datetime, timezone
 from unittest.mock import patch
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 import requests
 from django.contrib.messages import get_messages
@@ -48,6 +48,7 @@ from .kea_stub import (
     _subnet_stats,
     complete_lease,
     kea_client,
+    lease_page,
     lease_pages,
     lease_record,
     lease_reply,
@@ -1250,6 +1251,22 @@ class TestLeaseEditReturnsToTheSearch(_ViewTestBase):
         expected = f"{edit_url}?{urlencode({'return_url': f'{self._list_url()}?by=subnet_id&q=10'})}"
         self.assertEqual(next(iter(response.context["table"].rows)).record["edit_url"], expected)
         self.assertContains(response, f'href="{escape(expected)}"', count=1)
+
+    def test_an_all_leases_search_returns_to_a_page_that_reloads_it(self):
+        responses = {
+            **_catalogue_responses_for_subnets(4, [{"id": 10, "subnet": "192.0.2.0/24"}]),
+            "lease4-get-page": lease_page(lease_record("192.0.2.10")),
+            "reservation-get": {"result": 3},
+        }
+        with stub_kea(responses):
+            response = self.client.get(self._list_url(), {"by": "", "q": "", "state": ""}, HTTP_HX_REQUEST="true")
+            edit_url = next(iter(response.context["table"].rows)).record["edit_url"]
+            return_url = parse_qs(urlsplit(edit_url).query)["return_url"][0]
+            page = self.client.get(return_url)
+
+        self.assertEqual(return_url, f"{self._list_url()}?q=")
+        self.assertEqual(response["HX-Push-Url"], return_url)
+        self.assertContains(page, 'hx-trigger="load"')
 
     def test_a_saved_edit_returns_to_the_search(self):
         search = f"{self._list_url()}?by=hostname&q=host1.example.com"

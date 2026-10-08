@@ -64,9 +64,10 @@ def _strip_empty_params(path: str) -> str:
     sending them in the actual HTTP request.  Using this helper when building
     ``return_url`` ensures the URL we redirect to after bulk-delete matches
     the URL Playwright (and real browsers) see in the address bar.
+    A blank ``q`` stays: the lease page runs a search only when ``q`` is present.
     """
     parsed = urlparse(path)
-    params = parse_qsl(parsed.query, keep_blank_values=False)
+    params = [(key, value) for key, value in parse_qsl(parsed.query, keep_blank_values=True) if value or key == "q"]
     query = _urlencode(params) if params else ""
     return parsed._replace(query=query).geturl()
 
