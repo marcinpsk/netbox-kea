@@ -1280,7 +1280,13 @@ class TestLeaseEditReturnsToTheSearch(_ViewTestBase):
         self.assertContains(response, f'href="{escape(search)}" class="btn btn-outline-secondary">Cancel</a>')
 
     def test_an_unsafe_return_url_returns_to_the_lease_list(self):
-        for unsafe in ("https://evil.example/leases4/", "//evil.example/leases4/", "javascript:alert(1)"):
+        for unsafe in (
+            "https://evil.example/leases4/",
+            "//evil.example/leases4/",
+            "javascript:alert(1)",
+            "missing",
+            "#results",
+        ):
             with self.subTest(unsafe):
                 response = self._post(self._edit_url(unsafe))
                 self.assertRedirects(response, self._list_url(), fetch_redirect_response=False)

@@ -50,9 +50,10 @@ _REJECTED: dict[RejectionReason, str] = {
 
 
 def _safe_return_url(request: HttpRequest, fallback: str) -> str:
-    """Return the request's ``return_url`` when it is a local URL, else *fallback*."""
+    """Return the request's ``return_url`` when it is a local absolute path, else *fallback*."""
     return_url = request.GET.get("return_url", "")
-    if url_has_allowed_host_and_scheme(return_url, allowed_hosts=None):
+    # redirect() reverses a value without "/" as a view name, so only a path is safe.
+    if return_url.startswith("/") and url_has_allowed_host_and_scheme(return_url, allowed_hosts=None):
         return return_url
     return fallback
 
