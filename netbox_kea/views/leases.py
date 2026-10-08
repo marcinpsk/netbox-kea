@@ -608,20 +608,20 @@ class BaseServerLeasesDeleteView(GetReturnURLMixin, generic.ObjectView, metaclas
         """Show confirmation page or delete leases if confirmed."""
         instance: Server = self.get_object(**kwargs)
 
-        if resp := check_dhcp_enabled(instance, self.dhcp_version):
-            return resp
+        if check_dhcp_enabled(instance, self.dhcp_version):
+            return _after_lease_delete(request, instance.get_absolute_url())
 
         if not request.user.has_perm("netbox_kea.bulk_delete_lease_from_server", obj=instance):
             return HttpResponseForbidden("This user does not have permission to delete DHCP leases.")
 
         form = self.form(request.POST)
 
+        return_url = _strip_empty_params(self.get_return_url(request, obj=instance))
         if not form.is_valid():
             messages.warning(request, str(form.errors))
-            return redirect(_strip_empty_params(self.get_return_url(request, obj=instance)))
+            return _after_lease_delete(request, return_url)
 
         selected: tuple[ShownLease, ...] = form.cleaned_data["pk"]
-        return_url = _strip_empty_params(self.get_return_url(request, obj=instance))
         if "_confirm" not in request.POST:
             return render(
                 request,
@@ -639,7 +639,7 @@ class BaseServerLeasesDeleteView(GetReturnURLMixin, generic.ObjectView, metaclas
         except ValueError:
             logger.exception("Failed to create Kea client for server %s", instance.pk)
             messages.error(request, "Failed to connect to Kea: see server logs for details.")
-            return redirect(return_url)
+            return _after_lease_delete(request, return_url)
 
         deleted: list[Lease] = []
         failed_count = 0
@@ -677,11 +677,16 @@ class BaseServerLeasesDeleteView(GetReturnURLMixin, generic.ObjectView, metaclas
 
         if failed_count:
             messages.warning(request, f"Failed to delete {failed_count} lease(s). See above for details.")
-        if request.headers.get("HX-Request"):
-            response = HttpResponse()
-            response["HX-Refresh"] = "true"
-            return response
-        return redirect(return_url)
+        return _after_lease_delete(request, return_url)
+
+
+def _after_lease_delete(request: HttpRequest, return_url: str) -> HttpResponse:
+    """Show the queued messages: reload the page for the one-click row button, else redirect to *return_url*."""
+    if request.headers.get("HX-Request"):
+        response = HttpResponse()
+        response["HX-Refresh"] = "true"
+        return response
+    return redirect(return_url)
 
 
 class ServerLeases6DeleteView(BaseServerLeasesDeleteView):
@@ -1346,7 +1351,8 @@ def _enrich_leases_with_badges(
     edit_url_name = f"plugins:netbox_kea:server_lease{version}_edit"
     edit_query = f"?{_urlencode({'return_url': return_url})}" if return_url else ""
     # A delegated prefix is not an IP Address, so only an address Lease links one.
-    nb_ips = bulk_fetch_netbox_ips([_row_address(lease) for lease in leases if lease["lease"].kind == "address"])
+    addresses = [_row_address(lease) for lease in leases if lease["lease"].kind == "address"]
+    nb_ips = bulk_fetch_netbox_ips(addresses, vrf_id=server.sync_vrf_id)
     nb_prefixes = _sync_vrf_prefixes(server, [lease["lease"] for lease in leases])
     now = datetime.now(tz=timezone.utc)
     for lease in leases:

@@ -152,6 +152,18 @@ class TestReservationSyncCell(TestCase):
             with self.subTest(code=state.code):
                 self.assertIn(expected, self._render(state))
 
+    def test_the_sync_all_button_swaps_its_cell_and_keeps_the_page_url(self):
+        from netbox_kea.reservations import ReservationSynchronizationState
+
+        row = self._row(ReservationSynchronizationState.from_counts(0, 1))
+        row["sync_url"] = "/sync/"
+        from netbox_kea.tables import ReservationTable4
+
+        cell = str(ReservationTable4([row]).rows[0].get_cell("netbox_ip"))
+
+        self.assertIn('hx-target="closest td"', cell)
+        self.assertIn('hx-push-url="false"', cell)
+
     def test_the_subnet_id_cell_reads_the_key_the_views_build(self):
         """Pin the row key. Kea sends ``subnet-id``; every view row carries ``subnet_id``."""
         from netbox_kea.reservations import ReservationSynchronizationState

@@ -21,8 +21,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def bulk_fetch_netbox_ips(ip_list: list[str]) -> dict[str, NbIPAddress]:
-    """Fetch NetBox IPAddress objects for a list of host IP strings.
+def bulk_fetch_netbox_ips(ip_list: list[str], *, vrf_id: int | None) -> dict[str, NbIPAddress]:
+    """Fetch the NetBox IPAddress objects in VRF *vrf_id* (``None`` is the global table) for host IP strings.
 
     Returns a ``{ip_str: NbIPAddress}`` mapping containing only the IPs that
     are present in the NetBox database.  Chunked into batches of 500 to avoid
@@ -41,7 +41,7 @@ def bulk_fetch_netbox_ips(ip_list: list[str]) -> dict[str, NbIPAddress]:
         query = Q()
         for ip in chunk:
             query |= Q(address__net_host=ip)
-        for nb_ip in NbIP.objects.filter(query):
+        for nb_ip in NbIP.objects.filter(query, vrf_id=vrf_id):
             host = str(nb_ip.address).split("/")[0]
             result[host] = nb_ip
     return result
@@ -135,9 +135,9 @@ def is_kea_managed_ip(ip_obj: NbIPAddress) -> bool:
 
 def reservation_synchronization_state(
     reservation: Reservation,
-    synchronized_addresses: frozenset[str] | None = None,
+    synchronized_addresses: frozenset[str],
 ) -> ReservationSynchronizationState:
-    """Observe one aggregate NetBox synchronization state for a Reservation."""
+    """Return the aggregate NetBox synchronization state of a Reservation with *synchronized_addresses*."""
     if isinstance(reservation.scope, GlobalReservationScope):
         return ReservationSynchronizationState.not_applicable(
             "Global Reservations are not synchronized to NetBox IPAM."
@@ -146,20 +146,6 @@ def reservation_synchronization_state(
         return ReservationSynchronizationState.not_applicable(
             "The Reservation has no allocation address to synchronize."
         )
-    from django.db import DatabaseError
-
-    try:
-        addresses = [str(address) for address in reservation.addresses]
-        if synchronized_addresses is None:
-            found = bulk_fetch_netbox_ips(addresses)
-            synchronized_addresses = frozenset(
-                address for address in addresses if address in found and is_kea_managed_ip(found[address])
-            )
-        synchronized = sum(1 for address in addresses if address in synchronized_addresses)
-    except DatabaseError:
-        logger.exception("Could not determine the Reservation synchronization state")
-        return ReservationSynchronizationState.unknown(
-            len(reservation.addresses),
-            "NetBox IPAM state could not be read.",
-        )
+    addresses = [str(address) for address in reservation.addresses]
+    synchronized = sum(1 for address in addresses if address in synchronized_addresses)
     return ReservationSynchronizationState.from_counts(synchronized, len(addresses))

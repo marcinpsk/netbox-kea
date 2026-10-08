@@ -1141,6 +1141,36 @@ class TestDelegatedPrefixSyncBadges(_ViewTestBase):
         self.assertIsNone(rows["delegated-prefix"].get("netbox_prefix_url"))
         self.assertTrue(rows["delegated-prefix"].get("sync_url"))
 
+    def test_only_an_address_in_the_sync_vrf_shows_the_synced_link(self):
+        from ipam.models import VRF
+
+        NbIP.objects.create(address="2001:db8:1::10/64")
+        NbIP.objects.create(address="2001:db8:1::10/64", vrf=VRF.objects.create(name="other-vrf"))
+
+        _response, rows = self._rows()
+
+        self.assertIsNone(rows["address"].get("netbox_ip_url"))
+        self.assertTrue(rows["address"].get("sync_url"))
+
+        synced = NbIP.objects.create(address="2001:db8:1::10/64", vrf=self.vrf)
+        _response, rows = self._rows()
+        self.assertEqual(rows["address"].get("netbox_ip_url"), synced.get_absolute_url())
+        self.assertIsNone(rows["address"].get("sync_url"))
+
+    def test_a_refused_sync_replaces_its_button_with_the_reason(self):
+        from ipam.models import Prefix
+
+        response, rows = self._rows()
+        posted = self._sync_values(response)
+
+        with stub_kea(self._responses(state=3)):
+            refused = self.client.post(rows["delegated-prefix"]["sync_url"], posted[1], HTTP_HX_REQUEST="true")
+
+        # A 200 reply, because htmx swaps no 4xx or 5xx reply into the cell.
+        self.assertContains(refused, '<span class="badge text-bg-danger')
+        self.assertContains(refused, "The lease is not current in Kea")
+        self.assertFalse(Prefix.objects.exists())
+
     def test_the_prefix_lookup_is_one_query_for_every_row(self):
         from django.db import connection
         from django.test.utils import CaptureQueriesContext
@@ -1239,6 +1269,30 @@ class TestStaleMacBadgeEnrichment(_ViewTestBase):
         # hx-post must point to the delete endpoint (distinct from the bulk-delete form action)
         delete_url = reverse("plugins:netbox_kea:server_leases4_delete", args=[self.server.pk])
         self.assertContains(response, f'hx-post="{delete_url}"')
+        (button,) = re.findall(rf'<button[^>]*hx-post="{re.escape(delete_url)}"[^>]*>', response.content.decode())
+        # The lease search container swaps itself and pushes its URL; the row button must do neither.
+        self.assertIn('hx-target="closest td"', button)
+        self.assertIn('hx-push-url="false"', button)
+
+    def test_a_refused_one_click_delete_reloads_the_search_to_show_why(self):
+        from django.contrib.messages import get_messages
+
+        delete_url = reverse("plugins:netbox_kea:server_leases4_delete", args=[self.server.pk])
+        response = self.client.post(delete_url, {"pk": "not-a-lease", "_confirm": "1"}, HTTP_HX_REQUEST="true")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers.get("HX-Refresh"), "true")
+        self.assertEqual([message.level_tag for message in get_messages(response.wsgi_request)], ["warning"])
+
+    def test_a_one_click_delete_for_a_disabled_family_reloads_the_page(self):
+        self.server.dhcp4 = False
+        self.server.save()
+        delete_url = reverse("plugins:netbox_kea:server_leases4_delete", args=[self.server.pk])
+
+        response = self.client.post(delete_url, {"pk": "not-a-lease", "_confirm": "1"}, HTTP_HX_REQUEST="true")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers.get("HX-Refresh"), "true")
 
     def test_the_one_click_delete_posts_the_shown_facts_of_the_row(self):
         url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
