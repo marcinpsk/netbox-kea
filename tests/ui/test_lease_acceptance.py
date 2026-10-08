@@ -24,6 +24,9 @@ HW_ADDRESS4 = "08:08:08:08:08:08"
 # Kea 3.2.0 accepts this expiration, and reads back a transaction time past the last datetime timestamp.
 UNREPRESENTABLE_EXPIRE = 300_000_000_000
 MALFORMED_ADDRESS4 = "192.0.2.77"
+RELEASED_ADDRESS4 = "192.0.2.2"
+ADDED_ADDRESS4 = "192.0.2.30"
+IN_USE_ADDRESS4 = "192.0.2.31"
 
 _SYNC_USER_PERMISSIONS = [
     {"actions": ["view"], "object_types": ["netbox_kea.server"]},
@@ -402,3 +405,97 @@ def test_a_complete_export_refuses_an_observation_with_an_unreadable_lease(
             " (A lease field is outside the range that Kea permits.)."
         )
     assert len(downloads) == 1
+
+
+def test_a_delete_refuses_a_lease_whose_binding_changed_in_kea(
+    page: Page, kea: _DualEndpointKeaClient, lease4_with_extension: dict[str, Any]
+) -> None:
+    search_lease(page, 4, "IP Address", ADDRESS4)
+    row = _lease_row(page, ADDRESS4)
+    expect(row).to_have_count(1)
+    row.locator('input[name="pk"]').check()
+    page.get_by_role("button", name="Delete Selected").click()
+    confirm = page.locator('button[name="_confirm"]')
+    expect(confirm).to_be_visible()
+    _replace_lease4(kea, lease4_with_extension, **{"hw-address": "08:08:08:08:08:09"})
+
+    confirm.click()
+
+    expect(page.locator(".toast-body", has_text=f"Lease {ADDRESS4} was not deleted")).to_have_text(
+        f"Lease {ADDRESS4} was not deleted: its client binding changed in Kea after the list was shown."
+        " Reload the list and try again."
+    )
+    stored = kea.command("lease4-get", 4, arguments={"ip-address": ADDRESS4})[0]["arguments"]
+    assert stored["hw-address"] == "08:08:08:08:08:09"
+
+
+@pytest.fixture
+def assigned_and_released_leases4(kea: _DualEndpointKeaClient, clear_leases: None, nb_api: pynetbox.api) -> None:
+    for address in (ADDRESS4, RELEASED_ADDRESS4):
+        _delete_ip_addresses(nb_api, address)
+    kea.command("lease4-add", 4, arguments={"ip-address": ADDRESS4, "hw-address": HW_ADDRESS4})
+    kea.command(
+        "lease4-add", 4, arguments={"ip-address": RELEASED_ADDRESS4, "hw-address": "08:00:00:00:00:02", "state": 3}
+    )
+
+
+def test_a_lease_that_is_not_current_is_never_synced(
+    page: Page,
+    nb_api: pynetbox.api,
+    plugin_base: str,
+    with_test_server,
+    assigned_and_released_leases4: None,
+) -> None:
+    # The harness keeps the automatic sync off, so only the manual Sync could claim it.
+    search_lease(page, 4, "Subnet ID", "1")
+    assigned, released = _lease_row(page, ADDRESS4), _lease_row(page, RELEASED_ADDRESS4)
+    expect(released.get_by_text("Released", exact=True)).to_be_visible()
+    expect(assigned.get_by_role("button", name="Sync", exact=True)).to_have_count(1)
+    expect(released.get_by_role("button", name="Sync", exact=True)).to_have_count(0)
+
+    response = _post_with_csrf(
+        page, f"{plugin_base}/servers/{with_test_server.id}/leases4/sync/", {"ip_address": RELEASED_ADDRESS4}
+    )
+
+    assert response.ok
+    assert "The lease is not current in Kea, so it was not synchronized." in response.text()
+    assert not list(nb_api.ipam.ip_addresses.filter(address=RELEASED_ADDRESS4))
+
+
+def test_a_lease_added_in_the_form_is_created_in_kea(
+    page: Page, kea: _DualEndpointKeaClient, plugin_base: str, with_test_server, clear_leases: None
+) -> None:
+    page.goto(f"{plugin_base}/servers/{with_test_server.id}/leases4/add/")
+    page.locator("#id_ip_address").fill(ADDED_ADDRESS4)
+    page.locator("#id_hw_address").fill("08:00:00:00:00:30")
+    page.locator("#id_hostname").fill("form-added")
+    page.get_by_role("button", name="Save").click()
+
+    expect(page.locator(".toast-body", has_text="created")).to_have_text(f"Lease for {ADDED_ADDRESS4} created.")
+    stored = kea.command("lease4-get", 4, arguments={"ip-address": ADDED_ADDRESS4})[0]["arguments"]
+    assert (stored["hw-address"], stored["hostname"]) == ("08:00:00:00:00:30", "form-added")
+
+
+def test_a_csv_import_creates_each_new_lease_and_reports_the_refused_one(
+    page: Page, kea: _DualEndpointKeaClient, plugin_base: str, with_test_server, clear_leases: None
+) -> None:
+    kea.command("lease4-add", 4, arguments={"ip-address": IN_USE_ADDRESS4, "hw-address": "08:00:00:00:00:31"})
+    content = (
+        "ip-address,hw-address,hostname\n"
+        f"{ADDED_ADDRESS4},08:00:00:00:00:30,csv-added\n"
+        f"{IN_USE_ADDRESS4},08:00:00:00:00:99,csv-refused\n"
+    )
+    page.goto(f"{plugin_base}/servers/{with_test_server.id}/leases4/import/")
+    page.locator("#id_csv_file").set_input_files(
+        files=[{"name": "leases.csv", "mimeType": "text/csv", "buffer": content.encode()}]
+    )
+    page.get_by_role("button", name="Import").click()
+
+    expect(page.locator(".display-6.text-success")).to_have_text("1")
+    expect(page.locator(".display-6.text-danger")).to_have_text("1")
+    expect(page.locator("tr.table-danger > td").first).to_have_text("3")
+    expect(page.locator("tr.table-danger code")).to_have_text(IN_USE_ADDRESS4)
+    added = kea.command("lease4-get", 4, arguments={"ip-address": ADDED_ADDRESS4})[0]["arguments"]
+    assert added["hostname"] == "csv-added"
+    kept = kea.command("lease4-get", 4, arguments={"ip-address": IN_USE_ADDRESS4})[0]["arguments"]
+    assert kept["hw-address"] == "08:00:00:00:00:31"
