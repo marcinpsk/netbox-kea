@@ -2128,7 +2128,7 @@ class KeaClient:
         ):
             raise ValueError(f"max_leases must be >= 1 (or None for no cap), got {max_leases!r}")
         started = _now()
-        records: list[Any] = []
+        records: list[Lease] = []
         diagnostics: list[LeaseDiagnostic] = []
         raw_count = 0
         cursor: IPAddressValue | None = None
