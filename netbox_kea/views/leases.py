@@ -1184,6 +1184,7 @@ def _set_lease_reservation_fields(
         "subnet_cidr": subnet_cidr,
         "ip_addresses" if version == 6 else "ip_address": ip,
         "hostname": observed.hostname,
+        "return_url": return_url,
     }
     identities = lease_identities(observed).identities
     if identities:

@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
 
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 import requests
 import yaml
@@ -49,6 +49,21 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
         row, search = self._searched_row(self._url(), {"q": "searched"})
         self.assertEqual(_return_url(row["edit_url"]), [search])
         self.assertEqual(_return_url(row["delete_url"]), [search])
+
+    def test_the_add_button_returns_to_the_reservation_search(self):
+        responses = _catalogue_responses(4, 20, "198.18.0.0/24")
+        responses.update(
+            {
+                "reservation-get-page": _res_page([]),
+                "lease4-get-by-state": {"result": 0, "arguments": {"leases": []}},
+                "list-commands": _reservation_mutation_commands(),
+            }
+        )
+        with stub_kea(responses):
+            page = self.client.get(self._url(), {"q": "searched"})
+        search = page.wsgi_request.get_full_path()
+        add = reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk])
+        self.assertContains(page, f'href="{add}?{urlencode({"return_url": search})}"')
 
     def test_combined_row_actions_return_to_the_combined_search(self):
         url = reverse("plugins:netbox_kea:combined_reservations4")
@@ -707,6 +722,12 @@ class TestLeaseReservationIdentityMatching(_ViewTestBase):
         self.assertFalse(row["is_reserved"])
         self.assertIsNone(row["create_reservation_url"])
         self.assertIsNone(row.get("sync_url"))
+
+    def test_the_reserve_link_returns_to_the_lease_search(self):
+        response = self._get({"result": 3})
+
+        row = response.context["table"].data.data[0]
+        self.assertEqual(_return_url(row["create_reservation_url"]), [response.wsgi_request.get_full_path()])
 
     def test_the_reservation_link_returns_to_the_lease_search(self):
         response = self._get(

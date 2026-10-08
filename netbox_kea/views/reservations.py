@@ -573,6 +573,7 @@ def _reservation_list_context(
         "mutation_unavailable": mutation_unavailable,
         "mutation_unavailable_reason": mutation_unavailable_reason,
         "add_url": reverse(f"plugins:netbox_kea:server_reservation{version}_add", args=[server.pk])
+        + f"?{urlencode({'return_url': request.get_full_path()})}"
         if can_mutate
         else None,
         "bulk_sync_url": reverse(f"plugins:netbox_kea:server_reservation{version}_bulk_sync", args=[server.pk])
