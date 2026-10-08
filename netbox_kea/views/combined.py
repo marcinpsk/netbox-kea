@@ -27,7 +27,7 @@ from ..utilities import (
     snapshot_rows,
 )
 from ._base import ConditionalLoginRequiredMixin, _catalogue_subnet_row, _enrich_subnet_statistics, _shared_network_row
-from .leases import _enrich_leases_with_badges
+from .leases import _enrich_leases_with_badges, user_sync_kinds
 from .reservations import (
     _attach_reservation_action_urls,
     _configured_capabilities,
@@ -670,6 +670,7 @@ class _CombinedLeasesView(_CombinedViewMixin):
                     self.dhcp_version,
                     can_delete=can_delete,
                     can_change=can_change,
+                    sync_kinds=user_sync_kinds(request.user),
                     return_url=request.get_full_path(),
                 )
 

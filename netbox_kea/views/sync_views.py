@@ -43,7 +43,7 @@ from ..utilities import (
     parse_lease_csv,
 )
 from ._base import ConditionalLoginRequiredMixin, _KeaChangeMixin
-from .leases import _LEASES_TAB
+from .leases import _LEASES_TAB, user_sync_kinds
 from .reservation_mutations import _confirmed_side_effects, _identity_from_request, _reservation_target_scope
 from .reservations import _RESERVATIONS_TAB
 
@@ -64,8 +64,7 @@ class _BaseSyncView(ConditionalLoginRequiredMixin, View):
         except ValueError:
             return HttpResponse("Invalid lease address or delegated prefix", status=400)
 
-        model = "prefix" if identity.kind == "delegated-prefix" else "ipaddress"
-        if not (request.user.has_perm(f"ipam.add_{model}") and request.user.has_perm(f"ipam.change_{model}")):
+        if identity.kind not in user_sync_kinds(request.user):
             return HttpResponseForbidden("You do not have permission to sync to NetBox IPAM.")
 
         server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)

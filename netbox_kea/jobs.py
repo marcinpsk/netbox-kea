@@ -72,6 +72,7 @@ def _sync_one_server(
         PoolPhase,
         ReservationPhase,
         SubnetPhase,
+        lease_prefixes_enabled,
         read_catalogue,
         read_leases,
         reconcile,
@@ -112,8 +113,7 @@ def _sync_one_server(
             phases.append(SubnetPhase(observation))
         if sync_ip_ranges:
             phases.append(PoolPhase(observation))
-        # Delegated-prefix leases become Prefixes only when lease sync and Prefix sync are both on.
-        if leases is not None and sync_prefixes and version == 6:
+        if leases is not None and lease_prefixes_enabled(version, sync_leases, sync_prefixes):
             phases.append(LeasePrefixPhase(leases, catalogue))
         reports[version] = reconcile(server, version, phases)
         combined.merge(reports[version])
