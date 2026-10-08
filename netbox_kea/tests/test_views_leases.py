@@ -2638,6 +2638,15 @@ class TestLeaseBulkImportEdgeCases(_ViewTestBase):
     def _url(self):
         return reverse("plugins:netbox_kea:server_lease4_bulk_import", args=[self.server.pk])
 
+    def test_the_import_is_served_at_one_url_per_family(self):
+        for family in (4, 6):
+            with self.subTest(family=family):
+                url = reverse(f"plugins:netbox_kea:server_lease{family}_bulk_import", args=[self.server.pk])
+                self.assertTrue(url.endswith(f"/servers/{self.server.pk}/leases{family}/import/"))
+                self.assertEqual(self.client.get(url).status_code, 200)
+                duplicate = url.replace(f"/leases{family}/import/", f"/lease{family}_bulk_import/")
+                self.assertEqual(self.client.get(duplicate).status_code, 404)
+
     def test_post_no_file_rerenders(self):
         """POST without csv_file → invalid form → 200."""
         response = self.client.post(self._url(), {})

@@ -14,7 +14,6 @@ from django.shortcuts import get_object_or_404, render
 from django.urls import reverse
 from django.views import View
 from netaddr import AddrFormatError, IPAddress
-from utilities.views import register_model_view
 
 from .. import forms
 from ..constants import Family
@@ -535,7 +534,6 @@ class _BaseBulkLeaseImportView(_KeaChangeMixin, ConditionalLoginRequiredMixin, V
         return self._render(request, instance, self.form_class(), result)
 
 
-@register_model_view(Server, "lease4_bulk_import")
 class ServerLease4BulkImportView(_BaseBulkLeaseImportView):
     """Bulk import DHCPv4 leases from a CSV file."""
 
@@ -543,7 +541,6 @@ class ServerLease4BulkImportView(_BaseBulkLeaseImportView):
     form_class = forms.Lease4BulkImportForm
 
 
-@register_model_view(Server, "lease6_bulk_import")
 class ServerLease6BulkImportView(_BaseBulkLeaseImportView):
     """Bulk import DHCPv6 leases from a CSV file."""
 
