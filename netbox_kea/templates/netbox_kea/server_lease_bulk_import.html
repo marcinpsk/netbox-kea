@@ -15,15 +15,23 @@
       <div class="card-body">
         {% if dhcp_version == 4 %}
         <div class="alert alert-info" role="alert">
-          <strong>v4 required columns:</strong> <code>ip-address, hw-address</code><br>
-          <strong>Optional columns:</strong> <code>subnet-id, valid-lft, hostname</code><br>
-          <small>Example: <code>10.0.0.10,aa:bb:cc:dd:ee:ff,1,3600,host1.example.com</code></small>
+          <div>
+            <strong>v4 required columns:</strong> <code>ip-address, hw-address</code><br>
+            <strong>Optional columns:</strong> <code>subnet-id, valid-lft, hostname</code><br>
+            <small>Example (the first line names the columns):</small>
+            <pre class="mb-0 small">ip-address,hw-address,subnet-id,valid-lft,hostname
+10.0.0.10,aa:bb:cc:dd:ee:ff,1,3600,host1.example.com</pre>
+          </div>
         </div>
         {% else %}
         <div class="alert alert-info" role="alert">
-          <strong>v6 required columns:</strong> <code>ip-address, duid, iaid</code><br>
-          <strong>Optional columns:</strong> <code>subnet-id, valid-lft, hostname</code><br>
-          <small>Example: <code>2001:db8::1,00:01:02:03,12345,1,3600,v6host.example.com</code></small>
+          <div>
+            <strong>v6 required columns:</strong> <code>ip-address, duid, iaid</code><br>
+            <strong>Optional columns:</strong> <code>subnet-id, valid-lft, hostname</code><br>
+            <small>Example (the first line names the columns):</small>
+            <pre class="mb-0 small">ip-address,duid,iaid,subnet-id,valid-lft,hostname
+2001:db8::1,00:01:02:03,12345,1,3600,v6host.example.com</pre>
+          </div>
         </div>
         {% endif %}
 
