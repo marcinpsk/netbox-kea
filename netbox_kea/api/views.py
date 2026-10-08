@@ -12,7 +12,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 
 from .. import constants, filtersets, models
-from ..constants import Family
+from ..constants import Family, LeaseState
 from ..decimal_text import parse_decimal
 from ..kea import KeaException, LeaseQueryGuardError, lease_query_guard_message
 from ..leases import LeaseSnapshot, lease_record_data
@@ -109,7 +109,7 @@ def _single_reservation_response(version: int, reservation: Reservation | None) 
     return Response(_reservation_snapshot_data(snapshot))
 
 
-def _parse_subnet_lease_state(raw_state, selector) -> tuple[int | None, str | None]:
+def _parse_subnet_lease_state(raw_state, selector) -> tuple[LeaseState | None, str | None]:
     """Return a safe Subnet lease state and an optional parameter error."""
     if raw_state in (None, ""):
         return None, None
@@ -119,9 +119,10 @@ def _parse_subnet_lease_state(raw_state, selector) -> tuple[int | None, str | No
         state = parse_decimal(raw_state)
     except (TypeError, ValueError):
         return None, "A Subnet query supports only the Active or Declined state."
-    if state not in constants.LEASE_QUERY_STATE_CODES:
+    names = {constants.LEASE_STATE_CODES[name]: name for name in constants.LEASE_QUERY_STATES}
+    if state not in names:
         return None, "A Subnet query supports only the Active or Declined state."
-    return state, None
+    return names[state], None
 
 
 def _lease_parameter_error(params, version: int) -> str | None:

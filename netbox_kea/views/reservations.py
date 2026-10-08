@@ -23,7 +23,7 @@ from netbox.views import generic
 from utilities.views import register_model_view
 
 from .. import constants, forms, tables
-from ..constants import Family
+from ..constants import Family, LeaseState
 from ..ipam_reconciliation import RESERVATION, ReservationPhase, claim_permissions, reconcile_permissions
 from ..kea import KeaClient, KeaException, LeaseQueryGuardError
 from ..leases import LeaseSnapshot
@@ -106,7 +106,7 @@ def _current_lease_facts(snapshot: LeaseSnapshot) -> _CurrentLeaseFacts:
 def _lease_facts_in_subnet(client: KeaClient, version: Family, subnet_id: int, server_id: int) -> Any:
     """Observe the Current Leases in one Subnet, or report why they could not be read."""
     # DHCPv6 registered leases are current too, and only an unfiltered Subnet query returns them.
-    state = constants.LEASE_STATE_CODES["assigned"] if version == 4 else None
+    state: LeaseState | None = "assigned" if version == 4 else None
     with client.clone() as worker_client:
         try:
             snapshot = worker_client.lease_search(

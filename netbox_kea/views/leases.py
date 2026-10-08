@@ -28,7 +28,7 @@ from utilities.paginator import EnhancedPaginator, get_paginate_count
 from utilities.views import GetReturnURLMixin, register_model_view
 
 from .. import constants, event_scope, forms, subnet_catalogue, tables
-from ..constants import Family
+from ..constants import Family, LeaseState
 from ..ipam_reconciliation import LEASE, LEASE_PREFIX, claim, claim_permissions
 from ..kea import (
     KeaClient,
@@ -271,7 +271,7 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
         q: Any,
         by: str,
         *,
-        state: int | None = None,
+        state: LeaseState | None = None,
     ) -> LeaseSnapshot:
         """Read the leases matching *q* by search attribute *by*."""
         return client.lease_search(self.dhcp_version, by, q, state=state, server_id=server.pk)
@@ -314,7 +314,7 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
             return redirect(request.path)
 
         q = form.cleaned_data["q"]
-        state_filter: int | None = form.cleaned_data.get("state")
+        state_filter: LeaseState | None = form.cleaned_data.get("state")
         try:
             client = instance.get_client(version=self.dhcp_version)
         except ValueError:
@@ -443,7 +443,7 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
         try:
             by = form.cleaned_data["by"]
             q = form.cleaned_data["q"]
-            state_filter: int | None = form.cleaned_data.get("state")
+            state_filter: LeaseState | None = form.cleaned_data.get("state")
             client = instance.get_client(version=self.dhcp_version)
             is_subnet_search = by in (constants.BY_SUBNET, constants.BY_SUBNET_ID)
             if by == "":

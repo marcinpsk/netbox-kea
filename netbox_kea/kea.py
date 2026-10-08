@@ -17,7 +17,7 @@ import requests
 from requests.models import HTTPBasicAuth
 
 from . import constants
-from .constants import Family, IPAddressValue, IPNetworkValue, Persistence
+from .constants import Family, IPAddressValue, IPNetworkValue, LeaseState, Persistence
 from .decimal_text import parse_decimal
 from .dhcp_options import (
     DHCPOption,
@@ -337,7 +337,7 @@ class LeaseQueryTooBroad(LeaseQueryGuardError):
 class LeaseQueryNotMeasurable(LeaseQueryGuardError):
     """Raised when Kea cannot count a requested Subnet lease category."""
 
-    def __init__(self, state: int) -> None:
+    def __init__(self, state: str) -> None:
         self.state = state
         super().__init__(f"Kea cannot measure Subnet lease state {state} before an unpaged query.")
 
@@ -354,7 +354,7 @@ class LeaseQueryUnknownSubnet(LeaseQueryGuardError):
     """Raised when a Subnet CIDR query names no configured Subnet, so no Subnet ID scopes the read."""
 
 
-def lease_query_guard_message(exc: LeaseQueryGuardError, state: int | None) -> str:
+def lease_query_guard_message(exc: LeaseQueryGuardError, state: LeaseState | None) -> str:
     """Return safe, actionable guidance for one rejected lease query."""
     if isinstance(exc, LeaseQueryUnknownSubnet):
         # Kea can hold leases under a Subnet ID that its configuration no longer has.
@@ -1866,7 +1866,7 @@ class KeaClient:
         selector: str,
         value: Any,
         *,
-        state: int | None = None,
+        state: LeaseState | None = None,
         server_id: int,
     ) -> LeaseSnapshot:
         """Return the Lease Snapshot of one supported selector; it covers the query scope, never the whole daemon.
@@ -1892,7 +1892,7 @@ class KeaClient:
         if selector == constants.BY_IP:
             return self._exact_lease_snapshot(version, value, started=started, server_id=server_id)
         if selector in (constants.BY_SUBNET, constants.BY_SUBNET_ID):
-            if state is not None and (isinstance(state, bool) or state not in constants.LEASE_QUERY_STATE_CODES):
+            if state is not None and state not in constants.LEASE_QUERY_STATES:
                 raise LeaseQueryNotMeasurable(state)
             if selector == constants.BY_SUBNET:
                 if not isinstance(value, str) or not value:
@@ -1923,13 +1923,8 @@ class KeaClient:
         return _lease_snapshot(server_id, query, started, read, coverage="exhaustive")
 
     @staticmethod
-    def _lease_query(version: Family, selector: str, value: Any, state: int | None) -> LeaseQuery:
-        return LeaseQuery(
-            family=version,
-            selector=selector,
-            value=value,
-            state=None if state is None else constants.LEASE_STATES[state],
-        )
+    def _lease_query(version: Family, selector: str, value: Any, state: LeaseState | None) -> LeaseQuery:
+        return LeaseQuery(family=version, selector=selector, value=value, state=state)
 
     def _exact_lease_snapshot(self, version: Family, value: Any, *, started: datetime, server_id: int) -> LeaseSnapshot:
         """Return the Snapshot of every allocation at one address: each kind is read on its own.
@@ -1968,13 +1963,14 @@ class KeaClient:
             raise LeaseQueryPreflightUnavailable("state-command") from exc
 
     def _subnet_lease_search_spec(
-        self, version: Family, subnet_id: int, state: int | None
+        self, version: Family, subnet_id: int, state: LeaseState | None
     ) -> tuple[KeaCommand, dict[str, Any]]:
         """Guard one Subnet lease query before selecting its command."""
+        arguments: dict[str, Any]
         if self.max_unpaged_leases is None:
             if state is None:
                 return LEASE_GET_ALL[version], {"subnets": [subnet_id]}
-            return LEASE_GET_BY_STATE[version], {"subnet-id": subnet_id, "state": state}
+            return LEASE_GET_BY_STATE[version], {"subnet-id": subnet_id, "state": constants.LEASE_STATE_CODES[state]}
 
         try:
             counts = self._subnet_lease_counts(version, subnet_id)
@@ -1987,9 +1983,9 @@ class KeaClient:
             command = LEASE_GET_ALL[version]
             arguments = {"subnets": [subnet_id]}
         else:
-            observed_leases = counts.active if state == constants.LEASE_STATE_CODES["assigned"] else counts.declined
+            observed_leases = counts.active if state == "assigned" else counts.declined
             command = LEASE_GET_BY_STATE[version]
-            arguments = {"subnet-id": subnet_id, "state": state}
+            arguments = {"subnet-id": subnet_id, "state": constants.LEASE_STATE_CODES[state]}
         if observed_leases > self.max_unpaged_leases:
             raise LeaseQueryTooBroad(observed_leases, self.max_unpaged_leases)
         return command, arguments

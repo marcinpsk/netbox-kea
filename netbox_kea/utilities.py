@@ -19,7 +19,7 @@ from pydantic import ValidationError as PydanticValidationError
 from utilities.views import ViewTab
 
 from . import constants
-from .constants import Family
+from .constants import Family, LeaseState
 from .decimal_text import parse_decimal
 from .leases import (
     DHCPv4AddressLease,
@@ -49,14 +49,14 @@ def format_duration(s: int | None) -> str | None:
     return f"{hours:02}:{minutes:02}:{seconds:02}"
 
 
-def snapshot_leases(snapshot: LeaseSnapshot, state_filter: int | None) -> tuple[Lease, ...]:
-    """Return the valid Leases of *snapshot*, or only those with the Kea state code *state_filter*."""
+def snapshot_leases(snapshot: LeaseSnapshot, state_filter: LeaseState | None) -> tuple[Lease, ...]:
+    """Return the valid Leases of *snapshot*, or only those in the state *state_filter*."""
     if state_filter is None:
         return snapshot.records
-    return tuple(lease for lease in snapshot.records if constants.LEASE_STATE_CODES[lease.state] == state_filter)
+    return tuple(lease for lease in snapshot.records if lease.state == state_filter)
 
 
-def snapshot_rows(snapshot: LeaseSnapshot, state_filter: int | None) -> list[dict[str, Any]]:
+def snapshot_rows(snapshot: LeaseSnapshot, state_filter: LeaseState | None) -> list[dict[str, Any]]:
     """Return the presentation rows of :func:`snapshot_leases`."""
     return lease_rows(snapshot_leases(snapshot, state_filter), evaluated_at=snapshot.evaluated_at)
 

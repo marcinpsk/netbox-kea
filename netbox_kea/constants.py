@@ -71,7 +71,6 @@ LEASE_STATES: tuple[LeaseState, ...] = get_args(LeaseState)
 LEASE_STATE_CODES: dict[LeaseState, int] = {state: code for code, state in enumerate(LEASE_STATES)}
 # The states a Subnet lease query can filter by: stat_cmds counts only these.
 LEASE_QUERY_STATES: tuple[LeaseState, ...] = ("assigned", "declined")
-LEASE_QUERY_STATE_CODES = frozenset(LEASE_STATE_CODES[state] for state in LEASE_QUERY_STATES)
 
 # Kea 3.2.0 lease identifier octets: HWAddr::MAX_HWADDR_LEN (hwaddr.h) and the DUID and ClientId sizes (duid.h).
 LEASE_HW_ADDRESS_OCTETS = (1, 20)
