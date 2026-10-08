@@ -127,3 +127,29 @@ def reraised_before_a_tuple(obj):
         raise
     except (Exception, OSError):
         pass
+
+
+def runtime_error_around_a_claim(server, leases):
+    try:
+        # ruleid: kea-dispatch-error-swallowed
+        claim(server, 4, leases, force=True)
+    except (RuntimeError, ValueError):
+        pass
+
+
+def runtime_error_around_a_reconciliation_reraised(server, phases):
+    try:
+        # ok: kea-dispatch-error-swallowed
+        reconcile(server, 4, phases)
+    except event_scope.EventDispatchError:
+        raise
+    except RuntimeError as exc:
+        print(type(exc))
+
+
+def claim(*args, **kwargs):
+    return args, kwargs
+
+
+def reconcile(*args, **kwargs):
+    return args, kwargs

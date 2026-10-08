@@ -5,6 +5,8 @@ from netbox_kea import event_scope
 
 def refusal_after_save(obj, bad):
     try:
+        # The RuntimeError handler also swallows EventDispatchError.
+        # ruleid: kea-dispatch-error-swallowed
         with event_scope.atomic():
             obj.save()
             if bad:
@@ -16,6 +18,8 @@ def refusal_after_save(obj, bad):
 
 def refusal_before_save(obj, bad):
     try:
+        # The RuntimeError handler also swallows EventDispatchError.
+        # ruleid: kea-dispatch-error-swallowed
         with event_scope.atomic():
             if bad:
                 # ok: kea-refusal-after-event-write

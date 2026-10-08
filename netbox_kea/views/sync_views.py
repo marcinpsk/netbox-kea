@@ -155,6 +155,8 @@ class _BaseReservationSyncView(ConditionalLoginRequiredMixin, View):
                 state = reservation_synchronization_state(
                     reservation, synchronized_addresses=result.synchronized_addresses
                 )
+        except event_scope.EventDispatchError:
+            raise
         except Http404:
             return _row_error(request, "The Reservation or its Subnet is no longer in Kea. Reload the list.")
         except KeaException as exc:
