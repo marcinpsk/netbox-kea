@@ -32,7 +32,7 @@ from django.contrib import messages as django_messages
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.db.models.signals import pre_save
-from django.test import TestCase, override_settings
+from django.test import TestCase, TransactionTestCase, override_settings
 from django.urls import reverse
 from ipam.models import IPAddress as NbIP
 
@@ -41,9 +41,11 @@ from netbox_kea.views.reservations import _RESERVATION_PAGE_SIZE
 
 from .kea_stub import (
     _catalogue_responses,
+    _catalogue_responses_for_subnets,
     _res_page,
     _reservation_mutation_commands,
     complete_lease,
+    lease_record,
     queued,
     stub_kea,
 )
@@ -255,9 +257,7 @@ class TestLease4SyncView(_SyncViewBase):
         self._start_stub(
             {
                 **_catalogue_responses(4, 1, "192.168.0.0/16"),
-                "lease4-get": _lease_get(
-                    "mock-host.local", **{"hw-address": "aa:bb:cc:00:00:01", "valid-lft": 86400, "cltt": 1700000000}
-                ),
+                "lease4-get": _lease_get("mock-host.local", **{"hw-address": "aa:bb:cc:00:00:01", "valid-lft": 86400}),
             }
         )
 
@@ -335,9 +335,7 @@ class TestLease6SyncView(_SyncViewBase):
         self._start_stub(
             {
                 **_catalogue_responses(6, 1, "2001:db8::/64"),
-                "lease6-get": _lease_get(
-                    "mock-v6.local", duid="01:02:03:04", **{"valid-lft": 86400, "cltt": 1700000000}
-                ),
+                "lease6-get": _lease_get("mock-v6.local", duid="01:02:03:04", **{"valid-lft": 86400}),
             }
         )
 
@@ -376,6 +374,238 @@ class TestLease6SyncView(_SyncViewBase):
             response = self.client.post(self._url(), {"ip_address": "2001:db8::4"})
         self.assertEqual(response.status_code, 400)
         self.assertContains(response, "Could not fetch live data", status_code=400)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Per-kind lease Sync: delegated prefixes, permissions and current use
+# ─────────────────────────────────────────────────────────────────────────────
+
+_PD_SUBNETS = [{"id": 10, "subnet": "2001:db8:1::/64"}]
+_PD_LABEL = "2001:db8:100:100::/56"
+_PD_ADDRESS_LABEL = "2001:db8:1::10"
+
+
+def _pd_record(**changes) -> dict:
+    return lease_record("2001:db8:100:100::", **{"type": "IA_PD", "prefix_len": 56, "subnet_id": 10, **changes})
+
+
+def _lease6_get(*records: dict):
+    """A ``lease6-get`` responder that holds *records*, keyed as Kea 3.2 looks them up (address and type)."""
+    held = {(record["ip-address"], record.get("type", "IA_NA")): record for record in records}
+
+    def respond(body: dict) -> dict:
+        arguments = body["arguments"]
+        record = held.get((arguments["ip-address"], arguments.get("type", "IA_NA")))
+        if record is None:
+            return {"result": 3, "text": "Lease not found."}
+        return {"result": 0, "text": "IPv6 lease found.", "arguments": record}
+
+    return respond
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestLeaseSyncByKind(_SyncViewBase):
+    """The lease Sync claims an address as an IP Address and a delegated prefix as a Prefix in the sync VRF."""
+
+    def setUp(self):
+        super().setUp()
+        from ipam.models import VRF
+
+        from netbox_kea.models import SyncConfig
+
+        self.vrf = VRF.objects.create(name="kea-sync-vrf")
+        self.server.sync_vrf = self.vrf
+        # Manual Sync does not depend on any automatic synchronization setting.
+        flags = {
+            "sync_enabled": False,
+            "sync_leases_enabled": False,
+            "sync_reservations_enabled": False,
+            "sync_prefixes_enabled": False,
+            "sync_ip_ranges_enabled": False,
+        }
+        for name, value in flags.items():
+            setattr(self.server, name, value)
+        self.server.save()
+        SyncConfig.objects.filter(pk=1).update(**flags)
+
+    def _url(self):
+        return reverse("plugins:netbox_kea:server_lease6_sync", args=[self.server.pk])
+
+    def _post(self, label: str, *records: dict, subnets=_PD_SUBNETS):
+        responses = {**_catalogue_responses_for_subnets(6, subnets), "lease6-get": _lease6_get(*records)}
+        with stub_kea(responses) as kea:
+            response = self.client.post(self._url(), {"ip_address": label})
+        return response, kea
+
+    def _login_with(self, *codenames: str):
+        from django.contrib.contenttypes.models import ContentType
+        from users.models import ObjectPermission
+
+        user = User.objects.create(username=f"sync-{'-'.join(codenames)}")
+        view = ObjectPermission.objects.create(name=f"view-server-{user.pk}", actions=["view"])
+        view.object_types.add(ContentType.objects.get_for_model(Server))
+        view.users.add(user)
+        for codename in codenames:
+            action, model = codename.split("_", 1)
+            grant = ObjectPermission.objects.create(name=f"{codename}-{user.pk}", actions=[action])
+            grant.object_types.add(ContentType.objects.get(app_label="ipam", model=model))
+            grant.users.add(user)
+        self.client.force_login(user)
+
+    def _assert_no_ipam_rows(self):
+        from ipam.models import Prefix
+
+        self.assertFalse(Prefix.objects.exists())
+        self.assertFalse(NbIP.objects.exists())
+        self.assertFalse(IPAMOwnershipLink.objects.exists())
+
+    def test_a_delegated_prefix_sync_creates_a_prefix_in_the_sync_vrf_and_no_ip_address(self):
+        from ipam.models import Prefix
+
+        response, kea = self._post(_PD_LABEL, _pd_record())
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(
+            kea.bodies("lease6-get")[0]["arguments"], {"ip-address": "2001:db8:100:100::", "type": "IA_PD"}
+        )
+        prefix = Prefix.objects.get()
+        self.assertEqual((str(prefix.prefix), prefix.vrf_id), (_PD_LABEL, self.vrf.pk))
+        self.assertFalse(NbIP.objects.exists())
+        link = IPAMOwnershipLink.objects.get()
+        self.assertEqual((link.server_id, link.source, link.prefix_id), (self.server.pk, "lease-prefix", prefix.pk))
+        self.assertContains(response, f'href="{prefix.get_absolute_url()}"')
+        self.assertContains(response, _PD_LABEL)
+
+    def test_a_delegated_prefix_sync_adopts_an_existing_prefix_of_the_sync_vrf(self):
+        from ipam.models import Prefix
+
+        existing = Prefix.objects.create(prefix=_PD_LABEL, vrf=self.vrf, description="Operator prefix")
+        other_vrf = Prefix.objects.create(prefix=_PD_LABEL, description="Global table prefix")
+
+        response, _kea = self._post(_PD_LABEL, _pd_record())
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(Prefix.objects.count(), 2)
+        self.assertEqual(IPAMOwnershipLink.objects.get().prefix_id, existing.pk)
+        self.assertFalse(IPAMOwnershipLink.objects.filter(prefix=other_vrf).exists())
+        self.assertContains(response, f'href="{existing.get_absolute_url()}"')
+
+    def test_an_address_sync_still_claims_an_ip_address_with_the_flags_off(self):
+        from ipam.models import Prefix
+
+        response, _kea = self._post(_PD_ADDRESS_LABEL, lease_record(_PD_ADDRESS_LABEL, subnet_id=10))
+
+        self.assertEqual(response.status_code, 200, response.content)
+        ip = NbIP.objects.get()
+        self.assertEqual((str(ip.address), ip.vrf_id), ("2001:db8:1::10/64", self.vrf.pk))
+        self.assertEqual(IPAMOwnershipLink.objects.get().source, "lease")
+        self.assertFalse(Prefix.objects.exists())
+
+    def test_ip_address_permissions_do_not_authorize_a_delegated_prefix_sync(self):
+        self._login_with("add_ipaddress", "change_ipaddress")
+
+        response, kea = self._post(_PD_LABEL, _pd_record())
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(kea.commands(), [])
+        self._assert_no_ipam_rows()
+
+    def test_prefix_permissions_do_not_authorize_an_address_sync(self):
+        self._login_with("add_prefix", "change_prefix")
+
+        response, kea = self._post(_PD_ADDRESS_LABEL, lease_record(_PD_ADDRESS_LABEL, subnet_id=10))
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(kea.commands(), [])
+        self._assert_no_ipam_rows()
+
+    def test_a_delegated_prefix_sync_needs_both_prefix_permissions(self):
+        for codenames in (("add_prefix",), ("change_prefix",)):
+            with self.subTest(codenames=codenames):
+                self._login_with(*codenames)
+                response, _kea = self._post(_PD_LABEL, _pd_record())
+                self.assertEqual(response.status_code, 403)
+                self._assert_no_ipam_rows()
+
+    def test_prefix_permissions_authorize_a_delegated_prefix_sync(self):
+        from ipam.models import Prefix
+
+        self._login_with("add_prefix", "change_prefix")
+
+        response, _kea = self._post(_PD_LABEL, _pd_record())
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(str(Prefix.objects.get().prefix), _PD_LABEL)
+
+    def test_a_lease_that_is_not_current_is_not_synchronized(self):
+        import time
+
+        expired = {"cltt": int(time.time()) - 7200, "valid_lft": 3600}
+        cases = {
+            "reclaimed prefix": (_PD_LABEL, _pd_record(state=2)),
+            "released prefix": (_PD_LABEL, _pd_record(state=3)),
+            "expired prefix": (_PD_LABEL, _pd_record(**expired)),
+            "registered prefix": (_PD_LABEL, _pd_record(state=4)),
+            "reclaimed address": (_PD_ADDRESS_LABEL, lease_record(_PD_ADDRESS_LABEL, subnet_id=10, state=2)),
+            "expired address": (_PD_ADDRESS_LABEL, lease_record(_PD_ADDRESS_LABEL, subnet_id=10, **expired)),
+        }
+        for case, (label, record) in cases.items():
+            with self.subTest(case=case):
+                response, kea = self._post(label, record)
+                self.assertContains(response, "not current", status_code=409)
+                self.assertEqual(kea.commands(), ["lease6-get"])
+                self._assert_no_ipam_rows()
+
+    def test_a_dhcpv4_lease_that_is_not_current_is_not_synchronized(self):
+        import time
+
+        url = reverse("plugins:netbox_kea:server_lease4_sync", args=[self.server.pk])
+        expired = {"cltt": int(time.time()) - 7200, "valid_lft": 3600}
+        for case, changes in {"declined": {"state": 1}, "expired": expired}.items():
+            with self.subTest(case=case):
+                record = lease_record("192.0.2.10", subnet_id=10, **changes)
+                responses = {
+                    **_catalogue_responses(4, 10, "192.0.2.0/24"),
+                    "lease4-get": {"result": 0, "arguments": record},
+                }
+                with stub_kea(responses):
+                    response = self.client.post(url, {"ip_address": "192.0.2.10"})
+                self.assertContains(response, "not current", status_code=409)
+                self._assert_no_ipam_rows()
+
+    def test_a_changed_prefix_length_is_not_synchronized(self):
+        response, _kea = self._post(_PD_LABEL, _pd_record(prefix_len=60))
+
+        self.assertContains(response, "The lease changed in Kea", status_code=409)
+        self._assert_no_ipam_rows()
+
+    def test_a_subnet_id_absent_from_the_catalogue_is_a_generic_error(self):
+        response, _kea = self._post(_PD_LABEL, _pd_record(subnet_id=99))
+
+        self.assertEqual(response.content, b"Sync error: see server logs for details.")
+        self.assertEqual(response.status_code, 500)
+        self._assert_no_ipam_rows()
+
+    def test_an_unavailable_catalogue_is_a_generic_error_for_a_delegated_prefix(self):
+        responses = {
+            "lease6-get": _lease6_get(_pd_record()),
+            "subnet6-list": {"result": 1, "text": "private diagnostic"},
+            "config-get": {"result": 1, "text": "private diagnostic"},
+        }
+        with stub_kea(responses):
+            response = self.client.post(self._url(), {"ip_address": _PD_LABEL})
+
+        self.assertEqual(response.content, b"Sync error: see server logs for details.")
+        self.assertEqual(response.status_code, 500)
+        self._assert_no_ipam_rows()
+
+    def test_an_invalid_selection_is_refused_before_kea_is_read(self):
+        for label in ("2001:db8:100:101::/56", "not-an-address", "192.0.2.0/24", "2001:db8::/129"):
+            with self.subTest(label=label):
+                response, kea = self._post(label, _pd_record())
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(kea.commands(), [])
+                self._assert_no_ipam_rows()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -749,9 +979,7 @@ class TestSyncViewPermissionChecks(_SyncViewBase):
         url = reverse("plugins:netbox_kea:server_lease4_sync", args=[self.server.pk])
         stub = {
             **_catalogue_responses(4, 1, "192.168.99.0/24"),
-            "lease4-get": _lease_get(
-                "mock-host.local", **{"hw-address": "aa:bb:cc:00:00:01", "valid-lft": 86400, "cltt": 1700000000}
-            ),
+            "lease4-get": _lease_get("mock-host.local", **{"hw-address": "aa:bb:cc:00:00:01", "valid-lft": 86400}),
         }
         with stub_kea(stub):
             response = self.client.post(url, {"ip_address": "192.168.99.3"})
@@ -994,3 +1222,27 @@ class TestReservationCheckNetboxIPView(_SyncViewBase):
         body = response.content.decode()
         self.assertIn("alert-warning", body)
         self.assertIn("Router loopback", body)
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestLeaseSyncEventDispatch(TransactionTestCase):
+    """A claim row is a unit at the top level of the request, so its events dispatch after its own commit."""
+
+    def test_a_committed_claim_whose_events_fail_to_dispatch_is_not_reported_as_a_sync_error(self):
+        from ipam.models import Prefix
+
+        from netbox_kea.event_scope import _NESTED_TRACKING, EventDispatchError
+
+        if not _NESTED_TRACKING:
+            self.skipTest("Before NetBox 4.6.9 a claim row is a plain transaction and dispatches with the request")
+        self.client.force_login(User.objects.create_superuser(username="dispatch-user", password="dispatch-pass"))
+        server = _make_server()
+        responses = {**_catalogue_responses_for_subnets(6, _PD_SUBNETS), "lease6-get": _lease6_get(_pd_record())}
+        url = reverse("plugins:netbox_kea:server_lease6_sync", args=[server.pk])
+        with (
+            override_settings(EVENTS_PIPELINE=["netbox_kea.tests.test_event_scope.fail_dispatch"]),
+            stub_kea(responses),
+            self.assertRaises(EventDispatchError),
+        ):
+            self.client.post(url, {"ip_address": _PD_LABEL})
+        self.assertTrue(Prefix.objects.filter(prefix=_PD_LABEL).exists())

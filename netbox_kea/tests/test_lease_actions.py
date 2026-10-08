@@ -518,7 +518,7 @@ class LeaseReserveTest(_ViewTestBase):
         self.last_response = response
         return {row.record["kind"]: row.record for row in response.context["table"].rows}
 
-    def test_a_delegated_prefix_offers_a_prefix_reservation_and_an_edit(self):
+    def test_a_delegated_prefix_offers_a_prefix_reservation_an_edit_and_a_sync(self):
         rows = self._rows([lease_record("2001:db8:1::10", subnet_id=10), _prefix()], {"result": 3})
 
         query = parse_qs(urlsplit(rows["delegated-prefix"]["create_reservation_url"]).query)
@@ -530,7 +530,10 @@ class LeaseReserveTest(_ViewTestBase):
             + "?"
             + urlencode({"return_url": self.last_response.wsgi_request.get_full_path()}),
         )
-        self.assertIsNone(rows["delegated-prefix"].get("sync_url"))
+        self.assertEqual(
+            rows["delegated-prefix"].get("sync_url"),
+            reverse("plugins:netbox_kea:server_lease6_sync", args=[self.server.pk]),
+        )
         self.assertEqual(
             parse_qs(urlsplit(rows["address"]["create_reservation_url"]).query)["ip_addresses"], ["2001:db8:1::10"]
         )

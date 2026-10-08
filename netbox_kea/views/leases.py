@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
 import concurrent.futures
+import ipaddress
 import logging
 import threading
 import uuid
@@ -1251,6 +1252,19 @@ def _set_lease_reservation_fields(
     lease["create_reservation_url"] = f"{base}?{_urlencode({key: value for key, value in params.items() if value})}"
 
 
+def _sync_vrf_prefixes(server: "Server", leases: list[Lease]) -> dict[ipaddress.IPv6Network, Any]:
+    """Return the NetBox Prefix in the Server's sync VRF for each delegated prefix of *leases*, in one query."""
+    from ipam.models import Prefix
+
+    delegated = [str(lease.prefix) for lease in leases if isinstance(lease, DHCPv6PrefixLease)]
+    if not delegated:
+        return {}
+    found: dict[ipaddress.IPv6Network, Any] = {}
+    for prefix in Prefix.objects.filter(vrf_id=server.sync_vrf_id, prefix__in=delegated):
+        found.setdefault(ipaddress.IPv6Network(str(prefix.prefix)), prefix)
+    return found
+
+
 def _enrich_leases_with_badges(
     leases: list[dict[str, Any]],
     server: "Server",
@@ -1267,8 +1281,9 @@ def _enrich_leases_with_badges(
     - ``can_change_reservation``: whether the user may edit the reservation (gates link vs plain badge)
     - ``host_reservation``: an In-Subnet Reservation that holds no address and no delegated prefix matched
     - ``create_reservation_url``: pre-filled add link if host_cmds is loaded
-    - ``netbox_ip_url``: absolute URL if IP exists in NetBox IPAM
-    - ``sync_url``: POST endpoint URL to create a NetBox IP when absent
+    - ``netbox_ip_url``: absolute URL if the address of an address Lease exists in NetBox IPAM
+    - ``netbox_prefix_url``: absolute URL if the delegated prefix exists as a Prefix in the Server's sync VRF
+    - ``sync_url``: POST endpoint URL to claim the Lease when neither link is set
     - ``can_delete``: whether the current user may delete this lease
     - ``can_change``: whether the current user may edit this lease (gates edit_url)
 
@@ -1316,17 +1331,21 @@ def _enrich_leases_with_badges(
     edit_query = f"?{_urlencode({'return_url': return_url})}" if return_url else ""
     # A delegated prefix is not an IP Address, so only an address Lease links one.
     nb_ips = bulk_fetch_netbox_ips([_row_address(lease) for lease in leases if lease["lease"].kind == "address"])
+    nb_prefixes = _sync_vrf_prefixes(server, [lease["lease"] for lease in leases])
+    now = datetime.now(tz=timezone.utc)
     for lease in leases:
         ip = _row_address(lease)
-        # Sync claims an IP address, so a delegated prefix does not offer it.
-        is_address = lease["lease"].kind == "address"
-        nb_ip = nb_ips.get(ip) if is_address else None
-        if nb_ip:
-            lease["netbox_ip_url"] = nb_ip.get_absolute_url()
-        # Don't offer Sync for leases with indeterminate reservation state.
+        observed = lease["lease"]
+        if isinstance(observed, DHCPv6PrefixLease):
+            synced, url_key = nb_prefixes.get(observed.prefix), "netbox_prefix_url"
+        else:
+            synced, url_key = nb_ips.get(ip), "netbox_ip_url"
+        if synced is not None:
+            lease[url_key] = synced.get_absolute_url()
+        # Sync needs a Current Lease; don't offer it for leases with indeterminate reservation state.
         elif (
             can_change
-            and is_address
+            and is_current(observed, now)
             and host_cmds_available
             and not lease.get("pending_ip_change")
             and not lease.get("stale_mac")

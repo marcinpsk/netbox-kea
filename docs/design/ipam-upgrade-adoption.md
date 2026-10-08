@@ -49,7 +49,7 @@ This allows valid phase work to survive a sibling failure without declaring the 
 ## Barrier
 
 The last ownership link of an adoption-marked object remains while a relevant enabled Server lacks the required whole-workflow observation receipt.
-For IP addresses, lease and Reservation sources can be owners. Prefixes use Subnet and delegated-prefix sources.
+For IP addresses, lease and Reservation sources can be owners. Prefixes use Subnet, delegated-prefix and live delegated-prefix lease (`lease-prefix`, DHCPv6) sources.
 IP Ranges use Pool sources. Determine relevant families and effective source flags from configured Server state.
 Global source flags and Server flags both apply. The DHCP import can report Reservation addresses, Subnet Prefixes, Pool ranges and delegated Prefixes.
 Its opt-in plus an installed plugin makes those sources relevant, including import-only Servers.

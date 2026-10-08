@@ -479,12 +479,18 @@ class BaseLeaseTable(GenericTable):
             "{% if record.netbox_ip_url %}"
             '<a href="{{ record.netbox_ip_url }}" class="badge text-bg-success text-decoration-none">'
             '<i class="mdi mdi-link-variant"></i> Synced</a>'
+            "{% elif record.netbox_prefix_url %}"
+            '<a href="{{ record.netbox_prefix_url }}" class="badge text-bg-success text-decoration-none">'
+            '<i class="mdi mdi-link-variant"></i> Synced</a>'
             "{% elif record.sync_url %}"
             '<button type="button"'
             ' hx-post="{{ record.sync_url }}"'
-            ' hx-vals=\'{"ip_address":"{{ record.ip_address|escapejs }}","hostname":"{{ record.hostname|default:""|escapejs }}"}\''
+            # The label is the address, or address/length for a delegated prefix.
+            ' hx-vals=\'{"ip_address":"{{ record.label|escapejs }}","hostname":"{{ record.hostname|default:""|escapejs }}"}\''
             ' hx-target="closest td"'
             ' hx-swap="innerHTML"'
+            # The lease search container pushes its URL; a Sync POST must not replace the page URL.
+            ' hx-push-url="false"'
             ' class="badge text-bg-secondary border-0"'
             ' style="cursor:pointer">'
             '<i class="mdi mdi-sync"></i> Sync</button>'

@@ -23,6 +23,7 @@ from ipam.models import IPAddress as NbIP
 from netbox_kea import subnet_catalogue
 from netbox_kea.ipam_reconciliation import (
     ClaimResult,
+    LeaseObservation,
     LeasePhase,
     ReservationPhase,
     SyncReport,
@@ -43,7 +44,7 @@ from netbox_kea.tests.kea_stub import (
     typed_lease,
 )
 from netbox_kea.tests.test_jobs import _PLUGINS_CONFIG_CLEANUP, _lease_page, _make_job, _patch_kea
-from netbox_kea.tests.utils import _make_db_server, plugins_config
+from netbox_kea.tests.utils import _make_db_server, lease_phase, plugins_config
 
 ADDRESS = "10.0.0.5"
 SUBNET = {"id": 1, "subnet": "10.0.0.0/24"}
@@ -85,15 +86,15 @@ def _claim_disagreeing(server, *hostnames: str) -> ClaimResult:
         return claim(server, 4, [typed_lease(_lease(hostname=hostname)) for hostname in hostnames], force=False)
 
 
-def _lease_phase(max_leases: int | None = None) -> LeasePhase:
-    return LeasePhase(max_leases=max_leases, subnet_prefix_lengths={1: 24})
+def _lease_phase(server, max_leases: int | None = None) -> LeasePhase:
+    return lease_phase(server, 4, {1: 24}, max_leases)
 
 
 def _phases(server, sources: Sequence[str] = BOTH, *, max_leases: int | None = None) -> list:
     """Build the phases of *sources*. The Reservation phase reads the stubbed Subnet Catalogue, as the job does."""
     phases: list[LeasePhase | ReservationPhase] = []
     if "lease" in sources:
-        phases.append(_lease_phase(max_leases))
+        phases.append(_lease_phase(server, max_leases))
     if "reservation" in sources:
         phases.append(ReservationPhase(subnet_catalogue.for_synchronization(server, 4)))
     return phases
@@ -150,7 +151,7 @@ class JobLeasePhaseOwnershipTest(TestCase):
                     server,
                     4,
                     [
-                        LeasePhase(max_leases=None, subnet_prefix_lengths=mapping),
+                        lease_phase(server, 4, mapping),
                         ReservationPhase(subnet_catalogue.for_synchronization(server, 4)),
                     ],
                 )
@@ -189,9 +190,8 @@ class JobLeasePhaseOwnershipTest(TestCase):
 
     def test_unavailable_catalogue_fallback_still_rejects_a_malformed_subnet_id(self):
         server = _server("owner")
-        phase = LeasePhase(max_leases=None, subnet_prefix_lengths=None)
         with _kea([_lease("10.0.0.8", **{"subnet-id": []}), _lease()]):
-            report = reconcile(server, 4, [phase])
+            report = reconcile(server, 4, [lease_phase(server, 4, None)])
         self.assertEqual(report.errors, 1)
         self.assertEqual(report.incomplete, {"lease"})
         self.assertFalse(NbIP.objects.filter(address__net_host="10.0.0.8").exists())
@@ -202,17 +202,16 @@ class JobLeasePhaseOwnershipTest(TestCase):
         server = _server("owner", sync_vrf=vrf)
         Prefix.objects.create(prefix="10.0.0.5/32")
         Prefix.objects.create(prefix="10.0.0.0/24", vrf=vrf)
-        phase = LeasePhase(max_leases=None, subnet_prefix_lengths=None)
         with _kea([_lease()]):
-            report = reconcile(server, 4, [phase])
+            report = reconcile(server, 4, [lease_phase(server, 4, None)])
         self.assertEqual(report.errors, 0)
         self.assertEqual(str(_row().address), "10.0.0.5/24")
         Prefix.objects.create(prefix="10.0.0.5/32", vrf=vrf)
         with _kea([_lease()]):
-            reconcile(server, 4, [phase])
+            reconcile(server, 4, [lease_phase(server, 4, None)])
         self.assertEqual(str(_row().address), "10.0.0.5/32")
         with _kea([_lease("10.1.0.1")]):
-            reconcile(server, 4, [phase])
+            reconcile(server, 4, [lease_phase(server, 4, None)])
         self.assertEqual(str(_row("10.1.0.1").address), "10.1.0.1/32")
 
     def test_one_servers_run_keeps_the_row_of_another_server_with_the_same_hostname(self):
@@ -509,7 +508,7 @@ class LeasePhaseOwnersTest(TestCase):
             return _lease_page([_lease()])(body)
 
         with stub_kea({"lease4-get-page": lease_page}):
-            reconcile(server, 4, [_lease_phase()])
+            reconcile(server, 4, [_lease_phase(server)])
 
         self.assertLess(before, seen["cutoff"])
         self.assertLess(seen["cutoff"], _links(_row())["owner"].confirmation)
@@ -861,8 +860,9 @@ class LeasePhaseRowFailureTest(TestCase):
         _reconcile(server, [_lease("198.18.0.42")])
         before = list(NbIP.objects.values())
         links = list(IPAMOwnershipLink.objects.values())
+        observation = LeaseObservation(None, next_confirmation_number(), None)
         with stub_kea({}) as kea, self.assertRaises(ValueError):
-            reconcile(server, 4, [_lease_phase(), _lease_phase()])
+            reconcile(server, 4, [LeasePhase(observation, {1: 24}), LeasePhase(observation, {1: 24})])
         self.assertEqual(kea.commands(), [])
         self.assertEqual(list(NbIP.objects.values()), before)
         self.assertEqual(list(IPAMOwnershipLink.objects.values()), links)
@@ -1130,7 +1130,7 @@ class ReservationPhaseTest(TestCase):
 
         for _ in range(2):
             with stub_kea(kea):
-                phases = [LeasePhase(None, {}), ReservationPhase(subnet_catalogue.for_synchronization(server, 6))]
+                phases = [lease_phase(server, 6, {}), ReservationPhase(subnet_catalogue.for_synchronization(server, 6))]
                 report = reconcile(server, 6, phases)
             self.assertEqual((report.complete, report.removed), (True, 0))
 
@@ -1445,9 +1445,8 @@ class _Holder:
             self.connection.close()
 
 
-@override_settings(PLUGINS_CONFIG=_config("remove"))
-class IPAMPhaseConcurrencyTest(TransactionTestCase):
-    """Concurrent runs, row locks and operator edits, each on its own connection, in a fixed order."""
+class ConcurrencyHarness(TransactionTestCase):
+    """Run work on separate connections in threads, and hold locks on another connection, in a fixed order."""
 
     def setUp(self) -> None:
         self.results: dict[str, object] = {}
@@ -1506,6 +1505,11 @@ class IPAMPhaseConcurrencyTest(TransactionTestCase):
         if not isinstance(result, SyncReport):
             self.fail(f"{name} did not return a report: {result!r}")
         return result
+
+
+@override_settings(PLUGINS_CONFIG=_config("remove"))
+class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
+    """Concurrent runs, row locks and operator edits, each on its own connection, in a fixed order."""
 
     def test_source_enabled_while_cleanup_waits_preserves_the_adopted_address(self):
         from netbox_kea.ipam_reconciliation import upgrade_counts
@@ -1999,7 +2003,7 @@ class IPAMPhaseConcurrencyTest(TransactionTestCase):
 
         def run_reconciliation():
             with transaction.atomic():
-                report = reconcile(owner, 4, [_lease_phase()])
+                report = reconcile(owner, 4, [_lease_phase(owner)])
                 policy_held.set()
                 if not server_row_locked.wait(timeout=30):
                     raise TimeoutError("Receipt completion did not lock the Server")
@@ -2164,7 +2168,7 @@ class IPAMPhaseConcurrencyTest(TransactionTestCase):
 
         with stub_kea({"lease4-get-page": _lease_page([_lease(hostname="host")])}):
             for server in (first, second):
-                self._start(server.name, lambda server=server: reconcile(server, 4, [_lease_phase()]))
+                self._start(server.name, lambda server=server: reconcile(server, 4, [_lease_phase(server)]))
             self._wait_for_lock_waits(2)
             holder.commit()
             self._join()
@@ -2205,13 +2209,12 @@ class IPAMPhaseConcurrencyTest(TransactionTestCase):
             return _lease_page(reported)(body)
 
         with _kea(responses={"lease4-get-page": lease_page}):
-            # Both phases run, so the cleanup may remove the last link of the Server.
-            phases = _phases(server)
+            # Both phases run, so the cleanup may remove the last link of the Server. Each thread reads its own leases.
             # The claim takes the identity lock, then waits for the row lock inside its transaction.
-            self._start("claim", lambda: reconcile(server, 4, phases))
+            self._start("claim", lambda: reconcile(server, 4, _phases(server)))
             self._wait_for_lock_waits(1)
             # The cleanup takes its cutoff now, reads a snapshot without the lease, and waits for the identity lock.
-            self._start("cleanup", lambda: reconcile(server, 4, phases))
+            self._start("cleanup", lambda: reconcile(server, 4, _phases(server)))
             self._wait_for_lock_waits(2)
             holder.commit()
             self._join()
@@ -2227,7 +2230,7 @@ class IPAMPhaseConcurrencyTest(TransactionTestCase):
         operator = self._hold("UPDATE ipam_ipaddress SET description = 'Printer on floor 2' WHERE id = %s", [ip.pk])
 
         with stub_kea({"lease4-get-page": _lease_page([_lease(hostname="renamed")])}):
-            self._start("run", lambda: reconcile(server, 4, [_lease_phase()]))
+            self._start("run", lambda: reconcile(server, 4, [_lease_phase(server)]))
             self._wait_for_lock_waits(1)
             operator.commit()
             self._join()
@@ -2368,7 +2371,7 @@ class IPAMPhaseConcurrencyTest(TransactionTestCase):
         holder = self._hold("LOCK TABLE ipam_ipaddress IN SHARE MODE", [])
         with _kea([_lease(hostname="host")]):
             self._start("claim", lambda: claim(first, 4, [typed_lease(_lease(hostname="host"))], force=False))
-            self._start("reconcile", lambda: reconcile(second, 4, [_lease_phase()]))
+            self._start("reconcile", lambda: reconcile(second, 4, [_lease_phase(second)]))
             self._wait_for_lock_waits(2)
             holder.commit()
             self._join()

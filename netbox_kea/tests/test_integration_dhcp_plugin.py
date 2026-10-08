@@ -35,7 +35,7 @@ from netbox_kea.reservations import (
 from netbox_kea.subnet_catalogue import IncompleteCatalogueSnapshot, SubnetIdentity, VerifiedSubnet
 
 from .kea_stub import _res_page, kea_client, stub_kea
-from .utils import _make_db_server, linked_dhcp_targets, plugins_config
+from .utils import _make_db_server, lease_phase, linked_dhcp_targets, plugins_config
 
 DHCP_PLUGIN = "netbox_dhcp"
 _PLUGINS_CONFIG = plugins_config()
@@ -1457,7 +1457,7 @@ class DhcpPluginStaleCleanupGuardTest(TestCase):
 
         from netbox_kea import subnet_catalogue
         from netbox_kea.integrations import dhcp_plugin
-        from netbox_kea.ipam_reconciliation import LeasePhase, ReservationPhase, reconcile
+        from netbox_kea.ipam_reconciliation import ReservationPhase, reconcile
         from netbox_kea.models import IPAMOwnershipLink
 
         from .kea_stub import _catalogue_responses_for_subnets
@@ -1476,7 +1476,6 @@ class DhcpPluginStaleCleanupGuardTest(TestCase):
         }
         dhcp_plugin.import_server_config(self.server, parse_dhcp_config(conf, 4), _reservation_snapshot(conf, 4))
         referenced = IPAddress.objects.get(address="10.77.0.50/24")
-        lease_phase = LeasePhase(max_leases=None, subnet_prefix_lengths={1: 24})
         lease = {"ip-address": "10.77.0.50", "hostname": "pc", "subnet-id": 1}
         empty_kea = {
             **_catalogue_responses_for_subnets(4, [{"id": 1, "subnet": "10.77.0.0/24"}]),
@@ -1486,13 +1485,13 @@ class DhcpPluginStaleCleanupGuardTest(TestCase):
         for mode in ("remove", "deprecate"):
             with self.subTest(mode), override_settings(PLUGINS_CONFIG=plugins_config(stale_ip_cleanup=mode)):
                 with stub_kea({"lease4-get-page": _lease_page([lease])}):
-                    reconcile(self.server, 4, [lease_phase])
+                    reconcile(self.server, 4, [lease_phase(self.server, 4, {1: 24})])
                 self.assertTrue(IPAMOwnershipLink.objects.filter(ip_address=referenced).exists())
 
                 # Both phases run, so the cleanup decides the last link of the Server.
                 with stub_kea(empty_kea):
                     reservation_phase = ReservationPhase(subnet_catalogue.for_synchronization(self.server, 4))
-                    report = reconcile(self.server, 4, [lease_phase, reservation_phase])
+                    report = reconcile(self.server, 4, [lease_phase(self.server, 4, {1: 24}), reservation_phase])
 
                 self.assertEqual((report.removed, report.deprecated), (0, 0))
                 self.assertIn(IPAddress.objects.get(pk=referenced.pk).status, {"reserved", "dhcp"})

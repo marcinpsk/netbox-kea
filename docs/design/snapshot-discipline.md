@@ -25,8 +25,8 @@ ObjectChange values for IPAM, MAC addresses, DHCP imports and the sync toggle.
 `netbox_kea/tests/snapshot_discipline.py` scans production Python modules. Tests
 and migrations are excluded. The native suite and pre-commit hook run the same
 scanner. The inventory names the module, function, direct receiver, classification
-and save count for each current site. It covers 27 saves: 16 loaded updates and
-11 explicit create, plain bookkeeping or framework sites. An unclassified direct
+and save count for each current site. It covers 28 saves: 16 loaded updates and
+12 explicit create, plain bookkeeping or framework sites. An unclassified direct
 save or a changed save count requires an inventory review.
 
 For loaded sites, a small local walk checks standalone snapshots, direct field

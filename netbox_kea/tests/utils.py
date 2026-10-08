@@ -94,6 +94,13 @@ def linked_dhcp_targets(server):
 _INT_PK_RE = re.compile(r"/servers/(\d+)/")
 
 
+def lease_phase(server: Server, family, subnet_prefix_lengths, max_leases: int | None = None):
+    """Read the stubbed Lease Snapshot of *server* and return its address lease phase; call it inside ``stub_kea``."""
+    from netbox_kea.ipam_reconciliation import LeasePhase, read_leases
+
+    return LeasePhase(read_leases(server, family, max_leases), subnet_prefix_lengths)
+
+
 def _make_db_server(**kwargs) -> Server:
     """Create a persisted Server fixture with sensible defaults.
 
