@@ -1358,7 +1358,6 @@ def _enrich_leases_with_badges(
     addresses = [_row_address(lease) for lease in leases if lease["lease"].kind == "address"]
     nb_ips = bulk_fetch_netbox_ips(addresses, vrf_id=server.sync_vrf_id)
     nb_prefixes = _sync_vrf_prefixes(server, [lease["lease"] for lease in leases])
-    now = datetime.now(tz=timezone.utc)
     for lease in leases:
         ip = _row_address(lease)
         observed = lease["lease"]
@@ -1370,7 +1369,7 @@ def _enrich_leases_with_badges(
             lease[url_key] = synced.get_absolute_url()
         # Sync needs a Current Lease; don't offer it for leases with indeterminate reservation state.
         elif (
-            is_current(observed, now)
+            lease["current"]
             and host_cmds_available
             and not lease.get("pending_ip_change")
             and not lease.get("stale_mac")

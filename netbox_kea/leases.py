@@ -665,12 +665,21 @@ def is_current(lease: Lease, at: datetime) -> bool:
         ValueError: If *at* is naive.
 
     """
+    ended = lifetime_ended(lease, at)
+    return not ended and (lease.state == "assigned" or (lease.state == "registered" and lease.kind == "address"))
+
+
+def lifetime_ended(lease: Lease, at: datetime) -> bool:
+    """Return whether the valid lifetime of *lease* has ended at the aware time *at*.
+
+    Raises:
+        ValueError: If *at* is naive.
+
+    """
     if at.tzinfo is None or at.utcoffset() is None:
         raise ValueError("Lease current use needs an aware evaluation time.")
-    if lease.state != "assigned" and not (lease.state == "registered" and lease.kind == "address"):
-        return False
     # Kea compares whole seconds: a finite lifetime ends when its last second is before now.
-    return lease.infinite or lease.cltt + lease.valid_lifetime >= math.floor(at.timestamp())
+    return not lease.infinite and lease.cltt + lease.valid_lifetime < math.floor(at.timestamp())
 
 
 def shown_lease(lease: Lease) -> ShownLease:

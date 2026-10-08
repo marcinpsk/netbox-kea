@@ -13,7 +13,7 @@ import io
 import json
 import re
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import urlencode
@@ -179,6 +179,26 @@ class LeaseBrowsingTest(_ViewTestBase):
         self.assertTrue(rows["address"].get("sync_url"))
         # Sync claims a delegated prefix as a Prefix.
         self.assertEqual(rows["delegated-prefix"].get("sync_url"), rows["address"]["sync_url"])
+
+    def test_the_sync_offer_uses_the_evaluation_time_of_the_observation(self):
+        class _TwoHoursLater(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return datetime.now(tz) + timedelta(hours=2)
+
+        responses = {
+            **_catalogue_responses_for_subnets(4, _SUBNETS4),
+            "lease4-get-all": lease_reply(lease_record("192.0.2.10", subnet_id=10, valid_lft=3600)),
+            "reservation-get": {"result": 3},
+        }
+        # mock-ok: the clock is the boundary; only the view module reads it later than the observation.
+        with stub_kea(responses), patch("netbox_kea.views.leases.datetime", _TwoHoursLater):
+            response = self.client.get(self._url(4), {"by": "subnet_id", "q": "10"}, HTTP_HX_REQUEST="true")
+
+        (row,) = (row.record for row in response.context["table"].rows)
+        self.assertEqual(row["state_label"], "Active")
+        self.assertEqual(row["expiry_class"], "")
+        self.assertTrue(row.get("sync_url"))
 
     def test_only_an_address_lease_row_links_its_netbox_ip_address(self):
         # NetBox holds an IP Address at the network address of the prefix, which is not the delegated prefix.
