@@ -52,12 +52,12 @@ from .leases import (
     _creation_arguments,
     _edited_arguments,
     allocation_identities,
+    confirm_lease_creation,
     lease_edit_conflicts,
     lookup_arguments,
     read_exact_lease,
     read_lease_change,
     read_lease_collection,
-    read_lease_creation,
     read_lease_page,
     read_lease_page_count,
 )
@@ -338,7 +338,7 @@ class LeaseQueryTooBroad(LeaseQueryGuardError):
 class LeaseQueryNotMeasurable(LeaseQueryGuardError):
     """Raised when Kea cannot count a requested Subnet lease category."""
 
-    def __init__(self, state: str) -> None:
+    def __init__(self, state: LeaseState) -> None:
         self.state = state
         super().__init__(f"Kea cannot measure Subnet lease state {state} before an unpaged query.")
 
@@ -1784,7 +1784,7 @@ class KeaClient:
 
         """
         response = self.command(LEASE_ADD[request.family], request.family, arguments=_creation_arguments(request))
-        read_lease_creation(response)
+        confirm_lease_creation(response)
 
     def lease_get(self, identity: LeaseIdentity) -> ExactLeaseResult:
         """Read the one Lease with *identity*: found, confirmed absent, or a failed observation.

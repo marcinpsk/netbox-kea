@@ -1085,7 +1085,7 @@ def read_lease_change(response: Any, *, refused: int) -> bool:
     return result == 0
 
 
-def read_lease_creation(response: Any) -> None:
+def confirm_lease_creation(response: Any) -> None:
     """Read one ``lease{4,6}-add`` reply that ``KeaClient.command`` checked; only one success entry confirms it.
 
     Raises:
