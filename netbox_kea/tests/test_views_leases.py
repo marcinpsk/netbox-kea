@@ -3345,6 +3345,21 @@ class TestLeaseAddPostErrors(_ViewTestBase):
             response = self.client.post(self._url(), self._valid_form())
         self.assertEqual(response.status_code, 200)
 
+    def test_a_conflict_shows_a_readable_message(self):
+        """Kea's lease_cmds answers result 4 (CONTROL_RESULT_CONFLICT) when the lease already exists."""
+        with _lease_stub({"lease4-add": {"result": 4, "text": "IPv4 lease already exists."}}):
+            response = self.client.post(self._url(), self._valid_form())
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            [str(message) for message in get_messages(response.wsgi_request)],
+            [
+                (
+                    "The change conflicts with the current state of the Kea server: for example, the lease already"
+                    " exists, or another request changed it at the same time. Check the current state and try again."
+                )
+            ],
+        )
+
     def test_request_exception_rerenders_form(self):
         """RequestException from lease_add re-renders form with error."""
         with _lease_stub({"lease4-add": requests.ConnectionError("down")}):

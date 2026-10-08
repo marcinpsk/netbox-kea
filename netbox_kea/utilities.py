@@ -345,6 +345,7 @@ def kea_error_hint(exc: Any) -> str:
         1  — generic error
         2  — command not supported (hook library not loaded)
         3  — empty result / not found
+        4  — conflict with the server state (lease_cmds: the lease exists, or a concurrent change)
         128 — service not connected / daemon unreachable
     """
     result = getattr(exc, "response", {}).get("result", -1)
@@ -355,6 +356,11 @@ def kea_error_hint(exc: Any) -> str:
         )
     if result == 3:
         return "No matching records found in Kea."
+    if result == 4:
+        return (
+            "The change conflicts with the current state of the Kea server: for example, the lease already exists,"
+            " or another request changed it at the same time. Check the current state and try again."
+        )
     if result == 128:
         return "Cannot reach the Kea daemon. Check that the service is running and the server URL is reachable."
     if result == 0:
