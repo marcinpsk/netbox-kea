@@ -119,10 +119,10 @@ def _parse_subnet_lease_state(raw_state, selector) -> tuple[LeaseState | None, s
         state = parse_decimal(raw_state)
     except (TypeError, ValueError):
         return None, "A Subnet query supports only the Active or Declined state."
-    names = {constants.LEASE_STATE_CODES[name]: name for name in constants.LEASE_QUERY_STATES}
-    if state not in names:
+    name = constants.LEASE_STATES[state] if 0 <= state < len(constants.LEASE_STATES) else None
+    if name not in constants.LEASE_QUERY_STATES:
         return None, "A Subnet query supports only the Active or Declined state."
-    return names[state], None
+    return name, None
 
 
 def _lease_parameter_error(params, version: int) -> str | None:
