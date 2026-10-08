@@ -13,6 +13,201 @@ forked, and predate its conventional-commit history.
 
 <!-- version list -->
 
+## v2.0.0 (2026-10-08)
+
+### Bug Fixes
+
+- Accept only a local path as a return URL
+  ([`51bb3b7`](https://github.com/marcinpsk/netbox-kea/commit/51bb3b720342001e569255783b07f20bfbb7b9ff))
+
+- Bound Subnet ID lease queries to the Kea range
+  ([`66a2ca5`](https://github.com/marcinpsk/netbox-kea/commit/66a2ca5c400fb6516ee58202d479681126ccc2ed))
+
+- Check all Reservation MACs before the first MAC write
+  ([`910f9bc`](https://github.com/marcinpsk/netbox-kea/commit/910f9bc1c50c6013ddbf3627795568fcfdcf498c))
+
+- Check each Reservation MAC once with a bounded query
+  ([`fcca25c`](https://github.com/marcinpsk/netbox-kea/commit/fcca25cf0633714e8646df604d34ad26d169cb00))
+
+- Close coverage and relationship gaps in Lease reads
+  ([`4a5d670`](https://github.com/marcinpsk/netbox-kea/commit/4a5d670632e557617c640691b3ba31073bd36640))
+
+- Delete a selected delegated-prefix lease as a prefix
+  ([`4d647d0`](https://github.com/marcinpsk/netbox-kea/commit/4d647d0bed6dd849362121f42163eea637c29895))
+
+- Do not link a delegated-prefix lease row to a NetBox IP Address
+  ([`b87e539`](https://github.com/marcinpsk/netbox-kea/commit/b87e5390ad9748609427e05f67da5e22d7da4b18))
+
+- Fail one lease delete on a malformed Kea reply
+  ([`ce44a99`](https://github.com/marcinpsk/netbox-kea/commit/ce44a99d1aee739790b2518e5207ad0ed07cedc0))
+
+- Hide the background_job label on the lease bulk-delete page
+  ([`fd68664`](https://github.com/marcinpsk/netbox-kea/commit/fd68664d2a7fa460dcf00d7c575c1177ef52493c))
+
+- Keep a blank lease search query in the return URL
+  ([`e479069`](https://github.com/marcinpsk/netbox-kea/commit/e47906943af97a38a20ea28956fdaa7295fd8373))
+
+- Keep a Reservation conflict a conflict when its MAC does not resolve
+  ([`82dd7eb`](https://github.com/marcinpsk/netbox-kea/commit/82dd7ebc3b1f3c8d4d308a5415bcdbe3af17d174))
+
+- Make one event write per MAC sync and check Reservation MACs first
+  ([`7d45edc`](https://github.com/marcinpsk/netbox-kea/commit/7d45edcacb3baf94a5355758e9f3ed773ba5ed42))
+
+- Offer lease Sync and Edit only for address leases
+  ([`83af234`](https://github.com/marcinpsk/netbox-kea/commit/83af2343ecb170734c260580ff8b708505b20ad5))
+
+- Offer the create-reservation link only for address leases
+  ([`7b1866e`](https://github.com/marcinpsk/netbox-kea/commit/7b1866e69c642343a97cd030fe9c7c9016c54bd8))
+
+- Parse lease Subnet IDs as ASCII decimal digits only
+  ([`5b9f157`](https://github.com/marcinpsk/netbox-kea/commit/5b9f15781917230c21fbd04f6d636760733258a9))
+
+- Refuse lease Subnet IDs above the Kea range before any request
+  ([`298e9a1`](https://github.com/marcinpsk/netbox-kea/commit/298e9a1d100ee42f8e19addb3cb0b505a1ebdf8a))
+
+- Register each Option Definition view once
+  ([`8dfc7f1`](https://github.com/marcinpsk/netbox-kea/commit/8dfc7f147c8fccd56bb6aee1e93b46b9c9fe6ca4))
+
+- Render Subnet, Shared Network and Lease page controls in the content block
+  ([`81d8257`](https://github.com/marcinpsk/netbox-kea/commit/81d8257490691730bc25902cf1f496bf6067687a))
+
+- Report a Kea reply body that is not a JSON list as a malformed reply
+  ([`840f21f`](https://github.com/marcinpsk/netbox-kea/commit/840f21f4708e9614e33f4e6133d5e7ab746c4bd2))
+
+- Return 502 for every Kea transport failure on REST lease search
+  ([`06eedc3`](https://github.com/marcinpsk/netbox-kea/commit/06eedc362705aceec916bea364db05bb3782b520))
+
+- Return 502 for every malformed Kea reply on REST lease search
+  ([`5107877`](https://github.com/marcinpsk/netbox-kea/commit/5107877e8b86a96e8b6de164174b438647db9b4a))
+
+- Return to the lease search after a lease edit
+  ([`5f518f5`](https://github.com/marcinpsk/netbox-kea/commit/5f518f5058ebdda0f982ee76137cecf3b6cbda28))
+
+- Return to the search from the Reserve and Add Reservation links
+  ([`e07628d`](https://github.com/marcinpsk/netbox-kea/commit/e07628d883db4fdbc052a85f34b782c877bfb779))
+
+- Run every caught plugin transaction through event_scope.atomic
+  ([`b046b5d`](https://github.com/marcinpsk/netbox-kea/commit/b046b5dda09ddf189065151d52fe49153f9d188b))
+
+- Select the Reservations tab on the Reservation import page
+  ([`f5f6530`](https://github.com/marcinpsk/netbox-kea/commit/f5f65303ecc214c9bcbc21374100c66860ac32c9))
+
+- Select units from NetBox 4.6.9, where event_tracking first nests
+  ([`fb2fb0f`](https://github.com/marcinpsk/netbox-kea/commit/fb2fb0f8b9255ef9256aeacffefe4df4c841c227))
+
+- Serve the lease CSV import at one URL per family
+  ([`6ea0120`](https://github.com/marcinpsk/netbox-kea/commit/6ea0120515112ecd65cb0ec5a6cc7748e95dec3e))
+
+- Show a hostname-only Reservation as a host reservation
+  ([`efd88f8`](https://github.com/marcinpsk/netbox-kea/commit/efd88f8ba05ee194972e918a00aa47cb889355c0))
+
+- Show a readable message for Kea result 4
+  ([`9524bc0`](https://github.com/marcinpsk/netbox-kea/commit/9524bc08f117ef0d939900d594546295675078b1))
+
+- Show no empty meta fields box on the lease bulk-delete page
+  ([`00910e7`](https://github.com/marcinpsk/netbox-kea/commit/00910e751385792dbbf726b7d72d1d17a7782a22))
+
+- Show the prefix length on a delegated-prefix lease row
+  ([`0acf285`](https://github.com/marcinpsk/netbox-kea/commit/0acf285698d03554802f31af2b472ec255ce2e00))
+
+- Space header icons and tidy the lease import page
+  ([`48a1cdf`](https://github.com/marcinpsk/netbox-kea/commit/48a1cdf7a63a5cfabf536255e404503a83cdb020))
+
+### Chores
+
+- Flag a RequestException handler without a RuntimeError sibling
+  ([`067cb4d`](https://github.com/marcinpsk/netbox-kea/commit/067cb4d70a9d88fe703ece75b6208bd4a3a81a76))
+
+- **opengrep**: Flag Exception and BaseException inside tuple handlers
+  ([`6fef7d5`](https://github.com/marcinpsk/netbox-kea/commit/6fef7d5502b296f1156d2da6c33d7e3c83f1cd55))
+
+- **opengrep**: Guard plugin transactions and NetBox event internals
+  ([`a214975`](https://github.com/marcinpsk/netbox-kea/commit/a2149752f7ff9291a54401e60eed6c807a7a0fe8))
+
+### Continuous Integration
+
+- Run the event-rollback tests on NetBox 4.3
+  ([`1850b07`](https://github.com/marcinpsk/netbox-kea/commit/1850b07492ea4bcd059dacce32434d4c7a3d7cc7))
+
+### Documentation
+
+- Design for queued events of a rolled-back plugin transaction
+  ([`462566d`](https://github.com/marcinpsk/netbox-kea/commit/462566d23ee1493b32eb6ddbf2232d61b6944353))
+
+- Document the Lease observation, REST and CSV contract
+  ([`7391ec5`](https://github.com/marcinpsk/netbox-kea/commit/7391ec5e53282b502598c0881e304c8aac509687))
+
+- List the complete Lease export columns and read edges
+  ([`4797a3f`](https://github.com/marcinpsk/netbox-kea/commit/4797a3fe69f463d8aac96bb7b2cfdcec66e28e39))
+
+- Name the unit gate in AGENTS.md without a NetBox patch release
+  ([`92d83d0`](https://github.com/marcinpsk/netbox-kea/commit/92d83d0438bcd4255a0856770b2e0e124f29a8bf))
+
+- State the NetBox 4.6.9 unit boundary in the design summary
+  ([`ae1202f`](https://github.com/marcinpsk/netbox-kea/commit/ae1202f7f6dbe177cef06f0115dcf371989a9195))
+
+- State when event rules see plugin changes, and the known limits
+  ([`c3abcd9`](https://github.com/marcinpsk/netbox-kea/commit/c3abcd9c0f00ca3cb29faa0660320fedd0dc8a2c))
+
+### Features
+
+- Add event_scope.atomic as the owner of plugin transactions
+  ([`36401ae`](https://github.com/marcinpsk/netbox-kea/commit/36401ae49a720ac3cb4179dfcb0b648e37754f73))
+
+- Read Leases as typed observations in every read consumer
+  ([`7ceaad1`](https://github.com/marcinpsk/netbox-kea/commit/7ceaad1997e81402795d626e655c6588d9d3b10e))
+
+### Refactoring
+
+- Catch DatabaseError without its own subclasses
+  ([`64eef13`](https://github.com/marcinpsk/netbox-kea/commit/64eef13033477ef441739f7a9f96f08c922cf4b3))
+
+- Catch only the exceptions that each Kea-adjacent try can raise
+  ([`25708ab`](https://github.com/marcinpsk/netbox-kea/commit/25708ab8b34103d5aa79fd673eb0d66e28a7ece8))
+
+### Testing
+
+- Answer lease get-all in the branching guard read stub
+  ([`9e96255`](https://github.com/marcinpsk/netbox-kea/commit/9e962551662358a4196c415c4df137cf4b168ced))
+
+- Assert a lease with a string subnet-id is excluded and diagnosed
+  ([`8c2911d`](https://github.com/marcinpsk/netbox-kea/commit/8c2911d79fe46e90f1185459ca0f156b011dab82))
+
+- Derive the unit gate from the NetBox version, not from event_scope
+  ([`d5d4c36`](https://github.com/marcinpsk/netbox-kea/commit/d5d4c362cabca631351daf7cb928bf3020b2122b))
+
+- Exercise missing and null lease subnet-id before reservation lookup
+  ([`492f027`](https://github.com/marcinpsk/netbox-kea/commit/492f027488df61de5b745739d1721bcb35dd4d67))
+
+- Expect the not-found warning when a lease vanishes before delete
+  ([`7dfe0c6`](https://github.com/marcinpsk/netbox-kea/commit/7dfe0c623280db89017ec0bf047bf4c6a551593e))
+
+- Give the branching guard lease fixtures that a real Kea sends
+  ([`e7dd3be`](https://github.com/marcinpsk/netbox-kea/commit/e7dd3be8971e8e472d14fbf3b89fca67826d3c3d))
+
+- Pin the event limits of a late delete guard and a branch merge
+  ([`349911d`](https://github.com/marcinpsk/netbox-kea/commit/349911d9c5a08be1fa11d6f6bbfcc91ecf12c93c))
+
+- Remove a prefix Reservation test that pinned a wrong badge
+  ([`f32b262`](https://github.com/marcinpsk/netbox-kea/commit/f32b2625ecc27c837fd7de479880e19c1e87f276))
+
+### Breaking Changes
+
+- Export All Leases and All Data use the documented columns family, kind, address, prefix_length,
+  subnet_id, state, current, hostname, valid_lifetime, last_transaction, infinite, expires_at, then
+  hw_address and client_id for DHCPv4, or duid, iaid, hw_address and preferred_lifetime for DHCPv6.
+  A Subnet CIDR search for an unconfigured CIDR is refused instead of returning no leases.
+
+- The leases4 and leases6 REST actions return a normalized Lease observation: count, results,
+  diagnostics, complete, next_cursor, query, coverage and evaluated_at. Each result is the public
+  Lease projection (family, kind, address, prefix_length, subnet_id, state, current, binding,
+  hostname, valid_lifetime, last_transaction and expiration). The UI-enriched keys, the Kea
+  extension values and the display labels are gone. Lease CSV exports add the Family, Kind and
+  Prefix Length columns and drop the Type, Reserved and NetBox IP columns. Export All Leases and All
+  Data refuse an observation with a malformed record. The Current View export is labeled limited
+  coverage and is named leases_limited_coverage.csv.
+
+
 ## v1.14.0 (2026-10-07)
 
 ### Bug Fixes
