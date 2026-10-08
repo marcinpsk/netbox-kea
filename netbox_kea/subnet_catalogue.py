@@ -225,6 +225,16 @@ class CatalogueSnapshot:
             subnet.qualifying_suffix,
         )
 
+    def has_pool_qualifying_suffix(self, identity: SubnetIdentity) -> bool:
+        """Return whether a Pool of the shown Subnet *identity* sets a suffix, so a name without an address is unknown."""
+        subnet = self.find_by_id(identity.subnet_id)
+        return (
+            subnet is not None
+            and subnet.identity == identity
+            and subnet.configuration is not None
+            and bool(subnet.configuration.pool_qualifying_suffixes)
+        )
+
     def address_qualifying_suffix(self, address: IPAddressValue | None) -> str:
         """Return the DDNS qualifying suffix of the Subnet that contains *address*, else the global suffix.
 
