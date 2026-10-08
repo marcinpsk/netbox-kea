@@ -383,7 +383,7 @@ class TestKeaErrorHint(TestCase):
 
 
 class TestParseLeaseCsv(TestCase):
-    """parse_lease_csv(version, csv_text) → (row number, typed creation request) pairs."""
+    """parse_lease_csv(version, csv_text) → (file line number, typed creation request) pairs."""
 
     def _parse(self, content: str, version: Family = 4) -> list:
         from netbox_kea.utilities import parse_lease_csv
@@ -417,19 +417,32 @@ class TestParseLeaseCsv(TestCase):
         self.assertEqual((request.subnet_id, request.valid_lifetime, request.hostname), (None, None, None))
 
     def test_v4_missing_required_columns_raise(self):
-        """A v4 row without ip-address or hw-address raises ValueError with its row number."""
+        """A v4 row without ip-address or hw-address raises ValueError with its file line number."""
         for content in ("hw-address\naa:bb:cc:dd:ee:ff", "ip-address\n10.0.0.1"):
-            with self.subTest(content=content), self.assertRaisesRegex(ValueError, "^Row 2: missing required"):
+            with self.subTest(content=content), self.assertRaisesRegex(ValueError, "^Line 2: missing required"):
                 self._parse(content)
 
     def test_v4_multiple_rows(self):
-        """Multiple data rows produce one request each, with their row numbers."""
+        """Multiple data rows produce one request each, with their file line numbers."""
         rows = self._parse("ip-address,hw-address\n10.0.0.1,aa:bb:cc:00:00:01\n10.0.0.2,aa:bb:cc:00:00:02\n")
         self.assertEqual([number for number, _request in rows], [2, 3])
 
     def test_v4_strips_whitespace_skips_blank_and_comment_lines_and_the_bom(self):
         rows = self._parse("\ufeffip-address,hw-address\n\n# comment\n  10.0.0.1 ,aa:bb:cc:00:00:01\n\n")
         self.assertEqual([str(request.address) for _number, request in rows], ["10.0.0.1"])
+
+    def test_numbers_name_the_physical_line_of_each_row(self):
+        """The header, the BOM line, skipped lines and every line of a quoted field count."""
+        rows = self._parse(
+            "\ufeffip-address,hw-address,note\n"
+            '10.0.0.1,aa:bb:cc:00:00:01,"two\nlines"\n'
+            "# comment\n"
+            "\n"
+            "10.0.0.2,aa:bb:cc:00:00:02,one line\n"
+        )
+        self.assertEqual(
+            [(number, str(request.address)) for number, request in rows], [(2, "10.0.0.1"), (6, "10.0.0.2")]
+        )
 
     # v6 happy path
 
@@ -580,7 +593,7 @@ class TestOptionalViewTab(TestCase):
 
 
 class TestParseLeaseCsvValidationPaths(TestCase):
-    """parse_lease_csv names the row and the column of an invalid value, never the value."""
+    """parse_lease_csv names the file line and the column of an invalid value, never the value."""
 
     def _refused(self, content, version=4) -> str:
         from netbox_kea.utilities import parse_lease_csv
@@ -591,24 +604,28 @@ class TestParseLeaseCsvValidationPaths(TestCase):
 
     def test_each_invalid_value_names_its_row_and_column_only(self):
         cases = (
-            ("ip-address,hw-address\nnot-an-ip,aa:bb:cc:00:00:01", 4, "Row 2: 'ip-address' is not an IPv4 address."),
+            ("ip-address,hw-address\nnot-an-ip,aa:bb:cc:00:00:01", 4, "Line 2: 'ip-address' is not an IPv4 address."),
             (
                 "ip-address,hw-address\n2001:db8::1,aa:bb:cc:00:00:01",
                 4,
-                "Row 2: 'ip-address' is not valid for a DHCPv4 lease.",
+                "Line 2: 'ip-address' is not valid for a DHCPv4 lease.",
             ),
             (
                 "ip-address,hw-address\n10.0.0.1,zz:zz:zz:zz:zz:zz",
                 4,
-                "Row 2: 'hw-address' is not valid for a DHCPv4 lease.",
+                "Line 2: 'hw-address' is not valid for a DHCPv4 lease.",
             ),
-            ("ip-address,duid,iaid\n2001:db8::1,notvalid!!!,1", 6, "Row 2: 'duid' is not valid for a DHCPv6 lease."),
-            ("ip-address,duid,iaid\n2001:db8::1,00:01,-1", 6, "Row 2: 'iaid' must be an integer."),
-            ("ip-address,duid,iaid\n2001:db8::1,00:00:00,1", 6, "Row 2: 'duid' is not valid for a DHCPv6 lease."),
+            ("ip-address,duid,iaid\n2001:db8::1,notvalid!!!,1", 6, "Line 2: 'duid' is not valid for a DHCPv6 lease."),
+            ("ip-address,duid,iaid\n2001:db8::1,00:01,-1", 6, "Line 2: 'iaid' must be an integer."),
+            ("ip-address,duid,iaid\n2001:db8::1,00:00:00,1", 6, "Line 2: 'duid' is not valid for a DHCPv6 lease."),
         )
         for content, version, message in cases:
             with self.subTest(content=content):
                 self.assertEqual(self._refused(content, version), message)
+
+    def test_an_invalid_value_after_skipped_lines_names_its_file_line(self):
+        content = "ip-address,hw-address\n# comment\n\n10.0.0.1,zz:zz:zz:zz:zz:zz\n"
+        self.assertEqual(self._refused(content), "Line 4: 'hw-address' is not valid for a DHCPv4 lease.")
 
 
 class TestKeaOptionDatalist(TestCase):

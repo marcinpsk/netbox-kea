@@ -498,7 +498,7 @@ class _BaseBulkLeaseImportView(_KeaChangeMixin, ConditionalLoginRequiredMixin, V
         try:
             rows = parse_lease_csv(self.dhcp_version, content)
         except LeaseCSVError as exc:
-            # The message names the row and the column, never a value of the file.
+            # The message names the file line and the column, never a value of the file.
             logger.info("Refused a lease CSV import: %s", exc)
             form.add_error("csv_file", str(exc))
             return self._render(request, instance, form, None)
@@ -516,18 +516,18 @@ class _BaseBulkLeaseImportView(_KeaChangeMixin, ConditionalLoginRequiredMixin, V
         created: list[str] = []
         error_rows: list[dict[str, Any]] = []
 
-        for row_num, creation in rows:
-            failed = {"row": row_num, "address": str(creation.address)}
+        for line, creation in rows:
+            failed = {"line": line, "address": str(creation.address)}
             try:
                 client.lease_add(creation)
                 created.append(str(creation.address))
             except KeaException as exc:
                 error_rows.append({**failed, "error": kea_error_hint(exc)})
             except requests.RequestException:
-                logger.exception("Connection error importing lease CSV row %s", row_num)
+                logger.exception("Connection error importing lease CSV line %s", line)
                 error_rows.append({**failed, "error": "Connection error: could not reach the Kea server."})
             except (RuntimeError, ValueError):
-                logger.exception("Data error importing lease CSV row %s", row_num)
+                logger.exception("Data error importing lease CSV line %s", line)
                 error_rows.append({**failed, "error": "Invalid response from Kea: could not parse the server reply."})
 
         if created:

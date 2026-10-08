@@ -7,7 +7,7 @@ import io
 import ipaddress
 import logging
 import re
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from datetime import datetime
 from typing import Any
 
@@ -336,13 +336,14 @@ def kea_error_hint(exc: Any) -> str:
 
 
 class LeaseCSVError(ValueError):
-    """A lease CSV row is not a valid creation request; the message names the row and the column, never a value."""
+    """A lease CSV row is not a valid creation request; the message names the file line and the column, never a value."""
 
 
 def parse_lease_csv(version: Family, content: str) -> list[tuple[int, LeaseRequest]]:
-    """Parse a lease CSV file into typed creation requests, each with its row number.
+    """Parse a lease CSV file into typed creation requests, each with the file line where its row starts.
 
-    Strips a UTF-8 BOM, and skips blank lines and lines that start with ``#``.
+    Strips a UTF-8 BOM, and skips blank lines and lines that start with ``#``. A line number counts every line
+    of the file: the header, each skipped line and each line of a quoted field.
 
     **v4 required columns**: ``ip-address``, ``hw-address``.
     **v6 required columns**: ``ip-address``, ``duid``, ``iaid``.
@@ -361,13 +362,23 @@ def parse_lease_csv(version: Family, content: str) -> list[tuple[int, LeaseReque
     columns = {field: column for column, field in fields.items()}
     model = DHCPv4LeaseRequest if version == 4 else DHCPv6LeaseRequest
 
-    content = content.lstrip("\ufeff")
-    reader = csv.DictReader(
-        line.strip() for line in io.StringIO(content) if line.strip() and not line.strip().startswith("#")
-    )
+    # The file line number of each line that the reader gets.
+    kept: list[int] = []
+
+    def data_lines() -> Iterator[str]:
+        for number, physical in enumerate(io.StringIO(content.lstrip("\ufeff")), start=1):
+            text = physical.strip()
+            if text and not text.startswith("#"):
+                kept.append(number)
+                yield text
+
+    reader = csv.reader(data_lines())
+    header = [name.strip() for name in next(reader, [])]
     parsed: list[tuple[int, LeaseRequest]] = []
-    for row_num, raw in enumerate(reader, start=2):
-        row = {key.strip(): (value or "").strip() for key, value in raw.items() if key is not None}
+    consumed = reader.line_num
+    for cells in reader:
+        line, consumed = kept[consumed], reader.line_num
+        row = dict(zip(header, (cell.strip() for cell in cells), strict=False))
         values: dict[str, Any] = {}
         for column, field in fields.items():
             text = row.get(column, "")
@@ -377,22 +388,22 @@ def parse_lease_csv(version: Family, content: str) -> list[tuple[int, LeaseReque
                 try:
                     values[field] = parse_decimal(text)
                 except ValueError:
-                    raise LeaseCSVError(f"Row {row_num}: '{column}' must be an integer.") from None
+                    raise LeaseCSVError(f"Line {line}: '{column}' must be an integer.") from None
             elif column == "ip-address":
                 try:
                     values[field] = ipaddress.ip_address(text)
                 except ValueError:
-                    raise LeaseCSVError(f"Row {row_num}: '{column}' is not an IPv{version} address.") from None
+                    raise LeaseCSVError(f"Line {line}: '{column}' is not an IPv{version} address.") from None
             else:
                 values[field] = text
         try:
-            parsed.append((row_num, model.model_validate(values)))
+            parsed.append((line, model.model_validate(values)))
         except PydanticValidationError as exc:
             refused = request_errors(exc)[0]
             column = columns.get(refused.field or "", "row")
             if refused.code == "missing":
-                raise LeaseCSVError(f"Row {row_num}: missing required field '{column}'.") from None
-            raise LeaseCSVError(f"Row {row_num}: '{column}' is not valid for a DHCPv{version} lease.") from None
+                raise LeaseCSVError(f"Line {line}: missing required field '{column}'.") from None
+            raise LeaseCSVError(f"Line {line}: '{column}' is not valid for a DHCPv{version} lease.") from None
     return parsed
 
 
