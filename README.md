@@ -66,7 +66,8 @@ NetBox plugin for the [Kea DHCP](https://www.isc.org/kea/) server. Manage your D
 - Per-subnet and global DHCP option editing
 
 **IPAM Sync**
-- Sync active leases → NetBox `IPAddress` (status `active`)
+- Sync current address leases → NetBox `IPAddress` (status `dhcp`)
+- Sync current DHCPv6 delegated-prefix leases → NetBox `Prefix`, when lease sync and Prefix sync are both on
 - Sync reservations → NetBox `IPAddress` (status `reserved`)
 - Sync button on individual leases and reservations
 - Bulk sync for entire lease tables
@@ -76,7 +77,7 @@ NetBox plugin for the [Kea DHCP](https://www.isc.org/kea/) server. Manage your D
 
 **Periodic Background Sync** *(requires `rqworker`)*
 - Automatic Kea→NetBox IPAM sync on a configurable interval (default 5 minutes)
-- Syncs all leases and reservations from all configured servers
+- Syncs all current leases and reservations from all configured servers
 - Visible in NetBox **System → Background Jobs**
 
 **DHCP Control**
@@ -311,9 +312,9 @@ All settings are under `PLUGINS_CONFIG["netbox_kea"]`:
 | `stale_ip_cleanup` | `"remove"` | What to do with stale IPs after sync: `"remove"` (delete), `"deprecate"` (set status=deprecated), `"none"` (skip) |
 | `sync_interval_minutes` | `5` | Initial interval of the background sync job (minutes). Edit it later on the **Sync Jobs** page |
 | `sync_enabled` | `True` | Initial state of the global sync switch. Edit it later on the **Sync Jobs** page |
-| `sync_leases_enabled` | `True` | Sync active DHCP leases to NetBox IPAM |
+| `sync_leases_enabled` | `True` | Sync current DHCP address leases to NetBox IPAM. With `sync_prefixes_enabled`, also DHCPv6 delegated-prefix leases as Prefixes |
 | `sync_reservations_enabled` | `True` | Sync Kea reservations to NetBox IPAM |
-| `sync_prefixes_enabled` | `True` | Sync Kea subnets to NetBox IPAM as IP Prefixes |
+| `sync_prefixes_enabled` | `True` | Sync Kea subnets to NetBox IPAM as IP Prefixes. With `sync_leases_enabled`, also DHCPv6 delegated-prefix leases |
 | `sync_ip_ranges_enabled` | `True` | Sync Kea pools to NetBox IPAM as IP Ranges |
 | `sync_max_leases_per_server` | `50000` | Hard cap on leases fetched per server per sync run. Set to `0` for no limit |
 
@@ -397,9 +398,9 @@ Each server has optional overrides for the IPAM sync job:
 | Field | Default | Description |
 |---|---|---|
 | `IPAM Sync Enabled` (`sync_enabled`) | `True` | Include this server in the periodic sync job |
-| `Sync Leases` (`sync_leases_enabled`) | `True` | Sync active DHCP leases as NetBox IP Addresses |
+| `Sync Leases` (`sync_leases_enabled`) | `True` | Sync current DHCP address leases as NetBox IP Addresses. With Sync Prefixes, also DHCPv6 delegated-prefix leases as Prefixes |
 | `Sync Reservations` (`sync_reservations_enabled`) | `True` | Sync DHCP reservations as NetBox IP Addresses |
-| `Sync Prefixes` (`sync_prefixes_enabled`) | `True` | Sync Kea subnets as NetBox IP Prefixes |
+| `Sync Prefixes` (`sync_prefixes_enabled`) | `True` | Sync Kea subnets as NetBox IP Prefixes. With Sync Leases, also DHCPv6 delegated-prefix leases |
 | `Sync IP Ranges` (`sync_ip_ranges_enabled`) | `True` | Sync Kea pools as NetBox IP Ranges |
 | `Deprecate stale Prefixes and IP Ranges` (`sync_deprecate_prefixes_and_ranges`) | `False` | Deprecate an owned Prefix or IP Range when this server drops its last ownership link as stale. These objects are never deleted |
 | `Sync VRF` (`sync_vrf`) | None (global routing table) | VRF to assign when syncing Prefixes, IP Ranges, and lease and reservation IP Addresses. There is no global fallback: leave blank to use the global routing table (no VRF). NetBox refuses to delete a VRF while a server syncs into it |
@@ -415,7 +416,8 @@ These fields override the global `PLUGINS_CONFIG` values for that specific serve
 The `Kea IPAM Sync` job runs automatically when `rqworker` is active:
 
 1. Iterates all configured `Server` objects
-2. For each server: fetches all active leases (v4 + v6) and all reservations
+2. For each server: fetches all leases (v4 + v6) and all reservations. Only a current lease is an owner: an
+   assigned address or delegated prefix, or a registered address, whose valid lifetime has not ended
 3. Creates or updates NetBox `IPAddress` objects in the server's `sync_vrf`, and links each one to the server
    and its source (lease or reservation):
    - Leases → `status=dhcp`, `dns_name` set from the lease hostname, without a trailing dot
@@ -437,8 +439,12 @@ The `Kea IPAM Sync` job runs automatically when `rqworker` is active:
    the last link can opt in to deprecation with `sync_deprecate_prefixes_and_ranges`. A deprecated object's last link
    stays marked stale until an applied report restores its active status, or another owner supersedes the stale link.
    Removing the description marker releases every link without deprecation. DHCP plugin references prevent deprecation.
-6. One server failing does not block others
-7. Summary logged per server and in total
+6. Links each current DHCPv6 delegated-prefix lease to a Prefix in the server's `sync_vrf` (source `lease-prefix`),
+   when lease sync and Prefix sync are both on. The DHCP plugin import owns delegated prefixes through its own
+   source, so neither cleans up the other's links. These Prefixes follow the rules of step 5. A delegated prefix
+   never creates an IP address
+7. One server failing does not block others
+8. Summary logged per server and in total
 
 Each execution groups its native changelog records under one request ID, including MAC address changes.
 **Sync now** records the initiating user. Scheduled runs use the reserved user `netbox-kea-sync`.
@@ -449,7 +455,7 @@ Keep it inactive and without access grants. If an existing account with that nam
 permissions, the job fails before synchronization and leaves the account unchanged.
 
 Each server's summary reports `created`, `updated`, `errors`, `prefix_errors`, `conflicts`, `disagreements`,
-`skipped` and `waiting`. The job total also reports `unowned`:
+`skipped`, `waiting` and `unclassified`. The job total also reports `unowned`:
 
 - **skipped**: reservations the sync deliberately did not write: global reservations and
   reservations that reserve no address. They are not errors and do not fail the job.
@@ -473,6 +479,8 @@ Each server's summary reports `created`, `updated`, `errors`, `prefix_errors`, `
 - **waiting**: adopted objects whose cleanup this server held during the run while a potential owner had not
   completed its initial observations. The job total counts objects still waiting after all servers finish.
   Counts include each object once across sources and address families.
+- **unclassified**: IP addresses that keep a stale DHCPv6 lease link from before the sync recorded the allocation
+  kind (see "Delegated-prefix leases from earlier releases" below).
 
 View job history, next scheduled time and logs under **System → Background Jobs → Kea IPAM Sync**.
 
@@ -486,6 +494,7 @@ permission that the Sync can use. An enabled ObjectPermission of the user, or of
 | Control | Required permissions |
 | --- | --- |
 | Lease **Sync**, lease add with **Sync to NetBox IPAM** | `ipam.add_ipaddress`, `ipam.change_ipaddress`, `dcim.add_macaddress`, `dcim.change_macaddress` |
+| Lease **Sync** of a DHCPv6 delegated prefix | `ipam.add_prefix`, `ipam.change_prefix` |
 | Reservation **Sync all** and **Sync All to NetBox**, Reservation add or edit with **Sync to NetBox IPAM** | The same as for a lease |
 | **Sync to DHCP plugin now** | The same as for a lease, `ipam.add_prefix`, `ipam.change_prefix`, `ipam.add_iprange`, `ipam.change_iprange`, change permission on the Server, and the `netbox_dhcp` permissions below |
 
@@ -517,6 +526,20 @@ sources still require complete observations, even when that timestamp is already
 leases after their final ownership link becomes stale. On upgrade, lease removal applies only to leases that
 expire after adoption. Rows already stale before the upgrade get no link, stay unchanged and count as
 `unowned`. Review these rows before removing them manually.
+
+### Delegated-prefix leases from earlier releases
+
+Earlier releases synced a DHCPv6 delegated-prefix lease as an IP address at the prefix base. The sync now records
+the allocation kind on each lease link. DHCPv4 lease links are address links. Existing DHCPv6 lease links start
+unclassified, because the stored facts cannot show the original kind:
+
+- A current address lease at the same address classifies the link as an address link.
+- A current delegated prefix at that base classifies the link only after a complete run links its Prefix.
+  The normal stale cleanup then retires the old IP address under `stale_ip_cleanup`, and other owners keep it.
+- Prefix sync off, a failed Prefix claim (for example an operator Prefix without the marker) or an incomplete
+  lease read keeps the old link unclassified.
+- An unclassified link that Kea no longer reports stays, and the summary counts it as `unclassified`.
+  Remove the sync marker from the IP address to release it.
 
 To change the sync interval, edit it on the **Sync Jobs** page. You do not need to restart the worker: the new interval applies after the next scheduled run.
 

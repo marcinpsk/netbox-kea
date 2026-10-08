@@ -2,9 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """IPAM Reconciliation (ADR 0006): the one owner of IPAM Ownership links, stale cleanup and per-row savepoints.
 
-``reconcile`` runs the lease, Reservation, Subnet and Pool phases of one Server and family. It links every owned object that a
-phase reports, and a complete phase removes its own stale links. Each row runs in its own transaction, or in a
-savepoint when the caller holds a transaction, under a transaction-level advisory lock on the object identity.
+``reconcile`` runs the lease, delegated-prefix lease, Reservation, Subnet and Pool phases of one Server and family.
+It links every owned object that a phase reports, and a complete phase removes its own stale links. Each row runs in
+its own transaction, or in a savepoint when the caller holds a transaction, under a transaction-level advisory lock
+on the object identity.
 """
 
 from __future__ import annotations
@@ -37,7 +38,7 @@ from .ipam_marker import (
     status_kind,
 )
 from .kea import KeaException
-from .leases import LEASE_VARIANTS, Lease
+from .leases import LEASE_VARIANTS, DHCPv6PrefixLease, Lease, LeaseSnapshot
 from .models import IPAMOwnershipLink, IPAMOwnershipSource, Server, SyncConfig, next_confirmation_number
 from .plugin_settings import plugin_setting
 from .pools import Pool
@@ -119,6 +120,9 @@ R = TypeVar("R")
 # The type check sees a TextChoices member as its (value, label) tuple; at runtime it is the str value.
 LEASE = cast("str", IPAMOwnershipSource.LEASE)
 RESERVATION = cast("str", IPAMOwnershipSource.RESERVATION)
+LEASE_PREFIX = cast("str", IPAMOwnershipSource.LEASE_PREFIX)
+# The sources that own Prefixes and IP Ranges; their failures count as prefix errors.
+_NETWORK_SOURCES = frozenset({"subnet", "pool", "delegated-prefix", LEASE_PREFIX})
 
 # The status of an IP address from the sources of its live links.
 _STATUSES: dict[frozenset[str], str] = {
@@ -140,16 +144,50 @@ _LOCK_CLASS = _int4("netbox_kea.ipam_reconciliation")
 
 
 @dataclass(frozen=True)
+class LeaseObservation:
+    """A Lease Snapshot paired with the confirmation cutoff taken before its read; ``failure`` when the read failed."""
+
+    snapshot: LeaseSnapshot | None
+    cutoff: int
+    max_leases: int | None
+    failure: BaseException | None = None
+
+
+def read_leases(server: Server, family: Family, max_leases: int | None) -> LeaseObservation:
+    """Read the family's Lease Snapshot after taking the cutoff for its lease phases."""
+    cutoff = next_confirmation_number()
+    try:
+        client = server.get_client(version=family)
+        snapshot = client.lease_get_all(version=family, max_leases=max_leases, server_id=server.pk)
+    # OSError covers each requests error, KeaTLSFileError included.
+    except (KeaException, OSError, ValueError, RuntimeError) as exc:
+        return LeaseObservation(None, cutoff, max_leases, exc)
+    return LeaseObservation(snapshot, cutoff, max_leases)
+
+
+@dataclass(frozen=True)
 class LeasePhase:
-    """The lease phase of one reconcile call: the Server's lease snapshot of the family.
+    """The address lease phase of one reconcile call: the Current address Leases of one observation.
 
     A mask mapping is the available Kea authority, even when empty. ``None`` selects the job's unavailable-catalogue
     fallback to Prefixes in the Server's VRF, then host masks.
     """
 
-    max_leases: int | None
+    observation: LeaseObservation
     subnet_prefix_lengths: Mapping[int, int] | None
     source: ClassVar[str] = LEASE
+
+
+@dataclass(frozen=True)
+class LeasePrefixPhase:
+    """The Current delegated-prefix Leases of the observation that the call's address lease phase also reads.
+
+    *catalogue* verifies their Subnet IDs; ``None`` means that the Subnet Catalogue is unavailable.
+    """
+
+    observation: LeaseObservation
+    catalogue: CompleteCatalogueSnapshot | None
+    source: ClassVar[str] = LEASE_PREFIX
 
 
 @dataclass(frozen=True)
@@ -218,13 +256,14 @@ class DelegatedPrefixPhase:
     source: ClassVar[str] = "delegated-prefix"
 
 
-Phase = LeasePhase | ReservationPhase | SubnetPhase | PoolPhase | DelegatedPrefixPhase
+Phase = LeasePhase | LeasePrefixPhase | ReservationPhase | SubnetPhase | PoolPhase | DelegatedPrefixPhase
 
 # The NetBox permissions that a claim of each source uses. An address claim also writes the MAC address rows.
 _ADDRESS_WRITES = ("ipam.add_ipaddress", "ipam.change_ipaddress", "dcim.add_macaddress", "dcim.change_macaddress")
 _PREFIX_WRITES = ("ipam.add_prefix", "ipam.change_prefix")
 _CLAIM_PERMISSIONS: dict[str, tuple[str, ...]] = {
     LEASE: _ADDRESS_WRITES,
+    LEASE_PREFIX: _PREFIX_WRITES,
     RESERVATION: _ADDRESS_WRITES,
     SubnetPhase.source: _PREFIX_WRITES,
     PoolPhase.source: ("ipam.add_iprange", "ipam.change_iprange"),
@@ -261,6 +300,8 @@ class SyncReport:
     completed_sources: set[str] = field(default_factory=set)
     waiting_objects: set[tuple[str, int]] = field(default_factory=set)
     unowned_objects: set[tuple[str, int]] = field(default_factory=set)
+    # IP addresses whose stale DHCPv6 lease link has no known allocation kind, so the cleanup keeps it.
+    unclassified_objects: set[tuple[str, int]] = field(default_factory=set)
     created: int = 0
     updated: int = 0
     # IP address ownership links removed by stale cleanup, including the last link of a removed address.
@@ -294,6 +335,7 @@ class SyncReport:
         self.completed_sources.update(other.completed_sources)
         self.waiting_objects.update(other.waiting_objects)
         self.unowned_objects.update(other.unowned_objects)
+        self.unclassified_objects.update(other.unclassified_objects)
         self.conflicts.update(other.conflicts)
         self.disagreements.update(other.disagreements)
         self.incomplete.update(other.incomplete)
@@ -312,13 +354,18 @@ class SyncReport:
         return len(self.unowned_objects)
 
     @property
+    def unclassified(self) -> int:
+        """Count distinct IP addresses kept for a stale lease link of unknown allocation kind."""
+        return len(self.unclassified_objects)
+
+    @property
     def complete(self) -> bool:
         """Return whether every phase of the call is complete."""
         return not self.incomplete
 
     def fail_snapshot(self, source: str, what: str, exc: BaseException) -> None:
         """Count one snapshot that could not be read, which makes its phase incomplete, and log it."""
-        if source in {"subnet", "pool"}:
+        if source in _NETWORK_SOURCES:
             self.prefix_errors += 1
         else:
             self.errors += 1
@@ -327,7 +374,7 @@ class SyncReport:
 
     def fail_row(self, source: str, what: str, exc: BaseException) -> None:
         """Count one failed row, which makes its phase incomplete, and log the first failures."""
-        if source in {"subnet", "pool", "delegated-prefix"}:
+        if source in _NETWORK_SOURCES:
             self.prefix_errors += 1
         else:
             self.errors += 1
@@ -365,6 +412,9 @@ def _effective_sources(server: Server, config: SyncConfig) -> dict[Workflow, Sou
         for source, flag in sources.items()
         if config.sync_enabled and server.sync_enabled and getattr(config, flag) and getattr(server, flag)
     )
+    # Delegated-prefix leases need both the lease and the Prefix flags; there is no separate toggle.
+    if {(6, "lease"), (6, "subnet")} <= job:
+        job |= {(6, LEASE_PREFIX)}
     imported = frozenset(
         (family, source)
         for family in families
@@ -396,7 +446,7 @@ class _ObservationReceipt:
             or len(pair) != 2
             or type(pair[0]) is not int
             or pair[0] not in (4, 6)
-            or pair[1] not in {"lease", "reservation", "subnet", "pool", "delegated-prefix"}
+            or pair[1] not in IPAMOwnershipSource.values
             for pair in sources
         ):
             raise ValueError("Malformed IPAM observation source scope")
@@ -456,6 +506,7 @@ def _pending_adoptions() -> set[tuple[Family, str]]:
         "reservation": "ip_address",
         "subnet": "prefix",
         "delegated-prefix": "prefix",
+        LEASE_PREFIX: "prefix",
         "pool": "ip_range",
     }
     config = SyncConfig.get()
@@ -575,6 +626,11 @@ class PrefixClaim:
     outcome: _Outcome | Literal["error"]
     prefix: Prefix | None = None
 
+    @property
+    def synchronized(self) -> bool:
+        """Return whether the run applied this network's report."""
+        return self.outcome in {"created", "updated", "unchanged"} and self.prefix is not None
+
 
 @dataclass(frozen=True)
 class RangeClaim:
@@ -627,10 +683,11 @@ def claim(
     *,
     catalogue: CatalogueSnapshot | None = None,
 ) -> ClaimResult:
-    """Claim one source's records in the Server's VRF, with per-address outcomes and no stale cleanup.
+    """Claim one source's records in the Server's VRF, with per-object outcomes and no stale cleanup.
 
-    A call contains one source: leases, Reservations, Subnets or Pools. All records are validated and grouped
-    before any write. Lease masks come from a live complete Kea Subnet Catalogue. Reservations carry their verified
+    A call contains one source: address leases, delegated-prefix leases, Reservations, Subnets or Pools. All records
+    are validated and grouped before any write. Lease masks and the Subnet IDs of delegated prefixes come from a live
+    complete Kea Subnet Catalogue; a delegated prefix is claimed as a Prefix. Reservations carry their verified
     Subnet mask, and *catalogue*, the catalogue that verified them, gives their published names; only a Reservation
     claim takes it. Network records carry their own canonical network and Pool bounds.
     """
@@ -651,6 +708,8 @@ def claim(
         raise ValueError("A claim takes one source: leases or Reservations, not both")
     if lease_records == (catalogue is not None):
         raise unexpected
+    if lease_records and any(isinstance(record, DHCPv6PrefixLease) for record in records):
+        return _claim_lease_prefixes(server, family, cast("Sequence[Lease]", records), force=force)
     source = LEASE if lease_records else RESERVATION
     if catalogue is None:
         catalogue = subnet_catalogue.for_synchronization(server, family)
@@ -695,6 +754,21 @@ def claim(
     for row, result in _each_row(reports.values(), report, source, apply, lambda row: row.address):
         outcomes[row.address] = result
     return ClaimResult(addresses=outcomes, conflicts=conflicts)
+
+
+def _claim_lease_prefixes(server: Server, family: Family, records: Sequence[Lease], *, force: bool) -> ClaimResult:
+    """Claim delegated-prefix leases as Prefixes; each Subnet ID must be in a live complete Subnet Catalogue."""
+    subnet_ids = {subnet.subnet_id for subnet in subnet_catalogue.for_synchronization(server, family).subnets}
+    reports: dict[str, _NetworkReport] = {}
+    for record in records:
+        if not isinstance(record, DHCPv6PrefixLease):
+            raise ValueError("A claim takes one source: address leases or delegated-prefix leases, not both")
+        if record.family != family:
+            raise ValueError("The lease does not match the claim family")
+        if record.subnet_id not in subnet_ids:
+            raise ValueError("The lease Subnet ID is absent from the Subnet Catalogue")
+        reports[str(record.prefix)] = _NetworkReport(str(record.prefix), record.prefix_length)
+    return _claim_network_reports(server, family, LEASE_PREFIX, reports, report=SyncReport(), force=force)
 
 
 def _require_one_mac_each(row: _Report) -> None:
@@ -777,12 +851,11 @@ def _reservation_rows(reservation: Reservation, catalogue: CatalogueSnapshot) ->
 def _lease_report(
     server: Server, family: Family, lease: Lease, subnet_prefix_lengths: Mapping[int, int] | None
 ) -> _Report:
-    """Resolve lease facts from Kea, or the job's explicit unavailable-catalogue fallback.
-
-    A delegated prefix reports its base address, as the lease source always has.
-    """
+    """Resolve address lease facts from Kea, or the job's explicit unavailable-catalogue fallback."""
     if lease.family != family:
         raise ValueError("The lease address does not match the claim family")
+    if isinstance(lease, DHCPv6PrefixLease):
+        raise ValueError("A delegated prefix is claimed as a Prefix, not as an IP address")
     address = lease.identity.address
     if subnet_prefix_lengths is not None:
         if lease.subnet_id not in subnet_prefix_lengths:
@@ -809,6 +882,11 @@ def reconcile(server: Server, family: Family, phases: Sequence[Phase]) -> SyncRe
     """
     if len({phase.source for phase in phases}) != len(phases):
         raise ValueError("reconcile takes at most one phase of each source")
+    observations = {id(phase.observation) for phase in phases if isinstance(phase, (LeasePhase, LeasePrefixPhase))}
+    if any(isinstance(phase, LeasePrefixPhase) for phase in phases) and (
+        family != 6 or len(observations) != 1 or not any(isinstance(phase, LeasePhase) for phase in phases)
+    ):
+        raise ValueError("A DHCPv6 delegated-prefix lease phase reads the observation of the call's lease phase")
     mode = _get_stale_cleanup_mode()
     report = SyncReport()
     cutoffs = {phase.source: _run_phase(server, family, phase, report) for phase in phases}
@@ -873,12 +951,15 @@ def _run_phase(server: Server, family: Family, phase: Phase, report: SyncReport)
     """
     if isinstance(phase, DelegatedPrefixPhase):
         return _run_delegated_prefix_phase(server, family, phase, report)
+    if isinstance(phase, LeasePrefixPhase):
+        return _run_lease_prefix_phase(server, family, phase, report)
     if isinstance(phase, (SubnetPhase, PoolPhase)):
         return _run_network_phase(server, family, phase, report)
-    cutoff = next_confirmation_number()
     if isinstance(phase, LeasePhase):
+        cutoff = phase.observation.cutoff
         reports = _lease_reports(server, family, phase, report)
     else:
+        cutoff = next_confirmation_number()
         reports = _reservation_reports(server, family, phase, report)
     rows = _each_row(
         reports.values(),
@@ -896,17 +977,15 @@ def _run_phase(server: Server, family: Family, phase: Phase, report: SyncReport)
 
 
 def _lease_reports(server: Server, family: Family, phase: LeasePhase, report: SyncReport) -> dict[str, _Report]:
-    """Read the lease Snapshot and group its valid records by canonical address.
+    """Group the Current address Leases of the observation by canonical address.
 
     A Snapshot that reached its cap or excluded a record leaves the phase incomplete, so it removes no stale link.
+    This phase counts the read failure and the excluded records once for both lease phases.
     """
     what = f"Server {server.name} (v{family}): the lease snapshot"
-    try:
-        client = server.get_client(version=family)
-        snapshot = client.lease_get_all(version=family, max_leases=phase.max_leases, server_id=server.pk)
-    # OSError covers each requests error, KeaTLSFileError included.
-    except (KeaException, OSError, ValueError, RuntimeError) as exc:
-        report.fail_snapshot(LEASE, what, exc)
+    snapshot = phase.observation.snapshot
+    if snapshot is None:
+        report.fail_snapshot(LEASE, what, cast("BaseException", phase.observation.failure))
         return {}
     logger.info("Server %s (v%s): fetched %d leases", server.name, family, len(snapshot.records))
     if snapshot.coverage != "exhaustive":
@@ -914,7 +993,7 @@ def _lease_reports(server: Server, family: Family, phase: LeasePhase, report: Sy
             "Server %s (v%s): lease fetch truncated at %d: increase sync_max_leases_per_server",
             server.name,
             family,
-            phase.max_leases,
+            phase.observation.max_leases,
         )
         report.incomplete.add(LEASE)
     if snapshot.diagnostics:
@@ -923,7 +1002,9 @@ def _lease_reports(server: Server, family: Family, phase: LeasePhase, report: Sy
         logger.warning("%s is incomplete: %d excluded lease record(s)", what, len(snapshot.diagnostics))
 
     reports: dict[str, _Report] = {}
-    for lease in snapshot.records:
+    for lease in snapshot.current_records:
+        if isinstance(lease, DHCPv6PrefixLease):
+            continue
         try:
             row = _lease_report(server, family, lease, phase.subnet_prefix_lengths)
         except (ValueError, RuntimeError) as exc:
@@ -1268,6 +1349,11 @@ def _kept_mark(link: IPAMOwnershipLink | None) -> int | None:
     return link.stale_mark if link is not None else None
 
 
+def _unclassified(link: IPAMOwnershipLink) -> bool:
+    """Return whether the lease link may come from a delegated prefix: it predates the recorded allocation kind."""
+    return link.source == LEASE and not link.allocation_kind
+
+
 def _marked_and_unconfirmed(link: IPAMOwnershipLink) -> bool:
     """Return whether the link is marked stale and its owner has not confirmed it since the mark."""
     return link.stale_mark is not None and link.confirmation <= link.stale_mark
@@ -1276,9 +1362,9 @@ def _marked_and_unconfirmed(link: IPAMOwnershipLink) -> bool:
 def _drop_superseded_stale_links(others: list[IPAMOwnershipLink]) -> list[IPAMOwnershipLink]:
     """Another owner links the object, so a stale link goes unless its own owner confirmed it after the mark.
 
-    Return the links that stay.
+    An unclassified lease link stays too. Return the links that stay.
     """
-    superseded = [link for link in others if _marked_and_unconfirmed(link)]
+    superseded = [link for link in others if _marked_and_unconfirmed(link) and not _unclassified(link)]
     if superseded:
         IPAMOwnershipLink.objects.filter(pk__in=[link.pk for link in superseded]).delete()
     return [link for link in others if link not in superseded]
@@ -1295,8 +1381,12 @@ def _store_link(
     stale_mark: int | None,
     adopted: bool = False,
 ) -> None:
-    """Confirm the owner's link with the next confirmation number, creating it when the owner has none."""
+    """Confirm the owner's link with the next confirmation number, creating it when the owner has none.
+
+    Every lease link that a run confirms comes from an address lease, so it records that allocation kind.
+    """
     confirmation = next_confirmation_number()
+    allocation_kind = "address" if source == LEASE else ""
     if link is None:
         IPAMOwnershipLink.objects.create(
             server=server,
@@ -1307,13 +1397,15 @@ def _store_link(
             confirmation=confirmation,
             stale_mark=stale_mark,
             adopted=adopted,
+            allocation_kind=allocation_kind,
         )
         return
     link.facts = facts
     link.confirmation = confirmation
     link.stale_mark = stale_mark
     link.adopted = link.adopted or adopted
-    link.save(update_fields=["facts", "confirmation", "stale_mark", "adopted"])
+    link.allocation_kind = allocation_kind
+    link.save(update_fields=["facts", "confirmation", "stale_mark", "adopted", "allocation_kind"])
 
 
 @dataclass(frozen=True)
@@ -1357,6 +1449,8 @@ def _remove_stale_links(
     for stale, outcome in rows:
         if outcome == "waiting":
             report.waiting_objects.add(("ip_address", stale.ip_pk))
+        elif outcome == "unclassified":
+            report.unclassified_objects.add(("ip_address", stale.ip_pk))
         if outcome in {"removed", "unlinked", "updated", "unchanged"}:
             report.cleaned += 1
         if outcome == "removed":
@@ -1392,6 +1486,9 @@ def _remove_stale_link(
     if not _is_owned_description(ip.description):
         IPAMOwnershipLink.objects.filter(ip_address=ip).delete()
         return "conflict"
+    if _unclassified(link):
+        # Without the allocation kind, the address alone cannot show whether a replacement Prefix exists.
+        return "unclassified"
     if _marked_and_unconfirmed(link):
         return "kept"
     others = [other for other in links if other.pk != link.pk]
@@ -1724,3 +1821,75 @@ def _run_delegated_prefix_phase(
     if not phase.complete:
         report.incomplete.add(phase.source)
     return None if phase.source in report.incomplete else phase.cutoff
+
+
+def _run_lease_prefix_phase(server: Server, family: Family, phase: LeasePrefixPhase, report: SyncReport) -> int | None:
+    """Claim the Current delegated-prefix Leases as Prefixes; a complete phase then classifies the links they replace.
+
+    The address lease phase counts a failed or incomplete observation; this phase only stays incomplete then.
+    """
+    snapshot = phase.observation.snapshot
+    if snapshot is None or not snapshot.complete:
+        # An excluded record can be of either kind, so it makes both lease phases incomplete.
+        report.incomplete.add(LEASE_PREFIX)
+        if snapshot is None:
+            return None
+    catalogue = phase.catalogue
+    if catalogue is None:
+        if not report.incomplete.intersection({"subnet", "pool"}):
+            report.fail_snapshot(LEASE_PREFIX, "the Subnet Catalogue", CatalogueUnavailable("No complete catalogue."))
+        report.incomplete.add(LEASE_PREFIX)
+        return None
+    subnet_ids = {subnet.subnet_id for subnet in catalogue.subnets}
+    reports: dict[str, _NetworkReport] = {}
+    for lease in snapshot.current_records:
+        if not isinstance(lease, DHCPv6PrefixLease):
+            continue
+        if lease.subnet_id not in subnet_ids:
+            unknown = ValueError("The lease Subnet ID is absent from the Subnet Catalogue")
+            report.fail_row(LEASE_PREFIX, f"delegated prefix {lease.prefix} of Server {server.name}", unknown)
+            continue
+        reports[str(lease.prefix)] = _NetworkReport(str(lease.prefix), lease.prefix_length)
+    results = _claim_network_reports(server, family, LEASE_PREFIX, reports, report=report)
+    replaced: list[str] = []
+    for network, result in results.prefixes.items():
+        if result.outcome != "error":
+            _count(report, network, result.outcome)
+        if result.synchronized:
+            replaced.append(str(ipaddress.ip_network(network).network_address))
+    if LEASE_PREFIX in report.incomplete:
+        # A partial replacement keeps every legacy link unclassified, so the lease cleanup keeps it too.
+        return None
+    list(
+        _each_row(
+            replaced,
+            report,
+            LEASE_PREFIX,
+            lambda address: _classify_replaced_links(server, family, address),
+            lambda address: f"the lease link of delegated prefix base {address} of Server {server.name}",
+        )
+    )
+    return None if LEASE_PREFIX in report.incomplete else phase.observation.cutoff
+
+
+def _classify_replaced_links(server: Server, family: Family, address: str) -> int:
+    """Classify the Server's unclassified lease links at the base *address* of a Prefix that its claim now owns.
+
+    The normal lease cleanup then retires them, under its complete-observation, last-link and barrier rules.
+    """
+    candidates = IPAMOwnershipLink.objects.filter(
+        server=server, family=family, source=LEASE, allocation_kind="", ip_address__address__net_host=address
+    ).values_list("pk", "ip_address__vrf")
+    classified = 0
+    for pk, vrf_id in candidates:
+        _lock_identity(None, address)
+        if vrf_id is not None:
+            _lock_identity(vrf_id, address)
+        link = IPAMOwnershipLink.objects.select_for_update().filter(pk=pk, allocation_kind="").first()
+        ip = IPAddress.objects.filter(pk=link.ip_address_id).first() if link is not None else None
+        if ip is None or (ip.vrf_id, _host(ip.address)) != (vrf_id, address):
+            continue
+        link.allocation_kind = "delegated-prefix"
+        link.save(update_fields=["allocation_kind"])
+        classified += 1
+    return classified

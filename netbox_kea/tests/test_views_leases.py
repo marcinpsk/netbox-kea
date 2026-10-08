@@ -926,7 +926,6 @@ class TestEnrichLeasesErrorPaths(_ViewTestBase):
             "hostname": "enrich-host",
             "subnet-id": 1,
             "valid-lft": 3600,
-            "cltt": 1_700_000_000,
         }
     )
     _SUBNETS4 = _subnet_list(4, [{"id": 1, "subnet": "10.0.0.0/24"}])
@@ -1036,6 +1035,137 @@ class TestEnrichLeasesErrorPaths(_ViewTestBase):
             response = self._htmx_get(url, {"by": "ip", "q": "10.0.0.5"})
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Synced")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Delegated-prefix Sync and Synced badges
+# ─────────────────────────────────────────────────────────────────────────────
+
+_PD_LABEL = "2001:db8:100:100::/56"
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestDelegatedPrefixSyncBadges(_ViewTestBase):
+    """A delegated-prefix row offers Sync, and links the Prefix of the Server's sync VRF once one exists."""
+
+    def setUp(self):
+        super().setUp()
+        from ipam.models import VRF
+
+        self.vrf = VRF.objects.create(name="pd-badge-vrf")
+        self.server.sync_vrf = self.vrf
+        self.server.save()
+
+    @staticmethod
+    def _responses(**changes) -> dict:
+        address = lease_record("2001:db8:1::10", subnet_id=10, **changes)
+        prefix = lease_record("2001:db8:100:100::", type="IA_PD", prefix_len=56, subnet_id=10, **changes)
+
+        def lease6_get(body: dict) -> dict:
+            return {"result": 0, "arguments": prefix if body["arguments"].get("type") == "IA_PD" else address}
+
+        return {
+            **_catalogue_responses_for_subnets(6, [{"id": 10, "subnet": "2001:db8:1::/64"}]),
+            "lease6-get-all": lease_reply(address, prefix),
+            "lease6-get": lease6_get,
+            "reservation-get": {"result": 3},
+        }
+
+    def _rows(self, **changes):
+        url = reverse("plugins:netbox_kea:server_leases6", args=[self.server.pk])
+        with stub_kea(self._responses(**changes)):
+            response = self.client.get(url, {"by": "subnet_id", "q": "10"}, HTTP_HX_REQUEST="true")
+        self.assertEqual(response.status_code, 200)
+        return response, {row.record["kind"]: row.record for row in response.context["table"].rows}
+
+    @staticmethod
+    def _sync_values(response) -> list[dict]:
+        return [
+            json.loads(values) for values in re.findall(r"hx-vals='(\{\"ip_address\"[^']*)'", response.content.decode())
+        ]
+
+    def test_a_lease_that_is_not_current_offers_no_sync(self):
+        # Kea state 3 is released; the Sync view refuses a lease that is not current.
+        for changes in ({"state": 3}, {"cltt": 1_700_000_000, "valid_lft": 3600}):
+            with self.subTest(changes):
+                _response, rows = self._rows(**changes)
+                self.assertEqual(set(rows), {"address", "delegated-prefix"})
+                for row in rows.values():
+                    self.assertIsNone(row.get("sync_url"))
+
+    def test_a_delegated_prefix_row_offers_sync_that_claims_its_prefix(self):
+        from ipam.models import Prefix
+
+        response, rows = self._rows()
+
+        self.assertEqual(
+            rows["delegated-prefix"].get("sync_url"),
+            reverse("plugins:netbox_kea:server_lease6_sync", args=[self.server.pk]),
+        )
+        self.assertIsNone(rows["delegated-prefix"].get("netbox_prefix_url"))
+        posted = self._sync_values(response)
+        # The search container pushes its URL, so the Sync button opts out.
+        self.assertEqual(response.content.decode().count('hx-push-url="false"'), 2)
+        self.assertEqual([values["ip_address"] for values in posted], ["2001:db8:1::10", _PD_LABEL])
+        # The button posts what the Sync view reads, end to end.
+        with stub_kea(self._responses()):
+            synced = self.client.post(rows["delegated-prefix"]["sync_url"], posted[1])
+        self.assertEqual(synced.status_code, 200, synced.content)
+        self.assertEqual(str(Prefix.objects.get(vrf=self.vrf).prefix), _PD_LABEL)
+        self.assertFalse(NbIP.objects.exists())
+
+    def test_a_prefix_in_the_sync_vrf_shows_the_synced_link(self):
+        from ipam.models import Prefix
+
+        prefix = Prefix.objects.create(prefix=_PD_LABEL, vrf=self.vrf)
+
+        response, rows = self._rows()
+
+        self.assertEqual(rows["delegated-prefix"].get("netbox_prefix_url"), prefix.get_absolute_url())
+        self.assertIsNone(rows["delegated-prefix"].get("sync_url"))
+        self.assertIsNone(rows["delegated-prefix"].get("netbox_ip_url"))
+        self.assertContains(response, f'<a href="{prefix.get_absolute_url()}" class="badge text-bg-success')
+        # The address row still offers its own Sync.
+        self.assertTrue(rows["address"].get("sync_url"))
+
+    def test_a_prefix_outside_the_sync_vrf_or_of_another_length_does_not_count(self):
+        from ipam.models import VRF, Prefix
+
+        Prefix.objects.create(prefix=_PD_LABEL)
+        Prefix.objects.create(prefix=_PD_LABEL, vrf=VRF.objects.create(name="other-vrf"))
+        Prefix.objects.create(prefix="2001:db8:100:100::/60", vrf=self.vrf)
+        Prefix.objects.create(prefix="2001:db8:100::/48", vrf=self.vrf)
+
+        _response, rows = self._rows()
+
+        self.assertIsNone(rows["delegated-prefix"].get("netbox_prefix_url"))
+        self.assertTrue(rows["delegated-prefix"].get("sync_url"))
+
+    def test_the_prefix_lookup_is_one_query_for_every_row(self):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        with CaptureQueriesContext(connection) as queries:
+            self._rows()
+
+        prefix_queries = [query["sql"] for query in queries.captured_queries if '"ipam_prefix"' in query["sql"]]
+        self.assertEqual(len(prefix_queries), 1, prefix_queries)
+
+    def test_a_delegated_prefix_row_without_change_permission_offers_no_sync(self):
+        from django.contrib.auth import get_user_model
+        from django.contrib.contenttypes.models import ContentType
+        from users.models import ObjectPermission
+
+        viewer = get_user_model().objects.create_user(username="pd-viewer", password="example-password")
+        permission = ObjectPermission.objects.create(name="pd-view-server", actions=["view"])
+        permission.object_types.add(ContentType.objects.get_for_model(Server))
+        permission.users.add(viewer)
+        self.client.force_login(viewer)
+
+        _response, rows = self._rows()
+
+        self.assertIsNone(rows["delegated-prefix"].get("sync_url"))
+        self.assertIsNone(rows["address"].get("sync_url"))
 
 
 # ─────────────────────────────────────────────────────────────────────────────

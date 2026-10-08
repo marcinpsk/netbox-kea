@@ -27,7 +27,7 @@ from ipam.models import IPAddress
 from rest_framework.test import APIClient
 
 from netbox_kea import signals
-from netbox_kea.ipam_reconciliation import LeasePhase, reconcile
+from netbox_kea.ipam_reconciliation import reconcile
 
 from .kea_stub import (
     LeaseDaemon,
@@ -46,7 +46,7 @@ from .kea_stub import (
     stub_kea,
 )
 from .test_ipam_reconciliation import _kea, _lease, _links, _reconcile, _row, _server
-from .utils import _PLUGINS_CONFIG, _make_db_server, _ViewTestBase, plugins_config
+from .utils import _PLUGINS_CONFIG, _make_db_server, _ViewTestBase, lease_phase, plugins_config
 
 _SUBNETS4 = [{"id": 10, "subnet": "192.0.2.0/24"}]
 _SUBNETS6 = [{"id": 10, "subnet": "2001:db8:1::/64"}]
@@ -152,7 +152,7 @@ class LeaseBrowsingTest(_ViewTestBase):
             [("2001:db8:100:100::", "delegated-prefix", 56)],
         )
 
-    def test_only_an_address_lease_row_offers_sync(self):
+    def test_address_and_delegated_prefix_rows_offer_edit_and_sync(self):
         records = [
             lease_record("2001:db8:1::10", subnet_id=10),
             lease_record("2001:db8:100:100::", type="IA_PD", prefix_len=56, subnet_id=10),
@@ -177,8 +177,8 @@ class LeaseBrowsingTest(_ViewTestBase):
             + f"?{urlencode({'return_url': f'{self._url(6)}?by=subnet_id&q=10'})}",
         )
         self.assertTrue(rows["address"].get("sync_url"))
-        # Sync claims an IP address; delegated-prefix ownership is not part of this action.
-        self.assertIsNone(rows["delegated-prefix"].get("sync_url"))
+        # Sync claims a delegated prefix as a Prefix.
+        self.assertEqual(rows["delegated-prefix"].get("sync_url"), rows["address"]["sync_url"])
 
     def test_only_an_address_lease_row_links_its_netbox_ip_address(self):
         # NetBox holds an IP Address at the network address of the prefix, which is not the delegated prefix.
@@ -719,13 +719,13 @@ class LeaseReconciliationTest(_ViewTestBase):
         server = _server("owner")
         records = [_lease("10.0.0.8", **{"subnet-id": 4_294_967_295}), _lease()]
         with _kea(records):
-            report = reconcile(server, 4, [LeasePhase(max_leases=None, subnet_prefix_lengths=None)])
+            report = reconcile(server, 4, [lease_phase(server, 4, None)])
 
         self.assertEqual((report.errors, report.incomplete), (1, {"lease"}))
         self.assertFalse(IPAddress.objects.filter(address__net_host="10.0.0.8").exists())
         self.assertTrue(IPAddress.objects.filter(address__net_host="10.0.0.5").exists())
 
-    def test_a_delegated_prefix_still_reports_its_base_address_to_the_lease_source(self):
+    def test_a_delegated_prefix_reports_no_ip_address_to_the_address_lease_source(self):
         server = _make_db_server(name="pd-owner", ca_url="https://pd.example.com", dhcp4=False)
         prefix = lease_record("2001:db8:1:100::", type="IA_PD", prefix_len=56, subnet_id=10)
         responses = {
@@ -733,7 +733,7 @@ class LeaseReconciliationTest(_ViewTestBase):
             "lease6-get-page": lease_pages([prefix]),
         }
         with stub_kea(responses):
-            report = reconcile(server, 6, [LeasePhase(max_leases=None, subnet_prefix_lengths={10: 64})])
+            report = reconcile(server, 6, [lease_phase(server, 6, {10: 64})])
 
-        self.assertEqual((report.created, report.errors, report.incomplete), (1, 0, set()))
-        self.assertEqual(set(_links(_row("2001:db8:1:100::"))), {"pd-owner"})
+        self.assertEqual((report.created, report.errors, report.incomplete), (0, 0, set()))
+        self.assertFalse(IPAddress.objects.exists())

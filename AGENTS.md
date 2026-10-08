@@ -226,6 +226,9 @@ URL request
   relevant enabled owners have observed their sources. `Server.ipam_first_complete_at` records the initial
   completion time. Internal scoped receipts protect newly enabled sources after that time.
   Read `docs/design/ipam-upgrade-adoption.md` when changing adoption, completion receipts or upgrade cleanup.
+  The job reads one `LeaseObservation` per family for its address `LeasePhase` and its DHCPv6 `LeasePrefixPhase`
+  (source `lease-prefix`, enabled by the lease and the Prefix flags together). Both take only Current Leases.
+  A lease link records its `allocation_kind`; an unclassified DHCPv6 lease link is never cleaned up (ADR 0006).
 - **`jobs.py`**: `KeaIpamSyncJob` (`@system_job`). Iterates all `Server` objects,
   runs subnet/lease/reservation/prefix/range sync phases, writes a per-server
   summary to the job log.

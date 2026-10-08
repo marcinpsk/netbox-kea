@@ -2,12 +2,13 @@
 # SPDX-License-Identifier: Apache-2.0
 import csv
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
 import requests
 from django.contrib import messages
 from django.core.exceptions import ValidationError
-from django.db import DatabaseError, IntegrityError, OperationalError, ProgrammingError
+from django.db import DatabaseError
 from django.http import HttpResponse, HttpResponseForbidden, HttpResponseRedirect
 from django.http.request import HttpRequest
 from django.shortcuts import get_object_or_404, render
@@ -15,10 +16,9 @@ from django.urls import reverse
 from django.views import View
 from netaddr import AddrFormatError, IPAddress
 
-from .. import forms
+from .. import event_scope, forms
 from ..constants import Family
 from ..ipam_reconciliation import (
-    LEASE,
     RESERVATION,
     ReservationPhase,
     claim_permissions,
@@ -26,7 +26,15 @@ from ..ipam_reconciliation import (
     reconcile_permissions,
 )
 from ..kea import KeaException
-from ..leases import ExactLeaseResult, LeaseFound, LeaseLookupFailed, address_identity
+from ..leases import (
+    ExactLeaseResult,
+    LeaseFound,
+    LeaseIdentity,
+    LeaseLookupFailed,
+    is_current,
+    parse_selection,
+    shown_lease,
+)
 from ..models import Server
 from ..reservation_transfer import (
     ReservationTransferDiagnostic,
@@ -42,7 +50,7 @@ from ..utilities import (
     parse_lease_csv,
 )
 from ._base import ConditionalLoginRequiredMixin, _KeaChangeMixin
-from .leases import _LEASES_TAB, _add_lease_journal
+from .leases import _LEASES_TAB, _add_lease_journal, lease_sync_gates
 from .reservation_mutations import _confirmed_side_effects, _identity_from_request, _reservation_target_scope
 from .reservations import _RESERVATIONS_TAB
 
@@ -50,41 +58,52 @@ logger = logging.getLogger(__name__)
 
 
 class _BaseSyncView(ConditionalLoginRequiredMixin, View):
-    """Claim a live lease and return its per-address synchronization result."""
+    """Claim one fresh Current Lease: an address as an IP Address, a delegated prefix as a Prefix."""
 
     dhcp_version: Family
 
     def post(self, request: HttpRequest, pk: int) -> HttpResponse:
-        gate = sync_gate(request.user, claim_permissions(LEASE))
+        selected = request.POST.get("ip_address", "").strip()
+        if not selected:
+            return HttpResponse("ip_address is required", status=400)
+        try:
+            label, identity = parse_selection(self.dhcp_version, selected)
+        except ValueError:
+            return HttpResponse("Invalid lease address or delegated prefix", status=400)
+
+        gate = lease_sync_gates(request.user)[identity.kind]
         if not gate.allowed:
             return HttpResponseForbidden(gate.reason)
 
         server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
 
-        ip_str = request.POST.get("ip_address", "").strip()
-        if not ip_str:
-            return HttpResponse("ip_address is required", status=400)
-
-        try:
-            IPAddress(ip_str)
-        except (AddrFormatError, ValueError):
-            return HttpResponse("Invalid IP address", status=400)
-
-        observed = self._fetch_live_data(server, ip_str)
+        observed = self._fetch_live_data(server, identity)
         if isinstance(observed, LeaseLookupFailed):
-            logger.warning("Kea returned a malformed lease%s for %s", self.dhcp_version, ip_str)
+            logger.warning("Kea returned a malformed lease%s for %s", self.dhcp_version, label)
             return HttpResponse("Sync error: see server logs for details.", status=500)
         if not isinstance(observed, LeaseFound):
             return HttpResponse("Could not fetch live data from Kea.", status=400)
+        lease = observed.lease
+        # The label holds the kind and the prefix length, so a changed allocation does not match.
+        if shown_lease(lease).label != label:
+            return HttpResponse("The lease changed in Kea. Reload the lease list.", status=409)
+        if not is_current(lease, datetime.now(tz=timezone.utc)):
+            return HttpResponse("The lease is not current in Kea, so it was not synchronized.", status=409)
         try:
             from ..ipam_reconciliation import claim
 
-            result = claim(server, self.dhcp_version, [observed.lease], force=True)
-            outcome = next(iter(result.addresses.values()))
-            if outcome.outcome == "error":
+            result = claim(server, self.dhcp_version, [lease], force=True)
+            outcome: str
+            if identity.kind == "delegated-prefix":
+                outcome = next(iter(result.prefixes.values())).outcome
+            else:
+                outcome = next(iter(result.addresses.values())).outcome
+            if outcome == "error":
                 return HttpResponse("Sync error: see server logs for details.", status=500)
-        except (RuntimeError, ValueError, IntegrityError, ValidationError, OperationalError, ProgrammingError):
-            logger.exception("Sync error for ip=%s", ip_str)
+        except event_scope.EventDispatchError:
+            raise
+        except (RuntimeError, ValueError, ValidationError, DatabaseError):
+            logger.exception("Sync error for lease %s", label)
             return HttpResponse("Sync error: see server logs for details.", status=500)
 
         return render(
@@ -93,14 +112,13 @@ class _BaseSyncView(ConditionalLoginRequiredMixin, View):
             {"claim_result": result},
         )
 
-    def _fetch_live_data(self, server: "Server", ip_str: str) -> ExactLeaseResult | None:
-        """Read the live address Lease of *ip_str* from Kea, or ``None`` when the read fails."""
+    def _fetch_live_data(self, server: "Server", identity: LeaseIdentity) -> ExactLeaseResult | None:
+        """Read the live Lease with *identity* from Kea, or ``None`` when the read fails."""
         try:
             client = server.get_client(version=self.dhcp_version)
-            identity = address_identity(self.dhcp_version, ip_str)
             return client.lease_get(identity)
         except (KeaException, requests.RequestException, RuntimeError, ValueError):
-            logger.exception("Failed to fetch live lease%s data for %s", self.dhcp_version, ip_str)
+            logger.exception("Failed to fetch live lease%s data for %s", self.dhcp_version, identity.address)
             return None
 
 

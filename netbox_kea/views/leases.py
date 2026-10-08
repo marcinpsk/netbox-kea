@@ -1,11 +1,12 @@
 # SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
 import concurrent.futures
+import ipaddress
 import logging
 import threading
 import uuid
 from abc import ABCMeta
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
 from functools import partial
 from typing import Any, Generic, Literal, TypeVar
@@ -28,7 +29,7 @@ from utilities.views import GetReturnURLMixin, register_model_view
 
 from .. import constants, forms, subnet_catalogue, tables
 from ..constants import Family
-from ..ipam_reconciliation import LEASE, claim, claim_permissions
+from ..ipam_reconciliation import LEASE, LEASE_PREFIX, claim, claim_permissions
 from ..kea import (
     KeaClient,
     KeaException,
@@ -37,6 +38,7 @@ from ..kea import (
     lease_query_guard_message,
 )
 from ..leases import (
+    AllocationKind,
     DHCPv4AddressLease,
     DHCPv4Binding,
     DHCPv4LeaseRequest,
@@ -88,6 +90,14 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseTable)
 _LEASE_EXPORT_MAX_LEASES = 50_000
+
+
+def lease_sync_gates(user: Any) -> dict[AllocationKind, SyncGate]:
+    """Apply the manual Sync rule to *user* for the claim of each Lease kind."""
+    return {
+        "address": sync_gate(user, claim_permissions(LEASE)),
+        "delegated-prefix": sync_gate(user, claim_permissions(LEASE_PREFIX)),
+    }
 
 
 def _read_created_lease(request: HttpRequest, client: KeaClient, creation: LeaseRequest) -> Lease | None:
@@ -477,7 +487,7 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
                 self.dhcp_version,
                 can_delete=can_delete,
                 can_change=can_change,
-                sync=sync_gate(request.user, claim_permissions(LEASE)),
+                sync=lease_sync_gates(request.user),
                 return_url=stripped_return_url,
             )
 
@@ -1257,6 +1267,19 @@ def _set_lease_reservation_fields(
     lease["create_reservation_url"] = f"{base}?{_urlencode({key: value for key, value in params.items() if value})}"
 
 
+def _sync_vrf_prefixes(server: "Server", leases: list[Lease]) -> dict[ipaddress.IPv6Network, Any]:
+    """Return the NetBox Prefix in the Server's sync VRF for each delegated prefix of *leases*, in one query."""
+    from ipam.models import Prefix
+
+    delegated = [str(lease.prefix) for lease in leases if isinstance(lease, DHCPv6PrefixLease)]
+    if not delegated:
+        return {}
+    found: dict[ipaddress.IPv6Network, Any] = {}
+    for prefix in Prefix.objects.filter(vrf_id=server.sync_vrf_id, prefix__in=delegated):
+        found.setdefault(ipaddress.IPv6Network(str(prefix.prefix)), prefix)
+    return found
+
+
 def _enrich_leases_with_badges(
     leases: list[dict[str, Any]],
     server: "Server",
@@ -1264,7 +1287,7 @@ def _enrich_leases_with_badges(
     can_delete: bool = False,
     can_change: bool = False,
     *,
-    sync: SyncGate,
+    sync: Mapping[AllocationKind, SyncGate],
     return_url: str,
 ) -> None:
     """In-place: add reservation and NetBox IPAM badge fields to lease dicts.
@@ -1274,9 +1297,10 @@ def _enrich_leases_with_badges(
     - ``can_change_reservation``: whether the user may edit the reservation (gates link vs plain badge)
     - ``host_reservation``: an In-Subnet Reservation that holds no address and no delegated prefix matched
     - ``create_reservation_url``: pre-filled add link if host_cmds is loaded
-    - ``netbox_ip_url``: absolute URL if IP exists in NetBox IPAM
-    - ``sync_url``: POST endpoint URL to create a NetBox IP when absent and *sync* allows it
-    - ``sync_refusal``: the reason when *sync* refuses the user
+    - ``netbox_ip_url``: absolute URL if the address of an address Lease exists in NetBox IPAM
+    - ``netbox_prefix_url``: absolute URL if the delegated prefix exists as a Prefix in the Server's sync VRF
+    - ``sync_url``: POST endpoint URL to claim the Lease when neither link is set and the gate of its kind allows it
+    - ``sync_refusal``: the reason when the gate of its kind refuses the user
     - ``can_delete``: whether the current user may delete this lease
     - ``can_change``: whether the current user may edit this lease (gates edit_url)
 
@@ -1324,26 +1348,31 @@ def _enrich_leases_with_badges(
     edit_query = f"?{_urlencode({'return_url': return_url})}" if return_url else ""
     # A delegated prefix is not an IP Address, so only an address Lease links one.
     nb_ips = bulk_fetch_netbox_ips([_row_address(lease) for lease in leases if lease["lease"].kind == "address"])
+    nb_prefixes = _sync_vrf_prefixes(server, [lease["lease"] for lease in leases])
+    now = datetime.now(tz=timezone.utc)
     for lease in leases:
         ip = _row_address(lease)
-        # Sync claims an IP address, so a delegated prefix does not offer it.
-        is_address = lease["lease"].kind == "address"
-        nb_ip = nb_ips.get(ip) if is_address else None
-        if nb_ip:
-            lease["netbox_ip_url"] = nb_ip.get_absolute_url()
-        # Don't offer Sync for leases with indeterminate reservation state.
+        observed = lease["lease"]
+        if isinstance(observed, DHCPv6PrefixLease):
+            synced, url_key = nb_prefixes.get(observed.prefix), "netbox_prefix_url"
+        else:
+            synced, url_key = nb_ips.get(ip), "netbox_ip_url"
+        if synced is not None:
+            lease[url_key] = synced.get_absolute_url()
+        # Sync needs a Current Lease; don't offer it for leases with indeterminate reservation state.
         elif (
             can_change
-            and is_address
+            and is_current(observed, now)
             and host_cmds_available
             and not lease.get("pending_ip_change")
             and not lease.get("stale_mac")
             and ip not in failed_ips
         ):
-            if sync.allowed:
+            gate = sync[observed.kind]
+            if gate.allowed:
                 lease["sync_url"] = sync_url
             else:
-                lease["sync_refusal"] = sync.reason
+                lease["sync_refusal"] = gate.reason
         if can_change:
             lease["edit_url"] = reverse(edit_url_name, args=[server.pk, lease["label"]]) + edit_query
         lease["can_delete"] = can_delete
