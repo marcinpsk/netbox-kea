@@ -27,6 +27,8 @@ via ``kea_stub.stub_kea``:
 
 from __future__ import annotations
 
+import sys
+
 import requests
 from django.contrib import messages as django_messages
 from django.contrib.auth import get_user_model
@@ -1331,3 +1333,44 @@ class TestLeaseSyncEventDispatch(TransactionTestCase):
         ):
             self.client.post(f"{url}?identifier_type=hw-address&identifier=aa%3Abb%3Acc%3A00%3A00%3A02")
         self.assertTrue(NbIP.objects.filter(address__net_host="10.0.0.50").exists())
+
+    def test_a_committed_claim_after_a_lease_creation_whose_events_fail_to_dispatch_is_not_reported_as_failed(self):
+        from django.core.signals import got_request_exception
+
+        from netbox_kea.event_scope import _NESTED_TRACKING, EventDispatchError
+
+        from .kea_stub import LeaseDaemon
+
+        if not _NESTED_TRACKING:
+            self.skipTest("Before NetBox 4.6.9 a claim row is a plain transaction and dispatches with the request")
+        self.client.force_login(User.objects.create_superuser(username="dispatch-add-user", password="dispatch-pass"))
+        server = _make_server()
+        responses = {
+            **_catalogue_responses_for_subnets(4, [{"id": 10, "subnet": "192.0.2.0/24"}]),
+            **LeaseDaemon(4).responses(),
+        }
+        data = {
+            "ip_address": "192.0.2.50",
+            "hw_address": "aa:bb:cc:00:00:50",
+            "subnet_id": "10",
+            "sync_to_netbox": "on",
+        }
+        raised = []
+
+        def record(sender, request, **kwargs):
+            raised.append(sys.exc_info()[1])
+
+        # Django turns the view error into a 500 inside NetBox's request scope, which then flushes the journal event
+        # and fails again; the test client re-raises only that last error, so the view error is read from the signal.
+        got_request_exception.connect(record)
+        try:
+            with (
+                override_settings(EVENTS_PIPELINE=["netbox_kea.tests.test_event_scope.fail_dispatch"]),
+                stub_kea(responses),
+                self.assertRaises(RuntimeError),
+            ):
+                self.client.post(reverse("plugins:netbox_kea:server_lease4_add", args=[server.pk]), data)
+        finally:
+            got_request_exception.disconnect(record)
+        self.assertTrue(any(isinstance(error, EventDispatchError) for error in raised), raised)
+        self.assertTrue(NbIP.objects.filter(address__net_host="192.0.2.50").exists())
