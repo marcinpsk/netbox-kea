@@ -526,7 +526,8 @@ class TestLeaseSyncByKind(_SyncViewBase):
 
         response, _kea = self._post(_PD_LABEL, _pd_record())
 
-        self.assertEqual(response.status_code, 200, response.content)
+        self.assertNotContains(response, _ROW_ERROR_BADGE)
+        self.assertTrue(IPAMOwnershipLink.objects.filter(prefix__prefix=_PD_LABEL, source="lease-prefix").exists())
         self.assertTrue(IPAMOwnershipLink.objects.filter(prefix=stale, source="lease-prefix").exists())
         stale.refresh_from_db()
         self.assertEqual(stale.status, "active")
@@ -1310,3 +1311,23 @@ class TestLeaseSyncEventDispatch(TransactionTestCase):
         ):
             self.client.post(url, {"ip_address": _PD_LABEL})
         self.assertTrue(Prefix.objects.filter(prefix=_PD_LABEL).exists())
+
+    def test_a_committed_reservation_claim_whose_events_fail_to_dispatch_is_not_reported_as_refused(self):
+        from netbox_kea.event_scope import _NESTED_TRACKING, EventDispatchError
+
+        if not _NESTED_TRACKING:
+            self.skipTest("Before NetBox 4.6.9 a claim row is a plain transaction and dispatches with the request")
+        self.client.force_login(User.objects.create_superuser(username="dispatch-res-user", password="dispatch-pass"))
+        server = _make_server()
+        responses = {
+            **_catalogue_responses(4, 1, "10.0.0.0/24"),
+            "reservation-get": _reservation_get("mock-res.local", "10.0.0.50", **{"hw-address": "aa:bb:cc:00:00:02"}),
+        }
+        url = reverse("plugins:netbox_kea:server_reservation4_sync", args=[server.pk, 1])
+        with (
+            override_settings(EVENTS_PIPELINE=["netbox_kea.tests.test_event_scope.fail_dispatch"]),
+            stub_kea(responses),
+            self.assertRaises(EventDispatchError),
+        ):
+            self.client.post(f"{url}?identifier_type=hw-address&identifier=aa%3Abb%3Acc%3A00%3A00%3A02")
+        self.assertTrue(NbIP.objects.filter(address__net_host="10.0.0.50").exists())

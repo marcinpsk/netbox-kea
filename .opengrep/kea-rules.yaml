@@ -580,8 +580,8 @@ rules:
     message: >-
       Add "except event_scope.EventDispatchError: raise" before the broad handler of this try.
       The unit committed and its events did not dispatch, so the run must fail, not report a failed row.
-      Limits: the handler order is not checked; a try with finally and handlers in the callers of
-      this function are not seen.
+      Limits: the handler order is not checked; a try with finally and handlers around callers of
+      event_scope.atomic other than claim() and reconcile() are not seen.
     metadata:
       category: correctness
       confidence: HIGH
@@ -690,6 +690,54 @@ rules:
           - pattern-inside: |
               try:
                   ...
+              except RuntimeError:
+                  ...
+          - pattern-inside: |
+              try:
+                  ...
+              except RuntimeError:
+                  ...
+              else:
+                  ...
+          - pattern-inside: |
+              try:
+                  ...
+              except RuntimeError as $ERR:
+                  ...
+          - pattern-inside: |
+              try:
+                  ...
+              except RuntimeError as $ERR:
+                  ...
+              else:
+                  ...
+          - pattern-inside: |
+              try:
+                  ...
+              except (..., RuntimeError, ...):
+                  ...
+          - pattern-inside: |
+              try:
+                  ...
+              except (..., RuntimeError, ...):
+                  ...
+              else:
+                  ...
+          - pattern-inside: |
+              try:
+                  ...
+              except (..., RuntimeError, ...) as $ERR:
+                  ...
+          - pattern-inside: |
+              try:
+                  ...
+              except (..., RuntimeError, ...) as $ERR:
+                  ...
+              else:
+                  ...
+          - pattern-inside: |
+              try:
+                  ...
               except:
                   ...
           - pattern-inside: |
@@ -718,7 +766,11 @@ rules:
               raise
           finally:
               ...
-      - pattern: event_scope.atomic(...)
+      - pattern-either:
+          - pattern: event_scope.atomic(...)
+          # Each claim and reconciliation row is an event_scope unit inside the call.
+          - pattern: claim(...)
+          - pattern: reconcile(...)
 
   - id: netbox-ipam-mutation-outside-reconciliation
     languages: [python]

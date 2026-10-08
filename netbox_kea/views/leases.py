@@ -27,7 +27,7 @@ from netbox.views import generic
 from utilities.paginator import EnhancedPaginator, get_paginate_count
 from utilities.views import GetReturnURLMixin, register_model_view
 
-from .. import constants, forms, subnet_catalogue, tables
+from .. import constants, event_scope, forms, subnet_catalogue, tables
 from ..constants import Family
 from ..ipam_reconciliation import LEASE, LEASE_PREFIX, claim, claim_permissions
 from ..kea import (
@@ -164,6 +164,8 @@ def _run_lease_sync_to_netbox(
         else:
             nb_action = outcome if outcome in {"created", "updated"} else "already up to date"
             messages.success(request, f"IPAddress {address} {nb_action} in NetBox.")
+    except event_scope.EventDispatchError:
+        raise
     except (CatalogueUnavailable, RuntimeError, OSError, ValueError, DatabaseError, ValidationError):
         logger.exception("Failed to sync lease %s to NetBox", address)
         messages.warning(request, "Lease created but NetBox IPAM sync failed; see server logs.")
