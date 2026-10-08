@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
 
+from urllib.parse import parse_qs, urlsplit
+
 import requests
 import yaml
 from bs4 import BeautifulSoup
@@ -20,9 +22,39 @@ from .kea_stub import (
 from .utils import _ViewTestBase
 
 
+def _return_url(url: str) -> list[str]:
+    return parse_qs(urlsplit(url).query).get("return_url", [])
+
+
 class TestPerServerReservationSnapshots(_ViewTestBase):
     def _url(self, version: int = 4) -> str:
         return reverse(f"plugins:netbox_kea:server_reservations{version}", args=[self.server.pk])
+
+    def _searched_row(self, url: str, query: dict) -> tuple[dict, str]:
+        responses = _catalogue_responses(4, 20, "198.18.0.0/24")
+        host = {"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:ff", "hostname": "searched.example.invalid"}
+        responses.update(
+            {
+                "reservation-get-page": _res_page([host]),
+                "lease4-get-by-state": {"result": 0, "arguments": {"leases": []}},
+                "list-commands": _reservation_mutation_commands(),
+            }
+        )
+        with stub_kea(responses):
+            response = self.client.get(url, query)
+        self.assertContains(response, "searched.example.invalid")
+        return response.context["table"].data.data[0], response.wsgi_request.get_full_path()
+
+    def test_row_actions_return_to_the_reservation_search(self):
+        row, search = self._searched_row(self._url(), {"q": "searched"})
+        self.assertEqual(_return_url(row["edit_url"]), [search])
+        self.assertEqual(_return_url(row["delete_url"]), [search])
+
+    def test_combined_row_actions_return_to_the_combined_search(self):
+        url = reverse("plugins:netbox_kea:combined_reservations4")
+        row, search = self._searched_row(url, {"server": self.server.pk, "q": "searched"})
+        self.assertEqual(_return_url(row["edit_url"]), [search])
+        self.assertEqual(_return_url(row["delete_url"]), [search])
 
     def test_configured_only_subnet_filter_does_not_authorize_a_scoped_read(self):
         responses = _catalogue_responses(4, 20, "198.18.0.0/24")
@@ -666,6 +698,14 @@ class TestLeaseReservationIdentityMatching(_ViewTestBase):
         self.assertFalse(row["is_reserved"])
         self.assertIsNone(row["create_reservation_url"])
         self.assertIsNone(row.get("sync_url"))
+
+    def test_the_reservation_link_returns_to_the_lease_search(self):
+        response = self._get(
+            _res_get({"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:ff", "ip-address": "198.18.0.20"})
+        )
+
+        row = response.context["table"].data.data[0]
+        self.assertEqual(_return_url(row["reservation_url"]), [response.wsgi_request.get_full_path()])
 
     def test_addressless_reservation_matches_normalized_identity_in_the_same_subnet(self):
         response = self._get(

@@ -540,6 +540,7 @@ class _CombinedReservationsView(_CombinedViewMixin):
                     server_pk,
                     self.dhcp_version,
                     can_change=can_mutate,
+                    return_url=request.get_full_path(),
                 )
 
         if search_form.is_valid():
@@ -664,7 +665,12 @@ class _CombinedLeasesView(_CombinedViewMixin):
                 can_delete = request.user.has_perm("netbox_kea.bulk_delete_lease_from_server", server)
                 can_change = request.user.has_perm("netbox_kea.change_server", server)
                 _enrich_leases_with_badges(
-                    server_leases, server, self.dhcp_version, can_delete=can_delete, can_change=can_change
+                    server_leases,
+                    server,
+                    self.dhcp_version,
+                    can_delete=can_delete,
+                    can_change=can_change,
+                    return_url=request.get_full_path(),
                 )
 
         table = table_cls(all_leases, user=request.user)

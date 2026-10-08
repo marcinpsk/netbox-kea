@@ -421,14 +421,17 @@ def _attach_reservation_action_urls(
     version: Family,
     *,
     can_change: bool,
+    return_url: str,
 ) -> None:
-    """Attach canonical Scope plus Identity mutation URLs to eligible rows."""
+    """Attach canonical Scope plus Identity mutation URLs that return to *return_url* to eligible rows."""
     for row in reservations:
         row["edit_url"] = None
         row["delete_url"] = None
         if not can_change or row["scope_kind"] != "in-subnet":
             continue
-        query = urlencode({"identifier_type": row["identifier_type"], "identifier": row["identifier"]})
+        query = urlencode(
+            {"identifier_type": row["identifier_type"], "identifier": row["identifier"], "return_url": return_url}
+        )
         try:
             args = [server_pk, row["subnet_id"]]
             edit = reverse(f"plugins:netbox_kea:server_reservation{version}_edit", args=args)
@@ -546,7 +549,9 @@ def _reservation_list_context(
     _enrich_reservations_with_badges(reservations, server, version, can_sync=can_sync)
     for reservation in reservations:
         reservation["can_change"] = can_mutate and reservation["scope_kind"] == "in-subnet"
-    _attach_reservation_action_urls(reservations, server.pk, version, can_change=can_mutate)
+    _attach_reservation_action_urls(
+        reservations, server.pk, version, can_change=can_mutate, return_url=request.get_full_path()
+    )
 
     table_class = tables.ReservationTable4 if version == 4 else tables.ReservationTable6
     table = table_class(

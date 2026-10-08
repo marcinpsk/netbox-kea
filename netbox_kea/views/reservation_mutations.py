@@ -43,7 +43,7 @@ from ..reservations import (
 from ..signals import reservation_created, reservation_deleted, reservation_updated
 from ..subnet_catalogue import CatalogueSnapshot, MutationScope, VerifiedSubnet
 from ..utilities import kea_error_hint
-from ._base import _diagnostic_messages, _KeaChangeMixin
+from ._base import _diagnostic_messages, _KeaChangeMixin, _safe_return_url
 from .reservations import _RESERVATIONS_TAB, _build_reservation_options_formset, _configured_capabilities
 
 logger = logging.getLogger(__name__)
@@ -358,6 +358,12 @@ class _ReservationMutationView(_KeaChangeMixin, generic.ObjectView):
     form_class: type[forms.Reservation4Form] | type[forms.Reservation6Form]
     form_action: str
 
+    def _return_url(self, server: Server) -> str:
+        """Return the Reservation search that linked here, else the Reservation list."""
+        return _safe_return_url(
+            self.request, reverse(f"plugins:netbox_kea:server_reservations{self.dhcp_version}", args=[server.pk])
+        )
+
     def _mutation_unavailable_response(
         self,
         request: HttpRequest,
@@ -367,7 +373,7 @@ class _ReservationMutationView(_KeaChangeMixin, generic.ObjectView):
         if capabilities is not None and capabilities.mutation_available:
             return None
         messages.error(request, "Reservation mutation capabilities are unavailable.")
-        return redirect(reverse(f"plugins:netbox_kea:server_reservations{self.dhcp_version}", args=[server.pk]))
+        return redirect(self._return_url(server))
 
     def _form_context(
         self,
@@ -384,7 +390,7 @@ class _ReservationMutationView(_KeaChangeMixin, generic.ObjectView):
             "object": server,
             "form": form,
             "options_formset": options_formset,
-            "return_url": reverse(f"plugins:netbox_kea:server_reservations{self.dhcp_version}", args=[server.pk]),
+            "return_url": self._return_url(server),
             "action": self.form_action,
             "dhcp_version": self.dhcp_version,
             "tab": self.tab,
@@ -459,7 +465,7 @@ class _ReservationAddView(_ReservationMutationView):
                     sync_to_netbox=bool(form.cleaned_data.get("sync_to_netbox")),
                 )
                 messages.success(request, "Reservation created.")
-                return redirect(reverse(f"plugins:netbox_kea:server_reservations{self.dhcp_version}", args=[server.pk]))
+                return redirect(self._return_url(server))
             except KeaException as exc:
                 logger.exception("Kea rejected a DHCPv%s Reservation create", self.dhcp_version)
                 messages.error(request, kea_error_hint(exc))
@@ -540,7 +546,7 @@ class _ReservationEditView(_ReservationMutationView):
         except (KeaException, requests.RequestException, RuntimeError, ValueError):
             logger.exception("Could not load the Reservation edit target")
             messages.error(request, "The Reservation could not be loaded. See server logs.")
-            return redirect(reverse(f"plugins:netbox_kea:server_reservations{self.dhcp_version}", args=[server.pk]))
+            return redirect(self._return_url(server))
         capabilities = _configured_capabilities(server, self.dhcp_version)
         form = self._form_for(reservation, capabilities)
         return self._render(
@@ -554,7 +560,7 @@ class _ReservationEditView(_ReservationMutationView):
     def post(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         server = self.get_object(pk=pk)
         identity = _identity_from_request(request, self.dhcp_version)
-        return_url = reverse(f"plugins:netbox_kea:server_reservations{self.dhcp_version}", args=[server.pk])
+        return_url = self._return_url(server)
         capabilities = _configured_capabilities(server, self.dhcp_version)
         unavailable_response = self._mutation_unavailable_response(request, server, capabilities)
         if unavailable_response is not None:
@@ -663,7 +669,7 @@ class _ReservationDeleteView(_ReservationMutationView):
         except (KeaException, requests.RequestException, RuntimeError, ValueError):
             logger.exception("Could not load the Reservation delete target")
             messages.error(request, "The Reservation could not be loaded. See server logs.")
-            return redirect(reverse(f"plugins:netbox_kea:server_reservations{self.dhcp_version}", args=[server.pk]))
+            return redirect(self._return_url(server))
         return render(
             request,
             self.template_name,
@@ -672,7 +678,7 @@ class _ReservationDeleteView(_ReservationMutationView):
                 "reservation_label": f"{reservation.identity.identifier_type} {reservation.identity.value}",
                 "subnet_id": subnet_id,
                 "dhcp_version": self.dhcp_version,
-                "return_url": reverse(f"plugins:netbox_kea:server_reservations{self.dhcp_version}", args=[server.pk]),
+                "return_url": self._return_url(server),
                 "tab": self.tab,
             },
         )
@@ -680,7 +686,7 @@ class _ReservationDeleteView(_ReservationMutationView):
     def post(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         server = self.get_object(pk=pk)
         identity = _identity_from_request(request, self.dhcp_version)
-        return_url = reverse(f"plugins:netbox_kea:server_reservations{self.dhcp_version}", args=[server.pk])
+        return_url = self._return_url(server)
         capabilities = _configured_capabilities(server, self.dhcp_version)
         unavailable_response = self._mutation_unavailable_response(request, server, capabilities)
         if unavailable_response is not None:

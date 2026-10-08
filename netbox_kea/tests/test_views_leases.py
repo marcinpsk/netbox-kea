@@ -26,11 +26,13 @@ import re
 import threading
 from datetime import datetime, timezone
 from unittest.mock import patch
+from urllib.parse import urlencode
 
 import requests
 from django.contrib.messages import get_messages
 from django.test import SimpleTestCase, override_settings
 from django.urls import reverse
+from django.utils.html import escape
 from ipam.models import IPAddress as NbIP
 
 from netbox_kea.kea import KeaClient, KeaException
@@ -48,6 +50,7 @@ from .kea_stub import (
     kea_client,
     lease_pages,
     lease_record,
+    lease_reply,
     queued,
     stub_kea,
     typed_lease,
@@ -649,7 +652,7 @@ class TestLeaseSearchPaths(_ViewTestBase):
             # Subnet 99 is not in the Catalogue, so no worker needs a client of its own.
             lease = typed_lease(complete_lease({"ip-address": "10.0.0.5", "subnet-id": 99}))
             rows = lease_rows([lease], evaluated_at=datetime.now(tz=timezone.utc))
-            _enrich_leases_with_badges(rows, self.server, 4)
+            _enrich_leases_with_badges(rows, self.server, 4, return_url="")
 
         self.assertEqual(len(closed_clients), 1)
 
@@ -1215,6 +1218,59 @@ _LEASE4_GET_RESP = [
         ),
     }
 ]
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestLeaseEditReturnsToTheSearch(_ViewTestBase):
+    """An edit starts from a lease search and returns to that search."""
+
+    def _list_url(self):
+        return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+
+    def _edit_url(self, return_url=None):
+        url = reverse("plugins:netbox_kea:server_lease4_edit", args=[self.server.pk, "10.0.0.100"])
+        return url if return_url is None else f"{url}?{urlencode({'return_url': return_url})}"
+
+    def _post(self, url):
+        with _lease_stub({"lease4-get": _LEASE4_GET_RESP[0], "lease4-update": {"result": 0}}):
+            return self.client.post(url, {"hostname": "newhost.example.com"})
+
+    def test_the_lease_list_links_each_edit_to_its_search(self):
+        responses = {
+            **_catalogue_responses_for_subnets(4, [{"id": 10, "subnet": "192.0.2.0/24"}]),
+            "lease4-get-all": lease_reply(lease_record("192.0.2.10")),
+            "reservation-get": {"result": 3},
+        }
+        with stub_kea(responses):
+            response = self.client.get(
+                self._list_url(), {"by": "subnet_id", "q": "10", "state": ""}, HTTP_HX_REQUEST="true"
+            )
+
+        edit_url = reverse("plugins:netbox_kea:server_lease4_edit", args=[self.server.pk, "192.0.2.10"])
+        expected = f"{edit_url}?{urlencode({'return_url': f'{self._list_url()}?by=subnet_id&q=10'})}"
+        self.assertEqual(next(iter(response.context["table"].rows)).record["edit_url"], expected)
+        self.assertContains(response, f'href="{escape(expected)}"', count=1)
+
+    def test_a_saved_edit_returns_to_the_search(self):
+        search = f"{self._list_url()}?by=hostname&q=host1.example.com"
+        response = self._post(self._edit_url(search))
+        self.assertRedirects(response, search, fetch_redirect_response=False)
+
+    def test_cancel_returns_to_the_search(self):
+        search = f"{self._list_url()}?by=hostname&q=host1.example.com"
+        with _lease_stub({"lease4-get": _LEASE4_GET_RESP[0]}):
+            response = self.client.get(self._edit_url(search))
+        self.assertContains(response, f'href="{escape(search)}" class="btn btn-outline-secondary">Cancel</a>')
+
+    def test_an_unsafe_return_url_returns_to_the_lease_list(self):
+        for unsafe in ("https://evil.example/leases4/", "//evil.example/leases4/", "javascript:alert(1)"):
+            with self.subTest(unsafe):
+                response = self._post(self._edit_url(unsafe))
+                self.assertRedirects(response, self._list_url(), fetch_redirect_response=False)
+
+    def test_without_a_return_url_an_edit_returns_to_the_lease_list(self):
+        response = self._post(self._edit_url())
+        self.assertRedirects(response, self._list_url(), fetch_redirect_response=False)
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)

@@ -55,7 +55,7 @@ from ..utilities import (
     snapshot_leases,
     snapshot_rows,
 )
-from ._base import ConditionalLoginRequiredMixin, _KeaChangeMixin, _strip_empty_params
+from ._base import ConditionalLoginRequiredMixin, _KeaChangeMixin, _safe_return_url, _strip_empty_params
 
 logger = logging.getLogger(__name__)
 
@@ -425,6 +425,7 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
                 visible_leases = [row.record for row in table.paginated_rows]
                 next_page = table.page.next_page_number() if table.page.has_next() else None
 
+            stripped_return_url = _strip_empty_params(request.get_full_path())
             # Enrich only the visible table page with reservation badges and NetBox IPAM status.
             _enrich_leases_with_badges(
                 visible_leases,
@@ -432,12 +433,12 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
                 self.dhcp_version,
                 can_delete=can_delete,
                 can_change=can_change,
+                return_url=stripped_return_url,
             )
 
             if not can_delete:
                 table.columns.hide("pk")
 
-            stripped_return_url = _strip_empty_params(request.get_full_path())
             response = render(
                 request,
                 "netbox_kea/server_dhcp_leases_htmx.html",
@@ -669,9 +670,9 @@ class _BaseLeaseEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
         return get_object_or_404(Server.objects.restrict(self.request.user, "view"), pk=pk)
 
     def _leases_url(self, server: Server) -> str:
-        return reverse(
-            f"plugins:netbox_kea:server_leases{self.dhcp_version}",
-            kwargs={"pk": server.pk},
+        """Return the lease search that linked here, else the lease list."""
+        return _safe_return_url(
+            self.request, reverse(f"plugins:netbox_kea:server_leases{self.dhcp_version}", kwargs={"pk": server.pk})
         )
 
     def get(self, request: HttpRequest, pk: int, ip_address: str) -> HttpResponse:
@@ -1093,15 +1094,11 @@ def _fetch_reservations_for_leases(
     return matches, host_cmds_available, failed_ips
 
 
-def _canonical_reservation_url(server_pk: int, reservation: Reservation) -> str | None:
+def _canonical_reservation_url(server_pk: int, reservation: Reservation, return_url: str) -> str | None:
     if isinstance(reservation.scope, GlobalReservationScope):
         return None
-    query = _urlencode(
-        {
-            "identifier_type": reservation.identity.identifier_type,
-            "identifier": reservation.identity.value,
-        }
-    )
+    params = {"identifier_type": reservation.identity.identifier_type, "identifier": reservation.identity.value}
+    query = _urlencode({**params, "return_url": return_url} if return_url else params)
     base = reverse(
         f"plugins:netbox_kea:server_reservation{reservation.family}_edit",
         args=[server_pk, reservation.scope.subnet.subnet_id],
@@ -1118,6 +1115,7 @@ def _set_lease_reservation_fields(
     host_cmds_available: bool,
     failed_ips: set[str],
     can_change: bool,
+    return_url: str,
 ) -> None:
     """Set one lease row from its typed canonical Reservation match."""
     observed = lease["lease"]
@@ -1137,7 +1135,7 @@ def _set_lease_reservation_fields(
         }
     )
     if reservation is not None:
-        lease["reservation_url"] = _canonical_reservation_url(server_pk, reservation)
+        lease["reservation_url"] = _canonical_reservation_url(server_pk, reservation, return_url)
         lease["can_change_reservation"] = can_change and lease["reservation_url"] is not None
         if (
             isinstance(reservation.scope, InSubnetReservationScope)
@@ -1187,7 +1185,13 @@ def _set_lease_reservation_fields(
 
 
 def _enrich_leases_with_badges(
-    leases: list[dict[str, Any]], server: "Server", version: Family, can_delete: bool = False, can_change: bool = False
+    leases: list[dict[str, Any]],
+    server: "Server",
+    version: Family,
+    can_delete: bool = False,
+    can_change: bool = False,
+    *,
+    return_url: str,
 ) -> None:
     """In-place: add reservation and NetBox IPAM badge fields to lease dicts.
 
@@ -1199,6 +1203,8 @@ def _enrich_leases_with_badges(
     - ``sync_url``: POST endpoint URL to create a NetBox IP when absent
     - ``can_delete``: whether the current user may delete this lease
     - ``can_change``: whether the current user may edit this lease (gates edit_url)
+
+    *return_url* is the lease search page; the lease and Reservation edit forms return to it.
     """
     from ..sync import bulk_fetch_netbox_ips
 
@@ -1234,10 +1240,12 @@ def _enrich_leases_with_badges(
             host_cmds_available,
             failed_ips,
             can_change,
+            return_url,
         )
 
     sync_url = reverse(f"plugins:netbox_kea:server_lease{version}_sync", args=[server.pk])
     edit_url_name = f"plugins:netbox_kea:server_lease{version}_edit"
+    edit_query = f"?{_urlencode({'return_url': return_url})}" if return_url else ""
     nb_ips = bulk_fetch_netbox_ips([_row_address(lease) for lease in leases])
     for lease in leases:
         ip = _row_address(lease)
@@ -1257,6 +1265,6 @@ def _enrich_leases_with_badges(
         ):
             lease["sync_url"] = sync_url
         if can_change and is_address:
-            lease["edit_url"] = reverse(edit_url_name, args=[server.pk, ip])
+            lease["edit_url"] = reverse(edit_url_name, args=[server.pk, ip]) + edit_query
         lease["can_delete"] = can_delete
         lease["can_change"] = can_change

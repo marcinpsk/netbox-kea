@@ -13,6 +13,7 @@ from django.contrib.auth.models import PermissionsMixin
 from django.http import Http404, HttpResponse, HttpResponseForbidden
 from django.http.request import HttpRequest
 from django.urls import reverse
+from django.utils.http import url_has_allowed_host_and_scheme
 from netbox.tables import BaseTable
 
 from ..config_write import ConfigChangeOutcome, ConfigChangeRejected, RejectionReason
@@ -46,6 +47,14 @@ _REJECTED: dict[RejectionReason, str] = {
     "not-sent": "The change was not sent to Kea.",
     "invalid-client-configuration": "The change was not sent to Kea, because the Server settings are not valid.",
 }
+
+
+def _safe_return_url(request: HttpRequest, fallback: str) -> str:
+    """Return the request's ``return_url`` when it is a local URL, else *fallback*."""
+    return_url = request.GET.get("return_url", "")
+    if url_has_allowed_host_and_scheme(return_url, allowed_hosts=None):
+        return return_url
+    return fallback
 
 
 def _strip_empty_params(path: str) -> str:

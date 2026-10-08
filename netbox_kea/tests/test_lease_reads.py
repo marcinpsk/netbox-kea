@@ -15,6 +15,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
+from urllib.parse import urlencode
 
 import requests
 from django.contrib.messages import get_messages
@@ -164,7 +165,8 @@ class LeaseBrowsingTest(_ViewTestBase):
         rows = {row.record["kind"]: row.record for row in response.context["table"].rows}
         self.assertEqual(
             rows["address"]["edit_url"],
-            reverse("plugins:netbox_kea:server_lease6_edit", args=[self.server.pk, "2001:db8:1::10"]),
+            reverse("plugins:netbox_kea:server_lease6_edit", args=[self.server.pk, "2001:db8:1::10"])
+            + f"?{urlencode({'return_url': f'{self._url(6)}?by=subnet_id&q=10'})}",
         )
         self.assertTrue(rows["address"].get("sync_url"))
         # Edit and Sync look up an address Lease, which Kea reports absent for a delegated prefix.

@@ -8,6 +8,7 @@ from urllib.parse import urlencode
 import requests
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.urls import reverse
+from django.utils.html import escape
 
 from netbox_kea import server_configuration
 from netbox_kea.subnet_catalogue import display
@@ -1213,6 +1214,31 @@ class TestReservationMutationViews(_ViewTestBase):
         self.assertEqual(received[0]["dhcp_version"], 4)
         self.assertIsNotNone(received[0]["before"])
         self.assertIsNone(received[0]["after"])
+
+    def test_delete_returns_to_the_reservation_search(self):
+        responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
+        raw = {"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:ff", "ip-address": "198.18.0.20"}
+        url = reverse("plugins:netbox_kea:server_reservation4_delete", args=[self.server.pk, 20])
+        reservations = reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk])
+        search = f"{reservations}?q=aa%3Abb&cursor=next"
+
+        def target(return_url):
+            return f"{url}?{_identity_query()}&{urlencode({'return_url': return_url})}"
+
+        with stub_kea({**responses, "reservation-get": _res_get(raw)}):
+            confirmation = self.client.get(target(search))
+        self.assertContains(confirmation, f'href="{escape(search)}" class="btn btn-secondary me-2">Cancel</a>')
+
+        for return_url, expected in ((search, search), ("https://evil.example/", reservations)):
+            with self.subTest(return_url=return_url):
+                deleting = {
+                    **responses,
+                    "reservation-get": queued(_res_get(raw), _res_get(raw), {"result": 3}),
+                    "reservation-del": {"result": 0},
+                }
+                with stub_kea(deleting):
+                    response = self.client.post(target(return_url))
+                self.assertRedirects(response, expected, fetch_redirect_response=False)
 
     def test_delete_invalidates_a_catalogue_cached_during_the_mutation(self):
         responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])

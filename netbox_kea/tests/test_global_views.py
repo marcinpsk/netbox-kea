@@ -46,6 +46,7 @@ error handling runs through the real client instead of a mocked ``side_effect``.
 
 import json
 from unittest.mock import patch
+from urllib.parse import urlencode
 
 import requests
 import yaml
@@ -1050,6 +1051,15 @@ class TestCombinedLeases4Enrichment(_CombinedViewBase):
         self.assertEqual(response.status_code, 200)
         row = next(iter(response.context["table"].rows)).record
         self.assertTrue(row["is_reserved"])
+
+    def test_an_edit_returns_to_the_combined_search(self):
+        with _reservation_stub(
+            4, {"lease4-get": _lease_one(_MOCK_LEASE_V4_ENRICHMENT), "reservation-get": _RES_NOT_FOUND}
+        ):
+            response = self.client.get(self._lease_url())
+        edit_url = reverse("plugins:netbox_kea:server_lease4_edit", args=[self.v4_server.pk, "10.0.0.5"])
+        row = next(iter(response.context["table"].rows)).record
+        self.assertEqual(row["edit_url"], f"{edit_url}?{urlencode({'return_url': self._lease_url()})}")
 
     def test_create_reservation_link_when_no_reservation(self):
         """A lease without a matching reservation must show a create-reservation link."""
