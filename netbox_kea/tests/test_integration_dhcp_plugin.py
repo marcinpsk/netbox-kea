@@ -1198,6 +1198,33 @@ class DhcpPluginReservationSnapshotImportTest(TestCase):
             MACAddress.objects.get(mac_address="aa:bb:cc:dd:ee:12"),
         )
 
+    def test_addressless_reservation_without_a_known_published_name_imports_without_a_mac_name(self):
+        """A Pool suffix makes the name depend on the lease, so the MAC description gets no name."""
+        from dcim.models import MACAddress
+
+        HostReservation = apps.get_model(DHCP_PLUGIN, "HostReservation")
+        conf = {
+            "subnet4": [
+                {
+                    "id": 13,
+                    "subnet": "10.13.0.0/24",
+                    "pools": [{"pool": "10.13.0.10-10.13.0.100", "ddns-qualifying-suffix": "pool.example.com"}],
+                }
+            ]
+        }
+        hosts = [{"subnet-id": 13, "hw-address": "aa:bb:cc:dd:ee:13", "hostname": "id-only"}]
+        summary = self.adapter.import_server_config(
+            self.server, parse_dhcp_config(conf, 4), _reservation_snapshot(conf, 4, hosts)
+        )
+
+        self.assertEqual(summary.errors, 0, summary.warnings)
+        self.assertIn("reservation", summary.ownership.completed_sources)
+        reservation = HostReservation.objects.get()
+        self.assertEqual(reservation.hostname, "id-only")
+        mac = MACAddress.objects.get(mac_address="aa:bb:cc:dd:ee:13")
+        self.assertEqual(reservation.hw_address, mac)
+        self.assertEqual(mac.description, "")
+
     def test_global_v6_reservation_does_not_invent_ipam_scope(self):
         from ipam.models import IPAddress
 
