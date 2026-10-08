@@ -1941,3 +1941,16 @@ class TestSyncVRFHelp(TestCase):
 
     def test_import_help_includes_reservation_addresses(self):
         self.assertIn("reservation", str(ServerImportForm().fields["sync_vrf"].help_text).lower())
+
+
+class TestReservationHostnameHelp(TestCase):
+    """The hostname help names every source of the effective qualifying suffix, as published_name resolves it."""
+
+    def test_the_help_names_the_pool_subnet_shared_network_and_global_suffix(self):
+        from netbox_kea.forms import Reservation4Form, Reservation6Form
+
+        for form in (Reservation4Form, Reservation6Form):
+            with self.subTest(form=form.__name__):
+                help_text = str(form.base_fields["hostname"].help_text)
+                for source in ("Pool", "Subnet", "shared network", "global"):
+                    self.assertIn(source, help_text)
