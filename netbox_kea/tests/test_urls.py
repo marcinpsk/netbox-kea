@@ -30,6 +30,15 @@ class TestPluginURLRegistration(SimpleTestCase):
     def test_plugin_paths_have_one_registration(self):
         self._assert_unique_paths(urlpatterns)
 
+    def test_plugin_names_have_one_registration(self):
+        # reverse() returns only one of two paths with the same name, so the other path is served but never linked.
+        paths_by_name = defaultdict(list)
+        for route, name in _registered_paths(urlpatterns):
+            if name is not None:
+                paths_by_name[name].append(route)
+        duplicates = {name: routes for name, routes in paths_by_name.items() if len(routes) > 1}
+        self.assertEqual(duplicates, {}, f"Duplicate plugin URL names: {duplicates}")
+
     def test_duplicate_guard_detects_an_explicit_path_repeated_in_an_include(self):
         view = ServerLease4AddView.as_view()
         patterns = [

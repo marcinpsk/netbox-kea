@@ -300,16 +300,6 @@ urlpatterns = (
         name="server_shared_network6_edit",
     ),
     path(
-        "servers/<int:pk>/dhcp4/option-def/",
-        options.ServerOptionDef4View.as_view(),
-        name="server_option_def4",
-    ),
-    path(
-        "servers/<int:pk>/dhcp6/option-def/",
-        options.ServerOptionDef6View.as_view(),
-        name="server_option_def6",
-    ),
-    path(
         "servers/<int:pk>/dhcp4/option-def/add/",
         options.ServerOptionDef4AddView.as_view(),
         name="server_option_def4_add",
