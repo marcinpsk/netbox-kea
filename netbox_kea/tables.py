@@ -479,10 +479,10 @@ class BaseLeaseTable(GenericTable):
         template_code=(
             "{% if record.netbox_ip_url %}"
             '<a href="{{ record.netbox_ip_url }}" class="badge text-bg-success text-decoration-none">'
-            '<i class="mdi mdi-link-variant"></i> Synced</a>'
+            '<i class="mdi mdi-link-variant" aria-hidden="true"></i> Synced</a>'
             "{% elif record.netbox_prefix_url %}"
             '<a href="{{ record.netbox_prefix_url }}" class="badge text-bg-success text-decoration-none">'
-            '<i class="mdi mdi-link-variant"></i> Synced</a>'
+            '<i class="mdi mdi-link-variant" aria-hidden="true"></i> Synced</a>'
             "{% elif record.sync_url %}"
             '<button type="button"'
             ' hx-post="{{ record.sync_url }}"'
@@ -491,7 +491,7 @@ class BaseLeaseTable(GenericTable):
             ' {% include "netbox_kea/inc/row_action_htmx.html" %}'
             ' class="badge text-bg-secondary border-0"'
             ' style="cursor:pointer">'
-            '<i class="mdi mdi-sync"></i> Sync</button>'
+            '<i class="mdi mdi-sync" aria-hidden="true"></i> Sync</button>'
             "{% endif %}"
         ),
     )
