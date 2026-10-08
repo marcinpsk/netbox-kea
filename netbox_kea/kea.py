@@ -1343,6 +1343,28 @@ class KeaClient:
             )
         return reservation
 
+    def reservation_by_prefix(
+        self,
+        catalogue,
+        scope: InSubnetReservationScope,
+        prefix: ipaddress.IPv6Network,
+    ) -> Reservation | None:
+        """Resolve one delegated prefix to the In-Subnet Reservation that reserves exactly that prefix.
+
+        Kea finds a host by the base address of a reserved prefix, whatever its length, and the prefix
+        can be outside the Subnet CIDR. A host that reserves another length at that base fails closed.
+        """
+        raw = self._reservation_raw_by_address(6, scope, str(prefix.network_address))
+        if raw is None:
+            return None
+        reservation = _exact_reservation(raw, 6, catalogue)
+        if reservation.scope != scope or prefix not in reservation.delegated_prefixes:
+            raise MalformedReservation(
+                "target-mismatch",
+                "Kea returned a Reservation that does not match the scoped prefix target.",
+            )
+        return reservation
+
     def reservations_by_hostname(
         self,
         version: Family,
