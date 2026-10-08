@@ -57,6 +57,7 @@ from .leases import (
     read_exact_lease,
     read_lease_change,
     read_lease_collection,
+    read_lease_creation,
     read_lease_page,
     read_lease_page_count,
 )
@@ -1779,9 +1780,11 @@ class KeaClient:
 
         Raises:
             KeaException: If Kea refuses the Lease, for example because the address is in use.
+            MalformedLeaseResponse: If the reply confirms no creation.
 
         """
-        self.command(LEASE_ADD[request.family], request.family, arguments=_creation_arguments(request))
+        response = self.command(LEASE_ADD[request.family], request.family, arguments=_creation_arguments(request))
+        read_lease_creation(response)
 
     def lease_get(self, identity: LeaseIdentity) -> ExactLeaseResult:
         """Read the one Lease with *identity*: found, confirmed absent, or a failed observation.

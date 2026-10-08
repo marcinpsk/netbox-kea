@@ -934,7 +934,7 @@ def _read_records(raw_leases: list[Any], family: Family) -> tuple[tuple[Lease, .
     return records, tuple(diagnostic for _index, diagnostic in sorted(diagnostics, key=lambda item: item[0]))
 
 
-def _reply(response: Any, results: tuple[int, int] = (0, 3)) -> tuple[int, Any]:
+def _reply(response: Any, results: tuple[int, ...] = (0, 3)) -> tuple[int, Any]:
     """Return the result code and arguments of a one-service lease reply, or fail the read."""
     if not isinstance(response, list) or len(response) != 1 or not isinstance(response[0], dict):
         raise MalformedLeaseResponse("Kea returned a malformed lease response.")
@@ -1083,6 +1083,16 @@ def read_lease_change(response: Any, *, refused: int) -> bool:
     """
     result, _arguments = _reply(response, (0, refused))
     return result == 0
+
+
+def read_lease_creation(response: Any) -> None:
+    """Read one ``lease{4,6}-add`` reply that ``KeaClient.command`` checked; only one success entry confirms it.
+
+    Raises:
+        MalformedLeaseResponse: If the envelope is unusable.
+
+    """
+    _reply(response, (0,))
 
 
 def _edited_arguments(raw: Mapping[str, Any], fresh: Lease, edit: LeaseEdit) -> dict[str, Any]:
