@@ -4,6 +4,7 @@
 
 import ast
 import re
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -558,3 +559,10 @@ def test_invalid_baseline_fails_loudly(tmp_path, entry):
 def test_no_unapproved_wire_literals_in_production_tree():
     bad = wd.unapproved()
     assert not bad, "\n".join(str(hit) for hit in bad)
+
+
+def test_the_baseline_has_no_unused_budget():
+    # An unused budget would let new literals in unnoticed.
+    counts = Counter(hit.site for hit in wd.scan_tree())
+    slack = {site: budget for site, budget in wd.load_baseline().items() if budget > counts[site]}
+    assert not slack, f"Run kea_wire_discipline.py --update-baseline; these budgets exceed the tree: {slack}"
