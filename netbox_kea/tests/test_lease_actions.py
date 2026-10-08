@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import time
 from html.parser import HTMLParser
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 from django.contrib.messages import get_messages
 from django.test import override_settings
@@ -399,3 +400,81 @@ class LeaseAddTest(_ViewTestBase):
             "Lease created, but it was not synced to NetBox: Kea did not report it as a current lease.",
             _messages(response),
         )
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class LeaseReserveTest(_ViewTestBase):
+    """Reserve and the reservation badges compare a delegated prefix with the Reservation prefixes."""
+
+    def _rows(self, records: list[dict], reservation_get) -> dict[str, dict]:
+        responses = {
+            **_catalogue_responses_for_subnets(6, _SUBNETS[6]),
+            "lease6-get-all": {"result": 0, "arguments": {"leases": records}},
+            "reservation-get": reservation_get,
+        }
+        with stub_kea(responses):
+            response = self.client.get(
+                reverse("plugins:netbox_kea:server_leases6", args=[self.server.pk]),
+                {"by": "subnet_id", "q": "10"},
+                HTTP_HX_REQUEST="true",
+            )
+        return {row.record["kind"]: row.record for row in response.context["table"].rows}
+
+    def test_a_delegated_prefix_offers_a_prefix_reservation_and_an_edit(self):
+        rows = self._rows([lease_record("2001:db8:1::10", subnet_id=10), _prefix()], {"result": 3})
+
+        query = parse_qs(urlsplit(rows["delegated-prefix"]["create_reservation_url"]).query)
+        self.assertEqual(query["prefixes"], [f"{_PREFIX}/56"])
+        self.assertNotIn("ip_addresses", query)
+        self.assertEqual(
+            rows["delegated-prefix"]["edit_url"],
+            reverse("plugins:netbox_kea:server_lease6_edit", args=[self.server.pk, f"{_PREFIX}/56"])
+            + "?"
+            + urlencode({"return_url": self.last_response.wsgi_request.get_full_path()}),
+        )
+        self.assertIsNone(rows["delegated-prefix"].get("sync_url"))
+        self.assertEqual(
+            parse_qs(urlsplit(rows["address"]["create_reservation_url"]).query)["ip_addresses"], ["2001:db8:1::10"]
+        )
+
+    def test_a_reservation_of_the_prefix_shows_reserved(self):
+        host = {
+            "subnet-id": 10,
+            "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:09",
+            "hostname": "pdres",
+            "ip-addresses": [],
+            "prefixes": [f"{_PREFIX}/56"],
+        }
+
+        def reservation_get(body):
+            # Kea 3.2.0 finds a host by the base address of its reserved prefix.
+            if body["arguments"].get("ip-address") == _PREFIX:
+                return {"result": 0, "text": "Host found.", "arguments": host}
+            return {"result": 3, "text": "Host not found."}
+
+        rows = self._rows([_prefix()], reservation_get)
+
+        self.assertTrue(rows["delegated-prefix"]["is_reserved"])
+        self.assertFalse(rows["delegated-prefix"]["pending_ip_change"])
+
+    def test_a_reservation_of_another_prefix_for_the_client_is_pending(self):
+        lease = _prefix()
+        host = {
+            "subnet-id": 10,
+            "duid": lease["duid"],
+            "hostname": "",
+            "ip-addresses": [],
+            "prefixes": ["2001:db8:100:700::/56"],
+        }
+
+        def reservation_get(body):
+            if body["arguments"].get("identifier") == lease["duid"]:
+                return {"result": 0, "text": "Host found.", "arguments": host}
+            return {"result": 3, "text": "Host not found."}
+
+        rows = self._rows([lease], reservation_get)
+
+        row = rows["delegated-prefix"]
+        self.assertFalse(row["is_reserved"])
+        self.assertTrue(row["pending_ip_change"])
+        self.assertEqual(row["pending_reservation_ip"], "2001:db8:100:700::/56")

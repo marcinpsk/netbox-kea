@@ -40,6 +40,7 @@ from ..leases import (
     DHCPv4AddressLease,
     DHCPv4Binding,
     DHCPv6Binding,
+    DHCPv6PrefixLease,
     Lease,
     LeaseAbsent,
     LeaseChanged,
@@ -1087,7 +1088,10 @@ def _reservation_for_lease_worker(worker_clients, version, catalogue, row, looku
     carried = lease_identities(lease)
     worker_client = worker_clients.get()
     try:
-        reservation = worker_client.reservation_by_address(version, catalogue, scope, ip)
+        if isinstance(lease, DHCPv6PrefixLease):
+            reservation = worker_client.reservation_by_prefix(catalogue, scope, lease.prefix)
+        else:
+            reservation = worker_client.reservation_by_address(version, catalogue, scope, ip)
         if reservation is not None:
             return ip, reservation, True
         for identity_scope in (scope, GlobalReservationScope()):
@@ -1166,9 +1170,14 @@ def _set_lease_reservation_fields(
     can_change: bool,
     return_url: str,
 ) -> None:
-    """Set one lease row from its typed canonical Reservation match."""
+    """Set one lease row from its typed canonical Reservation match.
+
+    A delegated prefix compares with the Reservation prefixes, an address with the Reservation addresses.
+    """
     observed = lease["lease"]
     ip = _row_address(lease)
+    is_prefix = isinstance(observed, DHCPv6PrefixLease)
+    target = lease["label"]
     lease.update(
         {
             "is_reserved": reservation is not None,
@@ -1185,6 +1194,7 @@ def _set_lease_reservation_fields(
         }
     )
     if reservation is not None:
+        reserved = [str(item) for item in (reservation.delegated_prefixes if is_prefix else reservation.addresses)]
         lease["reservation_url"] = _canonical_reservation_url(server_pk, reservation, return_url)
         lease["can_change_reservation"] = can_change and lease["reservation_url"] is not None
         if (
@@ -1195,20 +1205,13 @@ def _set_lease_reservation_fields(
             # Kea assigns this lease from the pool; the Reservation holds only a hostname or options.
             lease["is_reserved"] = False
             lease["host_reservation"] = True
-        if (
-            isinstance(reservation.scope, InSubnetReservationScope)
-            and reservation.addresses
-            and all(str(address) != ip for address in reservation.addresses)
-        ):
+        if isinstance(reservation.scope, InSubnetReservationScope) and reserved and target not in reserved:
             lease["pending_ip_change"] = True
-            # The lease keeps its address until renewal, so the reservation is pending, not current.
+            # The lease keeps its allocation until renewal, so the reservation is pending, not current.
             lease["is_reserved"] = False
-            # Every reserved address, because the domain names no primary one.
-            lease["pending_reservation_ip"] = ", ".join(str(address) for address in reservation.addresses)
-        if (
-            ip in {str(address) for address in reservation.addresses}
-            and reservation.identity.identifier_type == "hw-address"
-        ):
+            # Every reserved allocation of the kind, because the domain names no primary one.
+            lease["pending_reservation_ip"] = ", ".join(reserved)
+        if target in reserved and reservation.identity.identifier_type == "hw-address":
             lease_hw_value = next(
                 (
                     identity.value
@@ -1226,12 +1229,12 @@ def _set_lease_reservation_fields(
                     args=[server_pk],
                 )
         return
-    # The add form reads ip_addresses as addresses, so a delegated prefix offers no prefilled link.
-    if not (observed.kind == "address" and can_change and host_cmds_available and ip not in failed_ips and subnet_cidr):
+    if not (can_change and host_cmds_available and ip not in failed_ips and subnet_cidr):
         return
+    allocation_field = "prefixes" if is_prefix else "ip_addresses" if version == 6 else "ip_address"
     params = {
         "subnet_cidr": subnet_cidr,
-        "ip_addresses" if version == 6 else "ip_address": ip,
+        allocation_field: target,
         "hostname": lease_published_name(observed.hostname),
         "return_url": return_url,
     }

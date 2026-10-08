@@ -225,8 +225,8 @@ class LeaseBrowsingTest(_ViewTestBase):
         self.assertContains(response, f'href="{reverse("ipam:prefix_list")}?prefix=2001:db8:100:100::/56"', count=1)
         self.assertContains(response, 'title="Search prefixes"', count=1)
 
-    def test_only_an_address_lease_row_offers_a_create_reservation_link(self):
-        # A prefix inside the Subnet passes the scoped address lookup, so only the lease kind refuses the link.
+    def test_a_delegated_prefix_row_offers_a_prefix_reservation(self):
+        # A prefix inside the Subnet CIDR still prefills the prefix field, not an address.
         records = [
             lease_record("2001:db8:1::10", subnet_id=10),
             lease_record("2001:db8:1:0:1::", type="IA_PD", prefix_len=80, subnet_id=10),
@@ -240,9 +240,10 @@ class LeaseBrowsingTest(_ViewTestBase):
             response = self.client.get(self._url(6), {"by": "subnet_id", "q": "10"}, HTTP_HX_REQUEST="true")
 
         rows = {row.record["kind"]: row.record for row in response.context["table"].rows}
-        self.assertTrue(rows["address"]["create_reservation_url"])
-        # The add form reads ip_addresses as IPv6 addresses, so a prefix would prefill an address Reservation.
-        self.assertIsNone(rows["delegated-prefix"]["create_reservation_url"])
+        self.assertIn("ip_addresses=2001%3Adb8%3A1%3A%3A10", rows["address"]["create_reservation_url"])
+        link = rows["delegated-prefix"]["create_reservation_url"]
+        self.assertIn("prefixes=2001%3Adb8%3A1%3A0%3A1%3A%3A%2F80", link)
+        self.assertNotIn("ip_addresses", link)
 
     def test_an_unconfigured_subnet_cidr_is_refused_not_reported_empty(self):
         responses = {**_catalogue_responses_for_subnets(4, _SUBNETS4)}
