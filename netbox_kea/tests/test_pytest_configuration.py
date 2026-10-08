@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import itertools
 import operator
 import os
 import re
@@ -2668,6 +2669,8 @@ def test_every_user_preferences_call_uses_the_established_bound():
     assert checked, "The browser suite reads no user preferences; this guard would read nothing."
 
 
+_PROXY_VARIABLES = ("HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy")
+
 #: Every external tool the integration setup script calls. Stubbed so the script can run
 #: in a test without a network, a Docker daemon, or a real Kea release tarball.
 _SETUP_SCRIPT_TOOLS = ("openssl", "curl", "sha256sum", "tar", "docker")
@@ -2682,8 +2685,15 @@ def _write_tool_stubs(stub_bin: Path) -> None:
     stub_bin.mkdir(exist_ok=True)
     for tool in _SETUP_SCRIPT_TOOLS:
         stub = stub_bin / tool
-        stub.write_text("#!/bin/sh\ncat >/dev/null 2>&1\nexit 0\n")
+        # Each call appends its arguments, one per line, then an empty line, to <tool>.calls.
+        stub.write_text('#!/bin/sh\nprintf \'%s\\n\' "$@" "" >>"$0.calls"\ncat >/dev/null 2>&1\nexit 0\n')
         stub.chmod(0o755)
+
+
+def _stub_calls(stub_bin: Path, tool: str) -> list[list[str]]:
+    """Return the argument list of each call that the setup script made to the *tool* stub."""
+    calls = (stub_bin / f"{tool}.calls").read_text().split("\n\n")
+    return [call.split("\n") for call in calls if call]
 
 
 def _run_setup_script(
@@ -2704,7 +2714,8 @@ def _run_setup_script(
         ["bash", "./tests/test_setup.sh"],
         cwd=sandbox,
         env={
-            **os.environ,
+            # The host proxy must not leak into the build arguments that a test asserts on.
+            **{name: value for name, value in os.environ.items() if name not in _PROXY_VARIABLES},
             "PATH": f"{stub_bin}:{os.environ['PATH']}",
             "NETBOX_CONTAINER_TAG": "v4.6",
             **(environment or {}),
@@ -2782,6 +2793,33 @@ def test_the_setup_script_copies_the_ca_bundle_into_the_build_project():
 
         assert result.returncode == 0, result.stderr
         assert (sandbox / "tests/docker/host_ca.crt").read_text() == bundle.read_text()
+
+
+def _compose_build_args(sandbox: Path) -> list[str]:
+    """Return the ``--build-arg`` values of the one ``docker compose build`` call of the setup script."""
+    (build,) = [call for call in _stub_calls(sandbox / "stub-bin", "docker") if call[:2] == ["compose", "build"]]
+    return [value for flag, value in itertools.pairwise(build) if flag == "--build-arg"]
+
+
+def test_the_setup_script_passes_the_set_proxy_variables_to_the_image_build():
+    """Compose does not forward the proxy of the host to a build, so the image cannot reach PyPI behind one."""
+    proxy = {"HTTPS_PROXY": "http://proxy.example:3128", "no_proxy": "localhost,.example"}
+    with tempfile.TemporaryDirectory() as directory:
+        sandbox = Path(directory)
+        result = _run_setup_script(sandbox, ("netbox_kea_ng-1.9.0-py3-none-any.whl",), proxy)
+
+        assert result.returncode == 0, result.stderr
+        proxy_args = [arg for arg in _compose_build_args(sandbox) if arg.split("=")[0] in _PROXY_VARIABLES]
+        assert proxy_args == ["HTTPS_PROXY=http://proxy.example:3128", "no_proxy=localhost,.example"]
+
+
+def test_the_setup_script_passes_no_proxy_argument_without_a_proxy():
+    with tempfile.TemporaryDirectory() as directory:
+        sandbox = Path(directory)
+        result = _run_setup_script(sandbox, ("netbox_kea_ng-1.9.0-py3-none-any.whl",))
+
+        assert result.returncode == 0, result.stderr
+        assert [arg.split("=")[0] for arg in _compose_build_args(sandbox)] == ["FROM", "WHL_FILE"]
 
 
 def _secret_source_is_inside_the_compose_project(source: str) -> bool:

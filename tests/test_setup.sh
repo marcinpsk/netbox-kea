@@ -50,5 +50,12 @@ cp "${SSL_CERT_FILE:-/etc/ssl/certs/ca-certificates.crt}" ./tests/docker/host_ca
 
 echo "Running docker compose up"
 cd ./tests/docker/
-docker compose build --build-arg "FROM=netboxcommunity/netbox:$NETBOX_CONTAINER_TAG" --build-arg "WHL_FILE=$WHL_FILE"
+build_args=(--build-arg "FROM=netboxcommunity/netbox:$NETBOX_CONTAINER_TAG" --build-arg "WHL_FILE=$WHL_FILE")
+# Compose does not pass the proxy of the host to a build. Pass each proxy variable that is set.
+for name in HTTP_PROXY HTTPS_PROXY NO_PROXY http_proxy https_proxy no_proxy; do
+    if [ -n "${!name-}" ]; then
+        build_args+=(--build-arg "$name=${!name}")
+    fi
+done
+docker compose build "${build_args[@]}"
 docker compose up -d
