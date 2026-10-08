@@ -39,7 +39,7 @@ from ipam.models import IPAddress as NbIP
 
 from netbox_kea.kea import KeaClient, KeaException
 from netbox_kea.models import Server
-from netbox_kea.utilities import lease_rows
+from netbox_kea.utilities import lease_rows, parse_lease_csv
 
 from .kea_stub import (
     LeaseDaemon,
@@ -2177,6 +2177,13 @@ class TestBulkLeaseImportView(_ViewTestBase):
         """GET lease6 bulk import page returns 200."""
         response = self.client.get(self._url(version=6))
         self.assertEqual(response.status_code, 200)
+
+    def test_the_shown_example_is_a_file_that_imports_one_row(self):
+        for version in (4, 6):
+            with self.subTest(version=version):
+                page = self.client.get(self._url(version=version)).content.decode()
+                (example,) = re.findall(r"<pre[^>]*>(.*?)</pre>", page, flags=re.DOTALL)
+                self.assertEqual(len(parse_lease_csv(version, html.unescape(example))), 1)
 
     def test_post_v4_valid_csv_calls_lease_add(self):
         """POST with valid v4 CSV calls lease_add once per row."""
