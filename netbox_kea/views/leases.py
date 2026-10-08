@@ -14,7 +14,6 @@ import requests
 from django.contrib import messages
 from django.core.exceptions import ValidationError
 from django.db import DatabaseError
-from django.db.utils import OperationalError, ProgrammingError
 from django.http import HttpResponse, HttpResponseForbidden
 from django.http.request import HttpRequest
 from django.shortcuts import get_object_or_404, redirect, render
@@ -157,7 +156,7 @@ def _add_lease_journal(
         )
     except ImportError:
         pass  # JournalEntry unavailable on older NetBox versions
-    except (ProgrammingError, OperationalError, DatabaseError):
+    except DatabaseError:
         logger.debug("Failed to create lease journal entry", exc_info=True)
 
 
@@ -904,7 +903,7 @@ class _BaseLeaseAddView(_KeaChangeMixin, generic.ObjectView):
                     hostname=cd.get("hostname") or "",
                     duid=cd.get("duid") or "",
                 )
-            except (DatabaseError, OperationalError, ProgrammingError):
+            except DatabaseError:
                 logger.exception("Failed to record journal entry for lease %s", cd.get("ip_address"))
             lease_added.send_robust(
                 sender=None,
