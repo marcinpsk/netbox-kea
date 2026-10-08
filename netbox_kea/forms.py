@@ -683,7 +683,8 @@ def _identifier_type_choices(version: Family) -> list[tuple[str, str]]:
 
 _RESERVATION_HOSTNAME_HELP = (
     "The name that clients get, for example <code>host.example.com</code>."
-    " Kea adds the DDNS qualifying suffix of the Subnet to a single label."
+    " Kea adds the effective DDNS qualifying suffix to a single label: the suffix of the Pool of the address,"
+    " else of the Subnet, its shared network or the global configuration."
     " Leave blank to reserve no hostname."
 )
 _IDENTIFIER_TYPE_CHOICES_V4 = _identifier_type_choices(4)
