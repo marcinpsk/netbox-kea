@@ -145,6 +145,20 @@ class LeaseEditTest(_ViewTestBase):
         self.assertIn("hostname", _messages(response)[0])
         self.assertEqual(daemon.lease("192.0.2.40")["hostname"], "changed.example.org")
 
+    def test_the_conflict_message_names_two_changed_fields_as_a_list(self):
+        daemon = LeaseDaemon(4, _address4())
+        form = self._shown(daemon, 4, "192.0.2.40")
+        daemon.put(_address4(hostname="changed.example.org", valid_lft=7200))
+
+        _kea, response = self._save(daemon, 4, "192.0.2.40", form, hostname="renamed.example.org", valid_lft="1800")
+
+        (message,) = _messages(response)
+        self.assertEqual(
+            message,
+            "Lease 192.0.2.40 was not changed: its hostname and valid lifetime changed in Kea"
+            " after the form was shown. Reload the form and try again.",
+        )
+
     def test_a_renewal_alone_permits_the_edit_and_keeps_the_fresh_renewal_and_extensions(self):
         daemon = LeaseDaemon(4, _address4(user_context=_CONTEXT))
         form = self._shown(daemon, 4, "192.0.2.40")
