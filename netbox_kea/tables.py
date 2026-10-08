@@ -132,7 +132,14 @@ LEASE_ACTIONS = """<span class="btn-group dropdown">
         {% if record.edit_url or record.reservation_url and record.can_change_reservation %}
         <li><hr class="dropdown-divider"></li>
         {% endif %}
-        {% if record.ip_address %}
+        {% if record.kind == "delegated-prefix" %}
+        <li>
+            <a href="{% url "ipam:prefix_list" %}?prefix={{ record.selection }}" class="dropdown-item">
+                <i class="mdi mdi-magnify" aria-hidden="true" title="Search prefixes"></i>
+                Search prefixes
+            </a>
+        </li>
+        {% elif record.ip_address %}
         <li>
             <a href="{% url "ipam:ipaddress_list" %}?address={{ record.ip_address }}" class="dropdown-item">
                 <i class="mdi mdi-magnify" aria-hidden="true" title="Search IPs"></i>
@@ -370,7 +377,8 @@ class BaseLeaseTable(GenericTable):
 
     # This column is for the select checkboxes.
     pk = ToggleColumn(verbose_name="IP Address", accessor="selection", visible=True)
-    ip_address = tables.Column(verbose_name="IP Address", order_by="_ip_sort_key")
+    # A delegated prefix shows as address/length.
+    ip_address = tables.Column(verbose_name="IP Address", accessor="selection", order_by="_ip_sort_key")
     family = tables.Column(verbose_name="Family")
     kind = tables.Column(verbose_name="Kind")
     prefix_length = tables.Column(verbose_name="Prefix Length")

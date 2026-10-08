@@ -171,6 +171,28 @@ class LeaseBrowsingTest(_ViewTestBase):
         self.assertIsNone(rows["delegated-prefix"].get("edit_url"))
         self.assertIsNone(rows["delegated-prefix"].get("sync_url"))
 
+    def test_a_delegated_prefix_row_shows_its_length_and_searches_prefixes(self):
+        records = [
+            lease_record("2001:db8:1::10", subnet_id=10),
+            lease_record("2001:db8:100:100::", type="IA_PD", prefix_len=56, subnet_id=10),
+        ]
+        responses = {
+            **_catalogue_responses_for_subnets(6, _SUBNETS6),
+            "lease6-get-all": lease_reply(*records),
+            "reservation-get": {"result": 3},
+        }
+        with stub_kea(responses):
+            response = self.client.get(self._url(6), {"by": "subnet_id", "q": "10"}, HTTP_HX_REQUEST="true")
+
+        rows = {row.record["kind"]: row for row in response.context["table"].rows}
+        self.assertEqual(rows["delegated-prefix"].get_cell("ip_address"), "2001:db8:100:100::/56")
+        self.assertEqual(rows["address"].get_cell("ip_address"), "2001:db8:1::10")
+        ip_search = f'href="{reverse("ipam:ipaddress_list")}?address='
+        self.assertContains(response, f"{ip_search}2001:db8:1::10", count=1)
+        self.assertNotContains(response, f"{ip_search}2001:db8:100:100::")
+        self.assertContains(response, f'href="{reverse("ipam:prefix_list")}?prefix=2001:db8:100:100::/56"', count=1)
+        self.assertContains(response, 'title="Search prefixes"', count=1)
+
     def test_only_an_address_lease_row_offers_a_create_reservation_link(self):
         # A prefix inside the Subnet passes the scoped address lookup, so only the lease kind refuses the link.
         records = [
