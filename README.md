@@ -118,9 +118,11 @@ NetBox plugin for the [Kea DHCP](https://www.isc.org/kea/) server. Manage your D
   prefixes for an address) shows as *Reservation*, not *Reserved*, and the row offers no *+ Reserve*.
 - The `lease_added` and `leases_deleted` signals carry typed values (see `netbox_kea/signals.py`).
   `lease_added` sends `creation`, the request that Kea confirmed, and `lease`, the lease that the read
-  back observed, or `None` when that read failed or does not match the request. `leases_deleted`
-  sends `leases`, the leases whose deletion Kea confirmed. A refused, changed or failed action sends
-  no signal.
+  back observed, or `None` when that read failed or does not match the request. A CSV import sends
+  `lease_added` for each row that Kea created, with `lease` `None`, because it reads nothing back.
+  `leases_deleted` sends `leases`, the leases whose deletion Kea confirmed. A refused, changed or
+  failed action sends no signal. Wiping the leases of a Subnet sends no signal, because Kea does
+  not report which leases it removed.
 
 **Lease observations**
 - The plugin validates each lease record that Kea returns. A malformed record is left out and the
@@ -130,12 +132,16 @@ NetBox plugin for the [Kea DHCP](https://www.isc.org/kea/) server. Manage your D
   DHCPv6 address, whose valid lifetime has not ended. An infinite lifetime never ends. The
   Reservation **Lease** column shows *No Lease* only when the lease query of that Reservation is
   complete; otherwise it shows *Lease Unknown* with the reason.
-- The lease REST actions (`/api/plugins/kea/servers/<pk>/leases4/` and `leases6/`) return one
-  normalized observation: `count`, `results`, `diagnostics`, `complete`, `next_cursor`, `query`
-  (`family`, `selector`, `value`, `state`), `coverage` (`exhaustive` or `page`) and `evaluated_at`.
+- The lease REST actions (`/api/plugins/kea/servers/<pk>/leases4/` and `leases6/`) take one filter:
+  `ip_address`, `hw_address` (DHCPv4), `duid` (DHCPv6), `hostname` or `subnet_id`. When a request
+  gives more than one, the first in that order is used. `state` narrows a `subnet_id` search to the
+  Kea state code `0` (assigned) or `1` (declined).
+  They return one normalized observation: `count`, `results`, `diagnostics`, `complete`, `next_cursor`,
+  `query` (`family`, `selector`, `value`, `state`), `coverage` (`exhaustive` or `page`) and `evaluated_at`.
   Each result has `family`, `kind` (`address` or `delegated-prefix`), `address`, `prefix_length`,
-  `subnet_id`, `state` (the Kea state name), `current`, `binding`, `hostname`, `valid_lifetime`,
-  `last_transaction` and `expiration` (`infinite`, `expires_at`). Each diagnostic has `code`, `field`,
+  `subnet_id`, `state` (the Kea state name), `current`, `binding` (`hw_address` and `client_id` for
+  DHCPv4, `duid` and `iaid` for DHCPv6), `hostname`, `valid_lifetime`, `last_transaction` and
+  `expiration` (`infinite`, `expires_at`). Each diagnostic has `code`, `field`,
   `message`, `source_position` and `kinds`. The response contains no Kea extension values, such as
   `user-context`, and no display labels. A search covers its own query scope only, so `complete`
   never means that the daemon has no other leases.
@@ -158,6 +164,23 @@ NetBox plugin for the [Kea DHCP](https://www.isc.org/kea/) server. Manage your D
   when `infinite` is `true`. An empty cell is a value that the lease does not have.
 - *Current View (limited coverage)* exports the readable leases of the search, in the columns that
   the table shows, as `leases_limited_coverage.csv`. It is not a complete export.
+
+**Upgrading from 1.x: lease contracts that changed**
+
+Integrations that read leases from the plugin must change with the typed lease release (2.0 and later):
+
+- The `leases4` and `leases6` REST actions return the observation above. The Kea fields with
+  underscores, such as `ip_address`, `valid_lft`, `cltt` and `user_context`, and the display keys
+  `state_label`, `expires_in` and `expiry_class` are gone. Check `complete` before you treat a
+  missing lease as absent.
+- *Export All Leases* and *All Data* use the documented columns and refuse an incomplete observation.
+- `lease_added` sends `creation` and `lease` instead of `ip_address`, `hw_address` and `hostname`.
+  `leases_deleted` sends `leases` instead of `ip_addresses`. A delegated prefix is a
+  `DHCPv6PrefixLease` with its prefix length, not an IP address.
+- The DHCPv4 lease CSV import requires the `hw-address` column.
+- The IPAM sync records a delegated-prefix lease as a Prefix, not an IP address. The first complete
+  runs after the upgrade repair the IP addresses that earlier releases made of delegated prefixes
+  (see [Delegated-prefix leases from earlier releases](#delegated-prefix-leases-from-earlier-releases)).
 
 ---
 
@@ -585,13 +608,13 @@ Replace `<Kea Server ID>` with your server's object ID (visible in the top-right
 
 **URL**: `https://netbox.example.com/plugins/kea/servers/<Kea Server ID>/leases{{ object.prefix.version }}/?q={{ object.prefix }}&by=subnet`
 
-### Show DHCP leases for a device/VM interface (by MAC)
+### Show DHCPv4 leases for a device/VM interface (by MAC)
 
 **Content types**: `DCIM > Interface`, `Virtualization > Interface`
 
 **DHCPv4 URL**: `https://netbox.example.com/plugins/kea/servers/<Kea Server ID>/leases4/?q={{ object.mac_address }}&by=hw`
 
-**DHCPv6 URL**: `https://netbox.example.com/plugins/kea/servers/<Kea Server ID>/leases6/?q={{ object.mac_address }}&by=hw`
+Kea has no DHCPv6 lease search by MAC address: a DHCPv6 lease search takes a DUID instead.
 
 ### Show DHCP leases for a device/VM (by hostname)
 
