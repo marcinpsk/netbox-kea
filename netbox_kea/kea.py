@@ -1765,8 +1765,8 @@ class KeaClient:
         # Kea answers result 3 when the Subnet holds no lease to delete.
         self._one_command(LEASE_WIPE[version], version, {"subnet-id": subnet_id}, (0, 3))
 
-    def lease_add(self, version: Family, lease: dict) -> None:
-        """Create a new lease in the Kea lease database using ``lease{v}-add``.
+    def lease_add(self, version: Family, lease: dict) -> str:
+        """Create a new lease in the Kea lease database using ``lease{v}-add``, and return its address.
 
         Args:
             version: DHCP version (4 or 6).
@@ -1779,6 +1779,7 @@ class KeaClient:
 
         """
         self.command(LEASE_ADD[version], version, arguments=lease)
+        return str(lease["ip-address"])
 
     def lease_update(
         self,

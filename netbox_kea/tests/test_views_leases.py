@@ -2132,6 +2132,39 @@ class TestBulkLeaseImportView(_ViewTestBase):
         response = self.client.get(self._url(version=6))
         self.assertEqual(response.status_code, 200)
 
+    def test_post_records_the_created_leases_in_the_server_journal(self):
+        """One journal entry names each lease that Kea created, and no refused row."""
+        from extras.models import JournalEntry
+
+        rows = ["10.0.0.10,aa:bb:cc:dd:ee:01,1,3600,a\n", "10.0.0.11,aa:bb:cc:dd:ee:02,1,3600,b\n"]
+        in_use = {"result": 1, "text": "lease for address 10.0.0.11 already exists"}
+        with _lease_stub({"lease4-add": queued({"result": 0}, in_use)}):
+            response = self.client.post(self._url(version=4), self._post(csv_bytes=self._csv4(rows)))
+        self.assertEqual(response.context["result"]["created"], 1)
+        journal = JournalEntry.objects.get(assigned_object_id=self.server.pk)
+        self.assertEqual(journal.comments, "Lease added: 10.0.0.10")
+        self.assertEqual(journal.created_by, self.user)
+
+    def test_a_journal_failure_still_reports_the_imported_lease(self):
+        """Kea already holds the Lease, so a journal error is logged and the import result is still shown."""
+        from django.db import OperationalError
+
+        with (
+            _lease_stub({"lease4-add": {"result": 0}}),
+            patch("extras.models.JournalEntry.objects.create", autospec=True, side_effect=OperationalError("db gone")),
+            self.assertLogs("netbox_kea.views.sync_views", level="ERROR"),
+        ):
+            response = self.client.post(self._url(version=4), self._post(version=4))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["result"]["created"], 1)
+
+    def test_post_with_no_created_lease_writes_no_journal_entry(self):
+        from extras.models import JournalEntry
+
+        with _lease_stub({"lease4-add": {"result": 1, "text": "lease already exists"}}):
+            self.client.post(self._url(version=4), self._post(version=4))
+        self.assertFalse(JournalEntry.objects.filter(assigned_object_id=self.server.pk).exists())
+
     def test_post_v4_valid_csv_calls_lease_add(self):
         """POST with valid v4 CSV calls lease_add once per row."""
         with _lease_stub({"lease4-add": {"result": 0}}) as kea:
@@ -2321,7 +2354,7 @@ class TestLeaseJournalEntries(_ViewTestBase):
 
 
 class TestJournalHelperEdgeCases(_ViewTestBase):
-    """Unit tests for _add_lease_journal exception paths."""
+    """Unit tests for _add_lease_journal."""
 
     def test_lease_journal_multiple_ips(self):
         """_add_lease_journal with a list of IP addresses uses the 'N lease(s)' branch."""
@@ -2339,28 +2372,6 @@ class TestJournalHelperEdgeCases(_ViewTestBase):
             )
             call_kwargs = mock_create.call_args[1]
             self.assertIn("2 lease(s)", call_kwargs["comments"])
-
-    def test_lease_journal_import_error(self):
-        """ImportError inside _add_lease_journal is swallowed."""
-        import sys
-
-        from netbox_kea.views.leases import _add_lease_journal
-
-        with patch.dict(sys.modules, {"extras.models": None}):
-            _add_lease_journal(self.server, self.user, "created", ip_addresses=["10.0.0.1"])
-
-    def test_lease_journal_db_error(self):
-        """OperationalError inside _add_lease_journal is swallowed."""
-        from django.db import OperationalError
-
-        from netbox_kea.views.leases import _add_lease_journal
-
-        with patch(
-            "extras.models.JournalEntry.objects.create",
-            autospec=True,
-            side_effect=OperationalError("db gone"),
-        ):
-            _add_lease_journal(self.server, self.user, "created", ip_addresses=["10.0.0.1"])
 
 
 # ---------------------------------------------------------------------------

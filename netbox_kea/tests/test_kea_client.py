@@ -1004,12 +1004,9 @@ class TestLeaseAdd(TestCase):
         self.assertEqual(payload["command"], "lease6-add")
         self.assertEqual(payload["service"], ["dhcp6"])
 
-    def test_returns_none_on_success(self):
-        """lease_add returns None on success."""
-        lease = {"ip-address": "10.0.0.50"}
-        with patch.object(self.client._session, "post", return_value=_mock_http_response(_LEASE_ADD_OK)):
-            result = self.client.lease_add(version=4, lease=lease)
-        self.assertIsNone(result)
+    def test_returns_the_created_address(self):
+        with stub_kea({"lease4-add": _LEASE_ADD_OK}):
+            self.assertEqual(self.client.lease_add(version=4, lease={"ip-address": "10.0.0.50"}), "10.0.0.50")
 
     def test_raises_kea_exception_on_error(self):
         """KeaException raised when Kea returns a non-zero result."""

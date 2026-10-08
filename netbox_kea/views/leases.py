@@ -19,6 +19,7 @@ from django.http.request import HttpRequest
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.views import View
+from extras.models import JournalEntry
 from netbox.tables import BaseTable
 from netbox.views import generic
 from utilities.paginator import EnhancedPaginator, get_paginate_count
@@ -120,8 +121,6 @@ def _add_lease_journal(
 ) -> None:
     """Create a JournalEntry on *server* recording a lease CRUD event.
 
-    Silently skips if JournalEntry is unavailable (older NetBox or import error).
-
     Args:
         server: The Server instance the journal entry is attached to.
         user: The request.user who performed the action.
@@ -131,33 +130,30 @@ def _add_lease_journal(
         hostname: Optional hostname (for add events).
         duid: Optional DUID (for DHCPv6 add events).
 
-    """
-    try:
-        from extras.models import JournalEntry
+    Raises:
+        DatabaseError: If the entry cannot be saved. The lease change in Kea is already done,
+            so callers log the error and continue.
 
-        if isinstance(ip_addresses, str):
-            ip_addresses = [ip_addresses]
-        ip_list = ", ".join(ip_addresses)
-        if len(ip_addresses) == 1:
-            parts = [f"Lease {action}: {ip_list}"]
-        else:
-            parts = [f"{len(ip_addresses)} lease(s) {action}: {ip_list}"]
-        if hw_address:
-            parts.append(f"hw-address: {hw_address}")
-        if duid:
-            parts.append(f"duid: {duid}")
-        if hostname:
-            parts.append(f"hostname: {hostname}")
-        JournalEntry.objects.create(
-            assigned_object=server,
-            created_by=user,
-            kind="info",
-            comments="; ".join(parts),
-        )
-    except ImportError:
-        pass  # JournalEntry unavailable on older NetBox versions
-    except DatabaseError:
-        logger.debug("Failed to create lease journal entry", exc_info=True)
+    """
+    if isinstance(ip_addresses, str):
+        ip_addresses = [ip_addresses]
+    ip_list = ", ".join(ip_addresses)
+    if len(ip_addresses) == 1:
+        parts = [f"Lease {action}: {ip_list}"]
+    else:
+        parts = [f"{len(ip_addresses)} lease(s) {action}: {ip_list}"]
+    if hw_address:
+        parts.append(f"hw-address: {hw_address}")
+    if duid:
+        parts.append(f"duid: {duid}")
+    if hostname:
+        parts.append(f"hostname: {hostname}")
+    JournalEntry.objects.create(
+        assigned_object=server,
+        created_by=user,
+        kind="info",
+        comments="; ".join(parts),
+    )
 
 
 def _diagnostic_lines(snapshot: LeaseSnapshot) -> list[str]:

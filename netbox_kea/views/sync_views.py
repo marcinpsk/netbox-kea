@@ -33,7 +33,7 @@ from ..utilities import (
     parse_lease_csv,
 )
 from ._base import ConditionalLoginRequiredMixin, _KeaChangeMixin
-from .leases import _LEASES_TAB
+from .leases import _LEASES_TAB, _add_lease_journal
 from .reservation_mutations import _confirmed_side_effects, _identity_from_request, _reservation_target_scope
 from .reservations import _RESERVATIONS_TAB
 
@@ -506,13 +506,12 @@ class _BaseBulkLeaseImportView(_KeaChangeMixin, ConditionalLoginRequiredMixin, V
             logger.exception("Failed to get Kea client for server %s", instance.pk)
             form.add_error(None, "Failed to connect to Kea server.")
             return self._render(request, instance, form, None)
-        created = 0
+        created: list[str] = []
         error_rows: list[dict[str, Any]] = []
 
         for row in rows:
             try:
-                client.lease_add(self.dhcp_version, row)
-                created += 1
+                created.append(client.lease_add(self.dhcp_version, row))
             except KeaException as exc:  # noqa: PERF203
                 error_rows.append({"row": row, "error": kea_error_hint(exc)})
             except requests.RequestException:
@@ -525,11 +524,16 @@ class _BaseBulkLeaseImportView(_KeaChangeMixin, ConditionalLoginRequiredMixin, V
                 logger.exception("Unexpected error importing lease row %s", row)
                 error_rows.append({"row": row, "error": "An unexpected error occurred."})
 
+        if created:
+            try:
+                _add_lease_journal(instance, request.user, "added", created)
+            except DatabaseError:
+                logger.exception("Failed to record the lease import journal for server %s", instance.pk)
         result = {
-            "created": created,
+            "created": len(created),
             "errors": len(error_rows),
             "error_rows": error_rows,
-            "total": created + len(error_rows),
+            "total": len(created) + len(error_rows),
         }
         return self._render(request, instance, self.form_class(), result)
 
