@@ -305,3 +305,43 @@ class TestOverriddenBlocksRender(SimpleTestCase):
     def test_the_block_scan_reads_netbox_templates(self):
         """No NetBox template found would make every override look unknown, or the scan vacuous."""
         self.assertTrue({"content", "head", "modals", "bulk_controls"} <= _blocks_netbox_defines())
+
+
+def _card_header_icons_without_gap(text: str) -> list[str]:
+    """Return the class of each card header icon that text follows directly, without a margin class."""
+    from bs4 import BeautifulSoup, NavigableString
+
+    offenders = []
+    for header in BeautifulSoup(text, "html.parser").select(".card-header"):
+        for icon in header.find_all("i", class_="mdi", recursive=False):
+            following = icon.next_sibling
+            if (
+                isinstance(following, NavigableString)
+                and following.strip()
+                and not any(name.startswith("me-") for name in icon["class"])
+            ):
+                offenders.append(" ".join(icon["class"]))
+    return offenders
+
+
+class TestCardHeaderIconGap(SimpleTestCase):
+    """NetBox draws .card-header as a flex box, which drops the space between an icon and the text after it."""
+
+    def test_detector_flags_an_icon_directly_before_header_text(self):
+        bad = '<h5 class="card-header">\n  <i class="mdi mdi-plus"></i>\n  Add {{ thing }}\n</h5>'
+        self.assertEqual(_card_header_icons_without_gap(bad), ["mdi mdi-plus"])
+
+    def test_detector_accepts_a_margin_class_or_an_inline_wrapper(self):
+        good = (
+            '<h5 class="card-header"><i class="mdi mdi-plus me-1"></i> Add</h5>'
+            '<div class="card-header"><strong><i class="mdi mdi-magnify"></i> Search</strong></div>'
+        )
+        self.assertEqual(_card_header_icons_without_gap(good), [])
+
+    def test_every_card_header_icon_has_a_gap(self):
+        offenders = sorted(
+            f"{name}: {icon}"
+            for name, text in _plugin_templates().items()
+            for icon in _card_header_icons_without_gap(text)
+        )
+        self.assertEqual(offenders, [], "Add me-1 to these icons, or the header shows the icon against the text")

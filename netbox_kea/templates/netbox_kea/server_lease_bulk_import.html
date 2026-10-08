@@ -13,11 +13,6 @@
         <strong>Import DHCPv{{ dhcp_version }} Leases from CSV</strong>
       </div>
       <div class="card-body">
-        <p class="text-muted mb-3">
-          Upload a UTF-8 CSV file.
-          Lines starting with <code>#</code> are treated as comments and ignored.
-        </p>
-
         {% if dhcp_version == 4 %}
         <div class="alert alert-info" role="alert">
           <strong>v4 required column:</strong> <code>ip-address</code><br>
@@ -69,7 +64,7 @@
 
         {% if result.error_rows %}
         <h6 class="mt-3">Error Details</h6>
-        <table class="table table-sm table-bordered">
+        <table class="table table-bordered mb-0">
           <thead>
             <tr>
               <th>Row data</th>
