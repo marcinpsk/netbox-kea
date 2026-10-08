@@ -13,8 +13,10 @@ SPDX-License-Identifier: Apache-2.0
 This design session replaces raw Lease dictionaries at the domain interface. The accepted decisions below
 record the operator's answers. Issue 291 implements the typed values and observation contracts in
 `netbox_kea/leases.py`, with tests. Issue 292 moves every Lease read to them: KeaClient reads, browsing,
-combined views, exports, REST, Reservation matching and the IPAM lease phase. Lease creation and edits
-still build raw Kea bodies until issue 293 lands, and the IPAM lease phase keeps its address-only
+combined views, exports, REST, Reservation matching and the IPAM lease phase. Issue 293 moves the
+actions to them: Edit and Delete carry the `ShownLease` facts and read the target again in `KeaClient`
+before a change, creation and CSV import send typed requests, Reserve fills the prefix field for a
+delegated prefix, and the lease signals carry typed values. The IPAM lease phase keeps its address-only
 ownership until issue 294 lands.
 
 ## Accepted decisions
