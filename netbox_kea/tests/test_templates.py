@@ -345,3 +345,15 @@ class TestCardHeaderIconGap(SimpleTestCase):
             for icon in _card_header_icons_without_gap(text)
         )
         self.assertEqual(offenders, [], "Add me-1 to these icons, or the header shows the icon against the text")
+
+
+class TestHtmxTableContainer(SimpleTestCase):
+    """NetBox's ``inc/table_htmx.html`` sorts through its header, which targets the closest ``.htmx-container``."""
+
+    def test_every_htmx_table_has_a_container_for_its_sortable_header(self):
+        missing = sorted(
+            name
+            for name, text in _plugin_templates().items()
+            if "inc/table_htmx.html" in text and not re.search(r'class="[^"]*\bhtmx-container\b', text)
+        )
+        self.assertEqual(missing, [], "Without an .htmx-container ancestor, a click on a column header swaps nothing")

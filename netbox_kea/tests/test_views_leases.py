@@ -4042,3 +4042,35 @@ class TestIdentityLookupMemoization(SimpleTestCase):
                 lookups.resolve(("global", "aa:bb"), lookup)
 
         self.assertEqual(len(calls), 1, "the failing lookup was reissued for a repeated identity")
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestLeaseSearchHeaderSort(_ViewTestBase):
+    """A column header of the lease search sorts the rows in place, through NetBox's htmx table header."""
+
+    def _search(self, **params):
+        records = [lease_record(f"10.0.0.{host}", subnet_id=1) for host in (65, 142, 9, 111)]
+        responses = {
+            **_catalogue_responses(4, 1, "10.0.0.0/24"),
+            "lease4-get-all": lease_reply(*records),
+            "reservation-get": {"result": 3},
+        }
+        with stub_kea(responses):
+            return self.client.get(
+                reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk]),
+                {"by": "subnet", "q": "10.0.0.0/24", **params},
+                HTTP_HX_REQUEST="true",
+            )
+
+    def test_the_header_target_is_the_search_container_and_the_sorted_rows_come_back(self):
+        from bs4 import BeautifulSoup
+
+        page = BeautifulSoup(self._search().content, "html.parser")
+        header = page.select_one('thead[hx-target="closest .htmx-container"]')
+        self.assertIsNotNone(header)
+        # htmx swaps the container's outer HTML with the response, which is the same #lease-search block.
+        self.assertEqual(header.find_parent(class_="htmx-container").get("id"), "lease-search")
+
+        sorted_page = BeautifulSoup(self._search(sort="ip_address").content, "html.parser")
+        addresses = [row.find_all("td")[1].get_text(strip=True) for row in sorted_page.select("tbody tr")]
+        self.assertEqual(addresses, ["10.0.0.9", "10.0.0.65", "10.0.0.111", "10.0.0.142"])
