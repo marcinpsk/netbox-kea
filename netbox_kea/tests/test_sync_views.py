@@ -407,6 +407,8 @@ def _lease6_get(*records: dict):
 class TestLeaseSyncByKind(_SyncViewBase):
     """The lease Sync claims an address as an IP Address and a delegated prefix as a Prefix in the sync VRF."""
 
+    automatic_sync = False
+
     def setUp(self):
         super().setUp()
         from ipam.models import VRF
@@ -416,13 +418,16 @@ class TestLeaseSyncByKind(_SyncViewBase):
         self.vrf = VRF.objects.create(name="kea-sync-vrf")
         self.server.sync_vrf = self.vrf
         # Manual Sync does not depend on any automatic synchronization setting.
-        flags = {
-            "sync_enabled": False,
-            "sync_leases_enabled": False,
-            "sync_reservations_enabled": False,
-            "sync_prefixes_enabled": False,
-            "sync_ip_ranges_enabled": False,
-        }
+        flags = dict.fromkeys(
+            (
+                "sync_enabled",
+                "sync_leases_enabled",
+                "sync_reservations_enabled",
+                "sync_prefixes_enabled",
+                "sync_ip_ranges_enabled",
+            ),
+            self.automatic_sync,
+        )
         for name, value in flags.items():
             setattr(self.server, name, value)
         self.server.save()
@@ -500,6 +505,28 @@ class TestLeaseSyncByKind(_SyncViewBase):
         self.assertEqual((str(ip.address), ip.vrf_id), ("2001:db8:1::10/64", self.vrf.pk))
         self.assertEqual(IPAMOwnershipLink.objects.get().source, "lease")
         self.assertFalse(Prefix.objects.exists())
+
+    def test_a_delegated_prefix_sync_cleans_up_no_other_ownership_link(self):
+        from ipam.models import Prefix
+
+        stale = Prefix.objects.create(
+            prefix="2001:db8:200::/56", vrf=self.vrf, description="[kea-sync: delegated prefix]"
+        )
+        IPAMOwnershipLink.objects.create(
+            server=self.server,
+            family=6,
+            source="lease-prefix",
+            prefix=stale,
+            facts={"prefix_length": 56},
+            confirmation=next_confirmation_number(),
+        )
+
+        response, _kea = self._post(_PD_LABEL, _pd_record())
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertTrue(IPAMOwnershipLink.objects.filter(prefix=stale, source="lease-prefix").exists())
+        stale.refresh_from_db()
+        self.assertEqual(stale.status, "active")
 
     def test_ip_address_permissions_do_not_authorize_a_delegated_prefix_sync(self):
         self._login_with("add_ipaddress", "change_ipaddress")
@@ -1222,6 +1249,12 @@ class TestReservationCheckNetboxIPView(_SyncViewBase):
         body = response.content.decode()
         self.assertIn("alert-warning", body)
         self.assertIn("Router loopback", body)
+
+
+class TestLeaseSyncByKindWithAutomaticSync(TestLeaseSyncByKind):
+    """The same permission, current-use and fact checks hold when every automatic sync flag is on."""
+
+    automatic_sync = True
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)

@@ -860,7 +860,7 @@ class LeasePhaseRowFailureTest(TestCase):
         _reconcile(server, [_lease("198.18.0.42")])
         before = list(NbIP.objects.values())
         links = list(IPAMOwnershipLink.objects.values())
-        observation = LeaseObservation(None, next_confirmation_number(), None)
+        observation = LeaseObservation(None, next_confirmation_number(), None, RuntimeError("not read"))
         with stub_kea({}) as kea, self.assertRaises(ValueError):
             reconcile(server, 4, [LeasePhase(observation, {1: 24}), LeasePhase(observation, {1: 24})])
         self.assertEqual(kea.commands(), [])

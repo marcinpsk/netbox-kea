@@ -38,6 +38,7 @@ from ..kea import (
     lease_query_guard_message,
 )
 from ..leases import (
+    AllocationKind,
     DHCPv4AddressLease,
     DHCPv4Binding,
     DHCPv4LeaseRequest,
@@ -476,6 +477,7 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
                 self.dhcp_version,
                 can_delete=can_delete,
                 can_change=can_change,
+                sync_kinds=user_sync_kinds(request.user),
                 return_url=stripped_return_url,
             )
 
@@ -1265,6 +1267,19 @@ def _sync_vrf_prefixes(server: "Server", leases: list[Lease]) -> dict[ipaddress.
     return found
 
 
+#: The NetBox model that a Sync of each allocation kind writes.
+_SYNC_MODELS: dict[AllocationKind, str] = {"address": "ipaddress", "delegated-prefix": "prefix"}
+
+
+def user_sync_kinds(user: Any) -> frozenset[AllocationKind]:
+    """Return the allocation kinds that *user* may Sync: those whose NetBox model the user may add and change."""
+    return frozenset(
+        kind
+        for kind, model in _SYNC_MODELS.items()
+        if user.has_perm(f"ipam.add_{model}") and user.has_perm(f"ipam.change_{model}")
+    )
+
+
 def _enrich_leases_with_badges(
     leases: list[dict[str, Any]],
     server: "Server",
@@ -1272,6 +1287,7 @@ def _enrich_leases_with_badges(
     can_delete: bool = False,
     can_change: bool = False,
     *,
+    sync_kinds: frozenset[AllocationKind] = frozenset(),
     return_url: str,
 ) -> None:
     """In-place: add reservation and NetBox IPAM badge fields to lease dicts.
@@ -1344,7 +1360,7 @@ def _enrich_leases_with_badges(
             lease[url_key] = synced.get_absolute_url()
         # Sync needs a Current Lease; don't offer it for leases with indeterminate reservation state.
         elif (
-            can_change
+            observed.kind in sync_kinds
             and is_current(observed, now)
             and host_cmds_available
             and not lease.get("pending_ip_change")

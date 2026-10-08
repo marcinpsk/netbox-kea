@@ -161,7 +161,7 @@ The DHCP plugin reference guard stays: an object that the DHCP plugin references
 Before issue 294, the `lease` source owned the prefix base of a delegated prefix as an IP address. A `lease` link records
 its allocation kind; a DHCPv6 link from before that change has none. A complete `lease-prefix` phase that links the
 Prefix of a delegated prefix classifies the old link at its base, and the normal `lease` cleanup then retires it.
-A current address lease classifies its link as an address link. No cleanup removes an unclassified link, including
+An address lease that a complete `lease` phase reads, current or not, classifies its link as an address link. No cleanup removes an unclassified link, including
 the removal of a stale link that another owner supersedes; a release still removes it.
 
 Deleting a Server drops its links. An object without an owner becomes an unowned marker object. The
