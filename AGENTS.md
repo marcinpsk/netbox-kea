@@ -423,7 +423,8 @@ resort, reserved for true external boundaries you cannot run locally.
   `tests/kea_stub.py` may also use wire literals to model Kea responses.
   It also checks `arguments` when code uses it as a raw payload key. Prefer typed domain
   interfaces when the gate fails. The baseline is the follow-up brief and only shrinks.
-  Use `--update-baseline` to record decreases. It refuses new sites and higher counts
+  Use `--update-baseline` to record decreases. A real-tree test fails while a budget is above
+  the tree's count, so record a decrease in the change that makes it. It refuses new sites and higher counts
   without changing the baseline. A test prevents the baseline from adding files.
   The pre-commit hook and the real-tree suite test enforce the budgets.
 - **Standard NetBox model coverage via mixins.** For the `Server` model (a
