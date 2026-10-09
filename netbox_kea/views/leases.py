@@ -85,6 +85,7 @@ from ..utilities import (
     snapshot_rows,
 )
 from ._base import ConditionalLoginRequiredMixin, _KeaChangeMixin, _safe_return_url, _strip_empty_params
+from .notices import Notice, load_snapshot, notice
 
 logger = logging.getLogger(__name__)
 
@@ -217,14 +218,6 @@ def _add_lease_journal(
     )
 
 
-def _diagnostic_lines(snapshot: LeaseSnapshot) -> list[str]:
-    """Return one safe line for each lease record that *snapshot* excluded."""
-    return [
-        f"{diagnostic.source_position} ({diagnostic.field or 'record'}): {diagnostic.message}"
-        for diagnostic in snapshot.diagnostics
-    ]
-
-
 def _incomplete_export_message(snapshot: LeaseSnapshot) -> str:
     """Return why a complete export of *snapshot* is refused."""
     reasons = diagnostic_reasons(snapshot.diagnostics)
@@ -253,8 +246,7 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
         kwargs = {
             "subnet_choices": snapshot.subnet_choices,
             "subnet_cmds_available": snapshot.subnet_cmds_available,
-            "subnet_diagnostics": tuple(dict.fromkeys(diagnostic.message for diagnostic in snapshot.diagnostics)),
-            "subnet_catalogue_unavailable": snapshot.unavailable,
+            "subnet_notice": notice(snapshot),
         }
         if data is None:
             return self.form(**kwargs)
@@ -395,17 +387,27 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
             )
             return redirect(request.path)
         if not snapshot.complete:
-            logger.warning(
-                "Refused an incomplete DHCPv%s lease export for server %s: %d excluded record(s)",
-                self.dhcp_version,
-                instance.pk,
-                len(snapshot.diagnostics),
-            )
-            messages.warning(request, _incomplete_export_message(snapshot))
+            refusal = _incomplete_export_message(snapshot)
+            logger.warning("Refused a DHCPv%s lease export for server %s: %s", self.dhcp_version, instance.pk, refusal)
+            messages.warning(request, refusal)
             return redirect(request.path)
 
         return lease_csv_response(
             snapshot.records, family=self.dhcp_version, evaluated_at=snapshot.evaluated_at, filename="leases_all.csv"
+        )
+
+    def _search_without_table(self, request: HttpRequest, form, lease_notice: Notice | None = None) -> HttpResponse:
+        """Render the search partial with the form and an empty table: a refused search or a failed read."""
+        return render(
+            request,
+            "netbox_kea/server_dhcp_leases_htmx.html",
+            {
+                "is_embedded": False,
+                "form": form,
+                "table": self.get_table([], request),
+                "paginate": False,
+                "lease_notice": lease_notice,
+            },
         )
 
     def get(self, request: HttpRequest, **kwargs) -> HttpResponse:
@@ -428,17 +430,7 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
         # `form.cleaned_data`, so neither may depend on how far into the try we got.
         form = self._make_search_form(instance, request.GET)
         if not form.is_valid():
-            table = self.get_table([], request)
-            return render(
-                request,
-                "netbox_kea/server_dhcp_leases_htmx.html",
-                {
-                    "is_embedded": False,
-                    "form": form,
-                    "table": table,
-                    "paginate": False,
-                },
-            )
+            return self._search_without_table(request, form)
 
         try:
             by = form.cleaned_data["by"]
@@ -446,24 +438,21 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
             state_filter: LeaseState | None = form.cleaned_data.get("state")
             client = instance.get_client(version=self.dhcp_version)
             is_subnet_search = by in (constants.BY_SUBNET, constants.BY_SUBNET_ID)
+            state_in_kea = state_filter if is_subnet_search else None
             if by == "":
-                snapshot = self.get_leases_page(
-                    client,
-                    instance,
-                    form.cleaned_data["page"],
-                    per_page=get_paginate_count(request),
+                page, per_page = form.cleaned_data["page"], get_paginate_count(request)
+                loaded = load_snapshot(
+                    instance, "lease", lambda: self.get_leases_page(client, instance, page, per_page=per_page)
                 )
-                next_page = None if snapshot.next_cursor is None else str(snapshot.next_cursor)
             else:
-                next_page = None
-                state_in_kea = state_filter if is_subnet_search else None
-                snapshot = self.get_leases(
-                    client,
-                    instance,
-                    str(q.cidr) if by == constants.BY_SUBNET else q,
-                    by,
-                    state=state_in_kea,
+                value = str(q.cidr) if by == constants.BY_SUBNET else q
+                loaded = load_snapshot(
+                    instance, "lease", lambda: self.get_leases(client, instance, value, by, state=state_in_kea)
                 )
+            if isinstance(loaded, Notice):
+                return self._search_without_table(request, form, loaded)
+            snapshot = loaded
+            next_page = None if by != "" or snapshot.next_cursor is None else str(snapshot.next_cursor)
             leases = snapshot_rows(snapshot, None if is_subnet_search else state_filter)
 
             can_delete = request.user.has_perm(
@@ -514,7 +503,7 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
                     "form": form,
                     "table": table,
                     "next_page": next_page,
-                    "lease_diagnostics": _diagnostic_lines(snapshot),
+                    "lease_notice": notice(snapshot),
                     "paginate": True,
                     "page_lengths": EnhancedPaginator.default_page_lengths,
                 },
@@ -528,18 +517,9 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
             logger.info("Rejected unsafe Subnet lease query on server %s: %s", instance.pk, exc)
             field = "q" if isinstance(exc, LeaseQueryUnknownSubnet) else "state"
             form.add_error(field, lease_query_guard_message(exc, form.cleaned_data.get("state")))
-            table = self.get_table([], request)
-            return render(
-                request,
-                "netbox_kea/server_dhcp_leases_htmx.html",
-                {
-                    "is_embedded": False,
-                    "form": form,
-                    "table": table,
-                    "paginate": False,
-                },
-            )
-        except (KeaException, requests.RequestException, RuntimeError, ValueError):
+            return self._search_without_table(request, form)
+        # A Kea, transport or malformed-reply failure of the read is a Notice above; this is a request error.
+        except ValueError:
             error_id = str(uuid.uuid4())
             logger.exception("HTMX leases handler error [%s]", error_id)
             return render(
@@ -1322,10 +1302,8 @@ def _enrich_leases_with_badges(
     client: KeaClient | None = None
     catalogue = None
     try:
-        from ..subnet_catalogue import display
-
         client = server.get_client(version=version)
-        catalogue = display(server, version)
+        catalogue = subnet_catalogue.display(server, version)
         reservation_by_ip, host_cmds_available, failed_ips = _fetch_reservations_for_leases(
             client, version, catalogue, leases
         )

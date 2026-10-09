@@ -1003,3 +1003,168 @@ rules:
               ...
           except:
               ...
+
+  - id: kea-snapshot-notice-outside-notice-module
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Do not read .diagnostics or choose messages.ERROR or messages.WARNING in a view. Pass the
+      Snapshot to notice(), or run a raised Reservation or Lease read through load_snapshot(), in
+      views/notices.py, and show the Notice through show_notices(), a template or ServerNotices. A view
+      that picks a level by hand codes the rule again, and the copies drift.
+      Exempt: the Configuration Change outcome in _run_config_change(), the Reservation search that
+      builds its Snapshot in _fetch_reservation_page(), the lease export refusal in
+      _incomplete_export_message(), and a function that parses a Reservation Transfer Document.
+      Limits: an alias (a messages constant imported by name, or the diagnostics of a variable passed
+      to a helper outside views/) and templates are not seen. A messages.error() or messages.warning()
+      call is not seen either, because non-Snapshot messages use these calls correctly.
+    metadata:
+      category: maintainability
+      confidence: HIGH
+      references:
+        - "docs/adr/0003-separate-server-configuration-authority.md: Presentation"
+    paths:
+      include:
+        - "**/views/**"
+      exclude:
+        - "**/views/notices.py"
+    patterns:
+      - pattern-either:
+          - pattern: $VALUE.diagnostics
+          - pattern: messages.ERROR
+          - pattern: messages.WARNING
+      # A Configuration Change outcome or rejection, not a Snapshot (ADR 0005).
+      - pattern-not-inside: |
+          def _run_config_change(...):
+              ...
+      # It builds the Reservation search Snapshot from its pages; the caller loads it through load_snapshot().
+      - pattern-not-inside: |
+          def _fetch_reservation_page(...):
+              ...
+      # A complete export refuses an incomplete Lease Snapshot; the message names the excluded records.
+      - pattern-not-inside: |
+          def _incomplete_export_message(...):
+              ...
+      # A Reservation Transfer Document is not a Snapshot.
+      - pattern-not-inside: |
+          def $FUNC(...):
+              ...
+              <... parse_reservation_document(...) ...>
+              ...
+
+  - id: kea-snapshot-read-without-notice
+    languages: [python]
+    severity: ERROR
+    message: >-
+      This view function reads a Catalogue, Server Configuration, Reservation or Lease Snapshot, but it
+      calls neither notice() nor load_snapshot() from views/notices.py. The page then does not show an
+      unavailable or incomplete Snapshot (ADR 0003, Presentation). Pass the Snapshot to notice(), or run
+      a raised Reservation or Lease read through load_snapshot(), and show the Notice.
+      Exempt by name: the read helpers whose callers use load_snapshot(), the exports that refuse a
+      failed or incomplete read, and the reads that only feed another read, a badge, a check or a
+      preview.
+      Limits: a read through a helper that this rule does not name, a read function passed by reference
+      other than to executor.submit(), an aliased import, and a Notice made in a called helper are not
+      seen.
+    metadata:
+      category: correctness
+      confidence: MEDIUM
+      references:
+        - "docs/adr/0003-separate-server-configuration-authority.md: Presentation"
+    paths:
+      include:
+        - "**/views/**"
+      exclude:
+        - "**/views/notices.py"
+    patterns:
+      - pattern-inside: |
+          def $FUNC(...):
+              ...
+      - pattern-either:
+          - pattern: subnet_catalogue.display(...)
+          - pattern: server_configuration.display(...)
+          - pattern: server_configuration.for_verification(...)
+          - pattern: $CLIENT.reservation_page(...)
+          - pattern: $CLIENT.reservation_snapshot(...)
+          - pattern: $CLIENT.lease_search(...)
+          - pattern: $CLIENT.lease_get_page(...)
+          - pattern: $CLIENT.lease_get_all(...)
+          - pattern: _fetch_reservation_page(...)
+          - pattern: _fetch_reservation_snapshot(...)
+          - pattern: $VIEW.get_leases(...)
+          - pattern: $VIEW.get_leases_page(...)
+          - patterns:
+              - pattern: $EXECUTOR.submit($READ, ...)
+              - metavariable-pattern:
+                  metavariable: $READ
+                  pattern-either:
+                    - pattern: subnet_catalogue.display
+                    - pattern: server_configuration.display
+                    - pattern: _fetch_reservations_from_server
+                    - pattern: _fetch_leases_from_server
+                    - pattern: _fetch_all_leases_from_server
+      - pattern-not-inside: |
+          def $FUNC(...):
+              ...
+              <... notice(...) ...>
+              ...
+      - pattern-not-inside: |
+          def $FUNC(...):
+              ...
+              <... load_snapshot(...) ...>
+              ...
+      # Read helpers: each caller runs them through load_snapshot(), or the DHCP plugin import reads them.
+      - pattern-not-inside: |
+          def _fetch_reservation_page(...):
+              ...
+      - pattern-not-inside: |
+          def _fetch_reservation_snapshot(...):
+              ...
+      - pattern-not-inside: |
+          def get_leases(...):
+              ...
+      - pattern-not-inside: |
+          def get_leases_page(...):
+              ...
+      - pattern-not-inside: |
+          def _fetch_reservations_from_server(...):
+              ...
+      - pattern-not-inside: |
+          def _fetch_leases_from_server(...):
+              ...
+      - pattern-not-inside: |
+          def _fetch_all_leases_from_server(...):
+              ...
+      # The DHCP plugin import reads the Reservation Snapshot to synchronize it, not to show it.
+      - pattern-not-inside: |
+          def run_dhcp_plugin_import(...):
+              ...
+      # Exports refuse a failed or incomplete read; they show no Snapshot.
+      - pattern-not-inside: |
+          def get_export(...):
+              ...
+      - pattern-not-inside: |
+          def get_export_all(...):
+              ...
+      - pattern-not-inside: |
+          def _reservation_export_response(...):
+              ...
+      # The advisory Pool overlap check after a Pool add reports its own result.
+      - pattern-not-inside: |
+          def _warn_reservations_in_pool(...):
+              ...
+      # Lease relationship badges of Reservation rows; a failed lookup is an unknown badge.
+      - pattern-not-inside: |
+          def _lease_facts_in_subnet(...):
+              ...
+      - pattern-not-inside: |
+          def _identity_holds_a_lease(...):
+              ...
+      # The Catalogue scopes the Reservation lookups of lease badges.
+      - pattern-not-inside: |
+          def _enrich_leases_with_badges(...):
+              ...
+      # The DDNS suffix of a hostname preview.
+      - pattern-not-inside: |
+          def _published_name_preview(...):
+              ...

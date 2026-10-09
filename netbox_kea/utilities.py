@@ -9,7 +9,7 @@ import logging
 import re
 from collections.abc import Callable, Iterable, Iterator
 from datetime import datetime
-from typing import Any
+from typing import Any, Protocol
 
 from django.http import HttpResponse
 from django.shortcuts import redirect
@@ -26,7 +26,6 @@ from .leases import (
     DHCPv4LeaseRequest,
     DHCPv6LeaseRequest,
     Lease,
-    LeaseDiagnostic,
     LeaseRequest,
     LeaseSnapshot,
     is_current,
@@ -61,7 +60,12 @@ def snapshot_rows(snapshot: LeaseSnapshot, state_filter: LeaseState | None) -> l
     return lease_rows(snapshot_leases(snapshot, state_filter), evaluated_at=snapshot.evaluated_at)
 
 
-def diagnostic_reasons(diagnostics: Iterable[LeaseDiagnostic]) -> str:
+class _HasMessage(Protocol):
+    @property
+    def message(self) -> str: ...
+
+
+def diagnostic_reasons(diagnostics: Iterable[_HasMessage]) -> str:
     """Return each distinct safe reason of *diagnostics* once, in order."""
     return "; ".join(dict.fromkeys(diagnostic.message for diagnostic in diagnostics))
 

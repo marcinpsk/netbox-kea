@@ -13,6 +13,7 @@ from . import (
     dhcp_control,
     dhcp_plugin_sync,
     leases,
+    notices,
     options,
     reservation_mutations,
     reservations,

@@ -21,7 +21,8 @@ from ..dhcp_options import DHCPOption, DHCPOptionConflict, DHCPOptionNameChange
 from ..kea import KeaCommand, KeaException
 from ..models import Server
 from ..utilities import OptionalViewTab, check_dhcp_enabled
-from ._base import ConditionalLoginRequiredMixin, _diagnostic_messages, _KeaChangeMixin, _run_config_change
+from ._base import ConditionalLoginRequiredMixin, _KeaChangeMixin, _run_config_change
+from .notices import notice, show_notices
 from .subnets import _NO_SUBNET_CIDR, _SUBNETS_TAB, _displayed_subnet
 
 # One Config tab for both sections and both families; ServerOptionDef4View owns it.
@@ -67,11 +68,7 @@ class _BaseSubnetOptionsEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
     ) -> server_configuration.DeclaredSubnet | None:
         """Return the one complete declared Subnet with this ID from a live read."""
         snapshot = server_configuration.for_verification(server, self.dhcp_version)
-        _diagnostic_messages(
-            request,
-            snapshot.diagnostics,
-            messages.WARNING if snapshot.available else messages.ERROR,
-        )
+        show_notices(request, notice(snapshot))
         matches = [subnet for subnet in snapshot.subnets if subnet.declared_subnet_id == subnet_id]
         if len(matches) != 1 or not matches[0].complete:
             return None
@@ -180,12 +177,9 @@ class _BaseServerOptionsEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
     def _get_options_from_config(self, request: HttpRequest, server: Server) -> tuple[DHCPOption, ...] | None:
         """Return the complete server DHCP Option list from a live read, or None."""
         snapshot = server_configuration.for_verification(server, self.dhcp_version)
-        _diagnostic_messages(
-            request,
-            snapshot.diagnostics,
-            messages.WARNING if snapshot.available else messages.ERROR,
-        )
-        return snapshot.global_options if snapshot.available and snapshot.global_options_complete else None
+        show_notices(request, notice(snapshot))
+        # An unavailable Snapshot has no complete global option list.
+        return snapshot.global_options if snapshot.global_options_complete else None
 
     def get(self, request, pk: int):
         server = get_object_or_404(
@@ -360,17 +354,11 @@ class BaseServerOptionDefView(ConditionalLoginRequiredMixin, View):
         if resp := check_dhcp_enabled(server, self.dhcp_version):
             return resp
         snapshot = server_configuration.display(server, self.dhcp_version)
-        _diagnostic_messages(
-            request,
-            snapshot.diagnostics,
-            messages.WARNING if snapshot.available else messages.ERROR,
-        )
-        option_defs = snapshot.option_definitions if snapshot.available else ()
-        options_load_error = not snapshot.available
+        show_notices(request, notice(snapshot))
         # Add delete URLs here because templates do not construct dynamic URL names.
         can_change = cast(PermissionsMixin, request.user).has_perm("netbox_kea.change_server")
         enriched_defs = []
-        for opt in option_defs:
+        for opt in snapshot.option_definitions:
             entry = {
                 "code": opt.code,
                 "name": opt.name,
@@ -390,7 +378,8 @@ class BaseServerOptionDefView(ConditionalLoginRequiredMixin, View):
             "object": server,
             "server": server,
             "option_defs": enriched_defs,
-            "options_load_error": options_load_error,
+            # An unavailable Snapshot shows its error instead of an empty list.
+            "definitions_known": not snapshot.unavailable,
             **config_nav_context(server.pk, "option_def", self.dhcp_version),
         }
         if can_change:

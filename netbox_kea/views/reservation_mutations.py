@@ -48,7 +48,8 @@ from ..signals import reservation_created, reservation_deleted, reservation_upda
 from ..subnet_catalogue import CatalogueSnapshot, CatalogueUnavailable, MutationScope, SubnetIdentity, VerifiedSubnet
 from ..sync_permissions import sync_gate
 from ..utilities import kea_error_hint
-from ._base import _diagnostic_messages, _KeaChangeMixin, _safe_return_url
+from ._base import _KeaChangeMixin, _safe_return_url
+from .notices import notice, show_notices
 from .reservations import _RESERVATIONS_TAB, _build_reservation_options_formset, _configured_capabilities
 
 logger = logging.getLogger(__name__)
@@ -561,9 +562,7 @@ class _ReservationAddView(_ReservationMutationView):
         server = self.get_object(pk=pk)
         capabilities = _configured_capabilities(server, self.dhcp_version)
         snapshot = subnet_catalogue.display(server, self.dhcp_version)
-        _diagnostic_messages(
-            request, snapshot.diagnostics, messages.ERROR if snapshot.unavailable else messages.WARNING
-        )
+        show_notices(request, notice(snapshot))
         initial_fields = (
             ("subnet_cidr", "ip_address", "identifier_type", "identifier", "hostname")
             if self.dhcp_version == 4
@@ -613,9 +612,7 @@ class _ReservationAddView(_ReservationMutationView):
                 logger.exception("Could not create a DHCPv%s Reservation", self.dhcp_version)
                 messages.error(request, "The Reservation could not be created. See server logs.")
         snapshot = subnet_catalogue.display(server, self.dhcp_version)
-        _diagnostic_messages(
-            request, snapshot.diagnostics, messages.ERROR if snapshot.unavailable else messages.WARNING
-        )
+        show_notices(request, notice(snapshot))
         return self._render(
             request,
             server,
@@ -698,9 +695,11 @@ class _ReservationEditView(_ReservationMutationView):
     def get(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         server = self.get_object(pk=pk)
         identity = _identity_from_request(request, self.dhcp_version)
+        catalogue = subnet_catalogue.display(server, self.dhcp_version)
+        show_notices(request, notice(catalogue))
         try:
             reservation = _load_target(server, self.dhcp_version, subnet_id, identity)
-            suffix = _shown_suffix(reservation, subnet_catalogue.display(server, self.dhcp_version))
+            suffix = _shown_suffix(reservation, catalogue)
         except (KeaException, requests.RequestException, RuntimeError, ValueError):
             logger.exception("Could not load the Reservation edit target")
             messages.error(request, "The Reservation could not be loaded. See server logs.")

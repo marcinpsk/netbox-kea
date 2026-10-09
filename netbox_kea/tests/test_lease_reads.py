@@ -19,6 +19,7 @@ from unittest.mock import patch
 from urllib.parse import urlencode
 
 import requests
+from django.contrib import messages as django_messages
 from django.contrib.messages import get_messages
 from django.test import override_settings
 from django.urls import reverse
@@ -125,13 +126,9 @@ class LeaseBrowsingTest(_ViewTestBase):
         self.assertEqual(
             [row.record["ip_address"] for row in response.context["table"].rows], ["192.0.2.10", "192.0.2.13"]
         )
-        self.assertEqual(
-            response.context["lease_diagnostics"],
-            [
-                "leases[1] (ip-address): The lease address is not valid.",
-                "leases[2] (state): A lease field has the wrong type.",
-            ],
-        )
+        self.assertContains(response, "<li>leases[1] (ip-address): The lease address is not valid.</li>", html=True)
+        self.assertContains(response, "<li>leases[2] (state): A lease field has the wrong type.</li>", html=True)
+        self.assertEqual(response.context["lease_notice"].level, django_messages.WARNING)
         self.assertContains(response, "2 lease records that could not be read")
         self.assertNotContains(response, "private-state-value")
         self.assertNotContains(response, "not-an-address")
@@ -494,9 +491,11 @@ class CombinedLeaseViewTest(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["errors"], [])
         self.assertEqual([row["ip_address"] for row in response.context["table"].data], ["192.0.2.10"])
-        self.assertEqual(
-            response.context["incomplete_servers"],
-            [(self.server.name, "1 record(s) could not be read: The lease address is not valid.")],
+        self.assertEqual(response.context["warnings"], [])
+        self.assertContains(
+            response,
+            f"<li><strong>{self.server.name}</strong>: 1 record(s) could not be read: The lease address is not valid.</li>",
+            html=True,
         )
 
 

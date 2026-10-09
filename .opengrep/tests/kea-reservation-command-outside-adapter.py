@@ -37,4 +37,5 @@ def ok_reads_leases(client):
 
 def ok_consumes_the_typed_adapter(client, family, catalogue):
     # ok: kea-reservation-command-outside-adapter
+    # ruleid: kea-snapshot-read-without-notice
     return client.reservation_snapshot(family, catalogue)

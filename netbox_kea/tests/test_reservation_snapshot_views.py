@@ -6,8 +6,10 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 import requests
 import yaml
 from bs4 import BeautifulSoup
+from django.contrib import messages as django_messages
 from django.urls import reverse
 
+from netbox_kea.views.notices import HEADLINES, Notice
 from netbox_kea.views.reservations import _RESERVATION_PAGE_SIZE
 
 from .kea_stub import (
@@ -82,7 +84,7 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["table"].data.data, [])
         self.assertIn(
-            "unverified-scope", [diagnostic.code for diagnostic in response.context["reservation_diagnostics"]]
+            "unverified-scope", [diagnostic.code for diagnostic in response.context["reservation_notice"].diagnostics]
         )
         self.assertNotIn("subnet-id", kea.bodies("reservation-get-page")[0]["arguments"])
 
@@ -202,13 +204,8 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
         self.assertIsNone(global_row["delete_url"])
         self.assertIsNone(global_row["sync_url"])
 
-    def test_a_failed_page_read_warns_that_the_snapshot_is_incomplete(self):
-        """A read failure is the one path that is incomplete and carries no diagnostic.
-
-        ``_parse_reservation_page`` sets ``complete`` from the diagnostics, so a page that
-        stops early with every record parsed is complete. Only the view's empty fallback
-        reports incomplete with nothing to list, which is the branch the banner guards.
-        """
+    def test_a_failed_page_read_shows_the_reservation_headline(self):
+        """A read failure is an unavailable Notice: it carries no diagnostic and is not an incomplete Snapshot."""
         responses = _catalogue_responses(4, 20, "198.18.0.0/24")
         responses.update(
             {
@@ -222,15 +219,14 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
 
         self.assertEqual(response.status_code, 200)
         self.assertFalse(response.context["snapshot_complete"])
-        self.assertEqual(response.context["reservation_diagnostics"], ())
+        self.assertEqual(response.context["reservation_notice"], Notice("reservation", django_messages.ERROR))
         self.assertEqual(response.context["table"].data.data, [])
-        self.assertContains(response, "Snapshot is incomplete")
-        self.assertNotContains(response, "diagnostic below")
-        self.assertNotContains(response, "This bounded Snapshot is complete")
-        self.assertIn(
-            "Failed to load Reservations from Kea.",
-            [str(message) for message in response.context["messages"]],
+        self.assertNotContains(response, "Snapshot is incomplete")
+        self.assertContains(
+            response, f'<div class="alert alert-danger" role="alert">{HEADLINES["reservation"]}</div>', html=True
         )
+        self.assertNotContains(response, "This bounded Snapshot is complete")
+        self.assertNotIn(HEADLINES["reservation"], [str(message) for message in response.context["messages"]])
 
     def test_a_full_page_with_more_to_come_is_reported_complete(self):
         """A filled page offers the next cursor and is still complete for this page.
@@ -259,7 +255,7 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
 
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.context["snapshot_complete"])
-        self.assertEqual(response.context["reservation_diagnostics"], ())
+        self.assertIsNone(response.context["reservation_notice"])
         self.assertIsNotNone(response.context["next_page_url"])
         self.assertContains(response, "This bounded Snapshot is complete")
 
@@ -543,7 +539,7 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
 
 
 class TestCombinedReservationSnapshots(_ViewTestBase):
-    def test_failed_page_read_warns_that_the_combined_snapshot_is_incomplete(self):
+    def test_failed_page_read_is_an_error_without_a_second_incomplete_warning(self):
         responses = _catalogue_responses(4, 20, "198.18.0.0/24")
         responses.update(
             {
@@ -559,8 +555,9 @@ class TestCombinedReservationSnapshots(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         self.assertFalse(response.context["snapshot_complete"])
         self.assertEqual(response.context["reservation_diagnostics"], [])
-        self.assertContains(response, "Snapshot is incomplete")
-        self.assertNotContains(response, "diagnostic below")
+        self.assertEqual(response.context["errors"], [(self.server.name, HEADLINES["reservation"])])
+        # The error list names the failed Server; the page adds no second, incomplete-Snapshot warning.
+        self.assertNotContains(response, "Snapshot is incomplete")
         self.assertNotContains(response, "This bounded Snapshot is complete")
 
     def test_combined_view_fetches_one_bounded_page_and_offers_the_next_cursor(self):
