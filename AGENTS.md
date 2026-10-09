@@ -508,8 +508,8 @@ resort, reserved for true external boundaries you cannot run locally.
   (opengrep `kea-raw-atomic`). At the top level of a tracked request, on a NetBox release whose `event_tracking` nests (`event_scope._nested_tracking`), it is a unit, whose events
   dispatch after its COMMIT or not at all. Put `except event_scope.EventDispatchError: raise` before a broad
   `except`. Read `docs/design/savepoint-event-queue.md` (sections 22 and 24) before you change it.
-- **Kea option aliases**: DNS options can be `domain-name-servers` or `dns-servers`;
-  NTP can be `ntp-servers` or `sntp-servers`. Search both alias tuples.
+- **Kea option names per family**: DNS is `domain-name-servers` (v4) or `dns-servers` (v6), and NTP is
+  `ntp-servers` (v4) or `sntp-servers` (v6). `dhcp_options._FORM_MANAGED_OPTIONS` maps each form field to them.
 - **Forms**: lease search forms inherit `BaseLeasesSarchForm` (the typo is
   intentional/existing); inner `Meta.ip_version` drives validation. The Subnet and
   Shared Network forms clean in the field class (`_AddressListField` for `dns_servers`,

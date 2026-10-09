@@ -66,13 +66,13 @@
           <tbody>
             {% for row in rows %}
             <tr>
-              <td>{{ row.name|default_if_none:"—" }}</td>
-              <td>{{ row.option.code|default_if_none:"—" }}</td>
-              <td>{{ row.option.space|default_if_none:"—" }}</td>
-              <td>{% for tag in row.option.client_classes %}<code>{{ tag }}</code>{% if not forloop.last %}, {% endif %}{% empty %}—{% endfor %}</td>
+              <td>{{ row.name|placeholder }}</td>
+              <td>{{ row.option.code|placeholder }}</td>
+              <td>{{ row.option.space|placeholder }}</td>
+              <td>{% for tag in row.option.client_classes %}<code>{{ tag }}</code>{% if not forloop.last %}, {% endif %}{% empty %}{{ None|placeholder }}{% endfor %}</td>
               <td><code>{{ row.option.data }}</code></td>
-              <td>{% if row.option.always_send is None %}—{% else %}{% checkmark row.option.always_send %}{% endif %}</td>
-              <td>{% if row.option.never_send is None %}—{% else %}{% checkmark row.option.never_send %}{% endif %}</td>
+              <td>{% if row.option.always_send is None %}{{ None|placeholder }}{% else %}{% checkmark row.option.always_send %}{% endif %}</td>
+              <td>{% if row.option.never_send is None %}{{ None|placeholder }}{% else %}{% checkmark row.option.never_send %}{% endif %}</td>
             </tr>
             {% endfor %}
           </tbody>

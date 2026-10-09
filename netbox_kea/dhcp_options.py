@@ -219,7 +219,7 @@ KEA_DHCP6_STD_OPTIONS: list[tuple[str, int]] = [
 
 def kea_std_options(version: int) -> list[tuple[str, int]]:
     """Return the standard option (name, code) list for the given DHCP version."""
-    return KEA_DHCP6_STD_OPTIONS if version == 6 else KEA_DHCP4_STD_OPTIONS
+    return {4: KEA_DHCP4_STD_OPTIONS, 6: KEA_DHCP6_STD_OPTIONS}[version]
 
 
 class DHCPOptionConflict(ValueError):
@@ -297,19 +297,18 @@ class DHCPOption:
 _STANDARD_CODES: dict[int, dict[str, int]] = {version: dict(kea_std_options(version)) for version in (4, 6)}
 
 
-def standard_option_code(version: int, name: str) -> int | None:
-    """Return the code of the standard DHCP Option *name* of the family *version*, or None when Kea has none."""
-    return _STANDARD_CODES[version].get(name)
-
-
 _STANDARD_NAMES: dict[int, dict[int, str]] = {
     version: {code: name for name, code in codes.items()} for version, codes in _STANDARD_CODES.items()
 }
 
 
+def _in_default_space(option: DHCPOption, version: int) -> bool:
+    return option.space in (None, f"dhcp{version}")
+
+
 def option_name(option: DHCPOption, version: int) -> str | None:
     """Return the name of *option*. A default-space entry with a code only takes the standard name of its code."""
-    if option.name is not None or option.code is None or option.space not in (None, f"dhcp{version}"):
+    if option.name is not None or option.code is None or not _in_default_space(option, version):
         return option.name
     return _STANDARD_NAMES[version].get(option.code)
 
@@ -377,7 +376,7 @@ def _fitting_entries(options: Sequence[DHCPOption], version: int, managed: FormM
     return [
         index
         for index, option in enumerate(options)
-        if option.space in (None, f"dhcp{version}")
+        if _in_default_space(option, version)
         and not option.client_classes
         and (option.code == managed.code if option.code is not None else option.name == managed.name)
     ]
