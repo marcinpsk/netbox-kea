@@ -131,15 +131,16 @@ class TestRecordSnapshotNotices(_ViewTestBase):
         self.assertIsNone(notice(snapshot))
 
     def test_a_failed_reservation_read_is_an_unavailable_notice(self):
-        for page, unsupported in (
-            (requests.ConnectionError("unreachable"), False),
-            ({"result": 1, "text": "database error"}, False),
-            (["not", "entries"], False),
-            ({"result": 2, "text": "unknown command"}, True),
+        for page, unsupported, unreachable in (
+            (requests.ConnectionError("unreachable"), False, True),
+            ({"result": 1, "text": "database error"}, False, False),
+            (["not", "entries"], False, False),
+            ({"result": 2, "text": "unknown command"}, True, False),
         ):
             with self.subTest(page=page):
                 result = self._reservations(page)
-                self.assertEqual(result, Notice("reservation", django_messages.ERROR, unsupported_command=unsupported))
+                expected = Notice("reservation", django_messages.ERROR, (), unsupported, unreachable)
+                self.assertEqual(result, expected)
                 self.assertEqual(result.lines, (HEADLINES["reservation"],))
 
     def test_a_lease_record_that_cannot_be_read_is_a_warning(self):
@@ -164,9 +165,13 @@ class TestRecordSnapshotNotices(_ViewTestBase):
         self.assertIsNone(notice(snapshot))
 
     def test_a_failed_lease_read_is_an_unavailable_notice(self):
-        for reply in (requests.ReadTimeout("timed out"), {"result": 1, "text": "error"}, {"result": 0}):
+        for reply, unreachable in (
+            (requests.ReadTimeout("timed out"), True),
+            ({"result": 1, "text": "error"}, False),
+            ({"result": 0}, False),
+        ):
             with self.subTest(reply=reply):
-                self.assertEqual(self._leases(reply), Notice("lease", django_messages.ERROR))
+                self.assertEqual(self._leases(reply), Notice("lease", django_messages.ERROR, unreachable=unreachable))
 
     @override_settings(PLUGINS_CONFIG=plugins_config(lease_query_max_unpaged_leases=100))
     def test_a_refused_lease_query_and_a_value_error_stay_outside_the_rule(self):

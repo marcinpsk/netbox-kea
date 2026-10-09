@@ -433,9 +433,9 @@ def fetch(server: Server, family: Family, query: ReservationQuery) -> Reservatio
     """
     loaded = load_snapshot(server, "reservation", lambda: _read_reservations(server, family, query))
     capabilities = None
-    # A failed read means Kea is down or broken, and a second read would only add its timeout.
-    failed = isinstance(loaded, Notice) and not loaded.unsupported_command
-    if query.mutations and not failed:
+    # A second read of a Server that did not answer would only add its timeout.
+    unreachable = isinstance(loaded, Notice) and loaded.unreachable
+    if query.mutations and not unreachable:
         capabilities = _configured_capabilities(server, family)
     return ReservationRead(query, loaded, capabilities)
 

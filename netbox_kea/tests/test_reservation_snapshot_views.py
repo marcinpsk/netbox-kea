@@ -67,6 +67,21 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
         add = reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk])
         self.assertContains(page, f'href="{add}?{urlencode({"return_url": search})}"')
 
+    def test_a_refused_reservation_read_keeps_the_add_button(self):
+        # Kea answered, so the capability read can still confirm the mutation commands.
+        responses = _catalogue_responses(4, 20, "198.18.0.0/24")
+        responses.update(
+            {
+                "reservation-get-page": {"result": 1, "text": "Unable to read the host database"},
+                "list-commands": _reservation_mutation_commands(),
+            }
+        )
+        with stub_kea(responses):
+            page = self.client.get(self._url())
+        self.assertEqual(page.status_code, 200)
+        self.assertIsNotNone(page.context["add_url"])
+        self.assertNotContains(page, "Reservation mutation controls are unavailable")
+
     def test_combined_row_actions_return_to_the_combined_search(self):
         url = reverse("plugins:netbox_kea:combined_reservations4")
         row, search = self._searched_row(url, {"server": self.server.pk, "q": "searched"})
@@ -252,7 +267,9 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
 
         self.assertEqual(response.status_code, 200)
         self.assertFalse(response.context["snapshot_complete"])
-        self.assertEqual(response.context["reservation_notice"], Notice("reservation", django_messages.ERROR))
+        self.assertEqual(
+            response.context["reservation_notice"], Notice("reservation", django_messages.ERROR, unreachable=True)
+        )
         self.assertEqual(response.context["table"].data.data, [])
         self.assertNotContains(response, "Snapshot is incomplete")
         self.assertContains(
