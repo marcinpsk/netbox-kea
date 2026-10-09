@@ -26,6 +26,7 @@ from ..utilities import (
     snapshot_rows,
 )
 from ._base import ConditionalLoginRequiredMixin, _catalogue_subnet_row, _enrich_subnet_statistics, _shared_network_row
+from .fan_out import fan_out
 from .leases import LeaseSearch, _enrich_leases_with_badges, lease_sync_gates
 from .leases import fetch as fetch_leases
 from .notices import HEADLINES, Notice, ServerNotices, load_snapshot, notice
@@ -208,15 +209,11 @@ class _CombinedSubnetsView(_CombinedViewMixin):
         servers = self._get_servers(request, self.dhcp_version)
 
         all_subnets: list[dict[str, Any]] = []
-        notices = ServerNotices()
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-            future_to_server = {executor.submit(_fetch_subnets_from_server, s, self.dhcp_version): s for s in servers}
-            # The display read never raises: an unavailable Catalogue is a Notice.
-            for future in concurrent.futures.as_completed(future_to_server):
-                subnets, found = future.result()
-                all_subnets.extend(subnets)
-                notices.add(future_to_server[future], found)
+        read = fan_out(servers, "catalogue", lambda server: _fetch_subnets_from_server(server, self.dhcp_version))
+        notices = read.notices
+        for server, (subnets, found) in read.results:
+            all_subnets.extend(subnets)
+            notices.add(server, found)
 
         # Annotate can_change per server so subnet pool/action controls render correctly.
         writable_pks = set(
@@ -284,30 +281,27 @@ class _CombinedSharedNetworksView(_CombinedViewMixin):
         servers = self._get_servers(request, self.dhcp_version)
 
         all_networks: list[dict[str, Any]] = []
-        notices = ServerNotices()
         writable_pks = set(
             Server.objects.restrict(request.user, "change")
             .filter(pk__in=[s.pk for s in servers])
             .values_list("pk", flat=True)
         )
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-            future_to_server = {executor.submit(server_configuration.display, s, self.dhcp_version): s for s in servers}
-            # The display read never raises: an unavailable Server Configuration is a Notice with no facts.
-            for future in concurrent.futures.as_completed(future_to_server):
-                server = future_to_server[future]
-                snapshot = future.result()
-                notices.add(server, notice(snapshot))
-                all_networks.extend(
-                    _shared_network_row(
-                        network,
-                        server,
-                        self.dhcp_version,
-                        can_change=server.pk in writable_pks,
-                        include_server_name=True,
-                    )
-                    for network in snapshot.shared_networks
+        # An unavailable Server Configuration is a Snapshot with no facts and an error Notice.
+        read = fan_out(servers, "configuration", lambda server: server_configuration.display(server, self.dhcp_version))
+        notices = read.notices
+        for server, snapshot in read.results:
+            notices.add(server, notice(snapshot))
+            all_networks.extend(
+                _shared_network_row(
+                    network,
+                    server,
+                    self.dhcp_version,
+                    can_change=server.pk in writable_pks,
+                    include_server_name=True,
                 )
+                for network in snapshot.shared_networks
+            )
 
         table = tables.GlobalSharedNetworkTable(all_networks, user=request.user)
         table.configure(request)
