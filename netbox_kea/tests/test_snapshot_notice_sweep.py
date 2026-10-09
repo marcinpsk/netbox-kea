@@ -122,7 +122,8 @@ def _shown_error_kinds(response) -> set[SnapshotKind]:
     return {
         kind
         for kind, text in HEADLINES.items()
-        if text in shown or re.search(rf'class="alert alert-danger[^"]*"[^>]*>\s*(?:<strong>)?{re.escape(text)}', page)
+        if text in shown
+        or re.search(rf'class="alert alert-danger[^"]*"[^>]*>\s*(?:<(?:div|strong)>\s*)*{re.escape(text)}', page)
     }
 
 
