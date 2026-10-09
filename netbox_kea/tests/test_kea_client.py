@@ -814,6 +814,7 @@ class TestSubnetUtilization(TestCase):
             (_utilization_reply(columns, [[1, 100, 50], [2]]), "malformed statistics row"),
             (_utilization_reply(columns, [[1, None, None]]), "invalid lease count"),
             (_utilization_reply(columns, [["1", 100, 25]]), "invalid lease count"),
+            (_utilization_reply(columns, [[1, 100, 50], [1, 100, 25]]), "two statistics rows for Subnet 1"),
         )
         for reply, message in cases:
             with self.subTest(message=message), stub_kea({"stat-lease4-get": reply}):
@@ -1442,6 +1443,11 @@ class TestLeaseSearch(TestCase):
             (
                 {"result": 0, "arguments": {"result-set": {"columns": columns, "rows": [[12, 0, 1]]}}},
                 "inconsistent lease counts",
+            ),
+            (
+                # A large count first: keeping only the last row would let an unpaged query pass the limit.
+                {"result": 0, "arguments": {"result-set": {"columns": columns, "rows": [[12, 900, 0], [12, 1, 0]]}}},
+                "two statistics rows for Subnet 12",
             ),
         )
 

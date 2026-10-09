@@ -389,7 +389,7 @@ def _stat_lease_counts(command: KeaCommand, reply: KeaResponse, names: Sequence[
     """Return the *names* counts of each Subnet row of one ``stat-lease{4,6}-get`` reply.
 
     Raises:
-        RuntimeError: If the result set, a column, a row or a count is malformed.
+        RuntimeError: If the result set, a column, a row or a count is malformed, or two rows name one Subnet.
 
     """
     arguments = reply.get("arguments")
@@ -410,6 +410,8 @@ def _stat_lease_counts(command: KeaCommand, reply: KeaResponse, names: Sequence[
         subnet_id, *values = (row[index] for index in indexes)
         if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in (subnet_id, *values)):
             raise RuntimeError(f"{command.value} returned an invalid lease count.")
+        if subnet_id in counts:
+            raise RuntimeError(f"{command.value} returned two statistics rows for Subnet {subnet_id}.")
         counts[subnet_id] = tuple(values)
     return counts
 
