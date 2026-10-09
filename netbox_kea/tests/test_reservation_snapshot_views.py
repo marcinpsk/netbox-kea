@@ -204,13 +204,8 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
         self.assertIsNone(global_row["delete_url"])
         self.assertIsNone(global_row["sync_url"])
 
-    def test_a_failed_page_read_warns_that_the_snapshot_is_incomplete(self):
-        """A read failure is the one path that is incomplete and carries no diagnostic.
-
-        ``_parse_reservation_page`` sets ``complete`` from the diagnostics, so a page that
-        stops early with every record parsed is complete. Only the view's empty fallback
-        reports incomplete with nothing to list, which is the branch the banner guards.
-        """
+    def test_a_failed_page_read_shows_the_reservation_headline(self):
+        """A read failure is an unavailable Notice: it carries no diagnostic and is not an incomplete Snapshot."""
         responses = _catalogue_responses(4, 20, "198.18.0.0/24")
         responses.update(
             {
@@ -226,8 +221,10 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
         self.assertFalse(response.context["snapshot_complete"])
         self.assertEqual(response.context["reservation_notice"], Notice("reservation", django_messages.ERROR))
         self.assertEqual(response.context["table"].data.data, [])
-        self.assertContains(response, "Snapshot is incomplete")
-        self.assertNotContains(response, "diagnostic below")
+        self.assertNotContains(response, "Snapshot is incomplete")
+        self.assertContains(
+            response, f'<div class="alert alert-danger" role="alert">{HEADLINES["reservation"]}</div>', html=True
+        )
         self.assertNotContains(response, "This bounded Snapshot is complete")
         self.assertIn(HEADLINES["reservation"], [str(message) for message in response.context["messages"]])
 

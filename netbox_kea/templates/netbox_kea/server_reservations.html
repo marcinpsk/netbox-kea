@@ -78,8 +78,10 @@
 {% endif %}
 
 {% if hook_available %}
-{% if reservation_notice %}
-<div class="alert alert-{{ reservation_notice.css }}" role="alert">
+{% if reservation_notice.unavailable %}
+<div class="alert alert-danger" role="alert">{{ reservation_notice.headline }}</div>
+{% elif reservation_notice %}
+<div class="alert alert-warning" role="alert">
   <strong>Snapshot is incomplete.</strong>
   The Reservation Snapshot could not be read completely.
   {% with diagnostics=reservation_notice.diagnostics %}

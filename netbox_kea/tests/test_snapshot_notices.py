@@ -280,7 +280,11 @@ class TestRecordPagesShowAFailedReadThroughTheLoader(_ViewTestBase):
             response = self.client.get(reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk]))
         self.assertEqual(response.status_code, 200)
         self.assertEqual(_page_messages(response), [(django_messages.ERROR, HEADLINES["reservation"])])
-        self.assertContains(response, '<div class="alert alert-danger" role="alert">')
+        self.assertContains(
+            response, f'<div class="alert alert-danger" role="alert">{HEADLINES["reservation"]}</div>', html=True
+        )
+        # A failed read is not an incomplete Snapshot, so the page gives it no second headline.
+        self.assertNotContains(response, "Snapshot is incomplete")
         self.assertNotContains(response, "This bounded Snapshot is complete")
 
     def test_the_lease_search_partial_shows_the_headline_inline(self):
