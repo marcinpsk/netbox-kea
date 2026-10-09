@@ -238,58 +238,6 @@ def parse_delegated_prefixes(value: str, separator: str = ",") -> list[str]:
     return prefixes
 
 
-_KNOWN_CODES_V4: dict[int, str] = {
-    1: "subnet_mask",
-    3: "gateway",
-    6: "dns_servers",
-    15: "domain_name",
-    28: "broadcast_address",
-    42: "ntp_servers",
-    44: "netbios_name_servers",
-    119: "domain_search",
-    121: "classless_static_routes",
-}
-_KNOWN_CODES_V6: dict[int, str] = {
-    23: "dns_servers",
-    24: "domain_search",
-    31: "ntp_servers",
-}
-
-
-def format_option_data(option_list: list[dict[str, Any]], version: Family) -> dict[str, str]:
-    """Parse a Kea ``option-data`` list into a friendly ``{name: value}`` dict.
-
-    Well-known DHCP option codes are mapped to canonical names using a
-    version-specific lookup table (v4 and v6 share some code numbers with
-    different meanings, so the caller must pass the DHCP version).  Unknown codes
-    use the option's own ``name`` field (dashes converted to underscores) or
-    fall back to ``option_<code>`` when no name is present.
-
-    Args:
-        option_list: Raw ``option-data`` list from a Kea response.
-        version: DHCP version (4 or 6). v4 and v6 reuse option codes with different
-            meanings, so the caller must say which family the list came from.
-
-    Returns:
-        A ``{field_name: value_str}`` dict suitable for template rendering.
-
-    """
-    known_codes = _KNOWN_CODES_V6 if version == 6 else _KNOWN_CODES_V4
-
-    result: dict[str, str] = {}
-    for opt in option_list:
-        code = opt.get("code")
-        data = opt.get("data", "")
-        if code in known_codes:
-            key = known_codes[code]
-        elif opt.get("name"):
-            key = opt["name"].replace("-", "_")
-        else:
-            key = f"option_{code}"
-        result[key] = data
-    return result
-
-
 def check_dhcp_enabled(instance: Server, version: Family) -> HttpResponse | None:
     """Return a redirect to the server detail page if the requested DHCP version is disabled, else ``None``."""
     if (version == 6 and instance.dhcp6) or (version == 4 and instance.dhcp4):

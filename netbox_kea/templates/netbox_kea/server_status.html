@@ -47,21 +47,37 @@
     </div>
   {% endfor %}
 
-  {% if global_options %}
-    {% for label, opts in global_options.items %}
+  {% for label, rows in global_options.items %}
     <div class="card mt-3">
       <h5 class="card-header">{{ label }}: Global Options</h5>
-      <div class="card-body">
-        <table class="table table-hover attr-table">
-          {% for k, v in opts.items %}
-          <tr>
-            <th scope="row">{{ k }}</th>
-            <td><code>{{ v }}</code></td>
-          </tr>
-          {% endfor %}
+      <div class="table-responsive">
+        <table class="table table-hover mb-0">
+          <thead>
+            <tr>
+              <th scope="col">Name</th>
+              <th scope="col">Code</th>
+              <th scope="col">Space</th>
+              <th scope="col">Client classes</th>
+              <th scope="col">Data</th>
+              <th scope="col">Always send</th>
+              <th scope="col">Never send</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in rows %}
+            <tr>
+              <td>{{ row.name|default_if_none:"—" }}</td>
+              <td>{{ row.option.code|default_if_none:"—" }}</td>
+              <td>{{ row.option.space|default_if_none:"—" }}</td>
+              <td>{% for tag in row.option.client_classes %}<code>{{ tag }}</code>{% if not forloop.last %}, {% endif %}{% empty %}—{% endfor %}</td>
+              <td><code>{{ row.option.data }}</code></td>
+              <td>{% if row.option.always_send is None %}—{% else %}{% checkmark row.option.always_send %}{% endif %}</td>
+              <td>{% if row.option.never_send is None %}—{% else %}{% checkmark row.option.never_send %}{% endif %}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
         </table>
       </div>
     </div>
-    {% endfor %}
-  {% endif %}
+  {% endfor %}
 {% endblock %}

@@ -18,7 +18,7 @@ from netbox.tables import BaseTable
 
 from ..config_write import ConfigChangeOutcome, ConfigChangeRejected, RejectionReason
 from ..constants import Family
-from ..dhcp_options import DHCPOption, shown_options
+from ..dhcp_options import shown_options
 from ..kea import KeaException
 from ..models import Server
 from ..server_configuration import SharedNetwork
@@ -123,25 +123,6 @@ def _run_config_change(
     else:
         messages.success(request, text)
     return outcome
-
-
-def _option_payload(option: DHCPOption) -> dict[str, Any]:
-    """Serialize a catalogue option for existing option display formatting."""
-    return {
-        "data": option.data,
-        **{
-            key: value
-            for key, value in (
-                ("code", option.code),
-                ("name", option.name),
-                ("space", option.space),
-                ("csv-format", option.csv_format),
-                ("always-send", option.always_send),
-                ("never-send", option.never_send),
-            )
-            if value is not None
-        },
-    }
 
 
 def _catalogue_subnet_row(

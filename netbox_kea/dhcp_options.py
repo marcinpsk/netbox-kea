@@ -90,6 +90,18 @@ def standard_option_code(version: int, name: str) -> int | None:
     return _STANDARD_CODES[version].get(name)
 
 
+_STANDARD_NAMES: dict[int, dict[int, str]] = {
+    version: {code: name for name, code in codes.items()} for version, codes in _STANDARD_CODES.items()
+}
+
+
+def option_name(option: DHCPOption, version: int) -> str | None:
+    """Return the name of *option*. A default-space entry with a code only takes the standard name of its code."""
+    if option.name is not None or option.code is None or option.space not in (None, f"dhcp{version}"):
+        return option.name
+    return _STANDARD_NAMES[version].get(option.code)
+
+
 @dataclass(frozen=True)
 class FormManagedOption:
     """One default-space standard DHCP Option that a Subnet or Shared Network form field edits."""
