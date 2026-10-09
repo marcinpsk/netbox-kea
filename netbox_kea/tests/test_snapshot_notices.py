@@ -404,15 +404,29 @@ _IDENTITY_ONLY = {"subnet4-list": _subnet_list(4, [_SUBNET]), "config-get": requ
 class TestNoticeGapsFromReview(_ViewTestBase):
     """Pages that read a Snapshot show its Notice once, in a channel that renders it."""
 
-    def test_a_subnets_table_refresh_queues_no_message(self):
+    def test_a_subnets_table_refresh_shows_the_notice_out_of_band_and_queues_no_message(self):
         # NetBox renders htmx/table.html without messages, so a queued one would surface on the next page.
+        url = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
         server_configuration.invalidate(self.server, 4)
         with stub_kea(_UNAVAILABLE):
-            response = self.client.get(
-                reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk]), HTTP_HX_REQUEST="true"
-            )
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(_page_messages(response), [])
+            failed = self.client.get(url, HTTP_HX_REQUEST="true")
+        self.assertEqual(failed.status_code, 200)
+        self.assertEqual(_page_messages(failed), [])
+        self.assertContains(failed, '<div id="subnet-notice" hx-swap-oob="true">')
+        self.assertContains(failed, f"<strong>{HEADLINES['catalogue']}</strong>", html=True)
+        self.assertContains(failed, f"<li>{_IDENTITY_UNAVAILABLE}</li>", html=True)
+        # A later refresh with a complete Catalogue clears the slot.
+        server_configuration.invalidate(self.server, 4)
+        with stub_kea({**_COMPLETE, "stat-lease4-get": {"result": 2, "text": "unknown command"}}):
+            recovered = self.client.get(url, HTTP_HX_REQUEST="true")
+        self.assertContains(recovered, '<div id="subnet-notice" hx-swap-oob="true"></div>', html=True)
+
+    def test_the_subnets_page_has_an_empty_notice_slot_and_shows_the_notice_as_messages(self):
+        server_configuration.invalidate(self.server, 4)
+        with stub_kea(_UNAVAILABLE):
+            response = self.client.get(reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk]))
+        self.assertContains(response, '<div id="subnet-notice"></div>', html=True)
+        self.assertIn((django_messages.ERROR, HEADLINES["catalogue"]), _page_messages(response))
 
     def test_the_pool_forms_warn_about_an_incomplete_catalogue(self):
         urls = (

@@ -82,7 +82,6 @@ _EXPECTED: dict[str, frozenset[SnapshotKind]] = {
     "server_reservations": frozenset({"reservation"}),
 }
 #: The htmx lease search shows the Catalogue Notice in its form and the Lease Notice below it.
-_HTMX_EXPECTED: frozenset[SnapshotKind] = frozenset({"catalogue", "lease"})
 
 #: The query that a page needs before it reads anything.
 _QUERIES = {
@@ -91,9 +90,12 @@ _QUERIES = {
 }
 
 #: The htmx search of each lease page, which reads a Lease Snapshot after the page itself.
-_HTMX_SEARCHES = {
-    "server_leases4": {"by": "hw", "q": "aa:bb:cc:dd:ee:ff"},
-    "server_leases6": {"by": "duid", "q": "00:01:02:03:04:05"},
+#: The htmx partial request of a page, and the Snapshot kinds whose error headline it must show inline.
+_HTMX_SEARCHES: dict[str, tuple[dict[str, str], frozenset[SnapshotKind]]] = {
+    "server_leases4": ({"by": "hw", "q": "aa:bb:cc:dd:ee:ff"}, frozenset({"catalogue", "lease"})),
+    "server_leases6": ({"by": "duid", "q": "00:01:02:03:04:05"}, frozenset({"catalogue", "lease"})),
+    "server_subnets4": ({}, frozenset({"catalogue"})),
+    "server_subnets6": ({}, frozenset({"catalogue"})),
 }
 
 _ARGUMENTS = {
@@ -146,7 +148,8 @@ class TestEveryServerPageShowsAFailedRead(_ViewTestBase):
                 self.assertIsNotNone(expected, f"Add the Snapshot kinds of {name} to _EXPECTED, or exempt it.")
                 requests_ = [(url, _QUERIES.get(name, {}), {}, expected)]
                 if name in _HTMX_SEARCHES:
-                    requests_.append((url, _HTMX_SEARCHES[name], {"HTTP_HX_REQUEST": "true"}, _HTMX_EXPECTED))
+                    htmx_query, htmx_kinds = _HTMX_SEARCHES[name]
+                    requests_.append((url, htmx_query, {"HTTP_HX_REQUEST": "true"}, htmx_kinds))
                 for path, query, headers, kinds in requests_:
                     with self.subTest(route=name, htmx=bool(headers)):
                         self._fresh_client()

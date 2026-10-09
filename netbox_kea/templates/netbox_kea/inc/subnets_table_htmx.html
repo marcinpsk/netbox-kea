@@ -1,0 +1,5 @@
+{# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com> #}
+{# SPDX-License-Identifier: Apache-2.0 #}
+{# A table refresh renders no Django messages, so it fills or clears the notice slot of the Subnets page out of band. #}
+{% include "htmx/table.html" %}
+<div id="subnet-notice" hx-swap-oob="true">{% if notice %}{% include "netbox_kea/inc/notice_alert.html" %}{% endif %}</div>

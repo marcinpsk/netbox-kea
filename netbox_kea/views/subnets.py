@@ -83,12 +83,10 @@ class BaseServerDHCPSubnetsView(generic.ObjectChildrenView):
     queryset = Server.objects.all()
     template_name = "netbox_kea/server_dhcp_subnets.html"
 
-    def get_children(self, request: HttpRequest, parent: Server) -> list[dict[str, Any]]:
+    def _catalogue_rows(
+        self, request: HttpRequest, parent: Server, snapshot: CatalogueSnapshot
+    ) -> list[dict[str, Any]]:
         """Return safe Subnet Catalogue rows for this Server."""
-        snapshot = subnet_catalogue.display(parent, self.dhcp_version)
-        # NetBox renders htmx/table.html without messages; the full page already showed the Notice.
-        if not htmx_partial(request):
-            show_notices(request, notice(snapshot))
         if snapshot.unavailable:
             return []
         can_change = Server.objects.restrict(request.user, "change").filter(pk=parent.pk).exists()
@@ -104,7 +102,9 @@ class BaseServerDHCPSubnetsView(generic.ObjectChildrenView):
             return resp
 
         # We can't use the original get() since it calls get_table_configs which requires a NetBox model.
-        child_objects = self.get_children(request, instance)
+        snapshot = subnet_catalogue.display(instance, self.dhcp_version)
+        subnet_notice = notice(snapshot)
+        child_objects = self._catalogue_rows(request, instance, snapshot)
 
         table_data = self.prep_table_data(request, child_objects, instance)
         table = self.get_table(table_data, request, False)
@@ -120,13 +120,16 @@ class BaseServerDHCPSubnetsView(generic.ObjectChildrenView):
         if htmx_partial(request):
             return render(
                 request,
-                "htmx/table.html",
+                "netbox_kea/inc/subnets_table_htmx.html",
                 {
                     "object": instance,
                     "table": table,
                     "model": self.child_model,
+                    "notice": subnet_notice,
                 },
             )
+
+        show_notices(request, subnet_notice)
 
         return render(
             request,

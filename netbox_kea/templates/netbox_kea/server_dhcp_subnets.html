@@ -21,6 +21,7 @@
 {% block content %}
 {% include "netbox_kea/inc/subnets_nav.html" %}
 {% include "netbox_kea/includes/persist_config_warning.html" %}
+<div id="subnet-notice"></div>
 {{ block.super }}
 <div class="d-flex justify-content-end gap-2 mt-3">
   {% if object.dhcp4 and '4' in request.resolver_match.url_name %}
