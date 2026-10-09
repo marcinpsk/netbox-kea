@@ -97,8 +97,8 @@ class SyncResponseRoutingTest(SimpleTestCase):
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-class FetchReservationSnapshotTest(TestCase):
-    """`_fetch_reservation_snapshot` distinguishes partial data from read failure."""
+class ReadReservationObservationTest(TestCase):
+    """`_read_reservation_observation` distinguishes partial data from read failure."""
 
     def _server(self):
         return _make_db_server(name="snapshot-test", dhcp4=True, dhcp6=False)
@@ -110,7 +110,7 @@ class FetchReservationSnapshotTest(TestCase):
         )
 
         with stub_kea(responses):
-            snapshot = dps._fetch_reservation_snapshot(self._server(), 4)
+            snapshot = dps._read_reservation_observation(self._server(), 4)
 
         self.assertIsNotNone(snapshot)
         self.assertFalse(snapshot.snapshot.complete)
@@ -120,7 +120,7 @@ class FetchReservationSnapshotTest(TestCase):
         responses["reservation-get-page"] = requests.ConnectionError("read failed")
 
         with self.assertLogs("netbox_kea.views.dhcp_plugin_sync", level="WARNING"), stub_kea(responses):
-            snapshot = dps._fetch_reservation_snapshot(self._server(), 4)
+            snapshot = dps._read_reservation_observation(self._server(), 4)
 
         self.assertIsNone(snapshot)
 

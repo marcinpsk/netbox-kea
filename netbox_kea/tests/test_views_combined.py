@@ -17,9 +17,16 @@ import requests
 from django.urls import reverse
 
 from netbox_kea.views.notices import HEADLINES
-from netbox_kea.views.reservations import _RESERVATION_PAGE_SIZE
+from netbox_kea.views.reservations import _RESERVATION_PAGE_SIZE, ReservationQuery, fetch
 
-from .kea_stub import _catalogue_responses, _catalogue_responses_for_subnets, _res_page, queued, stub_kea
+from .kea_stub import (
+    _catalogue_responses,
+    _catalogue_responses_for_subnets,
+    _res_page,
+    _reservation_mutation_commands,
+    queued,
+    stub_kea,
+)
 from .utils import _make_db_server, _ViewTestBase
 
 # ---------------------------------------------------------------------------
@@ -371,6 +378,28 @@ class TestCombinedReservationCapabilityConcurrency(_ViewTestBase):
         )
 
 
+class TestCombinedReservationFanOut(_ViewTestBase):
+    def test_a_server_that_cannot_build_a_client_keeps_the_other_servers(self):
+        # A client certificate without its key fails the client construction with a ValueError.
+        broken = _make_db_server(name="broken-kea", ca_url="https://kea-broken.example.com", client_cert_path="/cert")
+        hosts = [{"subnet-id": 1, "hw-address": "aa:bb:cc:dd:ee:ff", "hostname": "printer"}]
+        responses = {
+            **_catalogue_responses(4, 1, "198.18.0.0/24"),
+            "reservation-get-page": _res_page(hosts),
+            "lease4-get-by-state": {"result": 0, "arguments": {"leases": []}},
+            "list-commands": _reservation_mutation_commands(),
+        }
+        url = reverse("plugins:netbox_kea:combined_reservations4") + f"?server={self.server.pk}&server={broken.pk}"
+
+        with stub_kea(responses), self.assertLogs("netbox_kea.views.fan_out", level="ERROR"):
+            response = self.client.get(url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "printer")
+        self.assertEqual(response.context["errors"], [("broken-kea", HEADLINES["reservation"])])
+        self.assertEqual(response.context["mutation_unavailable_servers"], [])
+
+
 class TestCombinedReservationSyncControl(_ViewTestBase):
     """The combined tab must offer the same Reservation synchronization as one server.
 
@@ -510,21 +539,17 @@ class TestCombinedReservationCursorPagination(_ViewTestBase):
         self.assertIsNone(second.context["next_page_url"])
 
     def test_a_subnet_confirmed_absent_is_an_empty_complete_server_result(self):
-        from netbox_kea.views.reservations import _fetch_reservation_page
-
         responses = {
             **_catalogue_responses(4, 30, "198.18.30.0/24"),
             "reservation-get-page": {"result": 1, "text": "subnet 20 is not configured"},
         }
         with stub_kea(responses) as kea:
-            snapshot = _fetch_reservation_page(self.server, 4, None, subnet_id=20)
+            snapshot = fetch(self.server, 4, ReservationQuery(subnet_id=20)).loaded
         self.assertEqual(snapshot.records, ())
         self.assertTrue(snapshot.complete)
         self.assertEqual(kea.bodies("reservation-get-page"), [])
 
     def test_an_uncertain_subnet_absence_uses_a_bounded_unscoped_read(self):
-        from netbox_kea.views.reservations import _fetch_reservation_page
-
         def page(body):
             if "subnet-id" in body["arguments"]:
                 return {"result": 1, "text": "subnet 20 is not configured"}
@@ -536,14 +561,12 @@ class TestCombinedReservationCursorPagination(_ViewTestBase):
             "reservation-get-page": page,
         }
         with stub_kea(responses) as kea:
-            snapshot = _fetch_reservation_page(self.server, 4, None, subnet_id=20)
+            snapshot = fetch(self.server, 4, ReservationQuery(subnet_id=20)).loaded
         self.assertEqual(snapshot.records, ())
         self.assertEqual(len(kea.bodies("reservation-get-page")), 1)
         self.assertNotIn("subnet-id", kea.bodies("reservation-get-page")[0]["arguments"])
 
     def test_a_quarantined_subnet_is_not_treated_as_confirmed_absent(self):
-        from netbox_kea.views.reservations import _fetch_reservation_page
-
         responses = _catalogue_responses(4, 20, "198.18.20.0/24")
         responses["config-get"] = {
             "result": 0,
@@ -551,7 +574,7 @@ class TestCombinedReservationCursorPagination(_ViewTestBase):
         }
         responses["reservation-get-page"] = _res_page([{"subnet-id": 20, "flex-id": "quarantined-printer"}])
         with stub_kea(responses) as kea:
-            snapshot = _fetch_reservation_page(self.server, 4, None, subnet_id=20)
+            snapshot = fetch(self.server, 4, ReservationQuery(subnet_id=20)).loaded
         self.assertEqual(len(kea.bodies("reservation-get-page")), 1)
         self.assertNotIn("subnet-id", kea.bodies("reservation-get-page")[0]["arguments"])
         self.assertFalse(snapshot.complete)

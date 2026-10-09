@@ -552,7 +552,7 @@ class LeaseDeleteTable(GenericTable):
 # (``views.reservations._attach_reservation_action_urls``) rather than reversed here.
 # A reservation that reserves no address has no address-keyed URL, and ``{% url %}``
 # with an empty ``ip_address`` raised NoReverseMatch, taking the whole table down
-# (issue #110). ``can_change`` is already folded into the precomputed values.
+# (issue #110). A URL is set only when the user can change the Reservation.
 RESERVATION_ACTIONS = """
 {% if record.edit_url or record.delete_url %}
 <span class="btn-group">

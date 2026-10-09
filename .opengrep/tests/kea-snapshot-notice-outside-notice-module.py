@@ -54,7 +54,7 @@ def _run_config_change(request, change):
     return outcome
 
 
-def _fetch_reservation_page(client, version, catalogue, diagnostics):
+def _read_reservations(client, version, catalogue, diagnostics):
     page = client.reservation_page(version, catalogue)
     # ok: kea-snapshot-notice-outside-notice-module
     diagnostics.extend(page.diagnostics)

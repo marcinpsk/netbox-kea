@@ -73,6 +73,39 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
         self.assertEqual(_return_url(row["edit_url"]), [search])
         self.assertEqual(_return_url(row["delete_url"]), [search])
 
+    def test_a_client_that_cannot_be_built_shows_the_headline_as_a_message(self):
+        # A client certificate without its key fails the client construction with a ValueError.
+        self.server.client_cert_path = "/cert"
+        self.server.save()
+
+        with stub_kea({}) as kea, self.assertLogs("netbox_kea.views.reservations", level="ERROR"):
+            response = self.client.get(self._url())
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(kea.commands(), [])
+        self.assertIn(HEADLINES["reservation"], [str(message) for message in response.context["messages"]])
+        self.assertIsNone(response.context["reservation_notice"])
+        self.assertFalse(response.context["snapshot_complete"])
+        self.assertEqual(response.context["table"].data.data, [])
+        self.assertEqual(
+            response.context["mutation_unavailable_reason"],
+            "Live Reservation mutation capabilities could not be confirmed.",
+        )
+
+    def test_the_tab_and_the_combined_view_present_the_same_row(self):
+        tab_row, _ = self._searched_row(self._url(), {})
+        url = reverse("plugins:netbox_kea:combined_reservations4")
+        combined_row, _ = self._searched_row(url, {"server": self.server.pk})
+
+        # The return URL of each action is the page that shows the row.
+        actions = {"edit_url", "delete_url"}
+        self.assertEqual(
+            {key: value for key, value in tab_row.items() if key not in actions},
+            {key: value for key, value in combined_row.items() if key not in actions},
+        )
+        self.assertTrue(actions <= tab_row.keys() & combined_row.keys())
+        self.assertNotIn("can_change", tab_row)
+
     def test_configured_only_subnet_filter_does_not_authorize_a_scoped_read(self):
         responses = _catalogue_responses(4, 20, "198.18.0.0/24")
         responses["subnet4-list"] = {"result": 2, "text": "subnet commands unavailable"}

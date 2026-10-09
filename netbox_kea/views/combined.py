@@ -14,13 +14,10 @@ from django.views import View
 from .. import forms, server_configuration, subnet_catalogue, tables
 from ..constants import Family, LeaseState
 from ..decimal_text import parse_decimal
-from ..ipam_reconciliation import RESERVATION, claim_permissions
 from ..kea import LeaseQueryGuardError, lease_query_guard_message
 from ..leases import LeaseSnapshot
 from ..models import Server
 from ..reservation_transfer import export_reservation_document
-from ..reservations import ReservationCapabilities, ReservationSnapshot
-from ..sync_permissions import sync_gate
 from ..utilities import (
     export_table,
     snapshot_rows,
@@ -29,16 +26,11 @@ from ._base import ConditionalLoginRequiredMixin, _catalogue_subnet_row, _enrich
 from .fan_out import fan_out
 from .leases import LeaseSearch, _enrich_leases_with_badges, lease_sync_gates
 from .leases import fetch as fetch_leases
-from .notices import HEADLINES, Notice, ServerNotices, load_snapshot, notice
-from .reservations import (
-    _attach_reservation_action_urls,
-    _configured_capabilities,
-    _enrich_reservations_with_badges,
-    _fetch_reservation_page,
-    _fetch_reservation_snapshot,
-    _filter_reservations,
-    _reservation_table_record,
-)
+from .notices import HEADLINES, Notice, ServerNotices, notice
+from .reservations import ReservationQuery
+from .reservations import empty_text as reservation_empty_text
+from .reservations import fetch as fetch_reservations
+from .reservations import present as present_reservations
 
 logger = logging.getLogger(__name__)
 
@@ -335,60 +327,6 @@ class CombinedSharedNetworks6View(_CombinedSharedNetworksView):
     active_tab = "shared_networks6"
 
 
-def _fetch_reservations_from_server(
-    server: "Server",
-    version: Family,
-    cursor: str | None = None,
-    *,
-    full_snapshot: bool = False,
-    filters: dict[str, Any] | None = None,
-) -> ReservationSnapshot:
-    """Fetch one bounded page, or a complete typed Snapshot for transfer."""
-    if full_snapshot:
-        return _fetch_reservation_snapshot(server, version)
-    return _fetch_reservation_page(server, version, cursor, **(filters or {}))
-
-
-def _reservation_mutation_server_pks(
-    request: HttpRequest,
-    server_pks: list[int],
-    *,
-    is_export: bool,
-) -> set[int]:
-    """Return selected servers where the request can expose mutation controls."""
-    if is_export:
-        return set()
-    return set(Server.objects.restrict(request.user, "change").filter(pk__in=server_pks).values_list("pk", flat=True))
-
-
-def _reservation_capability_future(
-    executor: concurrent.futures.ThreadPoolExecutor,
-    server: Server,
-    version: Family,
-    writable_pks: set[int],
-    snapshot: ReservationSnapshot,
-) -> dict[int, concurrent.futures.Future[ReservationCapabilities | None]]:
-    """Submit one capability read when this Snapshot can expose mutation controls."""
-    if server.pk not in writable_pks or not snapshot.records:
-        return {}
-    return {server.pk: executor.submit(_configured_capabilities, server, version)}
-
-
-def _reservation_capability_results(
-    capability_futures: dict[int, concurrent.futures.Future[ReservationCapabilities | None]],
-    server_map: dict[int, Server],
-) -> dict[int, ReservationCapabilities | None]:
-    """Collect capability reads without letting one server hide the others."""
-    capabilities_by_server: dict[int, ReservationCapabilities | None] = {}
-    for server_pk, capability_future in capability_futures.items():
-        try:
-            capabilities_by_server[server_pk] = capability_future.result()
-        except Exception:  # noqa: PERF203
-            logger.exception("Failed to query Reservation capabilities from %s", server_map[server_pk].name)
-            capabilities_by_server[server_pk] = None
-    return capabilities_by_server
-
-
 class _CombinedReservationsView(_CombinedViewMixin):
     """Base view: fetch reservations from all selected servers concurrently."""
 
@@ -400,9 +338,6 @@ class _CombinedReservationsView(_CombinedViewMixin):
         ctx = self._combined_context(request)
         servers = self._get_servers(request, self.dhcp_version)
 
-        all_records: list[dict[str, Any]] = []
-        notices = ServerNotices()
-        snapshots = {}
         is_export = "export" in request.GET
         search_form = forms.ReservationSearchForm(request.GET or None)
         filters = search_form.cleaned_data if search_form.is_valid() else {}
@@ -410,57 +345,38 @@ class _CombinedReservationsView(_CombinedViewMixin):
         if is_export and export_format not in ("yaml", "json"):
             return HttpResponse("Reservation export format must be YAML or JSON.", status=400)
 
-        server_map = {server.pk: server for server in servers}
-        writable_pks = _reservation_mutation_server_pks(
-            request,
-            list(server_map),
-            is_export=is_export,
-        )
-        capability_futures: dict[int, concurrent.futures.Future[ReservationCapabilities | None]] = {}
-        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-            future_to_server = {
-                executor.submit(
-                    _fetch_reservations_from_server,
-                    server,
-                    self.dhcp_version,
-                    None if is_export else request.GET.get(f"reservation_cursor_{server.pk}"),
-                    full_snapshot=is_export,
-                    filters=filters,
-                ): server
-                for server in servers
-                if is_export or request.GET.get(f"reservation_cursor_{server.pk}") != "done"
-            }
-            for future in concurrent.futures.as_completed(future_to_server):
-                server = future_to_server[future]
-                try:
-                    loaded = load_snapshot(server, "reservation", future.result)
-                except ValueError:
-                    # A configuration or argument error is outside the notice rule.
-                    logger.exception("Failed to query server %s", server.name)
-                    notices.errors.append((server.name, HEADLINES["reservation"]))
-                    continue
-                if isinstance(loaded, Notice):
-                    notices.add(server, loaded)
-                    continue
-                snapshots[server.pk] = loaded
-                notices.add(server, notice(loaded))
-                all_records.extend(_reservation_table_record(record, server) for record in loaded.records)
-                capability_futures.update(
-                    _reservation_capability_future(executor, server, self.dhcp_version, writable_pks, loaded)
+        if is_export:
+            queries = {server.pk: ReservationQuery(full=True) for server in servers}
+        else:
+            writable_pks = set(
+                Server.objects.restrict(request.user, "change")
+                .filter(pk__in=[server.pk for server in servers])
+                .values_list("pk", flat=True)
+            )
+            queries = {
+                server.pk: ReservationQuery(
+                    cursor=request.GET.get(f"reservation_cursor_{server.pk}"),
+                    mutations=server.pk in writable_pks,
+                    **filters,
                 )
-            capabilities_by_server = _reservation_capability_results(capability_futures, server_map)
+                for server in servers
+                if request.GET.get(f"reservation_cursor_{server.pk}") != "done"
+            }
+        read = fan_out(
+            [server for server in servers if server.pk in queries],
+            "reservation",
+            lambda server: fetch_reservations(server, self.dhcp_version, queries[server.pk]),
+        )
+        notices = read.notices
 
         if is_export:
-            if notices.errors or any(not snapshot.complete for snapshot in snapshots.values()):
+            loaded = [server_read.loaded for _server, server_read in read.results]
+            snapshots = [item for item in loaded if not isinstance(item, Notice)]
+            if notices.errors or len(snapshots) < len(loaded) or any(not snapshot.complete for snapshot in snapshots):
                 return HttpResponse(
                     "The combined Reservation Snapshot is incomplete and cannot be exported.", status=409
                 )
-            records = tuple(
-                record
-                for server in servers
-                if (export_snapshot := snapshots.get(server.pk)) is not None
-                for record in export_snapshot.records
-            )
+            records = tuple(record for snapshot in snapshots for record in snapshot.records)
             content = export_reservation_document(records, export_format)
             response = HttpResponse(
                 content,
@@ -471,69 +387,37 @@ class _CombinedReservationsView(_CombinedViewMixin):
             )
             return response
 
-        # Enrich in the main thread so Django ORM queries see the test transaction.
+        # Present in the main thread so Django ORM queries see the test transaction.
+        all_records: list[dict[str, Any]] = []
         mutation_unavailable_servers: list[tuple[str, str]] = []
-        sync = sync_gate(request.user, claim_permissions(RESERVATION))
-        for server_pk, server in server_map.items():
-            server_records = [r for r in all_records if r.get("server_pk") == server_pk]
-            if server_records:
-                _enrich_reservations_with_badges(server_records, server, self.dhcp_version, sync=sync)
-                can_change = server_pk in writable_pks
-                capabilities = capabilities_by_server.get(server_pk) if can_change else None
-                can_mutate = bool(can_change and capabilities and capabilities.mutation_available)
-                if can_change and not can_mutate:
-                    reason = (
-                        capabilities.explanation
-                        if capabilities is not None and capabilities.explanation
-                        else "Live Reservation mutation capabilities could not be confirmed."
-                    )
-                    mutation_unavailable_servers.append((server.name, reason))
-                for r in server_records:
-                    r["can_change"] = can_mutate
-                # Per-server so a row can never be given another server's URL.
-                _attach_reservation_action_urls(
-                    server_records,
-                    server_pk,
-                    self.dhcp_version,
-                    can_change=can_mutate,
-                    return_url=request.get_full_path(),
-                )
-
-        if search_form.is_valid():
-            all_records = _filter_reservations(
-                all_records,
-                q=search_form.cleaned_data.get("q", ""),
-                subnet_id=search_form.cleaned_data.get("subnet_id"),
-                version=self.dhcp_version,
-                scope=search_form.cleaned_data.get("scope", ""),
-            )
+        snapshots = []
+        partial = bool(notices.errors)
+        next_query = request.GET.copy()
+        next_query.pop("page", None)
+        has_next = False
+        for server, server_read in read.results:
+            presented = present_reservations(request.user, server, server_read, return_url=request.get_full_path())
+            notices.add(server, presented.notice)
+            all_records.extend(presented.rows)
+            partial = partial or presented.partial
+            if presented.rows and presented.mutation_unavailable_reason:
+                mutation_unavailable_servers.append((server.name, presented.mutation_unavailable_reason))
+            if presented.snapshot is None:
+                continue
+            snapshots.append(presented.snapshot)
+            if presented.next_cursor is None:
+                next_query[f"reservation_cursor_{server.pk}"] = "done"
+            else:
+                next_query[f"reservation_cursor_{server.pk}"] = presented.next_cursor
+                has_next = True
 
         table_cls = tables.GlobalReservationTable4 if self.dhcp_version == 4 else tables.GlobalReservationTable6
         table = table_cls(
             all_records,
             user=request.user,
-            empty_text="No matches in this search batch."
-            if any(filters.values())
-            and (
-                notices.errors or any(snapshot.next_cursor or not snapshot.complete for snapshot in snapshots.values())
-            )
-            else None,
+            empty_text=reservation_empty_text(ReservationQuery(**filters).filtered, partial),
         )
         table.configure(request)
-
-        next_query = request.GET.copy()
-        next_query.pop("page", None)
-        has_next = False
-        for server in servers:
-            page_snapshot = snapshots.get(server.pk)
-            cursor_key = f"reservation_cursor_{server.pk}"
-            if page_snapshot is None:
-                continue
-            if page_snapshot.next_cursor is None:
-                next_query[cursor_key] = "done"
-            else:
-                next_query[cursor_key] = page_snapshot.next_cursor
-                has_next = True
 
         ctx.update(
             {
@@ -542,9 +426,9 @@ class _CombinedReservationsView(_CombinedViewMixin):
                 "errors": notices.errors,
                 "mutation_unavailable_servers": mutation_unavailable_servers,
                 "reservation_diagnostics": notices.record_diagnostics,
-                "snapshot_complete": not notices.errors and all(snapshot.complete for snapshot in snapshots.values()),
+                "snapshot_complete": not notices.errors and all(snapshot.complete for snapshot in snapshots),
                 # A failed Server read is already in the error list, so only a read Snapshot can be incomplete.
-                "snapshot_incomplete": any(not snapshot.complete for snapshot in snapshots.values()),
+                "snapshot_incomplete": any(not snapshot.complete for snapshot in snapshots),
                 "next_page_url": f"{request.path}?{next_query.urlencode()}" if has_next else None,
                 "dhcp_version": self.dhcp_version,
                 "page_title": f"DHCPv{self.dhcp_version} Reservations",

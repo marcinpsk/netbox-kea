@@ -66,6 +66,27 @@ def _read_leases(client, family, search, server_id):
     return client.lease_search(family, search.by, search.q, server_id=server_id)
 
 
+def bad_reservation_tab_reads_without_the_loader(server, query):
+    # ruleid: kea-snapshot-read-without-notice
+    snapshot = _read_reservations(server, 4, query)
+    return snapshot.records
+
+
+def fetch(server, family, query):
+    # ok: kea-snapshot-read-without-notice
+    return load_snapshot(server, "reservation", lambda: _read_reservations(server, family, query))
+
+
+def _read_reservations(server, family, query):
+    # ok: kea-snapshot-read-without-notice
+    return server.get_client(version=family).reservation_snapshot(family, None)
+
+
+def _read_reservation_observation(client, catalogue):
+    # ok: kea-snapshot-read-without-notice
+    return client.reservation_snapshot(4, catalogue)
+
+
 def good_form_carries_the_notice(server):
     # ok: kea-snapshot-read-without-notice
     snapshot = subnet_catalogue.display(server, 4)
