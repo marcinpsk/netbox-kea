@@ -24,6 +24,7 @@ from utilities.views import register_model_view
 
 from .. import constants, forms, tables
 from ..constants import Family
+from ..ipam_reconciliation import RESERVATION, ReservationPhase, claim_permissions, reconcile_permissions
 from ..kea import KeaClient, KeaException, LeaseQueryGuardError
 from ..leases import LeaseSnapshot
 from ..models import Server
@@ -43,6 +44,7 @@ from ..reservations import (
 )
 from ..subnet_catalogue import VerifiedSubnet
 from ..subnet_catalogue import display as subnet_catalogue
+from ..sync_permissions import SyncGate, sync_gate
 from ..utilities import OptionalViewTab
 
 logger = logging.getLogger(__name__)
@@ -447,9 +449,13 @@ def _enrich_reservations_with_badges(
     reservations: list[dict[str, Any]],
     server: Server,
     version: Family,
-    can_sync: bool = False,
+    *,
+    sync: SyncGate,
 ) -> None:
-    """Add active-lease and aggregate NetBox synchronization state to typed rows."""
+    """Add active-lease and aggregate NetBox synchronization state to typed rows.
+
+    A row that can take a Sync gets ``sync_url`` when *sync* allows it, else ``sync_refusal`` with the reason.
+    """
     from ..sync import bulk_fetch_netbox_ips, is_kea_managed_ip, reservation_synchronization_state
 
     try:
@@ -484,23 +490,26 @@ def _enrich_reservations_with_badges(
         ]
         row["netbox_ip_url"] = matched[0].get_absolute_url() if matched else None
         row["sync_url"] = None
+        row["sync_refusal"] = ""
         if (
-            can_sync
-            and isinstance(reservation.scope, InSubnetReservationScope)
+            isinstance(reservation.scope, InSubnetReservationScope)
             and reservation.addresses
             and state.code in ("not-synchronized", "partially-synchronized")
         ):
-            query = urlencode(
-                {
-                    "identifier_type": reservation.identity.identifier_type,
-                    "identifier": reservation.identity.value,
-                }
-            )
-            base = reverse(
-                f"plugins:netbox_kea:server_reservation{version}_sync",
-                args=[server.pk, reservation.scope.subnet.subnet_id],
-            )
-            row["sync_url"] = f"{base}?{query}"
+            if sync.allowed:
+                query = urlencode(
+                    {
+                        "identifier_type": reservation.identity.identifier_type,
+                        "identifier": reservation.identity.value,
+                    }
+                )
+                base = reverse(
+                    f"plugins:netbox_kea:server_reservation{version}_sync",
+                    args=[server.pk, reservation.scope.subnet.subnet_id],
+                )
+                row["sync_url"] = f"{base}?{query}"
+            else:
+                row["sync_refusal"] = sync.reason
 
 
 def _reservation_list_context(
@@ -545,8 +554,9 @@ def _reservation_list_context(
             if capabilities is not None and capabilities.explanation
             else "Live Reservation mutation capabilities could not be confirmed."
         )
-    can_sync = request.user.has_perm("ipam.add_ipaddress") and request.user.has_perm("ipam.change_ipaddress")
-    _enrich_reservations_with_badges(reservations, server, version, can_sync=can_sync)
+    sync = sync_gate(request.user, claim_permissions(RESERVATION))
+    bulk_sync = sync_gate(request.user, reconcile_permissions(server, ReservationPhase.source))
+    _enrich_reservations_with_badges(reservations, server, version, sync=sync)
     for reservation in reservations:
         reservation["can_change"] = can_mutate and reservation["scope_kind"] == "in-subnet"
     _attach_reservation_action_urls(
@@ -577,8 +587,9 @@ def _reservation_list_context(
         if can_mutate
         else None,
         "bulk_sync_url": reverse(f"plugins:netbox_kea:server_reservation{version}_bulk_sync", args=[server.pk])
-        if can_sync
+        if bulk_sync.allowed
         else None,
+        "bulk_sync_refusal": bulk_sync.reason,
         "import_url": reverse(f"plugins:netbox_kea:server_reservation{version}_bulk_import", args=[server.pk])
         if can_mutate
         else None,

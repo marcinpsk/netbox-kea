@@ -43,10 +43,11 @@ _UNUSABLE = "The selected branch is not usable"
 # NetBox renders the navbar twice (desktop and mobile), and only one copy is visible.
 _BANNER_SELECTOR = ".kea-branch-banner"
 
-#: What a user needs to open a Server's reservations and to see the Sync all button.
+#: What a user needs to open a Server's reservations and to use the Sync all button.
 _SYNC_USER_PERMISSIONS = [
     {"actions": ["view"], "object_types": ["netbox_kea.server"]},
     {"actions": ["view", "add", "change"], "object_types": ["ipam.ipaddress"]},
+    {"actions": ["add", "change"], "object_types": ["dcim.macaddress"]},
 ]
 
 

@@ -218,6 +218,39 @@ class DelegatedPrefixPhase:
 
 Phase = LeasePhase | ReservationPhase | SubnetPhase | PoolPhase | DelegatedPrefixPhase
 
+# The NetBox permissions that a claim of each source uses. An address claim also writes the MAC address rows.
+_ADDRESS_WRITES = ("ipam.add_ipaddress", "ipam.change_ipaddress", "dcim.add_macaddress", "dcim.change_macaddress")
+_PREFIX_WRITES = ("ipam.add_prefix", "ipam.change_prefix")
+_CLAIM_PERMISSIONS: dict[str, tuple[str, ...]] = {
+    LEASE: _ADDRESS_WRITES,
+    RESERVATION: _ADDRESS_WRITES,
+    SubnetPhase.source: _PREFIX_WRITES,
+    PoolPhase.source: ("ipam.add_iprange", "ipam.change_iprange"),
+    DelegatedPrefixPhase.source: _PREFIX_WRITES,
+}
+
+
+def claim_permissions(*sources: str) -> tuple[str, ...]:
+    """Return the NetBox permissions that a claim of records of *sources* can use."""
+    return tuple(dict.fromkeys(name for source in sources for name in _CLAIM_PERMISSIONS[source]))
+
+
+def reconcile_permissions(server: Server, *sources: str) -> tuple[str, ...]:
+    """Return the NetBox permissions that a reconcile call with phases of *sources* can use.
+
+    The stale cleanup changes the objects that it keeps. It deletes an IP address only in the remove mode, and only
+    when complete phases of *sources* may remove the last link of the Server to it. Prefixes and IP Ranges stay.
+    """
+    permissions = claim_permissions(*sources)
+    if _get_stale_cleanup_mode() == "remove" and _last_links_go(server, sources):
+        permissions += ("ipam.delete_ipaddress",)
+    return permissions
+
+
+def _last_links_go(server: Server, complete: Collection[str]) -> bool:
+    """Return whether the *complete* sources may remove the last link of the Server to an IP address."""
+    return LEASE in complete and (RESERVATION in complete or not server.sync_reservations_enabled)
+
 
 @dataclass
 class SyncReport:
@@ -727,7 +760,7 @@ def reconcile(server: Server, family: Family, phases: Sequence[Phase]) -> SyncRe
     cutoffs = {phase.source: _run_phase(server, family, phase, report) for phase in phases}
     complete = {source for source, cutoff in cutoffs.items() if cutoff is not None}
     report.completed_sources.update(complete)
-    last_links_go = LEASE in complete and (RESERVATION in complete or not server.sync_reservations_enabled)
+    last_links_go = _last_links_go(server, complete)
     for source, cutoff in cutoffs.items():
         if cutoff is None:
             continue

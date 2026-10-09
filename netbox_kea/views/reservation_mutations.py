@@ -20,7 +20,7 @@ from netbox.views import generic
 from .. import constants, forms, subnet_catalogue
 from ..constants import Family, IPAddressValue
 from ..dhcp_options import DHCPOption
-from ..ipam_reconciliation import claim
+from ..ipam_reconciliation import RESERVATION, claim, claim_permissions
 from ..kea import KeaClient, KeaException
 from ..models import Server
 from ..pools import addresses_in_pools
@@ -42,6 +42,7 @@ from ..reservations import (
 )
 from ..signals import reservation_created, reservation_deleted, reservation_updated
 from ..subnet_catalogue import CatalogueSnapshot, MutationScope, VerifiedSubnet
+from ..sync_permissions import sync_gate
 from ..utilities import kea_error_hint
 from ._base import _diagnostic_messages, _KeaChangeMixin, _safe_return_url
 from .reservations import _RESERVATIONS_TAB, _build_reservation_options_formset, _configured_capabilities
@@ -319,17 +320,10 @@ def _confirmed_side_effects(
     if sync_to_netbox and result.intended is not None and not result.intended.addresses:
         messages.info(request, f"Reservation {action}. Nothing to sync to NetBox because it reserves no IP address.")
     elif sync_to_netbox and result.intended is not None:
-        permission_checker = getattr(request.user, "has_perm", None)
-        has_ipam_write_permission = (
-            callable(permission_checker)
-            and permission_checker("ipam.add_ipaddress")
-            and permission_checker("ipam.change_ipaddress")
-        )
-        if not has_ipam_write_permission:
-            logger.warning("User %r requested Reservation IPAM sync without IPAM write permission", request.user)
-            messages.warning(
-                request, f"Reservation {action}, but it was not synced to NetBox. IPAM permission is required."
-            )
+        gate = sync_gate(request.user, claim_permissions(RESERVATION))
+        if not gate.allowed:
+            logger.warning("User %r requested a Reservation IPAM sync that the manual Sync rule refuses", request.user)
+            messages.warning(request, f"Reservation {action}, but it was not synced to NetBox. {gate.reason}")
         else:
             try:
                 outcome = claim(server, reservation.family, [result.intended], force=True)
@@ -363,6 +357,10 @@ class _ReservationMutationView(_KeaChangeMixin, generic.ObjectView):
         return _safe_return_url(
             self.request, reverse(f"plugins:netbox_kea:server_reservations{self.dhcp_version}", args=[server.pk])
         )
+
+    def _sync_refusal(self) -> str:
+        """Return why the manual Sync rule refuses the user a Reservation claim, or an empty string."""
+        return sync_gate(self.request.user, claim_permissions(RESERVATION)).reason
 
     def _mutation_unavailable_response(
         self,
@@ -435,7 +433,7 @@ class _ReservationAddView(_ReservationMutationView):
             else ("subnet_cidr", "ip_addresses", "prefixes", "identifier_type", "identifier", "hostname")
         )
         initial = {field: request.GET.get(field, "") for field in initial_fields if request.GET.get(field)}
-        form = self.form_class(initial=initial, capabilities=capabilities)
+        form = self.form_class(initial=initial, capabilities=capabilities, sync_refusal=self._sync_refusal())
         return self._render(
             request,
             server,
@@ -452,7 +450,7 @@ class _ReservationAddView(_ReservationMutationView):
         unavailable_response = self._mutation_unavailable_response(request, server, capabilities)
         if unavailable_response is not None:
             return unavailable_response
-        form = self.form_class(data=request.POST, capabilities=capabilities)
+        form = self.form_class(data=request.POST, capabilities=capabilities, sync_refusal=self._sync_refusal())
         options_formset, options_valid = _build_reservation_options_formset(request.POST)
         if form.is_valid() and options_valid:
             try:
@@ -571,7 +569,12 @@ class _ReservationEditView(_ReservationMutationView):
                 client,
                 catalogue,
             ):
-                form = self.form_class(data=request.POST, initial=self._initial(current), capabilities=capabilities)
+                form = self.form_class(
+                    data=request.POST,
+                    initial=self._initial(current),
+                    capabilities=capabilities,
+                    sync_refusal=self._sync_refusal(),
+                )
                 for field in ("subnet_cidr", "identifier_type", "identifier"):
                     form.fields[field].disabled = True
                 options_formset, options_valid = _build_reservation_options_formset(request.POST)
@@ -624,7 +627,9 @@ class _ReservationEditView(_ReservationMutationView):
         return initial
 
     def _form_for(self, reservation: Reservation, capabilities: ReservationCapabilities | None):
-        form = self.form_class(initial=self._initial(reservation), capabilities=capabilities)
+        form = self.form_class(
+            initial=self._initial(reservation), capabilities=capabilities, sync_refusal=self._sync_refusal()
+        )
         for field in ("subnet_cidr", "identifier_type", "identifier"):
             form.fields[field].disabled = True
         return form

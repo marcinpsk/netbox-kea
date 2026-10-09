@@ -480,6 +480,9 @@ class BaseLeaseTable(GenericTable):
             ' class="badge text-bg-secondary border-0"'
             ' style="cursor:pointer">'
             '<i class="mdi mdi-sync"></i> Sync</button>'
+            "{% elif record.sync_refusal %}"
+            '{% include "netbox_kea/inc/sync_refused.html" with reason=record.sync_refusal label="Sync"'
+            ' icon="mdi-sync" button_class="badge text-bg-secondary border-0 opacity-50" %}'
             "{% endif %}"
         ),
     )

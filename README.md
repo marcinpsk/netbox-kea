@@ -443,6 +443,25 @@ Each server's summary reports `created`, `updated`, `errors`, `prefix_errors`, `
 
 View job history, next scheduled time and logs under **System → Background Jobs → Kea IPAM Sync**.
 
+### Manual Sync permissions
+
+A manual Sync makes the writes of the automatic sync, and permission constraints do not limit the automatic sync.
+Thus a manual Sync runs only for an active superuser, or for a user who has an unconstrained grant of each
+permission that the Sync can use. An enabled ObjectPermission of the user, or of a group of the user, gives a grant.
+`DEFAULT_PERMISSIONS` also gives a grant. A grant is unconstrained when it has no constraint set, or an empty one.
+
+| Control | Required permissions |
+| --- | --- |
+| Lease **Sync**, lease add with **Sync to NetBox IPAM** | `ipam.add_ipaddress`, `ipam.change_ipaddress`, `dcim.add_macaddress`, `dcim.change_macaddress` |
+| Reservation **Sync all** and **Sync All to NetBox**, Reservation add or edit with **Sync to NetBox IPAM** | The same as for a lease |
+| **Sync to DHCP plugin now** | The same as for a lease, and `ipam.add_prefix`, `ipam.change_prefix`, `ipam.add_iprange`, `ipam.change_iprange`, and change permission on the Server |
+
+**Sync All to NetBox** runs only the reservation phase. Its stale cleanup cannot delete an IP address, so it needs no
+delete permission. When a user does not have a required grant, the Sync control is disabled. Its tooltip names each
+missing or constrained permission, and the server refuses the request with the same text. This rule does not check
+the permissions of the `netbox_dhcp` objects that the DHCP plugin import writes. A grant that only an LDAP group
+mapping (`FIND_GROUP_PERMS`) gives does not count.
+
 ### Upgrade to ownership links
 
 The first observations adopt marker objects that Kea still reports. No data migration assigns owners.

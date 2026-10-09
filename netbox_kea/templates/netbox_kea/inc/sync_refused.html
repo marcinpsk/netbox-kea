@@ -1,0 +1,4 @@
+{# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com> #}
+{# SPDX-License-Identifier: Apache-2.0 #}
+{# A disabled button gets no mouse events, so the focusable wrapper carries the tooltip. #}
+<span class="d-inline-block" tabindex="0" title="{{ reason }}"><button type="button" class="{{ button_class }}" disabled><i class="mdi {{ icon }}" aria-hidden="true"></i> {{ label }}</button><span class="visually-hidden"> {{ reason }}</span></span>

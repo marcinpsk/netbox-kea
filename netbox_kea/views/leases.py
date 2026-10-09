@@ -27,7 +27,7 @@ from utilities.views import GetReturnURLMixin, register_model_view
 
 from .. import constants, forms, subnet_catalogue, tables
 from ..constants import Family
-from ..ipam_reconciliation import claim
+from ..ipam_reconciliation import LEASE, claim, claim_permissions
 from ..kea import (
     KeaClient,
     KeaException,
@@ -45,6 +45,7 @@ from ..reservations import (
 )
 from ..signals import lease_added, leases_deleted
 from ..subnet_catalogue import CatalogueUnavailable, VerifiedSubnet
+from ..sync_permissions import SyncGate, sync_gate
 from ..utilities import (
     OptionalViewTab,
     check_dhcp_enabled,
@@ -63,17 +64,18 @@ T = TypeVar("T", bound=BaseTable)
 _LEASE_EXPORT_MAX_LEASES = 50_000
 
 
-def _run_lease_sync_to_netbox(request: HttpRequest, server: Server, family: Family, ip_address: str) -> None:
-    """Sync a just-created lease to NetBox IPAM, gated on IPAM write permission.
+def _run_lease_sync_to_netbox(
+    request: HttpRequest, server: Server, family: Family, ip_address: str, gate: SyncGate
+) -> None:
+    """Sync a just-created lease to NetBox IPAM when *gate*, the manual Sync rule of a lease claim, allows it.
 
-    Requires ``ipam.add_ipaddress`` + ``ipam.change_ipaddress`` (server-edit access
-    alone is not enough — mirrors the per-row/bulk sync endpoints). The sync uses
+    Server-edit access alone is not enough, as for the row Sync. The sync uses
     ``force=False``, so a foreign (non-Kea-managed) NetBox IP is skipped rather than
     overwritten; that skip is reported as a warning instead of a misleading "synced"
     message. Queues a success/warning message; never raises.
     """
-    if not (request.user.has_perm("ipam.add_ipaddress") and request.user.has_perm("ipam.change_ipaddress")):
-        messages.warning(request, "Lease created, but it was not synced to NetBox (requires IPAM permission).")
+    if not gate.allowed:
+        messages.warning(request, f"Lease created, but it was not synced to NetBox. {gate.reason}")
         return
     try:
         client = server.get_client(version=family)
@@ -428,6 +430,7 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
                 self.dhcp_version,
                 can_delete=can_delete,
                 can_change=can_change,
+                sync=sync_gate(request.user, claim_permissions(LEASE)),
                 return_url=stripped_return_url,
             )
 
@@ -809,7 +812,7 @@ class _BaseLeaseAddView(_KeaChangeMixin, generic.ObjectView):
             self.template_name,
             {
                 "object": server,
-                "form": self.form_class(),
+                "form": self.form_class(sync_refusal=sync_gate(request.user, claim_permissions(LEASE)).reason),
                 "dhcp_version": self.dhcp_version,
                 "cancel_url": self._leases_url(server),
                 "tab": self._active_tab,
@@ -823,7 +826,8 @@ class _BaseLeaseAddView(_KeaChangeMixin, generic.ObjectView):
         if resp := check_dhcp_enabled(server, self.dhcp_version):
             return resp
 
-        form = self.form_class(request.POST)
+        gate = sync_gate(request.user, claim_permissions(LEASE))
+        form = self.form_class(request.POST, sync_refusal=gate.reason)
         cancel_url = self._leases_url(server)
         if form.is_valid():
             cd = form.cleaned_data
@@ -911,7 +915,7 @@ class _BaseLeaseAddView(_KeaChangeMixin, generic.ObjectView):
                 request=request,
             )
             if cd.get("sync_to_netbox"):
-                _run_lease_sync_to_netbox(request, server, self.dhcp_version, cd["ip_address"])
+                _run_lease_sync_to_netbox(request, server, self.dhcp_version, cd["ip_address"], gate)
             return redirect(cancel_url)
         return render(
             request,
@@ -1196,6 +1200,7 @@ def _enrich_leases_with_badges(
     can_delete: bool = False,
     can_change: bool = False,
     *,
+    sync: SyncGate,
     return_url: str,
 ) -> None:
     """In-place: add reservation and NetBox IPAM badge fields to lease dicts.
@@ -1206,7 +1211,8 @@ def _enrich_leases_with_badges(
     - ``host_reservation``: an In-Subnet Reservation that holds no address and no delegated prefix matched
     - ``create_reservation_url``: pre-filled add link if host_cmds is loaded
     - ``netbox_ip_url``: absolute URL if IP exists in NetBox IPAM
-    - ``sync_url``: POST endpoint URL to create a NetBox IP when absent
+    - ``sync_url``: POST endpoint URL to create a NetBox IP when absent and *sync* allows it
+    - ``sync_refusal``: the reason when *sync* refuses the user
     - ``can_delete``: whether the current user may delete this lease
     - ``can_change``: whether the current user may edit this lease (gates edit_url)
 
@@ -1270,7 +1276,10 @@ def _enrich_leases_with_badges(
             and not lease.get("stale_mac")
             and ip not in failed_ips
         ):
-            lease["sync_url"] = sync_url
+            if sync.allowed:
+                lease["sync_url"] = sync_url
+            else:
+                lease["sync_refusal"] = sync.reason
         if can_change and is_address:
             lease["edit_url"] = reverse(edit_url_name, args=[server.pk, ip]) + edit_query
         lease["can_delete"] = can_delete

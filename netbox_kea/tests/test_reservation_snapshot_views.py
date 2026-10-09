@@ -390,7 +390,7 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
         row = response.context["table"].data.data[0]
         self.assertTrue(row["has_active_lease"])
 
-    def test_hides_sync_controls_without_ipam_write_permissions(self):
+    def test_disables_sync_controls_without_ipam_write_permissions(self):
         from django.contrib.auth import get_user_model
         from django.contrib.contenttypes.models import ContentType
         from users.models import ObjectPermission
@@ -427,8 +427,11 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
         row = response.context["table"].data.data[0]
         self.assertIsNone(row["sync_url"])
         self.assertIsNone(response.context["bulk_sync_url"])
+        self.assertIn("ipam.add_ipaddress", row["sync_refusal"])
+        self.assertIn("ipam.add_ipaddress", response.context["bulk_sync_refusal"])
 
     def test_shows_sync_controls_without_server_change_permission(self):
+        from dcim.models import MACAddress
         from django.contrib.auth import get_user_model
         from django.contrib.contenttypes.models import ContentType
         from ipam.models import IPAddress
@@ -442,7 +445,9 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
             name="write-ip-addresses-for-reservation-sync",
             actions=["add", "change"],
         )
-        ipam_permission.object_types.add(ContentType.objects.get_for_model(IPAddress))
+        ipam_permission.object_types.add(
+            ContentType.objects.get_for_model(IPAddress), ContentType.objects.get_for_model(MACAddress)
+        )
         ipam_permission.users.add(limited)
         self.client.force_login(limited)
 

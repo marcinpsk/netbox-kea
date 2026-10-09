@@ -373,8 +373,8 @@ class TestCombinedReservationSyncControl(_ViewTestBase):
     """The combined tab must offer the same Reservation synchronization as one server.
 
     The table cell renders the Sync all button only from ``sync_url``, which the
-    enrichment sets only for a caller that passes ``can_sync``. The combined view left
-    it out, so the button never rendered there.
+    enrichment sets only for a caller that passes the manual Sync rule. The combined
+    view left it out, so the button never rendered there.
     """
 
     def _url(self, version=4):

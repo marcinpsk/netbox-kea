@@ -17,7 +17,14 @@ from netaddr import AddrFormatError, IPAddress
 
 from .. import forms
 from ..constants import Family
-from ..ipam_reconciliation import ReservationPhase, reconcile
+from ..ipam_reconciliation import (
+    LEASE,
+    RESERVATION,
+    ReservationPhase,
+    claim_permissions,
+    reconcile,
+    reconcile_permissions,
+)
 from ..kea import KeaException
 from ..leases import ExactLeaseResult, LeaseFound, LeaseLookupFailed, address_identity
 from ..models import Server
@@ -28,6 +35,7 @@ from ..reservation_transfer import (
     resolve_import_proposal,
 )
 from ..subnet_catalogue import CatalogueUnavailable, MutationScope, for_synchronization
+from ..sync_permissions import sync_gate
 from ..utilities import (
     kea_error_hint,
     parse_lease_csv,
@@ -46,8 +54,9 @@ class _BaseSyncView(ConditionalLoginRequiredMixin, View):
     dhcp_version: Family
 
     def post(self, request: HttpRequest, pk: int) -> HttpResponse:
-        if not (request.user.has_perm("ipam.add_ipaddress") and request.user.has_perm("ipam.change_ipaddress")):
-            return HttpResponseForbidden("You do not have permission to sync to NetBox IPAM.")
+        gate = sync_gate(request.user, claim_permissions(LEASE))
+        if not gate.allowed:
+            return HttpResponseForbidden(gate.reason)
 
         server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
 
@@ -112,8 +121,9 @@ class _BaseReservationSyncView(ConditionalLoginRequiredMixin, View):
     dhcp_version: Family
 
     def post(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
-        if not (request.user.has_perm("ipam.add_ipaddress") and request.user.has_perm("ipam.change_ipaddress")):
-            return HttpResponseForbidden("You do not have permission to sync to NetBox IPAM.")
+        gate = sync_gate(request.user, claim_permissions(RESERVATION))
+        if not gate.allowed:
+            return HttpResponseForbidden(gate.reason)
         server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
         identity = _identity_from_request(request, self.dhcp_version)
         try:
@@ -167,10 +177,11 @@ class _BaseBulkReservationSyncView(ConditionalLoginRequiredMixin, View):
     dhcp_version: Family = 4  # overridden in subclasses
 
     def post(self, request: HttpRequest, pk: int) -> HttpResponse:
-        if not (request.user.has_perm("ipam.add_ipaddress") and request.user.has_perm("ipam.change_ipaddress")):
-            return HttpResponseForbidden("You do not have permission to sync to NetBox IPAM.")
-
         server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
+        gate = sync_gate(request.user, reconcile_permissions(server, ReservationPhase.source))
+        if not gate.allowed:
+            return HttpResponseForbidden(gate.reason)
+
         catalogue = None
         try:
             catalogue = for_synchronization(server, self.dhcp_version)

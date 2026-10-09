@@ -637,6 +637,7 @@ class TestLeaseSearchPaths(_ViewTestBase):
 
     @override_settings(PLUGINS_CONFIG=_UNGUARDED_PLUGINS_CONFIG)
     def test_reservation_enrichment_closes_its_source_client(self):
+        from netbox_kea.sync_permissions import SyncGate
         from netbox_kea.views.leases import _enrich_leases_with_badges
 
         real_close = KeaClient.close
@@ -653,7 +654,7 @@ class TestLeaseSearchPaths(_ViewTestBase):
             # Subnet 99 is not in the Catalogue, so no worker needs a client of its own.
             lease = typed_lease(complete_lease({"ip-address": "10.0.0.5", "subnet-id": 99}))
             rows = lease_rows([lease], evaluated_at=datetime.now(tz=timezone.utc))
-            _enrich_leases_with_badges(rows, self.server, 4, return_url="")
+            _enrich_leases_with_badges(rows, self.server, 4, sync=SyncGate(()), return_url="")
 
         self.assertEqual(len(closed_clients), 1)
 

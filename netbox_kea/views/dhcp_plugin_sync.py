@@ -28,6 +28,7 @@ from ..ipam_reconciliation import complete_import_observation
 from ..kea import KeaCommand, KeaException, KeaResponse
 from ..mappers.kea_to_dhcp import parse_dhcp_config
 from ..models import Server
+from ..sync_permissions import sync_gate
 from ..utilities import OptionalViewTab
 
 logger = logging.getLogger(__name__)
@@ -249,18 +250,18 @@ class ServerDhcpPluginView(generic.ObjectView):
             "plugin_available": available,
             "mapping_unavailable": unavailable,
             "drift": drift,
-            "can_sync": _user_can_sync(request.user, instance),
+            "sync_refusal": _sync_refusal(request.user, instance),
         }
 
 
-def _user_can_sync(user, server: Server) -> bool:
-    """Sync requires server change + IPAM add/change (the DHCP-plugin rows share IPAM)."""
-    return (
-        user.has_perm("netbox_kea.change_server")
-        and user.has_perm("ipam.add_ipaddress")
-        and user.has_perm("ipam.change_ipaddress")
-        and Server.objects.restrict(user, "change").filter(pk=server.pk).exists()
-    )
+def _sync_refusal(user, server: Server) -> str:
+    """Return why *user* may not run the import on *server*, or an empty string when the user may.
+
+    The import needs change permission on the Server and the manual Sync rule for its IPAM and DCIM writes.
+    """
+    if not Server.objects.restrict(user, "change").filter(pk=server.pk).exists():
+        return "Sync to DHCP plugin needs change permission on this Server."
+    return sync_gate(user, dhcp_plugin.import_permissions(server)).reason
 
 
 class ServerDhcpPluginSyncNowView(View):
@@ -277,8 +278,8 @@ class ServerDhcpPluginSyncNowView(View):
         if not server.sync_dhcp_plugin_enabled:
             messages.error(request, "Enable 'Sync to DHCP plugin' on this server first.")
             return redirect
-        if not _user_can_sync(request.user, server):
-            return HttpResponseForbidden("You do not have permission to sync to the DHCP plugin.")
+        if refusal := _sync_refusal(request.user, server):
+            return HttpResponseForbidden(refusal)
 
         try:
             results = run_dhcp_plugin_import(server)

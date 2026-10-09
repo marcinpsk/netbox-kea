@@ -1027,6 +1027,24 @@ def _claim_config_networks(server, config):
     return claim(server, config.family, subnets, force=False), claim(server, config.family, pools, force=False)
 
 
+def import_permissions(server) -> tuple[str, ...]:
+    """Return the IPAM and DCIM permissions that :func:`import_server_config` can use.
+
+    The import claims Subnets, Pools and Reservations, and reconciles delegated Prefixes.
+    """
+    from ..ipam_reconciliation import (
+        RESERVATION,
+        DelegatedPrefixPhase,
+        PoolPhase,
+        SubnetPhase,
+        claim_permissions,
+        reconcile_permissions,
+    )
+
+    claims = claim_permissions(SubnetPhase.source, PoolPhase.source, RESERVATION)
+    return tuple(dict.fromkeys((*claims, *reconcile_permissions(server, DelegatedPrefixPhase.source))))
+
+
 @coordinated_import
 def import_server_config(
     server,

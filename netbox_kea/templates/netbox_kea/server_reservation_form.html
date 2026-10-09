@@ -77,8 +77,9 @@
           <div>
             <strong>Automatic IPAM sync is enabled for this server.</strong>
             A reservation with a fixed IP address will be synced to NetBox IPAM on the next
-            scheduled sync run (not instantly). You can also use the checkbox below to sync
-            immediately. Reservations that reserve no address are skipped — there is nothing
+            scheduled sync run (not instantly).
+            {% if not form.sync_to_netbox.field.widget.attrs.disabled %}You can also use the checkbox below to sync immediately.{% endif %}
+            Reservations that reserve no address are skipped — there is nothing
             to record in IPAM.
           </div>
         </div>
@@ -87,7 +88,7 @@
           <i class="mdi mdi-sync-off me-2 mt-1" aria-hidden="true"></i>
           <div>
             <strong>Automatic IPAM sync is disabled for this server.</strong>
-            Use the checkbox below to sync this reservation to NetBox IPAM immediately.
+            {% if not form.sync_to_netbox.field.widget.attrs.disabled %}Use the checkbox below to sync this reservation to NetBox IPAM immediately.{% endif %}
             A reservation that reserves no address has nothing to sync.
           </div>
         </div>

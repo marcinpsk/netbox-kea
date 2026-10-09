@@ -698,7 +698,18 @@ def _configure_identifier_capabilities(
     form.reservation_capabilities = capabilities
 
 
-class Reservation4Form(forms.Form):
+class _SyncToNetBoxForm(forms.Form):
+    """A form with a ``sync_to_netbox`` checkbox. A non-empty *sync_refusal* shows it disabled, with the reason."""
+
+    def __init__(self, *args, sync_refusal: str = "", **kwargs):
+        super().__init__(*args, **kwargs)
+        if sync_refusal:
+            field = self.fields["sync_to_netbox"]
+            field.widget.attrs["disabled"] = True
+            field.help_text = sync_refusal
+
+
+class Reservation4Form(_SyncToNetBoxForm):
     """Form for creating or editing a DHCPv4 host reservation."""
 
     reservation_capabilities: ReservationCapabilities | None = None
@@ -794,7 +805,7 @@ class Reservation4Form(forms.Form):
         return cleaned
 
 
-class Reservation6Form(forms.Form):
+class Reservation6Form(_SyncToNetBoxForm):
     """Form for creating or editing a DHCPv6 host reservation."""
 
     reservation_capabilities: ReservationCapabilities | None = None
@@ -1635,7 +1646,7 @@ class Lease6EditForm(forms.Form):
         return value
 
 
-class Lease4AddForm(forms.Form):
+class Lease4AddForm(_SyncToNetBoxForm):
     """Form for manually creating a new DHCPv4 lease."""
 
     ip_address = forms.CharField(
@@ -1686,7 +1697,7 @@ class Lease4AddForm(forms.Form):
         return value
 
 
-class Lease6AddForm(forms.Form):
+class Lease6AddForm(_SyncToNetBoxForm):
     """Form for manually creating a new DHCPv6 lease."""
 
     ip_address = forms.CharField(
