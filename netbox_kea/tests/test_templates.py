@@ -400,17 +400,33 @@ class TestRowActionButtons(SimpleTestCase):
         self.assertEqual(missing, [])
 
 
+def _tables_outside_table_responsive(text: str) -> int:
+    """Count the ``render_table`` tags of *text* that no open ``.table-responsive`` element contains."""
+    outside = 0
+    open_divs: list[str] = []
+    for token in re.finditer(r"<div\b[^>]*>|</div\s*>|{%\s*render_table\b", text):
+        if token.group().startswith("</"):
+            # A block of a child template can close a div of its parent.
+            if open_divs:
+                open_divs.pop()
+        elif token.group().startswith("<"):
+            open_divs.append(token.group())
+        elif not any("table-responsive" in div for div in open_divs):
+            outside += 1
+    return outside
+
+
 class TestTablesScrollInsideTheirContainer(SimpleTestCase):
     """A wide table must scroll inside a ``.table-responsive`` element, not make the whole page scroll."""
 
     def test_every_rendered_table_sits_in_a_table_responsive_element(self):
-        missing = []
-        for name, text in _plugin_templates().items():
-            for found in re.finditer(r"{%\s*render_table\b", text):
-                opening = re.findall(r"<div\b[^>]*>", text[: found.start()])
-                if not (opening and "table-responsive" in opening[-1]):
-                    missing.append(name)
+        missing = [name for name, text in _plugin_templates().items() if _tables_outside_table_responsive(text)]
         self.assertEqual(sorted(missing), [])
+
+    def test_a_wrapper_closed_before_the_table_does_not_contain_it(self):
+        inside = '<div class="table-responsive"><div>{% render_table table %}</div></div>'
+        closed = '<div class="table-responsive"></div>{% render_table table %}'
+        self.assertEqual((_tables_outside_table_responsive(inside), _tables_outside_table_responsive(closed)), (0, 1))
 
 
 _PLUGIN_URL_TAG = re.compile(r"\{%\s*url\s+['\"]plugins:netbox_kea:([^'\"]+)['\"]")

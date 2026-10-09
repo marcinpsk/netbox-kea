@@ -310,6 +310,15 @@ class LegacyPrefixLeaseRepairTest(TestCase):
         self.assertEqual((summary["unclassified"], summary["errors"]), (0, 0))
         self.assertFalse(NbIP.objects.filter(pk=ip.pk).exists())
 
+    def test_an_inactive_delegated_prefix_lease_classifies_the_legacy_link_on_a_complete_run(self):
+        server = _server()
+        ip = _legacy_pd_ip(server)
+        # Kea state 2 is expired-reclaimed: the delegation is known, and it is not current.
+        summary = _run_job(server, [_pd(state=2)])
+        self.assertEqual((summary["unclassified"], summary["errors"], summary["prefix_errors"]), (0, 0, 0))
+        self.assertFalse(NbIP.objects.filter(pk=ip.pk).exists())
+        self.assertFalse(Prefix.objects.filter(prefix=PD_NETWORK).exists())
+
     def test_inactive_leases_cost_no_queries_once_no_link_is_unclassified(self):
         def queries(released: int) -> int:
             server = _server(f"released-{released}")

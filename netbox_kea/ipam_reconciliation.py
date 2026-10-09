@@ -1853,7 +1853,7 @@ def _run_delegated_prefix_phase(
 
 
 def _run_lease_prefix_phase(server: Server, family: Family, phase: LeasePrefixPhase, report: SyncReport) -> int | None:
-    """Claim the Current delegated-prefix Leases as Prefixes; a complete phase then classifies the links they replace.
+    """Claim the Current delegated-prefix Leases as Prefixes; a complete phase then classifies their legacy links.
 
     The address lease phase counts a failed or incomplete observation; this phase only stays incomplete then.
     """
@@ -1888,7 +1888,14 @@ def _run_lease_prefix_phase(server: Server, family: Family, phase: LeasePrefixPh
     if LEASE_PREFIX in report.incomplete:
         # An incomplete observation or claim keeps every legacy link unclassified, so the lease cleanup keeps it too.
         return None
-    # Each classification rests on its own Prefix claim; a failed sibling row does not undo it.
+    # A complete observation of a delegation that is not current shows the kind of its legacy link too.
+    current = {lease.identity for lease in snapshot.current_records}
+    replaced.extend(
+        str(lease.prefix.network_address)
+        for lease in snapshot.records
+        if isinstance(lease, DHCPv6PrefixLease) and lease.identity not in current
+    )
+    # A Current delegation classifies only after its own Prefix claim; a failed sibling row does not undo it.
     _classify(server, family, LEASE_PREFIX, replaced, "delegated-prefix", report)
     return None if LEASE_PREFIX in report.incomplete else phase.observation.cutoff
 
