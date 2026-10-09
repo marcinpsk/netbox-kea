@@ -34,6 +34,7 @@ from django.test import override_settings
 from django.urls import reverse
 
 from netbox_kea import server_configuration
+from netbox_kea.views.notices import HEADLINES
 
 from .kea_stub import _catalogue_responses_for_subnets, _subnet_list, stub_kea
 from .utils import _PLUGINS_CONFIG, _make_db_server, _ReadModifyWriteMessages, _ViewTestBase
@@ -654,7 +655,7 @@ class TestServerOptionDef4ListView(_ViewTestBase):
         errors = [str(message) for message in response.context["messages"] if message.level == django_messages.ERROR]
         self.assertEqual(
             errors,
-            ["Failed to load the Server Configuration from Kea.", "Kea did not return a Dhcp4 configuration object."],
+            [HEADLINES["configuration"], "Kea did not return a Dhcp4 configuration object."],
         )
 
     def test_malformed_definitions_are_dropped_with_a_warning(self):

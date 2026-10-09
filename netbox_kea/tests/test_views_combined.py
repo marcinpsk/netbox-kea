@@ -16,6 +16,7 @@ import threading
 import requests
 from django.urls import reverse
 
+from netbox_kea.views.notices import HEADLINES
 from netbox_kea.views.reservations import _RESERVATION_PAGE_SIZE
 
 from .kea_stub import _catalogue_responses, _catalogue_responses_for_subnets, _res_page, queued, stub_kea
@@ -126,7 +127,7 @@ class TestCombinedSubnetDiagnostics(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Kea subnet identity facts are unavailable.")
         self.assertContains(response, "Kea configuration facts are unavailable.")
-        self.assertNotContains(response, "Failed to query server")
+        self.assertNotContains(response, HEADLINES["lease"])
         self.assertTrue(response.context["errors"])
         self.assertContains(response, "alert-danger")
 
@@ -189,11 +190,11 @@ class TestCombinedSharedNetworkDiagnostics(_ViewTestBase):
         self.assertEqual(
             response.context["errors"],
             [
-                (self.server.name, "Failed to load the Server Configuration from Kea."),
+                (self.server.name, HEADLINES["configuration"]),
                 (self.server.name, "Kea configuration facts are unavailable."),
             ],
         )
-        self.assertNotContains(response, "Failed to query server")
+        self.assertNotContains(response, HEADLINES["lease"])
         self.assertContains(response, "alert-danger")
         self.assertNotContains(response, "alert-warning")
 
@@ -205,11 +206,11 @@ class TestCombinedSharedNetworkDiagnostics(_ViewTestBase):
         self.assertEqual(
             response.context["errors"],
             [
-                (self.server.name, "Failed to load the Server Configuration from Kea."),
+                (self.server.name, HEADLINES["configuration"]),
                 (self.server.name, "Kea did not return a Dhcp4 configuration object."),
             ],
         )
-        self.assertNotContains(response, "Failed to query server")
+        self.assertNotContains(response, HEADLINES["lease"])
 
     def test_incomplete_snapshot_keeps_valid_shared_networks_visible(self):
         responses = _catalogue_responses_for_subnets(

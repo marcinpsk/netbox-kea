@@ -9,7 +9,7 @@ from bs4 import BeautifulSoup
 from django.contrib import messages as django_messages
 from django.urls import reverse
 
-from netbox_kea.views.notices import Notice
+from netbox_kea.views.notices import HEADLINES, Notice
 from netbox_kea.views.reservations import _RESERVATION_PAGE_SIZE
 
 from .kea_stub import (
@@ -229,10 +229,7 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
         self.assertContains(response, "Snapshot is incomplete")
         self.assertNotContains(response, "diagnostic below")
         self.assertNotContains(response, "This bounded Snapshot is complete")
-        self.assertIn(
-            "Failed to load Reservations from Kea.",
-            [str(message) for message in response.context["messages"]],
-        )
+        self.assertIn(HEADLINES["reservation"], [str(message) for message in response.context["messages"]])
 
     def test_a_full_page_with_more_to_come_is_reported_complete(self):
         """A filled page offers the next cursor and is still complete for this page.

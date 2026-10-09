@@ -124,7 +124,7 @@ class TestRecordSnapshotNotices(_ViewTestBase):
             with self.subTest(page=page):
                 result = self._reservations(page)
                 self.assertEqual(result, Notice("reservation", django_messages.ERROR, unsupported_command=unsupported))
-                self.assertEqual(result.lines, ("Failed to load Reservations from Kea.",))
+                self.assertEqual(result.lines, (HEADLINES["reservation"],))
 
     def test_a_lease_record_that_cannot_be_read_is_a_warning(self):
         broken = complete_lease({"ip-address": "198.18.0.10", "valid-lft": -1})
@@ -340,3 +340,19 @@ class TestCombinedPagesKeepANoticePerServer(_ViewTestBase):
         self.assertEqual(refused.context["errors"], [])
         self.assertEqual(len(refused.context["warnings"]), 1)
         self.assertIn("stat_cmds", refused.context["warnings"][0][1])
+
+    def test_a_client_that_cannot_be_built_is_an_error_with_the_headline_of_its_kind(self):
+        type(self.server).objects.filter(pk=self.server.pk).update(
+            client_key_path="/tls/client.key", client_cert_path=""
+        )
+        with stub_kea({}) as kea:
+            reservations = self.client.get(
+                reverse("plugins:netbox_kea:combined_reservations4"), {"server": self.server.pk}
+            )
+            leases = self.client.get(
+                reverse("plugins:netbox_kea:combined_leases4"),
+                {"q": "aa:bb:cc:dd:ee:ff", "by": "hw", "server": self.server.pk},
+            )
+        self.assertEqual(kea.commands(), [])
+        self.assertEqual(reservations.context["errors"], [(self.server.name, HEADLINES["reservation"])])
+        self.assertEqual(leases.context["errors"], [(self.server.name, HEADLINES["lease"])])

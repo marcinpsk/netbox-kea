@@ -41,6 +41,7 @@ from netbox_kea.kea import KeaClient, KeaException
 from netbox_kea.models import Server
 from netbox_kea.signals import lease_added
 from netbox_kea.utilities import lease_rows, parse_lease_csv
+from netbox_kea.views.notices import HEADLINES
 
 from .kea_stub import (
     LeaseDaemon,
@@ -79,9 +80,7 @@ def _assert_rendered_error_template(test, response):
 def _assert_lease_read_failed(test, response):
     """Assert the partial keeps the form and shows the unavailable Lease Notice in place of the table."""
     test.assertEqual(response.status_code, 200)
-    test.assertContains(
-        response, '<div class="alert alert-danger" role="alert">Failed to query server</div>', html=True
-    )
+    test.assertContains(response, f'<div class="alert alert-danger" role="alert">{HEADLINES["lease"]}</div>', html=True)
     test.assertContains(response, 'id="lease-search-btn"')
     test.assertNotContains(response, 'id="lease-delete-form"')
     _assert_no_error_template(test, response)

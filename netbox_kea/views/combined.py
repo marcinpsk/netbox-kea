@@ -27,7 +27,7 @@ from ..utilities import (
 )
 from ._base import ConditionalLoginRequiredMixin, _catalogue_subnet_row, _enrich_subnet_statistics, _shared_network_row
 from .leases import _enrich_leases_with_badges, lease_sync_gates
-from .notices import Notice, ServerNotices, load_snapshot, notice
+from .notices import HEADLINES, Notice, ServerNotices, load_snapshot, notice
 from .reservations import (
     _attach_reservation_action_urls,
     _configured_capabilities,
@@ -111,7 +111,7 @@ def _read_combined_leases(
                 read.notices.warnings.append((server.name, lease_query_guard_message(exc, state_filter)))
             except ValueError:
                 logger.exception("Failed to query server %s", server.name)
-                read.notices.errors.append((server.name, "Failed to query server"))
+                read.notices.errors.append((server.name, HEADLINES["lease"]))
             else:
                 if isinstance(loaded, Notice):
                     read.notices.add(server, loaded)
@@ -463,7 +463,7 @@ class _CombinedReservationsView(_CombinedViewMixin):
                 except ValueError:
                     # A configuration or argument error is outside the notice rule.
                     logger.exception("Failed to query server %s", server.name)
-                    notices.errors.append((server.name, "Failed to query server"))
+                    notices.errors.append((server.name, HEADLINES["reservation"]))
                     continue
                 if isinstance(loaded, Notice):
                     notices.add(server, loaded)

@@ -34,6 +34,7 @@ from django.contrib.messages import get_messages
 from django.test import override_settings
 from django.urls import reverse
 
+from ..views.notices import HEADLINES
 from ..views.subnets import _NO_SUBNET_CIDR
 from .kea_stub import (
     Applied,
@@ -1284,7 +1285,7 @@ class TestSubnetEditNetworkChoicesNoneArguments(_ViewTestBase):
                     fetch_redirect_response=False,
                 )
                 shown = [(message.level, str(message)) for message in get_messages(response.wsgi_request)]
-                self.assertIn((django_messages.ERROR, "Failed to load the Server Configuration from Kea."), shown)
+                self.assertIn((django_messages.ERROR, HEADLINES["configuration"]), shown)
                 self.assertIn(
                     (
                         django_messages.ERROR,

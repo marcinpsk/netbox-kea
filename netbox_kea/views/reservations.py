@@ -46,7 +46,7 @@ from ..subnet_catalogue import VerifiedSubnet
 from ..subnet_catalogue import display as subnet_catalogue
 from ..sync_permissions import SyncGate, sync_gate
 from ..utilities import OptionalViewTab
-from .notices import Notice, load_snapshot, notice, show_notices
+from .notices import HEADLINES, Notice, load_snapshot, notice, show_notices
 
 logger = logging.getLogger(__name__)
 
@@ -533,7 +533,7 @@ def _reservation_list_context(
         )
     except ValueError:
         logger.exception("Unexpected error fetching DHCPv%s Reservations", version)
-        messages.error(request, "Failed to load Reservations from Kea.")
+        messages.error(request, HEADLINES["reservation"])
     else:
         if isinstance(loaded, Notice):
             # A missing host_cmds hook has its own panel, so one cause shows one banner.
