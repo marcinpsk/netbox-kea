@@ -116,6 +116,11 @@ _FORM_MANAGED_OPTIONS: dict[int, tuple[FormManagedOption, ...]] = {
         FormManagedOption("ntp_servers", "sntp-servers", 6),
     ),
 }
+# The Subnet table also shows the domain name, which no form edits. DHCPv6 has no domain-name option.
+_SHOWN_OPTIONS: dict[int, tuple[FormManagedOption, ...]] = {
+    4: (*_FORM_MANAGED_OPTIONS[4], FormManagedOption("domain_name", "domain-name", 4)),
+    6: _FORM_MANAGED_OPTIONS[6],
+}
 
 
 def form_managed_options(version: int) -> dict[str, FormManagedOption]:
@@ -137,17 +142,45 @@ def form_managed_entry(options: Sequence[DHCPOption], version: int, field: str) 
         AmbiguousFormOption: If more than one entry fits.
 
     """
-    managed = form_managed_options(version)[field]
-    fits = [
+    fits = _fitting_entries(options, version, form_managed_options(version)[field])
+    if len(fits) > 1:
+        raise AmbiguousFormOption(f"More than one DHCP Option entry fits the {field} field.")
+    return fits[0] if fits else None
+
+
+def _fitting_entries(options: Sequence[DHCPOption], version: int, managed: FormManagedOption) -> list[int]:
+    """Return the index of each default-space entry with no class tag and the code (or name) of *managed*."""
+    return [
         index
         for index, option in enumerate(options)
         if option.space in (None, f"dhcp{version}")
         and not option.client_classes
         and (option.code == managed.code if option.code is not None else option.name == managed.name)
     ]
-    if len(fits) > 1:
-        raise AmbiguousFormOption(f"More than one DHCP Option entry fits the {field} field.")
-    return fits[0] if fits else None
+
+
+@dataclass(frozen=True)
+class ShownOption:
+    """What the Subnet table shows for one field: the data of its entry, or that more than one entry fits."""
+
+    data: str
+    ambiguous: bool
+
+
+def shown_options(options: Sequence[DHCPOption], version: int) -> dict[str, ShownOption]:
+    """Return what the Subnet table shows for each field that has a fitting entry, keyed by field.
+
+    The rule is the one of ``form_managed_entry``. The table shows data that the form cannot edit, such as binary
+    data or a router list, because ``form_shows`` controls editing only.
+    """
+    shown: dict[str, ShownOption] = {}
+    for managed in _SHOWN_OPTIONS[version]:
+        fits = _fitting_entries(options, version, managed)
+        if len(fits) > 1:
+            shown[managed.field] = ShownOption(data="", ambiguous=True)
+        elif fits and options[fits[0]].data:
+            shown[managed.field] = ShownOption(data=options[fits[0]].data, ambiguous=False)
+    return shown
 
 
 def form_shows(option: DHCPOption, field: str) -> bool:

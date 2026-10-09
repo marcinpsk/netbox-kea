@@ -18,7 +18,7 @@ from netbox.tables import BaseTable
 
 from ..config_write import ConfigChangeOutcome, ConfigChangeRejected, RejectionReason
 from ..constants import Family
-from ..dhcp_options import DHCPOption
+from ..dhcp_options import DHCPOption, shown_options
 from ..kea import KeaException
 from ..models import Server
 from ..server_configuration import SharedNetwork
@@ -151,8 +151,6 @@ def _catalogue_subnet_row(
     can_change: bool,
 ) -> dict[str, Any]:
     """Build one Subnet table row from typed catalogue facts."""
-    from ..utilities import format_option_data
-
     identity = subnet.identity if isinstance(subnet, VerifiedSubnet) else subnet.candidate_identity
     configuration = subnet.configuration
     row = {
@@ -167,10 +165,7 @@ def _catalogue_subnet_row(
         "can_change": can_change and isinstance(subnet, VerifiedSubnet),
         "can_edit_options": can_change and isinstance(subnet, VerifiedSubnet) and configuration is not None,
         "ddns_qualifying_suffix": configuration.settings.ddns_qualifying_suffix if configuration else None,
-        "options": format_option_data(
-            [_option_payload(option) for option in configuration.options] if configuration else [],
-            version=version,
-        ),
+        "options": shown_options(configuration.options, version) if configuration else {},
         "pools": [pool.range for pool in configuration.pools] if configuration else [],
     }
     if subnet.shared_network is not None:

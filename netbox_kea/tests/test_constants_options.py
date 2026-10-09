@@ -13,7 +13,7 @@ from netbox_kea.constants import (
     KEA_DHCP6_STD_OPTIONS,
     kea_std_options,
 )
-from netbox_kea.dhcp_options import form_managed_options, standard_option_code
+from netbox_kea.dhcp_options import _SHOWN_OPTIONS, form_managed_options, standard_option_code
 
 _NAME_RE = re.compile(r"^[\w-]+$")
 
@@ -51,7 +51,7 @@ class TestStdOptionLists(SimpleTestCase):
 
 
 class TestStandardTableCoversManagedOptions(SimpleTestCase):
-    """Each option that a form edits takes its code from the standard table of its family."""
+    """Each option that a form edits or the Subnet table shows takes its code from the standard table."""
 
     def test_each_form_managed_option_has_a_standard_definition(self):
         for version in (4, 6):
@@ -59,3 +59,10 @@ class TestStandardTableCoversManagedOptions(SimpleTestCase):
                 with self.subTest(version=version, name=option.name):
                     self.assertIsNotNone(standard_option_code(version, option.name))
                     self.assertEqual(option.code, standard_option_code(version, option.name))
+
+    def test_each_shown_option_has_a_standard_definition(self):
+        for version, shown in _SHOWN_OPTIONS.items():
+            self.assertLessEqual(set(form_managed_options(version).values()), set(shown))
+            for option in shown:
+                with self.subTest(version=version, name=option.name):
+                    self.assertIsNotNone(standard_option_code(version, option.name))
