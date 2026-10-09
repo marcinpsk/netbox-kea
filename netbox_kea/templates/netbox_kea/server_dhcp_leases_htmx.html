@@ -33,9 +33,12 @@
           </div>
         </div>
         {% endif %}
-        {% for line in form.subnet_notice.lines %}
-        <div class="alert alert-{{ form.subnet_notice.css }} py-2 px-3 mb-3 small" role="alert">{{ line }}</div>
-        {% endfor %}
+        {% with notice=form.subnet_notice %}{% if notice %}
+        <div class="alert alert-{{ notice.css }} py-2 px-3 mb-3 small" role="alert">
+          {% if notice.headline %}<strong>{{ notice.headline }}</strong>{% endif %}
+          {% if notice.reasons %}<ul class="mb-0{% if notice.headline %} mt-1{% endif %}">{% for line in notice.lines %}{% if line != notice.headline %}<li>{{ line }}</li>{% endif %}{% endfor %}</ul>{% endif %}
+        </div>
+        {% endif %}{% endwith %}
         {% render_form form %}
         {% if form.subnet_choices %}
         {% comment %}

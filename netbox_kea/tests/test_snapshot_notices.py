@@ -257,26 +257,17 @@ class TestLeaseSearchFormNotice(_ViewTestBase):
         for response in (page, partial):
             with self.subTest(htmx=response is partial):
                 self.assertEqual(response.status_code, 200)
-                self.assertContains(
-                    response,
-                    f'<div class="alert alert-danger py-2 px-3 mb-3 small" role="alert">{HEADLINES["catalogue"]}</div>',
-                    html=True,
-                )
-                self.assertContains(
-                    response,
-                    f'<div class="alert alert-danger py-2 px-3 mb-3 small" role="alert">{_IDENTITY_UNAVAILABLE}</div>',
-                    html=True,
-                )
+                # One alert holds the headline, then each diagnostic as a list item.
+                self.assertContains(response, 'class="alert alert-danger py-2 px-3 mb-3 small"', count=1)
+                self.assertContains(response, f"<strong>{HEADLINES['catalogue']}</strong>", html=True)
+                self.assertContains(response, f"<li>{_IDENTITY_UNAVAILABLE}</li>", html=True)
 
     def test_an_incomplete_catalogue_is_an_inline_warning_without_a_headline(self):
         server_configuration.invalidate(self.server, 4)
         with stub_kea(_INCOMPLETE):
             response = self.client.get(reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk]))
-        self.assertContains(
-            response,
-            f'<div class="alert alert-warning py-2 px-3 mb-3 small" role="alert">{_INVALID_POOLS}</div>',
-            html=True,
-        )
+        self.assertContains(response, 'class="alert alert-warning py-2 px-3 mb-3 small"', count=1)
+        self.assertContains(response, f"<li>{_INVALID_POOLS}</li>", html=True)
         self.assertNotContains(response, HEADLINES["catalogue"])
 
 
