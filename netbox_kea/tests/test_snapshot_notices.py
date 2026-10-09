@@ -4,13 +4,15 @@
 
 import requests
 from django.contrib import messages as django_messages
+from django.contrib.messages import get_messages
 from django.test import override_settings
+from django.urls import reverse
 
 from netbox_kea import server_configuration, subnet_catalogue
 from netbox_kea.kea import LeaseQueryPreflightUnavailable
 from netbox_kea.views.notices import HEADLINES, Notice, ServerNotices, load_snapshot, notice, show_notices
 
-from .kea_stub import _catalogue_responses, _res_page, _subnet_list, complete_lease, lease_page, stub_kea
+from .kea_stub import _catalogue_responses, _res_page, _subnet_list, complete_lease, lease_page, queued, stub_kea
 from .utils import _ViewTestBase, plugins_config
 
 _IDENTITY_UNAVAILABLE = "Kea subnet identity facts are unavailable."
@@ -22,6 +24,10 @@ def _config4(*subnets: dict, **service: object) -> dict:
         "result": 0,
         "arguments": {"Dhcp4": {"subnet4": list(subnets), "shared-networks": [], **service}, "hash": "h1"},
     }
+
+
+def _page_messages(response) -> list[tuple[int, str]]:
+    return [(message.level, str(message)) for message in get_messages(response.wsgi_request)]
 
 
 _SUBNET = {"id": 1, "subnet": "198.18.0.0/24"}
@@ -186,3 +192,73 @@ class TestOneServerReadsSeveralSnapshots(_ViewTestBase):
         lists.add(other, incomplete)
         self.assertEqual(lists.warnings, [(self.server.name, _INVALID_POOLS), (other.name, _INVALID_POOLS)])
         self.assertEqual(lists.errors, [])
+
+
+class TestSubnetEditNotices(_ViewTestBase):
+    """The Subnet edit page reads the Subnet Catalogue and the Server Configuration of one Server."""
+
+    def test_an_unavailable_catalogue_next_to_an_available_configuration_is_an_error(self):
+        subnet = {"id": 42, "subnet": "10.0.0.0/24", "pools": [], "option-data": []}
+        with stub_kea(
+            {
+                "subnet4-list": requests.ConnectionError("identity unavailable"),
+                # The Catalogue reads the configuration first and fails; the page then reads it live.
+                "config-get": queued(requests.ConnectionError("configuration unavailable"), _config4(subnet)),
+                "stat-lease4-get": {"result": 2, "text": "unknown command"},
+            }
+        ):
+            response = self.client.get(reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, 42]))
+        self.assertEqual(response.status_code, 200)
+        self.assertIn((django_messages.ERROR, _IDENTITY_UNAVAILABLE), _page_messages(response))
+        self.assertNotIn((django_messages.WARNING, _IDENTITY_UNAVAILABLE), _page_messages(response))
+
+
+class TestStatusPageNotices(_ViewTestBase):
+    """The status page reads the Server Configuration of both families of one Server."""
+
+    def test_one_failure_of_both_families_shows_once(self):
+        failure = requests.ConnectionError("unreachable")
+        with stub_kea({"status-get": failure, "version-get": failure, "config-get": failure}):
+            response = self.client.get(reverse("plugins:netbox_kea:server_status", args=[self.server.pk]))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            _page_messages(response),
+            [
+                (django_messages.ERROR, HEADLINES["configuration"]),
+                (django_messages.ERROR, "Kea configuration facts are unavailable."),
+            ],
+        )
+
+
+class TestLeaseSearchFormNotice(_ViewTestBase):
+    """The lease search form shows the Catalogue Notice inline, also in the htmx partial."""
+
+    def test_an_unavailable_catalogue_is_an_inline_error(self):
+        url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        with stub_kea({**_UNAVAILABLE, "lease4-get-page": lease_page()}):
+            page = self.client.get(url)
+            partial = self.client.get(url, {"q": "", "by": ""}, HTTP_HX_REQUEST="true")
+        for response in (page, partial):
+            with self.subTest(htmx=response is partial):
+                self.assertEqual(response.status_code, 200)
+                self.assertContains(
+                    response,
+                    f'<div class="alert alert-danger py-2 px-3 mb-3 small" role="alert">{HEADLINES["catalogue"]}</div>',
+                    html=True,
+                )
+                self.assertContains(
+                    response,
+                    f'<div class="alert alert-danger py-2 px-3 mb-3 small" role="alert">{_IDENTITY_UNAVAILABLE}</div>',
+                    html=True,
+                )
+
+    def test_an_incomplete_catalogue_is_an_inline_warning_without_a_headline(self):
+        server_configuration.invalidate(self.server, 4)
+        with stub_kea(_INCOMPLETE):
+            response = self.client.get(reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk]))
+        self.assertContains(
+            response,
+            f'<div class="alert alert-warning py-2 px-3 mb-3 small" role="alert">{_INVALID_POOLS}</div>',
+            html=True,
+        )
+        self.assertNotContains(response, HEADLINES["catalogue"])

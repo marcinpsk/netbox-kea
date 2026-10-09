@@ -33,8 +33,8 @@
           </div>
         </div>
         {% endif %}
-        {% for message in form.subnet_diagnostics %}
-        <div class="alert alert-{% if form.subnet_catalogue_unavailable %}danger{% else %}warning{% endif %} py-2 px-3 mb-3 small" role="alert">{{ message }}</div>
+        {% for line in form.subnet_notice.lines %}
+        <div class="alert alert-{{ form.subnet_notice.css }} py-2 px-3 mb-3 small" role="alert">{{ line }}</div>
         {% endfor %}
         {% render_form form %}
         {% if form.subnet_choices %}

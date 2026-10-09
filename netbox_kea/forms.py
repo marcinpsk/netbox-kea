@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: Apache-2.0
 import copy
 import ipaddress
-from typing import Any, ClassVar, Generic, TypeVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Generic, TypeVar, cast
 
 from django import forms
 from django.core.exceptions import NON_FIELD_ERRORS, ValidationError
@@ -42,6 +42,9 @@ from .reservations import (
 from .server_connection import connection_values, validate_connection_change
 from .subnet_catalogue import VerifiedSubnet
 from .utilities import is_hex_string, parse_delegated_prefixes
+
+if TYPE_CHECKING:
+    from .views.notices import Notice
 
 
 class _AddressListField(forms.CharField):
@@ -479,8 +482,7 @@ class BaseLeasesSarchForm(forms.Form):
         *args,
         subnet_choices: tuple[tuple[str, int], ...] = (),
         subnet_cmds_available: bool = True,
-        subnet_diagnostics: tuple[str, ...] = (),
-        subnet_catalogue_unavailable: bool = False,
+        subnet_notice: "Notice | None" = None,
         **kwargs,
     ) -> None:
         """Stash the configured-subnet list so the template can build the Search combobox.
@@ -490,14 +492,12 @@ class BaseLeasesSarchForm(forms.Form):
         or *Subnet ID* — there is no separate subnet selector field.
         ``subnet_cmds_available`` is False when the hook that supplies those choices is
         not loaded, which the template reports instead of showing an empty combobox.
-        ``subnet_diagnostics`` are the Subnet Catalogue messages the template shows inline,
-        as an error when ``subnet_catalogue_unavailable`` and as a warning otherwise.
+        ``subnet_notice`` is the Notice of the Subnet Catalogue, which the template shows inline.
         """
         super().__init__(*args, **kwargs)
         self.subnet_choices = subnet_choices
         self.subnet_cmds_available = subnet_cmds_available
-        self.subnet_diagnostics = subnet_diagnostics
-        self.subnet_catalogue_unavailable = subnet_catalogue_unavailable
+        self.subnet_notice = subnet_notice
 
     def clean(self) -> dict[str, Any] | None:
         """Validate and normalise search fields according to the selected search type."""

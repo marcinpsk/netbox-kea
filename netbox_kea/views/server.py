@@ -4,7 +4,6 @@ import logging
 from typing import Any
 
 import requests
-from django.contrib import messages
 from django.http.request import HttpRequest
 from django.urls import reverse
 from netbox.views import generic
@@ -20,7 +19,8 @@ from ..server_connection import connection_values, validate_connection_change
 from ..utilities import (
     format_duration,
 )
-from ._base import _diagnostic_messages, _option_payload
+from ._base import _option_payload
+from .notices import Notice, notice, show_notices
 
 logger = logging.getLogger(__name__)
 
@@ -70,19 +70,21 @@ def _get_global_options(request: HttpRequest, server: "Server") -> dict[str, dic
         families["DHCPv6"] = 6
 
     result: dict[str, dict[str, str]] = {}
+    notices: list[Notice | None] = []
     for label, version in families.items():
         snapshot = server_configuration.display(server, version)
-        diagnostics = "; ".join(diagnostic.message for diagnostic in snapshot.diagnostics)
-        _diagnostic_messages(request, snapshot.diagnostics, messages.WARNING if snapshot.available else messages.ERROR)
-        if not snapshot.available:
-            logger.warning("Global DHCP Options are unavailable for %s: %s", label, diagnostics)
+        notices.append(found := notice(snapshot))
+        reasons = "; ".join(found.lines) if found is not None else ""
+        if snapshot.unavailable:
+            logger.warning("Global DHCP Options are unavailable for %s: %s", label, reasons)
             continue
         if not snapshot.global_options_complete:
-            logger.warning("Global DHCP Options are incomplete for %s: %s", label, diagnostics)
+            logger.warning("Global DHCP Options are incomplete for %s: %s", label, reasons)
         opts = format_option_data([_option_payload(option) for option in snapshot.global_options], version=version)
         if opts:
             # Convert snake_case keys to "Title Case" for display
             result[label] = {k.replace("_", " ").title(): v for k, v in opts.items()}
+    show_notices(request, *notices)
     return result
 
 

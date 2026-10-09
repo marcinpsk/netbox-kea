@@ -624,7 +624,7 @@ class TestServerOptionDef4ListView(_ViewTestBase):
             response = self.client.get(self._url())
 
         self.assertEqual(response.status_code, 200)
-        self.assertFalse(response.context["options_load_error"])
+        self.assertTrue(response.context["definitions_known"])
         definition = response.context["option_defs"][0]
         self.assertEqual(
             {key: definition[key] for key in ("code", "name", "space", "type", "array", "encapsulate", "record_types")},
@@ -644,12 +644,18 @@ class TestServerOptionDef4ListView(_ViewTestBase):
         ]
         self.assertTrue(any("invalid Option Definition" in message for message in warnings))
 
-    def test_non_object_family_configuration_sets_load_error_without_500(self):
+    def test_non_object_family_configuration_shows_an_error_without_500(self):
         with stub_kea({"config-get": {"result": 0, "arguments": {"Dhcp4": []}}}):
             response = self.client.get(self._url())
 
         self.assertEqual(response.status_code, 200)
-        self.assertTrue(response.context["options_load_error"])
+        self.assertFalse(response.context["definitions_known"])
+        self.assertNotContains(response, "No custom option definitions defined.")
+        errors = [str(message) for message in response.context["messages"] if message.level == django_messages.ERROR]
+        self.assertEqual(
+            errors,
+            ["Failed to load the Server Configuration from Kea.", "Kea did not return a Dhcp4 configuration object."],
+        )
 
     def test_malformed_definitions_are_dropped_with_a_warning(self):
         valid = {"name": "site", "code": 222, "type": "record", "space": "dhcp4", "record-types": "uint16, string"}
@@ -1193,15 +1199,15 @@ class TestServerOptionsGetClientError(_ViewTestBase):
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestOptionDefListFetchError(_ViewTestBase):
-    """GET to option-def list when config-get fails → 200 with options_load_error=True."""
+    """GET to option-def list when config-get fails → 200 with an error notice."""
 
-    def test_kea_exception_returns_200_with_error_flag(self):
-        """A KeaException while fetching the option-def list yields 200 + options_load_error."""
+    def test_kea_exception_returns_200_with_an_error(self):
+        """A KeaException while fetching the option-def list yields 200 and no empty-list text."""
         url = reverse("plugins:netbox_kea:server_option_def4", args=[self.server.pk])
         with stub_kea({"config-get": {"result": 1, "text": "error"}}):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
-        self.assertTrue(response.context.get("options_load_error"))
+        self.assertFalse(response.context["definitions_known"])
         message_text = [str(message) for message in response.context["messages"]]
         self.assertTrue(any("configuration facts are unavailable" in message for message in message_text))
 

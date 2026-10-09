@@ -623,7 +623,10 @@ class TestServerSubnet4EditView(_ViewTestBase):
         with self._post_stub(live):
             get = self.client.get(self._url())
         self.assertEqual(get.status_code, 302)
-        self.assertIn("Could not load subnet configuration from Kea.", [str(m) for m in get_messages(get.wsgi_request)])
+        self.assertIn(
+            "NetBox cannot show the configuration of Subnet 42, so the edit form cannot open.",
+            [str(m) for m in get_messages(get.wsgi_request)],
+        )
 
     def test_displayed_suppressed_options_preserve_metadata_unless_cleared(self):
         options = [
@@ -1280,11 +1283,14 @@ class TestSubnetEditNetworkChoicesNoneArguments(_ViewTestBase):
                     reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk]),
                     fetch_redirect_response=False,
                 )
-                self.assertTrue(
-                    any(
-                        message.level == django_messages.ERROR and "Could not load subnet configuration" in str(message)
-                        for message in get_messages(response.wsgi_request)
-                    )
+                shown = [(message.level, str(message)) for message in get_messages(response.wsgi_request)]
+                self.assertIn((django_messages.ERROR, "Failed to load the Server Configuration from Kea."), shown)
+                self.assertIn(
+                    (
+                        django_messages.ERROR,
+                        "NetBox cannot show the configuration of Subnet 42, so the edit form cannot open.",
+                    ),
+                    shown,
                 )
 
     def test_get_ignores_membership_under_a_duplicate_shared_network_name(self):

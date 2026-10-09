@@ -85,6 +85,7 @@ from ..utilities import (
     snapshot_rows,
 )
 from ._base import ConditionalLoginRequiredMixin, _KeaChangeMixin, _safe_return_url, _strip_empty_params
+from .notices import notice
 
 logger = logging.getLogger(__name__)
 
@@ -253,8 +254,7 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
         kwargs = {
             "subnet_choices": snapshot.subnet_choices,
             "subnet_cmds_available": snapshot.subnet_cmds_available,
-            "subnet_diagnostics": tuple(dict.fromkeys(diagnostic.message for diagnostic in snapshot.diagnostics)),
-            "subnet_catalogue_unavailable": snapshot.unavailable,
+            "subnet_notice": notice(snapshot),
         }
         if data is None:
             return self.form(**kwargs)

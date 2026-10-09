@@ -21,7 +21,7 @@ from ..constants import Family
 from ..dhcp_options import DHCPOption
 from ..kea import KeaException
 from ..models import Server
-from ..server_configuration import Diagnostic, SharedNetwork
+from ..server_configuration import SharedNetwork
 from ..subnet_catalogue import ConfiguredSubnet, VerifiedSubnet
 
 try:
@@ -210,12 +210,6 @@ def _shared_network_row(
     if include_server_name:
         row["server_name"] = server.name
     return row
-
-
-def _diagnostic_messages(request: HttpRequest, diagnostics: tuple[Diagnostic, ...], level: int) -> None:
-    """Show each distinct Snapshot diagnostic at its presentation level."""
-    for message in dict.fromkeys(diagnostic.message for diagnostic in diagnostics):
-        messages.add_message(request, level, message)
 
 
 def _enrich_subnet_statistics(rows: list[dict[str, Any]], server: Server, version: Family) -> None:
