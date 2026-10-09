@@ -518,6 +518,9 @@ resort, reserved for true external boundaries you cannot run locally.
   `_ShownValuesForm` and names its managed fields once, in `shown_names`.
   `dhcp_options.form_managed_entry` picks the one DHCP Option entry that a form field
   manages, for the display and for the save. Two fitting entries refuse the form.
+  The Subnet table column uses the same rule (`dhcp_options.shown_options`) and shows a badge for two fitting
+  entries. Option codes come from the Kea standard option table in `dhcp_options`, and the Subnet Settings keys
+  from `subnet_settings.SETTING_KEYS`.
 - **API URL naming**: the serializer's `HyperlinkedIdentityField` uses
   `view_name="plugins-api:netbox_kea-api:server-detail"` — `plugins-api:` prefix and
   `-api:` namespace suffix are NetBox conventions.
