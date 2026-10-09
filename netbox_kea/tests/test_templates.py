@@ -347,13 +347,31 @@ class TestCardHeaderIconGap(SimpleTestCase):
         self.assertEqual(offenders, [], "Add me-1 to these icons, or the header shows the icon against the text")
 
 
+def _htmx_tables_outside_a_container(text: str) -> int:
+    """Return how many ``inc/table_htmx.html`` renders of *text* have no ``.htmx-container`` ancestor."""
+    from bs4 import BeautifulSoup
+
+    renders = BeautifulSoup(text, "html.parser").find_all(string=re.compile(r"inc/table_htmx\.html"))
+    return sum(render.find_parent(class_="htmx-container") is None for render in renders)
+
+
 class TestHtmxTableContainer(SimpleTestCase):
     """NetBox's ``inc/table_htmx.html`` sorts through its header, which targets the closest ``.htmx-container``."""
 
-    def test_every_htmx_table_has_a_container_for_its_sortable_header(self):
-        missing = sorted(
-            name
-            for name, text in _plugin_templates().items()
-            if "inc/table_htmx.html" in text and not re.search(r'class="[^"]*\bhtmx-container\b', text)
+    def test_detector_flags_a_table_beside_a_container(self):
+        bad = (
+            '<div class="htmx-container"></div>\n<div class="card">{% render_table table "inc/table_htmx.html" %}</div>'
         )
+        self.assertEqual(_htmx_tables_outside_a_container(bad), 1)
+
+    def test_detector_accepts_a_table_inside_a_container(self):
+        good = (
+            '<div id="search" class="card htmx-container" hx-target="#search">\n'
+            '  {% if table %}<div class="table-responsive">{% render_table table "inc/table_htmx.html" %}</div>'
+            "{% endif %}\n</div>"
+        )
+        self.assertEqual(_htmx_tables_outside_a_container(good), 0)
+
+    def test_every_htmx_table_has_a_container_for_its_sortable_header(self):
+        missing = sorted(name for name, text in _plugin_templates().items() if _htmx_tables_outside_a_container(text))
         self.assertEqual(missing, [], "Without an .htmx-container ancestor, a click on a column header swaps nothing")
