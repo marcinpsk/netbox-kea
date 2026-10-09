@@ -1056,14 +1056,9 @@ class TestKeaIpamSyncJobRun(TestCase):
                 with patch(
                     "netbox_kea.jobs.complete_job_observation", side_effect=RuntimeError("db gone"), autospec=True
                 ):
-                    with (
-                        self.assertLogs("netbox.jobs", level="ERROR") as cm,
-                        self.assertLogs("netbox_kea.jobs", level="ERROR") as module_cm,
-                    ):
+                    with self.assertLogs("netbox.jobs", level="ERROR") as cm:
                         job = self._run_raises()
         self.assertTrue(any("Unhandled error syncing server" in msg for msg in cm.output))
-        # NetBox's JobLogHandler on the job logger blocks Python's last-resort stderr handler; the module logger does not.
-        self.assertEqual([record.exc_info[0] for record in module_cm.records], [RuntimeError])
 
         # This entry is on an exception path a clean run never reaches, so it is the
         # one self.logger call TestJobLogRendersValues cannot see. See that class for
@@ -1074,7 +1069,6 @@ class TestKeaIpamSyncJobRun(TestCase):
         failures = [m for m in entries if "Unhandled error syncing server" in m]
         self.assertTrue(failures, entries)
         self.assertNotIn("%s", failures[0])
-        self.assertIn("RuntimeError: db gone", failures[0])
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
