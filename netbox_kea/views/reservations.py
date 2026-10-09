@@ -46,7 +46,7 @@ from ..subnet_catalogue import VerifiedSubnet
 from ..subnet_catalogue import display as subnet_catalogue
 from ..sync_permissions import SyncGate, sync_gate
 from ..utilities import OptionalViewTab
-from .notices import HEADLINES, Notice, load_snapshot, notice, show_notices
+from .notices import HEADLINES, Notice, load_snapshot, notice
 
 logger = logging.getLogger(__name__)
 
@@ -542,7 +542,6 @@ def _reservation_list_context(
         else:
             snapshot = loaded
             reservation_notice = notice(snapshot)
-    show_notices(request, reservation_notice)
 
     reservations = [_reservation_table_record(record, server) for record in snapshot.records]
     if search_form.is_valid():

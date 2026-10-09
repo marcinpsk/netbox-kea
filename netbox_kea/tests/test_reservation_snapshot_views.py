@@ -226,7 +226,7 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
             response, f'<div class="alert alert-danger" role="alert">{HEADLINES["reservation"]}</div>', html=True
         )
         self.assertNotContains(response, "This bounded Snapshot is complete")
-        self.assertIn(HEADLINES["reservation"], [str(message) for message in response.context["messages"]])
+        self.assertNotIn(HEADLINES["reservation"], [str(message) for message in response.context["messages"]])
 
     def test_a_full_page_with_more_to_come_is_reported_complete(self):
         """A filled page offers the next cursor and is still complete for this page.

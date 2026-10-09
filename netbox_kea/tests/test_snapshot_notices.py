@@ -283,12 +283,12 @@ class TestLeaseSearchFormNotice(_ViewTestBase):
 class TestRecordPagesShowAFailedReadThroughTheLoader(_ViewTestBase):
     """A failed Reservation or Lease read shows the unavailable Notice in the channel of its page."""
 
-    def test_the_reservation_page_shows_the_headline_as_a_message_and_styles_its_record_list(self):
+    def test_the_reservation_page_shows_the_headline_once_in_its_record_list(self):
         responses = {**_catalogue_responses(4, 20, "198.18.0.0/24"), "reservation-get-page": ["not", "entries"]}
         with stub_kea(responses):
             response = self.client.get(reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk]))
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(_page_messages(response), [(django_messages.ERROR, HEADLINES["reservation"])])
+        self.assertEqual(_page_messages(response), [])
         self.assertContains(
             response, f'<div class="alert alert-danger" role="alert">{HEADLINES["reservation"]}</div>', html=True
         )
