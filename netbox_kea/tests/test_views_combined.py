@@ -188,7 +188,10 @@ class TestCombinedSharedNetworkDiagnostics(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(
             response.context["errors"],
-            [(self.server.name, "Kea configuration facts are unavailable.")],
+            [
+                (self.server.name, "Failed to load the Server Configuration from Kea."),
+                (self.server.name, "Kea configuration facts are unavailable."),
+            ],
         )
         self.assertNotContains(response, "Failed to query server")
         self.assertContains(response, "alert-danger")
@@ -201,7 +204,10 @@ class TestCombinedSharedNetworkDiagnostics(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(
             response.context["errors"],
-            [(self.server.name, "Kea did not return a Dhcp4 configuration object.")],
+            [
+                (self.server.name, "Failed to load the Server Configuration from Kea."),
+                (self.server.name, "Kea did not return a Dhcp4 configuration object."),
+            ],
         )
         self.assertNotContains(response, "Failed to query server")
 

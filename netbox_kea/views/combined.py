@@ -6,30 +6,28 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
-import requests
 from django.http import HttpResponse
 from django.http.request import HttpRequest
 from django.shortcuts import render
 from django.views import View
 
-from .. import constants, forms, server_configuration, tables
+from .. import constants, forms, server_configuration, subnet_catalogue, tables
 from ..constants import Family, LeaseState
 from ..decimal_text import parse_decimal
 from ..ipam_reconciliation import RESERVATION, claim_permissions
-from ..kea import KeaException, LeaseQueryGuardError, lease_query_guard_message
+from ..kea import LeaseQueryGuardError, lease_query_guard_message
 from ..leases import LeaseSnapshot
 from ..models import Server
 from ..reservation_transfer import export_reservation_document
-from ..reservations import ReservationCapabilities, ReservationDiagnostic, ReservationSnapshot
-from ..subnet_catalogue import CatalogueSnapshot, display
+from ..reservations import ReservationCapabilities, ReservationSnapshot
 from ..sync_permissions import sync_gate
 from ..utilities import (
-    diagnostic_reasons,
     export_table,
     snapshot_rows,
 )
 from ._base import ConditionalLoginRequiredMixin, _catalogue_subnet_row, _enrich_subnet_statistics, _shared_network_row
 from .leases import _enrich_leases_with_badges, lease_sync_gates
+from .notices import Notice, ServerNotices, load_snapshot, notice
 from .reservations import (
     _attach_reservation_action_urls,
     _configured_capabilities,
@@ -79,18 +77,13 @@ class _CombinedLeaseRead:
     """The lease rows of several servers and why some servers are missing or partial."""
 
     rows: list[dict[str, Any]] = field(default_factory=list)
-    errors: list[tuple[str, str]] = field(default_factory=list)
+    notices: ServerNotices = field(default_factory=ServerNotices)
     truncated_servers: list[str] = field(default_factory=list)
-    incomplete_servers: list[tuple[str, str]] = field(default_factory=list)
 
     def add(self, server: Server, snapshot: LeaseSnapshot, state_filter: LeaseState | None) -> None:
-        """Add the valid Leases of one server, and its excluded records as a safe reason."""
+        """Add the valid Leases of one server and its Notice."""
         self.rows.extend(_server_lease_rows(server, snapshot, state_filter))
-        if snapshot.diagnostics:
-            reasons = diagnostic_reasons(snapshot.diagnostics)
-            self.incomplete_servers.append(
-                (server.name, f"{len(snapshot.diagnostics)} record(s) could not be read: {reasons}")
-            )
+        self.notices.add(server, notice(snapshot))
         if snapshot.coverage != "exhaustive":
             self.truncated_servers.append(server.name)
 
@@ -111,14 +104,19 @@ def _read_combined_leases(
             futures = {executor.submit(_fetch_all_leases_from_server, s, version): s for s in servers}
         for future in concurrent.futures.as_completed(futures):
             server = futures[future]
+            # A refused query and a ValueError are outside the notice rule; each keeps its own message.
             try:
-                read.add(server, future.result(), None if subnet_search else state_filter)
+                loaded = load_snapshot(server, "lease", future.result)
             except LeaseQueryGuardError as exc:
-                read.errors.append((server.name, lease_query_guard_message(exc, state_filter)))
-            # MalformedLeaseResponse is a RuntimeError; a configuration or argument error is a ValueError.
-            except (KeaException, requests.RequestException, RuntimeError, ValueError):
+                read.notices.warnings.append((server.name, lease_query_guard_message(exc, state_filter)))
+            except ValueError:
                 logger.exception("Failed to query server %s", server.name)
-                read.errors.append((server.name, "Failed to query server"))
+                read.notices.errors.append((server.name, "Failed to query server"))
+            else:
+                if isinstance(loaded, Notice):
+                    read.notices.add(server, loaded)
+                else:
+                    read.add(server, loaded, None if subnet_search else state_filter)
     return read
 
 
@@ -204,18 +202,18 @@ def _filter_subnets(subnets: list[dict[str, Any]], q: str, subnet_id: int | None
 def _fetch_subnets_from_server(
     server: "Server",
     version: Family,
-) -> tuple[list[dict[str, Any]], CatalogueSnapshot]:
-    """Fetch safe Subnet Catalogue facts for one server and tag them for the combined table."""
-    snapshot = display(server, version)
+) -> tuple[list[dict[str, Any]], Notice | None]:
+    """Fetch safe Subnet Catalogue facts for one server, tagged for the combined table, and its Notice."""
+    snapshot = subnet_catalogue.display(server, version)
     if snapshot.unavailable:
-        return [], snapshot
+        return [], notice(snapshot)
     result = [
         _catalogue_subnet_row(subnet, server, version, can_change=False)
         for subnet in (*snapshot.subnets, *snapshot.configured_subnets)
     ]
 
     _enrich_subnet_statistics(result, server, version)
-    return result, snapshot
+    return result, notice(snapshot)
 
 
 class _CombinedSubnetsView(_CombinedViewMixin):
@@ -230,24 +228,15 @@ class _CombinedSubnetsView(_CombinedViewMixin):
         servers = self._get_servers(request, self.dhcp_version)
 
         all_subnets: list[dict[str, Any]] = []
-        errors: list[tuple[str, str]] = []
-        warnings: list[tuple[str, str]] = []
+        notices = ServerNotices()
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
             future_to_server = {executor.submit(_fetch_subnets_from_server, s, self.dhcp_version): s for s in servers}
+            # The display read never raises: an unavailable Catalogue is a Notice.
             for future in concurrent.futures.as_completed(future_to_server):
-                server = future_to_server[future]
-                try:
-                    subnets, snapshot = future.result()
-                    all_subnets.extend(subnets)
-                    diagnostics = errors if snapshot.unavailable else warnings
-                    diagnostics.extend(
-                        (server.name, message)
-                        for message in dict.fromkeys(diagnostic.message for diagnostic in snapshot.diagnostics)
-                    )
-                except Exception:
-                    logger.exception("Failed to query server %s", server.name)
-                    errors.append((server.name, "Failed to query server"))
+                subnets, found = future.result()
+                all_subnets.extend(subnets)
+                notices.add(future_to_server[future], found)
 
         # Annotate can_change per server so subnet pool/action controls render correctly.
         writable_pks = set(
@@ -280,8 +269,8 @@ class _CombinedSubnetsView(_CombinedViewMixin):
             {
                 "table": table,
                 "search_form": search_form,
-                "errors": errors,
-                "warnings": warnings,
+                "errors": notices.errors,
+                "warnings": notices.warnings,
                 "dhcp_version": self.dhcp_version,
                 "page_title": f"DHCPv{self.dhcp_version} Subnets",
             }
@@ -315,8 +304,7 @@ class _CombinedSharedNetworksView(_CombinedViewMixin):
         servers = self._get_servers(request, self.dhcp_version)
 
         all_networks: list[dict[str, Any]] = []
-        errors: list[tuple[str, str]] = []
-        warnings: list[tuple[str, str]] = []
+        notices = ServerNotices()
         writable_pks = set(
             Server.objects.restrict(request.user, "change")
             .filter(pk__in=[s.pk for s in servers])
@@ -325,29 +313,21 @@ class _CombinedSharedNetworksView(_CombinedViewMixin):
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
             future_to_server = {executor.submit(server_configuration.display, s, self.dhcp_version): s for s in servers}
+            # The display read never raises: an unavailable Server Configuration is a Notice with no facts.
             for future in concurrent.futures.as_completed(future_to_server):
                 server = future_to_server[future]
-                try:
-                    snapshot = future.result()
-                    diagnostics = errors if not snapshot.available else warnings
-                    diagnostics.extend(
-                        (server.name, message)
-                        for message in dict.fromkeys(diagnostic.message for diagnostic in snapshot.diagnostics)
+                snapshot = future.result()
+                notices.add(server, notice(snapshot))
+                all_networks.extend(
+                    _shared_network_row(
+                        network,
+                        server,
+                        self.dhcp_version,
+                        can_change=server.pk in writable_pks,
+                        include_server_name=True,
                     )
-                    if snapshot.available:
-                        all_networks.extend(
-                            _shared_network_row(
-                                network,
-                                server,
-                                self.dhcp_version,
-                                can_change=server.pk in writable_pks,
-                                include_server_name=True,
-                            )
-                            for network in snapshot.shared_networks
-                        )
-                except Exception:
-                    logger.exception("Failed to query server %s", server.name)
-                    errors.append((server.name, "Failed to query server"))
+                    for network in snapshot.shared_networks
+                )
 
         table = tables.GlobalSharedNetworkTable(all_networks, user=request.user)
         table.configure(request)
@@ -358,8 +338,8 @@ class _CombinedSharedNetworksView(_CombinedViewMixin):
         ctx.update(
             {
                 "table": table,
-                "errors": errors,
-                "warnings": warnings,
+                "errors": notices.errors,
+                "warnings": notices.warnings,
                 "dhcp_version": self.dhcp_version,
                 "page_title": f"DHCPv{self.dhcp_version} Shared Networks",
             }
@@ -447,8 +427,7 @@ class _CombinedReservationsView(_CombinedViewMixin):
         servers = self._get_servers(request, self.dhcp_version)
 
         all_records: list[dict[str, Any]] = []
-        errors: list[tuple[str, str]] = []
-        diagnostics: list[tuple[str, ReservationDiagnostic]] = []
+        notices = ServerNotices()
         snapshots = {}
         is_export = "export" in request.GET
         search_form = forms.ReservationSearchForm(request.GET or None)
@@ -480,26 +459,25 @@ class _CombinedReservationsView(_CombinedViewMixin):
             for future in concurrent.futures.as_completed(future_to_server):
                 server = future_to_server[future]
                 try:
-                    fetched_snapshot = future.result()
-                    snapshots[server.pk] = fetched_snapshot
-                    all_records.extend(_reservation_table_record(record, server) for record in fetched_snapshot.records)
-                    diagnostics.extend((server.name, diagnostic) for diagnostic in fetched_snapshot.diagnostics)
-                    capability_futures.update(
-                        _reservation_capability_future(
-                            executor,
-                            server,
-                            self.dhcp_version,
-                            writable_pks,
-                            fetched_snapshot,
-                        )
-                    )
-                except Exception:
+                    loaded = load_snapshot(server, "reservation", future.result)
+                except ValueError:
+                    # A configuration or argument error is outside the notice rule.
                     logger.exception("Failed to query server %s", server.name)
-                    errors.append((server.name, "Failed to query server"))
+                    notices.errors.append((server.name, "Failed to query server"))
+                    continue
+                if isinstance(loaded, Notice):
+                    notices.add(server, loaded)
+                    continue
+                snapshots[server.pk] = loaded
+                notices.add(server, notice(loaded))
+                all_records.extend(_reservation_table_record(record, server) for record in loaded.records)
+                capability_futures.update(
+                    _reservation_capability_future(executor, server, self.dhcp_version, writable_pks, loaded)
+                )
             capabilities_by_server = _reservation_capability_results(capability_futures, server_map)
 
         if is_export:
-            if errors or any(not snapshot.complete for snapshot in snapshots.values()):
+            if notices.errors or any(not snapshot.complete for snapshot in snapshots.values()):
                 return HttpResponse(
                     "The combined Reservation Snapshot is incomplete and cannot be exported.", status=409
                 )
@@ -562,7 +540,9 @@ class _CombinedReservationsView(_CombinedViewMixin):
             user=request.user,
             empty_text="No matches in this search batch."
             if any(filters.values())
-            and (errors or any(snapshot.next_cursor or not snapshot.complete for snapshot in snapshots.values()))
+            and (
+                notices.errors or any(snapshot.next_cursor or not snapshot.complete for snapshot in snapshots.values())
+            )
             else None,
         )
         table.configure(request)
@@ -585,10 +565,10 @@ class _CombinedReservationsView(_CombinedViewMixin):
             {
                 "table": table,
                 "search_form": search_form,
-                "errors": errors,
+                "errors": notices.errors,
                 "mutation_unavailable_servers": mutation_unavailable_servers,
-                "reservation_diagnostics": diagnostics,
-                "snapshot_complete": not errors and all(snapshot.complete for snapshot in snapshots.values()),
+                "reservation_diagnostics": notices.record_diagnostics,
+                "snapshot_complete": not notices.errors and all(snapshot.complete for snapshot in snapshots.values()),
                 "next_page_url": f"{request.path}?{next_query.urlencode()}" if has_next else None,
                 "dhcp_version": self.dhcp_version,
                 "page_title": f"DHCPv{self.dhcp_version} Reservations",
@@ -691,9 +671,10 @@ class _CombinedLeasesView(_CombinedViewMixin):
             )
 
         ctx["table"] = table
-        ctx["errors"] = read.errors
+        ctx["errors"] = read.notices.errors
+        ctx["warnings"] = read.notices.warnings
         ctx["truncated_servers"] = read.truncated_servers
-        ctx["incomplete_servers"] = read.incomplete_servers
+        ctx["incomplete_servers"] = read.notices.records
         return render(request, self.template_name, ctx)
 
 

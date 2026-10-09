@@ -37,10 +37,21 @@
 </div>
 
 {% if errors %}
-<div class="alert alert-warning">
+<div class="alert alert-danger">
   <strong>Some servers could not be reached:</strong>
   <ul class="mb-0 mt-1">
     {% for name, msg in errors %}
+    <li><strong>{{ name }}</strong>: {{ msg }}</li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}
+
+{% if warnings %}
+<div class="alert alert-warning">
+  <strong>Some servers were not searched:</strong>
+  <ul class="mb-0 mt-1">
+    {% for name, msg in warnings %}
     <li><strong>{{ name }}</strong>: {{ msg }}</li>
     {% endfor %}
   </ul>
@@ -51,8 +62,8 @@
 <div class="alert alert-warning">
   <strong>Some lease records could not be read.</strong> The table shows the other leases.
   <ul class="mb-0 mt-1">
-    {% for name, msg in incomplete_servers %}
-    <li><strong>{{ name }}</strong>: {{ msg }}</li>
+    {% for name, notice in incomplete_servers %}
+    <li><strong>{{ name }}</strong>: {{ notice.diagnostics|length }} record(s) could not be read: {{ notice.reasons }}</li>
     {% endfor %}
   </ul>
 </div>

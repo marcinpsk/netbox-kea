@@ -491,9 +491,11 @@ class CombinedLeaseViewTest(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["errors"], [])
         self.assertEqual([row["ip_address"] for row in response.context["table"].data], ["192.0.2.10"])
-        self.assertEqual(
-            response.context["incomplete_servers"],
-            [(self.server.name, "1 record(s) could not be read: The lease address is not valid.")],
+        self.assertEqual(response.context["warnings"], [])
+        self.assertContains(
+            response,
+            f"<li><strong>{self.server.name}</strong>: 1 record(s) could not be read: The lease address is not valid.</li>",
+            html=True,
         )
 
 

@@ -156,3 +156,8 @@ class ServerNotices:
             for item in notices
             if item is not None and item.kind in _RECORD_KINDS and item.diagnostics
         )
+
+    @property
+    def record_diagnostics(self) -> list[tuple[str, Diagnostic | ReservationDiagnostic | LeaseDiagnostic]]:
+        """Return each record diagnostic with the name of its Server, for a record list."""
+        return [(name, diagnostic) for name, item in self.records for diagnostic in item.diagnostics]
