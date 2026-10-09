@@ -635,7 +635,8 @@ def creation_mismatches(request: LeaseRequest, lease: Lease) -> tuple[LeaseFact,
     differs: dict[LeaseFact, bool] = {
         "binding": not binding,
         "subnet_id": request.subnet_id not in (None, lease.subnet_id),
-        "hostname": request.hostname not in (None, lease.hostname),
+        # Kea stores a lease hostname in lowercase.
+        "hostname": request.hostname is not None and request.hostname.lower() != lease.hostname,
     }
     return tuple(name for name, differ in differs.items() if differ)
 

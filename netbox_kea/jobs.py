@@ -388,8 +388,13 @@ class KeaIpamSyncJob(JobRunner):
                         effective_ip_ranges,
                         max_leases,
                     )
-                except Exception:
-                    self.logger.exception(f"Unhandled error syncing server {server.name}; see server logs")
+                except Exception as exc:
+                    # The job log keeps only the message, so the traceback goes to the module logger.
+                    logger.exception("Unhandled error syncing server %s", server.name)
+                    self.logger.error(  # noqa: TRY400 - the module logger above has the traceback
+                        f"Unhandled error syncing server {server.name}: {type(exc).__name__}: {exc};"
+                        " the worker log has the traceback"
+                    )
                     report.errors += 1
 
                 self.logger.info(

@@ -401,6 +401,17 @@ class LeaseAddTest(_ViewTestBase):
         )
         self.assertEqual((str(call["lease"].address), call["lease"].subnet_id), ("192.0.2.50", 10))
 
+    def test_a_mixed_case_hostname_that_kea_stores_in_lowercase_is_an_observation(self):
+        received = _Received(self, signals.lease_added)
+        daemon = LeaseDaemon(4)
+        data = {"ip_address": "192.0.2.50", "hw_address": "aa:bb:cc:00:00:50", "hostname": "New.Example.ORG"}
+        with stub_kea(daemon.responses()):
+            response = self.client.post(self._url(), data)
+
+        (call,) = received.calls
+        self.assertEqual(call["lease"].hostname, "new.example.org")
+        self.assertFalse(any("does not match" in message for message in _messages(response)))
+
     def test_a_failed_readback_reports_the_creation_without_an_observed_lease(self):
         received = _Received(self, signals.lease_added)
         daemon = LeaseDaemon(4)

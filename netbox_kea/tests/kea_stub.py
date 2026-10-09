@@ -836,8 +836,10 @@ def _recorded_lease_changes(family: int) -> dict[str, Any]:
     return json.loads((_RECORDINGS / f"dhcp{family}.json").read_text())["leases"]["changes"]
 
 
-def _transaction_time_from_expire(stored: dict[str, Any]) -> dict[str, Any]:
-    """Replace the ``expire`` of a sent lease body with the transaction time Kea stores for it."""
+def _as_stored(stored: dict[str, Any]) -> dict[str, Any]:
+    """Change a sent lease body as Kea does when it stores it: a lowercase hostname, and a transaction time."""
+    if "hostname" in stored:
+        stored["hostname"] = stored["hostname"].lower()
     expire = stored.pop("expire", None)
     stored["cltt"] = int(time.time()) if expire is None else expire - stored["valid-lft"]
     return stored
@@ -847,9 +849,9 @@ class LeaseDaemon:
     """One Kea daemon that holds the raw leases of one family and answers the exact lease commands like Kea 3.2.0.
 
     A lease is keyed by its type and address, so a delegated prefix needs its type, as in Kea. The replies come from
-    the recorded ``changes`` section. An update or an add stores the sent body as Kea does: ``expire`` sets the
-    transaction time, and without it the lease starts now. ``before`` queues a change of another writer that runs just
-    before the next call of a command.
+    the recorded ``changes`` section. An update or an add stores the sent body as Kea does: the hostname becomes
+    lowercase, ``expire`` sets the transaction time, and without it the lease starts now. ``before`` queues a change
+    of another writer that runs just before the next call of a command.
     """
 
     def __init__(self, family: Family, *records: dict[str, Any], subnet_id: int = 10) -> None:
@@ -911,7 +913,7 @@ class LeaseDaemon:
         key = self._key(arguments)
         if key not in self.leases:
             return self._recorded("update-absent")
-        self.leases[key] = _transaction_time_from_expire(json.loads(json.dumps(arguments)))
+        self.leases[key] = _as_stored(json.loads(json.dumps(arguments)))
         return self._recorded("update")
 
     def _delete(self, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -923,7 +925,7 @@ class LeaseDaemon:
         key = self._key(arguments)
         if key in self.leases:
             return {"result": 1, "text": f"Lease for address {key[1]} already exists."}
-        stored = _transaction_time_from_expire(
+        stored = _as_stored(
             {
                 "subnet-id": self.subnet_id,
                 "valid-lft": 3600,
