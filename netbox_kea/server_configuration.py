@@ -155,6 +155,11 @@ class ServerConfigurationSnapshot:
     # Collection and member shapes, string names, and valid member IDs unique across Shared Networks.
     shared_networks_complete: bool = False
 
+    @property
+    def unavailable(self) -> bool:
+        """Return true when the read failed, so the Snapshot holds no facts; the Catalogue Snapshot answers the same."""
+        return not self.available
+
     def subnet_with_membership(self, subnet_id: int) -> DeclaredSubnet | None:
         """Return a unique declaration with known Shared Network membership."""
         matches = [
