@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
-"""The one fan-out of a combined page: a per-Server read for each Server, in worker threads."""
+"""The fan-out of a combined page: a per-Server read for each Server, in worker threads."""
 
 from __future__ import annotations
 

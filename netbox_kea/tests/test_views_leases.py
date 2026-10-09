@@ -2799,7 +2799,7 @@ class TestLeaseAddGenericException(_ViewTestBase):
 
 
 # ---------------------------------------------------------------------------
-# fetch — each search selector and the read of every Lease
+# fetch: each search selector and the read of every Lease
 # ---------------------------------------------------------------------------
 
 

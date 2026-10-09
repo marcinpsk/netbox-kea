@@ -512,7 +512,6 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
                 next_page = None if snapshot.next_cursor is None else str(snapshot.next_cursor)
             else:
                 next_page = table.page.next_page_number() if table.page.has_next() else None
-            stripped_return_url = presented.return_url
 
             response = render(
                 request,
@@ -526,9 +525,9 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
                             args=[instance.pk],
                         )
                         + "?"
-                        + _urlencode({"return_url": stripped_return_url})
+                        + _urlencode({"return_url": presented.return_url})
                     ),
-                    "return_url": stripped_return_url,
+                    "return_url": presented.return_url,
                     "form": form,
                     "table": table,
                     "next_page": next_page,
@@ -541,7 +540,7 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
             # URL may include empty params (e.g. state=) that HTMX would otherwise
             # push verbatim; sending the stripped URL as HX-Push-Url overrides
             # that so the address bar always shows the clean URL.
-            response["HX-Push-Url"] = stripped_return_url
+            response["HX-Push-Url"] = presented.return_url
         except LeaseQueryGuardError as exc:
             logger.info("Rejected unsafe Subnet lease query on server %s: %s", instance.pk, exc)
             field = "q" if isinstance(exc, LeaseQueryUnknownSubnet) else "state"

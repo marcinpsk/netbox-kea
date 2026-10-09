@@ -460,7 +460,7 @@ def _lease_snapshot(
     server_id: int, query: LeaseQuery, started: datetime, read: LeaseRead, coverage: LeaseCoverage
 ) -> LeaseSnapshot:
     """Return the Snapshot of *read*, observed between *started* and now, with only the Leases in the query state."""
-    # Kea filters a Subnet query by state; every other read filters here.
+    # Kea already filters a Subnet query by state; this filters every other read.
     records = tuple(record for record in read.records if query.state in (None, record.state))
     return LeaseSnapshot(
         server_id=server_id,

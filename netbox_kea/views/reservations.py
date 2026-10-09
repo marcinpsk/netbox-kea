@@ -424,8 +424,8 @@ def _configured_capabilities(server: Server, version: Family) -> ReservationCapa
 def fetch(server: Server, family: Family, query: ReservationQuery) -> ReservationRead:
     """Read the Reservations of *query* from Kea, and the mutation capabilities when it asks.
 
-    It is safe in a worker thread. A Kea, transport or reply failure of the Reservation read is its Notice. A
-    capability failure of any kind leaves the capabilities unconfirmed and never hides the Reservations.
+    It is safe in a worker thread. A Kea, transport or reply failure of the Reservation read is its Notice. Such a
+    failure of the capability read leaves the capabilities unconfirmed and never hides the Reservations.
 
     Raises:
         ValueError: If the Server configuration or the query is not valid.
@@ -436,10 +436,7 @@ def fetch(server: Server, family: Family, query: ReservationQuery) -> Reservatio
     # A failed read means Kea is down or broken, and a second read would only add its timeout.
     failed = isinstance(loaded, Notice) and not loaded.unsupported_command
     if query.mutations and not failed:
-        try:
-            capabilities = _configured_capabilities(server, family)
-        except Exception:
-            logger.exception("Failed to query Reservation capabilities from %s", server.name)
+        capabilities = _configured_capabilities(server, family)
     return ReservationRead(query, loaded, capabilities)
 
 
