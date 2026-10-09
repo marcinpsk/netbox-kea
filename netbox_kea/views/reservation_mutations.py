@@ -195,15 +195,18 @@ def _first_address(addresses: tuple[IPAddressValue, ...]) -> IPAddressValue | No
 def _shown_suffix(reservation: Reservation, catalogue: CatalogueSnapshot) -> str | None:
     """Return the suffix under which the edit form shows the hostname of *reservation*.
 
-    None without a hostname, and when the published name depends on the leased address: the form then shows the
-    stored hostname.
+    None without a hostname, when the published name depends on the leased address, and when the suffix is unknown:
+    the form then shows the stored hostname.
     """
     if not reservation.hostname:
         return None
     subnet = _in_subnet_scope(reservation).subnet
     if not reservation.addresses and catalogue.has_pool_qualifying_suffix(subnet):
         return None
-    return catalogue.subnet_qualifying_suffix(subnet, _first_address(reservation.addresses))
+    try:
+        return catalogue.subnet_qualifying_suffix(subnet, _first_address(reservation.addresses))
+    except CatalogueUnavailable:
+        return None
 
 
 class _UnknownSuffix(Exception):
@@ -234,10 +237,12 @@ def _hostname_change(
     if current.hostname and shown_suffix is None and _shown_suffix(current, catalogue) is None:
         if entered == current.hostname:
             return Unchanged()
-        raise ReservationConflict(
-            "A Pool of the Subnet sets the DDNS qualifying suffix, so the published name depends on the address."
-            " Save an address first, then change the hostname."
-        )
+        # With an unknown suffix, _entered_suffix() below refuses the changed name on the hostname field.
+        if not current.addresses and catalogue.has_pool_qualifying_suffix(_in_subnet_scope(current).subnet):
+            raise ReservationConflict(
+                "A Pool of the Subnet sets the DDNS qualifying suffix, so the published name depends on the address."
+                " Save an address first, then change the hostname."
+            )
     # The token holds no suffix when the form showed no hostname; reservation_change() refuses a changed Reservation.
     if current.hostname and shown_suffix is not None and shown_suffix != _shown_suffix(current, catalogue):
         raise ReservationConflict("The DDNS qualifying suffix of the Subnet changed after the edit form was opened.")

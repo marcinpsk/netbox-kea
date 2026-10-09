@@ -7,6 +7,7 @@ Subnet 10 with an empty suffix, Subnet 20 in the Shared Network ``office`` with 
 and Subnet 21 with its own ``office.example.org.`` and one Pool with ``pool.example.org``.
 """
 
+import copy
 from typing import Any
 from urllib.parse import urlencode
 
@@ -54,6 +55,19 @@ def _stored(family: int, subnet_id: int, hostname: str, address: str | None = No
     if hostname:
         raw["hostname"] = hostname
     return raw
+
+
+def _with_subnet_21(family: int, fields: dict[str, Any]) -> dict[str, Any]:
+    """Return the recorded config-get reply with *fields* set on Subnet 21."""
+    reply = copy.deepcopy(_recording(family)["config-get"])
+    daemon = reply["arguments"][f"Dhcp{family}"]
+    for subnet in [
+        *daemon.get(f"subnet{family}", []),
+        *(member for network in daemon.get("shared-networks", []) for member in network.get(f"subnet{family}", [])),
+    ]:
+        if subnet["id"] == 21:
+            subnet.update(fields)
+    return reply
 
 
 class _PublishedNameViewTest(_ViewTestBase):
@@ -307,17 +321,52 @@ class TestReservationEditPublishedName(_PublishedNameViewTest):
         self.assertNotIn("reservation-update", kea.commands())
         self.assertIn("so it depends on the address.", " ".join(response.context["form"].errors["hostname"]))
 
-    def test_an_unknown_suffix_does_not_open_the_form_of_a_named_reservation(self):
+    def _save_with_unknown_suffix(self, family: int, entered: str, address: str):
+        # An invalid suffix makes the configuration of Subnet 21 unknown; its identity stays verified.
+        unknown = {**_recorded(family), "config-get": _with_subnet_21(family, {"ddns-qualifying-suffix": 5})}
+        current = _stored(family, 21, "host")
+        with stub_kea({**unknown, "reservation-get": _res_get(current)}):
+            form_page = self.client.get(self._url(family, 21))
+        self.assertEqual(form_page.status_code, 200)
+        self.assertEqual(form_page.context["form"].initial["hostname"], "host")
         with stub_kea(
             {
-                **_recorded(4),
-                "config-get": RuntimeError("config-get failed"),
-                "reservation-get": _res_get(_stored(4, 21, "host")),
+                **unknown,
+                "reservation-get": queued(_res_get(current), _res_get(current), _res_get(current)),
+                "reservation-update": {"result": 0},
             }
         ) as kea:
-            response = self.client.get(self._url(4, 21))
-        self.assertEqual(response.status_code, 302)
+            response = self.client.post(
+                self._url(family, 21),
+                self._form_data(
+                    family,
+                    21,
+                    entered,
+                    address,
+                    managed_fingerprint=form_page.context["form"].initial["managed_fingerprint"],
+                ),
+            )
+        return response, kea
+
+    def test_an_unknown_suffix_keeps_the_stored_hostname_when_another_field_changes(self):
+        for family, moved in ((4, "198.51.100.131"), (6, "2001:db8:3::6")):
+            with self.subTest(family=family):
+                response, kea = self._save_with_unknown_suffix(family, "host", moved)
+                self.assertEqual(response.status_code, 302)
+                sent = kea.bodies("reservation-update")[0]["arguments"]["reservation"]
+                self.assertEqual(sent["hostname"], "host")
+                self.assertEqual(
+                    sent["ip-address"] if family == 4 else sent["ip-addresses"], moved if family == 4 else [moved]
+                )
+
+    def test_an_unknown_suffix_refuses_a_changed_name_on_its_field(self):
+        response, kea = self._save_with_unknown_suffix(4, "db", _ADDRESSES[4][21])
+        self.assertEqual(response.status_code, 200)
         self.assertNotIn("reservation-update", kea.commands())
+        self.assertIn(
+            "The DDNS qualifying suffix of Subnet 198.51.100.128/25 is unknown.",
+            " ".join(response.context["form"].errors["hostname"]),
+        )
 
 
 class TestPublishedNamePreview(_PublishedNameViewTest):
