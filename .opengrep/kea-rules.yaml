@@ -1091,8 +1091,7 @@ rules:
           - pattern: $CLIENT.lease_get_all(...)
           - pattern: _fetch_reservation_page(...)
           - pattern: _fetch_reservation_snapshot(...)
-          - pattern: $VIEW.get_leases(...)
-          - pattern: $VIEW.get_leases_page(...)
+          - pattern: _read_leases(...)
           - patterns:
               - pattern: $EXECUTOR.submit($READ, ...)
               - metavariable-pattern:
@@ -1101,8 +1100,6 @@ rules:
                     - pattern: subnet_catalogue.display
                     - pattern: server_configuration.display
                     - pattern: _fetch_reservations_from_server
-                    - pattern: _fetch_leases_from_server
-                    - pattern: _fetch_all_leases_from_server
       - pattern-not-inside: |
           def $FUNC(...):
               ...
@@ -1121,19 +1118,10 @@ rules:
           def _fetch_reservation_snapshot(...):
               ...
       - pattern-not-inside: |
-          def get_leases(...):
-              ...
-      - pattern-not-inside: |
-          def get_leases_page(...):
+          def _read_leases(...):
               ...
       - pattern-not-inside: |
           def _fetch_reservations_from_server(...):
-              ...
-      - pattern-not-inside: |
-          def _fetch_leases_from_server(...):
-              ...
-      - pattern-not-inside: |
-          def _fetch_all_leases_from_server(...):
               ...
       # The DHCP plugin import reads the Reservation Snapshot to synchronize it, not to show it.
       - pattern-not-inside: |

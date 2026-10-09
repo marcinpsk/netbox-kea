@@ -11,7 +11,7 @@ from django.http.request import HttpRequest
 from django.shortcuts import render
 from django.views import View
 
-from .. import constants, forms, server_configuration, subnet_catalogue, tables
+from .. import forms, server_configuration, subnet_catalogue, tables
 from ..constants import Family, LeaseState
 from ..decimal_text import parse_decimal
 from ..ipam_reconciliation import RESERVATION, claim_permissions
@@ -26,7 +26,8 @@ from ..utilities import (
     snapshot_rows,
 )
 from ._base import ConditionalLoginRequiredMixin, _catalogue_subnet_row, _enrich_subnet_statistics, _shared_network_row
-from .leases import _enrich_leases_with_badges, lease_sync_gates
+from .leases import LeaseSearch, _enrich_leases_with_badges, lease_sync_gates
+from .leases import fetch as fetch_leases
 from .notices import HEADLINES, Notice, ServerNotices, load_snapshot, notice
 from .reservations import (
     _attach_reservation_action_urls,
@@ -41,26 +42,8 @@ from .reservations import (
 logger = logging.getLogger(__name__)
 
 
-def _fetch_leases_from_server(
-    server: Server,
-    q: Any,
-    by: str,
-    version: Family,
-    *,
-    state: LeaseState | None = None,
-) -> LeaseSnapshot:
-    """Read the leases matching *q*/*by* from one server."""
-    client = server.get_client(version=version)
-    value = str(q.cidr) if by == constants.BY_SUBNET else q
-    return client.lease_search(version, by, value, state=state, server_id=server.pk)
-
-
-def _fetch_all_leases_from_server(
-    server: "Server", version: Family, max_leases: int = 1000, *, state: LeaseState | None = None
-) -> LeaseSnapshot:
-    """Read every lease on *server* up to *max_leases* raw records; reaching the cap gives ``page`` coverage."""
-    client = server.get_client(version=version)
-    return client.lease_get_all(version, max_leases=max_leases, state=state, server_id=server.pk)
+#: The raw Lease records that a read of every Lease takes from each Server; reaching it gives ``page`` coverage.
+_COMBINED_MAX_LEASES = 1000
 
 
 def _server_lease_rows(server: Server, snapshot: LeaseSnapshot) -> list[dict[str, Any]]:
@@ -93,20 +76,17 @@ def _read_combined_leases(
 ) -> _CombinedLeaseRead:
     """Search each server, or read each one up to its cap for a state-only filter."""
     read = _CombinedLeaseRead()
+    if q and by:
+        search = LeaseSearch(by, q, state_filter)
+    else:
+        search = LeaseSearch(state=state_filter, max_leases=_COMBINED_MAX_LEASES)
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-        if q and by:
-            futures = {
-                executor.submit(_fetch_leases_from_server, s, q, by, version, state=state_filter): s for s in servers
-            }
-        else:
-            futures = {
-                executor.submit(_fetch_all_leases_from_server, s, version, state=state_filter): s for s in servers
-            }
+        futures = {executor.submit(fetch_leases, s, version, search): s for s in servers}
         for future in concurrent.futures.as_completed(futures):
             server = futures[future]
             # A refused query and a ValueError are outside the notice rule; each keeps its own message.
             try:
-                loaded = load_snapshot(server, "lease", future.result)
+                loaded = future.result()
             except LeaseQueryGuardError as exc:
                 read.notices.warnings.append((server.name, lease_query_guard_message(exc, state_filter)))
             except ValueError:

@@ -28,22 +28,17 @@ from .utils import _make_db_server, _ViewTestBase
 
 
 class TestCombinedResponseShapeGuards(_ViewTestBase):
-    """Lease collection helpers reject an empty Kea response list safely."""
+    """The combined Lease view reports an empty Kea response list as the error of its Server."""
 
-    def test_leases_empty_response_raises_runtime_error(self):
-        from netbox_kea import constants
-        from netbox_kea.views.combined import _fetch_leases_from_server
+    def test_an_empty_lease_reply_is_the_error_of_its_server(self):
+        url = reverse("plugins:netbox_kea:combined_leases4")
+        cases = (({"q": "10.0.0.1", "by": "ip"}, "lease4-get"), ({"state": "0"}, "lease4-get-page"))
+        for query, command in cases:
+            with self.subTest(command=command), stub_kea({command: []}):
+                response = self.client.get(url, {**query, "server": self.server.pk})
 
-        with stub_kea({"lease4-get": []}):
-            with self.assertRaises(RuntimeError):
-                _fetch_leases_from_server(self.server, "10.0.0.1", constants.BY_IP, 4)
-
-    def test_all_leases_empty_response_raises_runtime_error(self):
-        from netbox_kea.views.combined import _fetch_all_leases_from_server
-
-        with stub_kea({"lease4-get-page": []}):
-            with self.assertRaises(RuntimeError):
-                _fetch_all_leases_from_server(self.server, 4)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.context["errors"], [(self.server.name, HEADLINES["lease"])])
 
 
 class TestCombinedServerSelection(_ViewTestBase):

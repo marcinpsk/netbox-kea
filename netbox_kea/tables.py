@@ -400,7 +400,6 @@ class BaseLeaseTable(GenericTable):
     reserved = tables.TemplateColumn(
         verbose_name="Reserved",
         orderable=False,
-        exclude_from_export=True,
         template_code=(
             "{% if record.is_reserved %}"
             "{% if record.can_change_reservation and record.reservation_url %}"
@@ -465,7 +464,6 @@ class BaseLeaseTable(GenericTable):
     netbox_ip = tables.TemplateColumn(
         verbose_name="NetBox IP",
         orderable=False,
-        exclude_from_export=True,
         template_code=(
             "{% if record.netbox_ip_url %}"
             '<a href="{{ record.netbox_ip_url }}" class="badge text-bg-success text-decoration-none">'
