@@ -2,9 +2,12 @@
 # SPDX-License-Identifier: Apache-2.0
 """IPAM writes give netaddr values to the address fields, so other plugins' save signals can read them."""
 
+import uuid
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 
+from core.exceptions import JobFailed
+from core.models import Job
 from django.core.exceptions import ValidationError
 from django.db.models.signals import post_save, pre_save
 from django.test import TestCase, override_settings
@@ -12,9 +15,10 @@ from ipam.models import IPAddress, IPRange, Prefix
 from netaddr import IPNetwork
 
 from netbox_kea.ipam_reconciliation import claim
-from netbox_kea.tests.kea_stub import typed_lease
+from netbox_kea.jobs import KeaIpamSyncJob
+from netbox_kea.tests.kea_stub import _catalogue_responses_for_subnets, stub_kea, typed_lease
 from netbox_kea.tests.test_ipam_reconciliation import _kea, _lease, _server
-from netbox_kea.tests.test_prefix_pool_reconciliation import run_job
+from netbox_kea.tests.test_prefix_pool_reconciliation import SUBNET, run_job
 from netbox_kea.tests.utils import _make_db_server, plugins_config
 
 _FIELDS = {IPAddress: ("address",), Prefix: ("prefix",), IPRange: ("start_address", "end_address")}
@@ -43,6 +47,11 @@ def _dns_view_guard(sender, instance, **kwargs):
         return
     saved = Prefix.objects.get(pk=instance.pk)
     if saved.prefix != instance.prefix or saved.vrf_id != instance.vrf_id:
+        raise ValidationError("Prefix is assigned to DNS views _default_. Prefix and VRF must not be changed")
+
+
+def _refuse_every_prefix_update(sender, instance, **kwargs):
+    if instance.pk is not None:
         raise ValidationError("Prefix is assigned to DNS views _default_. Prefix and VRF must not be changed")
 
 
@@ -87,3 +96,26 @@ class IPAMFieldTypesTest(TestCase):
         self.assertEqual((first["errors"], first["prefix_errors"]), (0, 0))
         self.assertEqual((second["created"], second["updated"], second["errors"]), (0, 0, 0))
         self.assertEqual(len([entry for entry in seen if entry[0] == "Prefix"]), 1)
+
+    def test_an_unhandled_server_error_names_its_exception_and_writes_its_traceback(self):
+        server = _make_db_server(dhcp6=False, sync_leases_enabled=False, sync_reservations_enabled=False)
+        Prefix.objects.create(
+            prefix=IPNetwork("198.18.0.0/24"), status="active", description="Synced from Kea DHCP subnet"
+        )
+        pre_save.connect(_refuse_every_prefix_update, sender=Prefix, weak=False)
+        self.addCleanup(pre_save.disconnect, _refuse_every_prefix_update, sender=Prefix)
+        job = Job.objects.create(name="Kea IPAM Sync", job_id=uuid.uuid4(), data={})
+        with (
+            stub_kea(_catalogue_responses_for_subnets(4, [SUBNET])),
+            self.assertLogs("netbox_kea.jobs", level="ERROR") as module_log,
+            suppress(JobFailed),
+        ):
+            KeaIpamSyncJob(job).run(server_pk=server.pk)
+        # NetBox's JobLogHandler on the job logger blocks Python's last-resort stderr handler; the module logger does not.
+        self.assertEqual([record.exc_info[0] for record in module_log.records], [ValidationError])
+        failures = [
+            entry["message"] for entry in job.log_entries if "Unhandled error syncing server" in entry["message"]
+        ]
+        self.assertEqual(len(failures), 1, job.log_entries)
+        self.assertIn("ValidationError: ", failures[0])
+        self.assertNotIn("%s", failures[0])
