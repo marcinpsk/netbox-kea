@@ -8,6 +8,7 @@ Only the Kea HTTP boundary is stubbed. Records come from the lease replies recor
 from __future__ import annotations
 
 import csv
+import html
 import io
 import json
 import re
@@ -26,9 +27,10 @@ from ipam.models import IPAddress
 from rest_framework.test import APIClient
 
 from netbox_kea import signals
-from netbox_kea.ipam_reconciliation import LeasePhase, reconcile
+from netbox_kea.ipam_reconciliation import reconcile
 
 from .kea_stub import (
+    LeaseDaemon,
     _catalogue_responses_for_subnets,
     _http_response,
     _leases_per_subnet,
@@ -40,10 +42,11 @@ from .kea_stub import (
     lease_record,
     lease_reply,
     queued,
+    shown_token,
     stub_kea,
 )
 from .test_ipam_reconciliation import _kea, _lease, _links, _reconcile, _row, _server
-from .utils import _PLUGINS_CONFIG, _make_db_server, _ViewTestBase, plugins_config
+from .utils import _PLUGINS_CONFIG, _make_db_server, _ViewTestBase, lease_phase, plugins_config
 
 _SUBNETS4 = [{"id": 10, "subnet": "192.0.2.0/24"}]
 _SUBNETS6 = [{"id": 10, "subnet": "2001:db8:1::/64"}]
@@ -149,7 +152,7 @@ class LeaseBrowsingTest(_ViewTestBase):
             [("2001:db8:100:100::", "delegated-prefix", 56)],
         )
 
-    def test_only_an_address_lease_row_offers_sync_and_edit(self):
+    def test_address_and_delegated_prefix_rows_offer_edit_and_sync(self):
         records = [
             lease_record("2001:db8:1::10", subnet_id=10),
             lease_record("2001:db8:100:100::", type="IA_PD", prefix_len=56, subnet_id=10),
@@ -168,10 +171,14 @@ class LeaseBrowsingTest(_ViewTestBase):
             reverse("plugins:netbox_kea:server_lease6_edit", args=[self.server.pk, "2001:db8:1::10"])
             + f"?{urlencode({'return_url': f'{self._url(6)}?by=subnet_id&q=10'})}",
         )
+        self.assertEqual(
+            rows["delegated-prefix"]["edit_url"],
+            reverse("plugins:netbox_kea:server_lease6_edit", args=[self.server.pk, "2001:db8:100:100::/56"])
+            + f"?{urlencode({'return_url': f'{self._url(6)}?by=subnet_id&q=10'})}",
+        )
         self.assertTrue(rows["address"].get("sync_url"))
-        # Edit and Sync look up an address Lease, which Kea reports absent for a delegated prefix.
-        self.assertIsNone(rows["delegated-prefix"].get("edit_url"))
-        self.assertIsNone(rows["delegated-prefix"].get("sync_url"))
+        # Sync claims a delegated prefix as a Prefix.
+        self.assertEqual(rows["delegated-prefix"].get("sync_url"), rows["address"]["sync_url"])
 
     def test_only_an_address_lease_row_links_its_netbox_ip_address(self):
         # NetBox holds an IP Address at the network address of the prefix, which is not the delegated prefix.
@@ -218,8 +225,8 @@ class LeaseBrowsingTest(_ViewTestBase):
         self.assertContains(response, f'href="{reverse("ipam:prefix_list")}?prefix=2001:db8:100:100::/56"', count=1)
         self.assertContains(response, 'title="Search prefixes"', count=1)
 
-    def test_only_an_address_lease_row_offers_a_create_reservation_link(self):
-        # A prefix inside the Subnet passes the scoped address lookup, so only the lease kind refuses the link.
+    def test_a_delegated_prefix_row_offers_a_prefix_reservation(self):
+        # A prefix inside the Subnet CIDR still prefills the prefix field, not an address.
         records = [
             lease_record("2001:db8:1::10", subnet_id=10),
             lease_record("2001:db8:1:0:1::", type="IA_PD", prefix_len=80, subnet_id=10),
@@ -233,9 +240,10 @@ class LeaseBrowsingTest(_ViewTestBase):
             response = self.client.get(self._url(6), {"by": "subnet_id", "q": "10"}, HTTP_HX_REQUEST="true")
 
         rows = {row.record["kind"]: row.record for row in response.context["table"].rows}
-        self.assertTrue(rows["address"]["create_reservation_url"])
-        # The add form reads ip_addresses as IPv6 addresses, so a prefix would prefill an address Reservation.
-        self.assertIsNone(rows["delegated-prefix"]["create_reservation_url"])
+        self.assertIn("ip_addresses=2001%3Adb8%3A1%3A%3A10", rows["address"]["create_reservation_url"])
+        link = rows["delegated-prefix"]["create_reservation_url"]
+        self.assertIn("prefixes=2001%3Adb8%3A1%3A0%3A1%3A%3A%2F80", link)
+        self.assertNotIn("ip_addresses", link)
 
     def test_an_unconfigured_subnet_cidr_is_refused_not_reported_empty(self):
         responses = {**_catalogue_responses_for_subnets(4, _SUBNETS4)}
@@ -271,22 +279,6 @@ class LeaseBrowsingTest(_ViewTestBase):
         self.assertEqual(messages, ["Kea returned a lease that could not be read; it cannot be edited."])
 
 
-def _deleting_kea(*held: tuple[str, str]):
-    """A ``lease6-del`` responder holding (type, address) Leases; replies are the ones Kea 3.2.0 sent."""
-    store = set(held)
-
-    def respond(body: dict) -> dict:
-        arguments = body["arguments"]
-        # Kea reads an omitted type as IA_NA, so a delegated prefix is not found and stays.
-        key = (arguments.get("type", "IA_NA"), arguments["ip-address"])
-        if key not in store:
-            return {"result": 3, "text": "IPv6 lease not found."}
-        store.remove(key)
-        return {"result": 0, "text": "IPv6 lease deleted."}
-
-    return store, respond
-
-
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class LeaseDeleteTest(_ViewTestBase):
     """Bulk delete removes the selected allocation: real page, form, view and KeaClient; only HTTP is stubbed."""
@@ -299,6 +291,7 @@ class LeaseDeleteTest(_ViewTestBase):
             lease_record("2001:db8:1::10", subnet_id=10),
             lease_record("2001:db8:100:100::", type="IA_PD", prefix_len=56, subnet_id=10),
         ]
+        daemon = LeaseDaemon(6, *records)
         responses = {
             **_catalogue_responses_for_subnets(6, _SUBNETS6),
             "lease6-get-all": lease_reply(*records),
@@ -310,14 +303,18 @@ class LeaseDeleteTest(_ViewTestBase):
                 {"by": "subnet_id", "q": "10"},
                 HTTP_HX_REQUEST="true",
             )
-        selected = re.findall(r'name="pk" value="([^"]+)"', page.content.decode())
-        self.assertEqual(sorted(selected), ["2001:db8:100:100::/56", "2001:db8:1::10"])
+        selected = [html.unescape(value) for value in re.findall(r'name="pk" value="([^"]+)"', page.content.decode())]
+        self.assertEqual(
+            sorted(json.loads(value)["identity"]["kind"] for value in selected), ["address", "delegated-prefix"]
+        )
 
-        store, respond = _deleting_kea(("IA_NA", "2001:db8:1::10"), ("IA_PD", "2001:db8:100:100::"))
-        with stub_kea({"lease6-del": respond}):
+        with stub_kea(daemon.responses()) as kea:
             response = self.client.post(self._delete_url(), {"pk": selected, "_confirm": "1"})
 
-        self.assertEqual(store, set())
+        self.assertEqual(daemon.leases, {})
+        self.assertIn(
+            {"ip-address": "2001:db8:100:100::", "type": "IA_PD"}, [b["arguments"] for b in kea.bodies("lease6-del")]
+        )
         messages = [str(message) for message in get_messages(response.wsgi_request)]
         self.assertEqual(messages, ["Deleted 2 DHCPv6 lease(s)."])
 
@@ -327,28 +324,31 @@ class LeaseDeleteTest(_ViewTestBase):
         def handler(sender, **kwargs):
             received.append(kwargs)
 
-        _store, respond = _deleting_kea()
+        selected = shown_token(lease_record("2001:db8:1::10", subnet_id=10))
         signals.leases_deleted.connect(handler)
         try:
-            with stub_kea({"lease6-del": respond}):
-                response = self.client.post(self._delete_url(), {"pk": ["2001:db8:1::10"], "_confirm": "1"})
+            with stub_kea(LeaseDaemon(6).responses()) as kea:
+                response = self.client.post(self._delete_url(), {"pk": [selected], "_confirm": "1"})
         finally:
             signals.leases_deleted.disconnect(handler)
 
+        self.assertEqual(kea.commands(), ["lease6-get"])
         messages = [str(message) for message in get_messages(response.wsgi_request)]
         self.assertEqual(messages, ["Lease 2001:db8:1::10 was not found in Kea; nothing was deleted."])
         self.assertEqual(received, [])
         self.assertFalse(JournalEntry.objects.filter(assigned_object_id=self.server.pk).exists())
 
     def test_an_empty_delete_reply_fails_that_lease_and_the_rest_continue(self):
-        store, respond = _deleting_kea(("IA_NA", "2001:db8:1::11"))
-        with stub_kea({"lease6-del": queued([], respond)}):
+        records = [lease_record(address, subnet_id=10) for address in ("2001:db8:1::10", "2001:db8:1::11")]
+        daemon = LeaseDaemon(6, *records)
+        responses = daemon.responses()
+        with stub_kea({**responses, "lease6-del": queued([], responses["lease6-del"])}):
             response = self.client.post(
-                self._delete_url(), {"pk": ["2001:db8:1::10", "2001:db8:1::11"], "_confirm": "1"}
+                self._delete_url(), {"pk": [shown_token(record) for record in records], "_confirm": "1"}
             )
 
         self.assertEqual(response.status_code, 302)
-        self.assertEqual(store, set())
+        self.assertEqual(list(daemon.leases), [("IA_NA", "2001:db8:1::10")])
         messages = [str(message) for message in get_messages(response.wsgi_request)]
         self.assertEqual(
             messages,
@@ -359,9 +359,10 @@ class LeaseDeleteTest(_ViewTestBase):
             ],
         )
 
-    def test_a_dhcpv4_delete_refuses_a_prefix_before_kea(self):
+    def test_a_dhcpv4_delete_refuses_a_dhcpv6_selection_before_kea(self):
+        selected = shown_token(lease_record("2001:db8:100:100::", type="IA_PD", prefix_len=56, subnet_id=10))
         with stub_kea({}) as kea:
-            response = self.client.post(self._delete_url(4), {"pk": ["192.0.2.0/24"], "_confirm": "1"})
+            response = self.client.post(self._delete_url(4), {"pk": [selected], "_confirm": "1"})
 
         self.assertEqual(response.status_code, 302)
         self.assertEqual(kea.commands(), [])
@@ -718,13 +719,13 @@ class LeaseReconciliationTest(_ViewTestBase):
         server = _server("owner")
         records = [_lease("10.0.0.8", **{"subnet-id": 4_294_967_295}), _lease()]
         with _kea(records):
-            report = reconcile(server, 4, [LeasePhase(max_leases=None, subnet_prefix_lengths=None)])
+            report = reconcile(server, 4, [lease_phase(server, 4, None)])
 
         self.assertEqual((report.errors, report.incomplete), (1, {"lease"}))
         self.assertFalse(IPAddress.objects.filter(address__net_host="10.0.0.8").exists())
         self.assertTrue(IPAddress.objects.filter(address__net_host="10.0.0.5").exists())
 
-    def test_a_delegated_prefix_still_reports_its_base_address_to_the_lease_source(self):
+    def test_a_delegated_prefix_reports_no_ip_address_to_the_address_lease_source(self):
         server = _make_db_server(name="pd-owner", ca_url="https://pd.example.com", dhcp4=False)
         prefix = lease_record("2001:db8:1:100::", type="IA_PD", prefix_len=56, subnet_id=10)
         responses = {
@@ -732,7 +733,7 @@ class LeaseReconciliationTest(_ViewTestBase):
             "lease6-get-page": lease_pages([prefix]),
         }
         with stub_kea(responses):
-            report = reconcile(server, 6, [LeasePhase(max_leases=None, subnet_prefix_lengths={10: 64})])
+            report = reconcile(server, 6, [lease_phase(server, 6, {10: 64})])
 
-        self.assertEqual((report.created, report.errors, report.incomplete), (1, 0, set()))
-        self.assertEqual(set(_links(_row("2001:db8:1:100::"))), {"pd-owner"})
+        self.assertEqual((report.created, report.errors, report.incomplete), (0, 0, set()))
+        self.assertFalse(IPAddress.objects.exists())

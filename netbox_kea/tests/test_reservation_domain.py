@@ -59,6 +59,7 @@ def _catalogue(family: Family, subnet_id: int, cidr: str) -> CatalogueSnapshot:
         configuration=None,
         shared_network=None,
         membership_known=True,
+        qualifying_suffix=None,
     )
     # Identity-only: the fixture carries no configuration, which is all a Reservation
     # Scope needs verified.
@@ -75,6 +76,7 @@ def _catalogue(family: Family, subnet_id: int, cidr: str) -> CatalogueSnapshot:
         configuration_complete=False,
         consistent=True,
         configuration_hash=None,
+        global_qualifying_suffix=None,
     )
 
 
@@ -296,8 +298,11 @@ class TestReservationPage(SimpleTestCase):
         catalogue = _catalogue(4, 20, "198.18.0.0/24")
         configured = ConfiguredSubnet(
             candidate_identity=catalogue.subnets[0].identity,
-            configuration=SubnetConfiguration(pools=(), options=(), settings=SubnetSettings()),
+            configuration=SubnetConfiguration(
+                pools=(), options=(), settings=SubnetSettings(), pool_qualifying_suffixes=()
+            ),
             shared_network=None,
+            qualifying_suffix="",
         )
         catalogue = replace(catalogue, subnets=(), configured_subnets=(configured,))
         raw = {"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:ff", "ip-address": "198.18.0.20"}
@@ -645,6 +650,47 @@ class TestReservationExactIdentity(SimpleTestCase):
         with stub_kea({"reservation-get": {"result": 0, "text": "Host lookup completed."}}):
             with self.assertRaisesRegex(RuntimeError, "malformed arguments"):
                 self.kea.reservation_by_identity(4, self.catalogue, self.scope, identity)
+
+
+class TestReservationScopedPrefix(SimpleTestCase):
+    """A delegated prefix resolves to the Reservation of exactly that prefix, also outside the Subnet CIDR."""
+
+    def setUp(self):
+        self.kea = kea_client(url="http://kea.example.invalid", send_service=False)
+        self.catalogue = _catalogue(6, 10, "2001:db8:1::/64")
+        self.scope = InSubnetReservationScope(SubnetIdentity(10, ip_network("2001:db8:1::/64")))
+
+    def _host(self, prefix: str) -> dict:
+        # The shape of the host that Kea 3.2.0 returned for the base address of a reserved prefix.
+        return {
+            "subnet-id": 10,
+            "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:09",
+            "hostname": "pdres",
+            "ip-addresses": [],
+            "prefixes": [prefix],
+        }
+
+    def test_kea_finds_the_host_by_the_base_address_of_its_prefix(self):
+        with stub_kea({"reservation-get": _res_get(self._host("2001:db8:100:800::/56"))}) as kea:
+            reservation = self.kea.reservation_by_prefix(
+                self.catalogue, self.scope, ip_network("2001:db8:100:800::/56")
+            )
+
+        self.assertEqual(reservation.delegated_prefixes, (ip_network("2001:db8:100:800::/56"),))
+        self.assertEqual(
+            kea.bodies("reservation-get")[0]["arguments"], {"subnet-id": 10, "ip-address": "2001:db8:100:800::"}
+        )
+
+    def test_a_host_that_reserves_another_length_at_the_base_fails_closed(self):
+        with stub_kea({"reservation-get": _res_get(self._host("2001:db8:100:800::/60"))}):
+            with self.assertRaisesRegex(ValueError, "scoped target 2001:db8:100:800::/56"):
+                self.kea.reservation_by_prefix(self.catalogue, self.scope, ip_network("2001:db8:100:800::/56"))
+
+    def test_no_host_is_none(self):
+        with stub_kea({"reservation-get": {"result": 3, "text": "Host not found."}}):
+            self.assertIsNone(
+                self.kea.reservation_by_prefix(self.catalogue, self.scope, ip_network("2001:db8:100:800::/56"))
+            )
 
 
 class TestReservationScopedAddress(SimpleTestCase):

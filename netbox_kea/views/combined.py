@@ -15,7 +15,7 @@ from django.views import View
 from .. import constants, forms, server_configuration, tables
 from ..constants import Family
 from ..decimal_text import parse_decimal
-from ..ipam_reconciliation import LEASE, RESERVATION, claim_permissions
+from ..ipam_reconciliation import RESERVATION, claim_permissions
 from ..kea import KeaException, LeaseQueryGuardError, lease_query_guard_message
 from ..leases import LeaseSnapshot
 from ..models import Server
@@ -29,7 +29,7 @@ from ..utilities import (
     snapshot_rows,
 )
 from ._base import ConditionalLoginRequiredMixin, _catalogue_subnet_row, _enrich_subnet_statistics, _shared_network_row
-from .leases import _enrich_leases_with_badges
+from .leases import _enrich_leases_with_badges, lease_sync_gates
 from .reservations import (
     _attach_reservation_action_urls,
     _configured_capabilities,
@@ -661,7 +661,7 @@ class _CombinedLeasesView(_CombinedViewMixin):
 
         # Enrich in the main thread so Django ORM queries see the test transaction.
         server_map = {s.pk: s for s in servers}
-        sync = sync_gate(request.user, claim_permissions(LEASE))
+        sync = lease_sync_gates(request.user)
         for server_pk, server in server_map.items():
             server_leases = [entry for entry in all_leases if entry.get("server_pk") == server_pk]
             if server_leases:

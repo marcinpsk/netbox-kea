@@ -21,3 +21,19 @@
     {% endif %}
   </span>
 {% endfor %}
+{% for network, result in claim_result.prefixes.items %}
+  <span class="d-inline-block me-2">
+    {% if result.synchronized %}
+      {% include "netbox_kea/inc/prefix_sync_badge.html" with prefix=result.prefix %}
+    {% else %}
+      <span>{{ network }}</span>
+      {% if result.outcome == "disagreement" %}
+        <span class="badge text-bg-warning">Owner disagreement</span>
+      {% elif result.outcome == "conflict" %}
+        <span class="badge text-bg-warning">Conflict</span>
+      {% else %}
+        <span class="badge text-bg-danger">Sync error</span>
+      {% endif %}
+    {% endif %}
+  </span>
+{% endfor %}

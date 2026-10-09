@@ -14,7 +14,7 @@ import math
 from collections import Counter
 from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Literal, TypeAlias, get_args
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Literal, NamedTuple, TypeAlias, get_args
 
 from pydantic import (
     AwareDatetime,
@@ -183,13 +183,8 @@ def allocation_identities(family: Family, address: str) -> tuple[LeaseIdentity, 
     return tuple(LeaseIdentity(family=family, kind=kind, address=ipaddress.ip_address(address)) for kind in kinds)
 
 
-def selection_label(lease: Lease) -> str:
-    """Return the label that selects *lease*: its address, or its prefix for a delegated prefix."""
-    return str(lease.prefix) if isinstance(lease, DHCPv6PrefixLease) else str(lease.identity.address)
-
-
 def parse_selection(family: Family, label: str) -> tuple[str, LeaseIdentity]:
-    """Return the canonical form of a :func:`selection_label` and the identity it names.
+    """Return the canonical form of a :attr:`ShownLease.label` and the identity it names.
 
     Raises:
         ValueError: If *label* is not an address or a delegated prefix of *family*.
@@ -502,7 +497,10 @@ ExactLeaseResult: TypeAlias = Annotated[LeaseFound | LeaseAbsent | LeaseLookupFa
 
 
 class ShownLease(_Value):
-    """The Lease facts that a form showed, for comparison with a fresh read before a change."""
+    """The Lease facts that a form showed, for comparison with a fresh read before a change.
+
+    A page carries them as ``model_dump_json()`` and a submission reads them back with ``model_validate_json()``.
+    """
 
     identity: LeaseIdentity
     prefix_length: PrefixLength | None
@@ -510,6 +508,21 @@ class ShownLease(_Value):
     binding: DHCPv4Binding | DHCPv6Binding
     hostname: str
     valid_lifetime: Uint32
+
+    @model_validator(mode="after")
+    def _prefix_of_its_kind(self) -> ShownLease:
+        if (self.prefix_length is None) != (self.identity.kind == "address"):
+            raise ValueError("Only a delegated prefix has a prefix length.")
+        if isinstance(self.binding, DHCPv4Binding) != (self.identity.family == 4):
+            raise ValueError("The client binding must belong to the family of the Lease.")
+        return self
+
+    @property
+    def label(self) -> str:
+        """Return the address, or ``address/length`` for a delegated prefix."""
+        if self.prefix_length is None:
+            return str(self.identity.address)
+        return f"{self.identity.address}/{self.prefix_length}"
 
 
 class LeaseEdit(_Value):
@@ -530,9 +543,44 @@ class LeaseEdit(_Value):
         )
 
 
+class LeaseChanged(_Value):
+    """Kea confirmed the change or deletion of the Lease that the fresh read before it observed."""
+
+    outcome: Literal["changed"] = "changed"
+    lease: Lease
+
+
+#: Each Lease fact that a fresh read can contradict, in the order of comparison.
+LeaseFact = Literal["identity", "prefix_length", "subnet_id", "binding", "hostname", "valid_lifetime"]
+# The facts that a change compares only when it writes them.
+_WRITTEN_FACTS = frozenset({"hostname", "valid_lifetime"})
+
+
+class LeaseConflict(_Value):
+    """Nothing changed: the fresh Lease contradicts each shown fact in ``fields``."""
+
+    outcome: Literal["conflict"] = "conflict"
+    fields: Annotated[tuple[LeaseFact, ...], Field(min_length=1)]
+
+
+class LeaseChangeRefused(_Value):
+    """Nothing changed: Kea refused the update because the Lease was deleted or changed after the fresh read."""
+
+    outcome: Literal["refused"] = "refused"
+    identity: LeaseIdentity
+
+
+#: The outcome of one Lease change or deletion; only ``LeaseChanged`` changed Kea.
+LeaseChangeResult: TypeAlias = Annotated[
+    LeaseChanged | LeaseConflict | LeaseChangeRefused | LeaseAbsent | LeaseLookupFailed,
+    Field(discriminator="outcome"),
+]
+
+
 class DHCPv4LeaseRequest(_Value):
     """A request to create one DHCPv4 address Lease; Kea supplies the observed facts."""
 
+    family: ClassVar[Family] = 4
     variant: Literal["dhcpv4-address"] = "dhcpv4-address"
     address: ipaddress.IPv4Address
     # lease4-add requires it.
@@ -547,6 +595,7 @@ class DHCPv4LeaseRequest(_Value):
 class DHCPv6LeaseRequest(_Value):
     """A request to create one DHCPv6 address Lease; Kea supplies the observed facts."""
 
+    family: ClassVar[Family] = 6
     variant: Literal["dhcpv6-address"] = "dhcpv6-address"
     address: ipaddress.IPv6Address
     duid: Duid
@@ -557,12 +606,52 @@ class DHCPv6LeaseRequest(_Value):
 
     @model_validator(mode="after")
     def _client_identity(self) -> DHCPv6LeaseRequest:
+        # A new Lease needs a client DUID, not Kea's empty DUID.
         if self.duid == _EMPTY_DUID:
-            raise ValueError("A new Lease needs a client DUID, not Kea's empty DUID.")
+            raise _rule("invalid-identifier", "duid")
         return self
 
 
 LeaseRequest: TypeAlias = Annotated[DHCPv4LeaseRequest | DHCPv6LeaseRequest, Field(discriminator="variant")]
+
+
+class RequestError(NamedTuple):
+    """One reason why a creation request was refused."""
+
+    #: The request field, or ``None`` for an error of the whole request.
+    field: str | None
+    #: The Pydantic error type, such as ``missing``.
+    code: str
+    message: str
+
+
+def request_errors(exc: ValidationError) -> tuple[RequestError, ...]:
+    """Return each reason why a creation request was refused."""
+    return tuple(
+        RequestError(
+            str(error["loc"][0]) if error["loc"] else error.get("ctx", {}).get("field"), error["type"], error["msg"]
+        )
+        for error in exc.errors(include_url=False)
+    )
+
+
+def creation_mismatches(request: LeaseRequest, lease: Lease) -> tuple[LeaseFact, ...]:
+    """Return the facts of *request* that the Lease read after its creation contradicts.
+
+    A fact that the request left to Kea is not compared.
+    """
+    if isinstance(request, DHCPv4LeaseRequest):
+        binding = isinstance(lease, DHCPv4AddressLease) and (
+            lease.hw_address == request.hw_address and request.client_id in (None, lease.client_id)
+        )
+    else:
+        binding = isinstance(lease, DHCPv6AddressLease) and (lease.duid, lease.iaid) == (request.duid, request.iaid)
+    differs: dict[LeaseFact, bool] = {
+        "binding": not binding,
+        "subnet_id": request.subnet_id not in (None, lease.subnet_id),
+        "hostname": request.hostname not in (None, lease.hostname),
+    }
+    return tuple(name for name, differ in differs.items() if differ)
 
 
 class MalformedLeaseResponse(RuntimeError):
@@ -623,11 +712,10 @@ def lease_edit(shown: ShownLease, *, hostname: str, client_identifier: str, vali
     )
 
 
-def lease_edit_conflicts(shown: ShownLease, fresh: Lease, edit: LeaseEdit) -> tuple[str, ...]:
+def lease_edit_conflicts(shown: ShownLease, fresh: Lease, edit: LeaseEdit) -> tuple[LeaseFact, ...]:
     """Return the shown facts that a fresh read contradicts; a renewal alone is no conflict."""
     current = shown_lease(fresh)
-    compared = ["identity", "prefix_length", "subnet_id", "binding"]
-    compared += [name for name in ("hostname", "valid_lifetime") if getattr(edit, name) is not None]
+    compared = [name for name in get_args(LeaseFact) if name not in _WRITTEN_FACTS or getattr(edit, name) is not None]
     return tuple(name for name in compared if getattr(current, name) != getattr(shown, name))
 
 
@@ -851,12 +939,12 @@ def _read_records(raw_leases: list[Any], family: Family) -> tuple[tuple[Lease, .
     return records, tuple(diagnostic for _index, diagnostic in sorted(diagnostics, key=lambda item: item[0]))
 
 
-def _reply(response: Any) -> tuple[int, Any]:
+def _reply(response: Any, results: tuple[int, int] = (0, 3)) -> tuple[int, Any]:
     """Return the result code and arguments of a one-service lease reply, or fail the read."""
     if not isinstance(response, list) or len(response) != 1 or not isinstance(response[0], dict):
         raise MalformedLeaseResponse("Kea returned a malformed lease response.")
     result = response[0].get("result")
-    if isinstance(result, bool) or not isinstance(result, int) or result not in (0, 3):
+    if isinstance(result, bool) or not isinstance(result, int) or result not in results:
         raise MalformedLeaseResponse("Kea returned a lease response with an unexpected result.")
     return result, response[0].get("arguments")
 
@@ -988,14 +1076,17 @@ def read_exact_lease(response: Any, identity: LeaseIdentity) -> ExactLeaseResult
     return LeaseFound(lease=lease)
 
 
-def read_deletion(response: Any) -> bool:
-    """Read one ``lease{4,6}-del`` reply: ``True`` when Kea deleted the Lease, ``False`` when it held none.
+def read_lease_change(response: Any, *, refused: int) -> bool:
+    """Read one ``lease{4,6}-update`` or ``lease{4,6}-del`` reply: ``True`` when Kea applied it.
+
+    *refused* is the result that changed nothing: 3 when ``lease{4,6}-del`` held no Lease, 4 when
+    ``lease{4,6}-update`` found the Lease deleted or changed.
 
     Raises:
         MalformedLeaseResponse: If the envelope is unusable.
 
     """
-    result, _arguments = _reply(response)
+    result, _arguments = _reply(response, (0, refused))
     return result == 0
 
 

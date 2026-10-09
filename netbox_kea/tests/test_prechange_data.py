@@ -15,7 +15,7 @@ from django.test import RequestFactory, TestCase, override_settings
 from ipam.models import VRF, IPAddress, IPRange, Prefix
 from netbox.context_managers import event_tracking
 
-from netbox_kea.ipam_reconciliation import LeasePhase, PoolPhase, SubnetPhase, read_catalogue, reconcile
+from netbox_kea.ipam_reconciliation import PoolPhase, SubnetPhase, read_catalogue, reconcile
 from netbox_kea.jobs import KeaIpamSyncJob
 from netbox_kea.mappers.kea_to_dhcp import parse_dhcp_config
 from netbox_kea.models import IPAMOwnershipLink
@@ -23,7 +23,7 @@ from netbox_kea.tests.kea_stub import _catalogue_responses_for_subnets, complete
 from netbox_kea.tests.test_integration_dhcp_plugin import _reservation_snapshot
 from netbox_kea.tests.test_ipam_reconciliation import _kea, _lease, _reconcile, _reservation
 from netbox_kea.tests.test_jobs import _patch_kea
-from netbox_kea.tests.utils import _make_db_server, plugins_config
+from netbox_kea.tests.utils import _make_db_server, lease_phase, plugins_config
 
 
 @override_settings(PLUGINS_CONFIG=plugins_config())
@@ -158,7 +158,7 @@ class IPAMChangeRecordTest(TestCase):
                 }
             ),
         ):
-            report = reconcile(self.server, 4, [LeasePhase(max_leases=None, subnet_prefix_lengths={1: 24})])
+            report = reconcile(self.server, 4, [lease_phase(self.server, 4, {1: 24})])
         self.assertEqual(report.errors, 0)
         self.assertEqual(report.updated, 1)
         change = ObjectChange.objects.get(
@@ -207,7 +207,7 @@ class IPAMChangeRecordTest(TestCase):
                 }
             ),
         ):
-            report = reconcile(self.server, 4, [LeasePhase(max_leases=None, subnet_prefix_lengths={1: 24})])
+            report = reconcile(self.server, 4, [lease_phase(self.server, 4, {1: 24})])
         self.assertEqual(report.errors, 0)
         change = ObjectChange.objects.get(
             changed_object_type=ContentType.objects.get_for_model(mac),
@@ -227,7 +227,7 @@ class IPAMChangeRecordTest(TestCase):
             address="198.18.0.42/32", status="reserved", description="Synced from Kea DHCP reservation"
         )
         with event_tracking(self.request), _kea([_lease("198.18.0.42", "new.example.invalid")]):
-            report = reconcile(self.server, 4, [LeasePhase(max_leases=None, subnet_prefix_lengths={1: 24})])
+            report = reconcile(self.server, 4, [lease_phase(self.server, 4, {1: 24})])
         self.assertEqual(report.errors, 0)
         changes = list(
             ObjectChange.objects.filter(

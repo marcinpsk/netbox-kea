@@ -41,26 +41,32 @@ rules:
               regex: ^CONFIG_(TEST|SET|WRITE)$
       - pattern: $CLIENT._one_command(KeaCommand.CONFIG_SET, ...)
 
-  - id: kea-sync-hostname-unvalidated
+  - id: kea-sync-hostname-unpublished
     languages: [python]
     severity: ERROR
     message: >-
-      Read raw lease hostnames through _record_hostname() so malformed values
-      cannot enter ownership facts or a complete keep-set.
+      The IPAM and MAC sync must report the name that Kea publishes. Pass a lease
+      hostname through lease_published_name() and a Reservation through
+      reservation_published_name() in netbox_kea/published_name.py.
     metadata:
       category: correctness
       confidence: HIGH
+      references:
+        - "https://github.com/marcinpsk/netbox-kea/issues/304"
+    paths:
+      include:
+        - "netbox_kea/ipam_reconciliation.py"
+        - "netbox_kea/integrations/dhcp_plugin.py"
+        - "kea-sync-hostname-unpublished.py"
     patterns:
+      # A reported name reaches the sync as a call argument or in a (hardware, hostname) pair.
       - pattern-either:
-          - pattern-inside: |
-              def _lease_report(...):
-                  ...
-          - pattern-inside: |
-              def _claim_reports(...):
-                  ...
-      - pattern-either:
-          - pattern: $RECORD.get("hostname", ...)
-          - pattern: $RECORD["hostname"]
+          - pattern: $FUNCTION(..., $RECORD.hostname, ...)
+          - pattern: ($HARDWARE, $RECORD.hostname)
+      - metavariable-regex:
+          metavariable: $RECORD
+          regex: (?i)(lease|reservation|record)$
+      - pattern-not: lease_published_name(...)
 
   - id: kea-get-client-missing-version
     languages: [python]

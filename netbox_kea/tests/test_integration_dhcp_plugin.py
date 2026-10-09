@@ -21,9 +21,10 @@ from django.test import TestCase, TransactionTestCase, override_settings, tag
 from django.urls import reverse
 from django.utils import timezone
 
+from netbox_kea import server_configuration
 from netbox_kea.ipam_reconciliation import ReservationObservation
 from netbox_kea.mappers.kea_to_dhcp import parse_dhcp_config
-from netbox_kea.models import next_confirmation_number
+from netbox_kea.models import Server, next_confirmation_number
 from netbox_kea.reservations import (
     RESERVATION_INVALID_IDENTIFIER,
     RESERVATION_PAGE_FETCH_FAILED,
@@ -31,10 +32,10 @@ from netbox_kea.reservations import (
     ReservationDiagnostic,
     ReservationSnapshot,
 )
-from netbox_kea.subnet_catalogue import IdentityOnlyCatalogueSnapshot, SubnetIdentity, VerifiedSubnet
+from netbox_kea.subnet_catalogue import IncompleteCatalogueSnapshot, SubnetIdentity, VerifiedSubnet
 
 from .kea_stub import _res_page, kea_client, stub_kea
-from .utils import _make_db_server, linked_dhcp_targets, plugins_config
+from .utils import _make_db_server, lease_phase, linked_dhcp_targets, plugins_config
 
 DHCP_PLUGIN = "netbox_dhcp"
 _PLUGINS_CONFIG = plugins_config()
@@ -68,12 +69,24 @@ def _conf_v6():
     }
 
 
-def _reservation_snapshot(conf: dict, version: Family, hosts: list[dict] | None = None) -> ReservationObservation:
-    """Build the real typed Snapshot used by the optional adapter."""
+def _subnet_entries(conf: dict, version: Family) -> list:
     subnet_key = f"subnet{version}"
     entries = list(conf.get(subnet_key, []))
     for shared_network in conf.get("shared-networks", []):
         entries.extend(shared_network.get(subnet_key, []))
+    return entries
+
+
+def _catalogue(conf: dict, version: Family) -> IncompleteCatalogueSnapshot:
+    """Return the Subnet identities of *conf* with the effective DDNS qualifying suffixes."""
+    entries = _subnet_entries(conf, version)
+    # The real parser reads the effective DDNS qualifying suffixes from *conf*.
+    configuration = server_configuration.observed_snapshot(Server(pk=1), version, conf)
+    declared = {subnet.declared_subnet_id: subnet for subnet in configuration.subnets}
+    suffixes = {
+        subnet_id: server_configuration.effective_qualifying_suffix(configuration, subnet)
+        for subnet_id, subnet in declared.items()
+    }
     verified = tuple(
         VerifiedSubnet(
             identity=SubnetIdentity(
@@ -81,16 +94,16 @@ def _reservation_snapshot(conf: dict, version: Family, hosts: list[dict] | None 
                 network=ipaddress.ip_network(entry["subnet"]),
             ),
             declared_cidr=entry["subnet"],
-            configuration=None,
+            configuration=declared[int(entry["id"])].configuration if int(entry["id"]) in declared else None,
             shared_network=None,
             membership_known=False,
+            qualifying_suffix=suffixes.get(int(entry["id"])),
         )
         for entry in entries
         if isinstance(entry, dict) and entry.get("id") is not None and entry.get("subnet")
     )
-    # Identity-only: every VerifiedSubnet here carries configuration=None, which the
-    # real builder only produces when no configuration source was read.
-    catalogue = IdentityOnlyCatalogueSnapshot(
+    # The real parser's configuration facts; Shared Network membership is not shown.
+    return IncompleteCatalogueSnapshot(
         server_id=1,
         family=version,
         observed_at=timezone.now(),
@@ -98,12 +111,19 @@ def _reservation_snapshot(conf: dict, version: Family, hosts: list[dict] | None 
         configured_subnets=(),
         diagnostics=(),
         identity_available=True,
-        configuration_available=False,
+        configuration_available=True,
         identity_complete=True,
-        configuration_complete=False,
+        configuration_complete=not configuration.subnet_diagnostics,
         consistent=True,
         configuration_hash=None,
+        global_qualifying_suffix=configuration.ddns_qualifying_suffix,
     )
+
+
+def _reservation_snapshot(conf: dict, version: Family, hosts: list[dict] | None = None) -> ReservationObservation:
+    """Build the real typed Snapshot used by the optional adapter."""
+    entries = _subnet_entries(conf, version)
+    catalogue = _catalogue(conf, version)
     if hosts is None:
         hosts = []
         for entry in entries:
@@ -113,7 +133,9 @@ def _reservation_snapshot(conf: dict, version: Family, hosts: list[dict] | None 
     with stub_kea({"reservation-get-page": _res_page(hosts)}):
         # Bound the page to the fixture so a larger fixture cannot silently truncate.
         cutoff = next_confirmation_number()
-        return ReservationObservation(client.reservation_page(version, catalogue, limit=max(len(hosts), 1)), cutoff)
+        return ReservationObservation(
+            client.reservation_page(version, catalogue, limit=max(len(hosts), 1)), cutoff, catalogue
+        )
 
 
 class TestOptionalMetadataCoordination(TransactionTestCase):
@@ -1045,6 +1067,39 @@ class DhcpPluginReservationSnapshotImportTest(TestCase):
             MACAddress.objects.get(mac_address="aa:bb:cc:dd:ee:11"),
         )
 
+    def test_global_reservation_mac_takes_the_published_name_of_its_subnet(self):
+        """The MAC description takes the published name; the plugin row mirrors the stored Kea hostname."""
+        from dcim.models import MACAddress
+
+        HostReservation = apps.get_model(DHCP_PLUGIN, "HostReservation")
+        conf = {
+            "ddns-qualifying-suffix": "dhcp.example.com",
+            "subnet4": [{"id": 7, "subnet": "10.12.0.0/24", "ddns-qualifying-suffix": "lab.example.com."}],
+        }
+        hosts = [
+            {"subnet-id": 0, "hw-address": "aa:bb:cc:dd:ee:12", "ip-address": "10.12.0.9", "hostname": "in-subnet"},
+            {"subnet-id": 0, "hw-address": "aa:bb:cc:dd:ee:13", "ip-address": "10.13.0.9", "hostname": "outside"},
+            {"subnet-id": 0, "hw-address": "aa:bb:cc:dd:ee:14", "hostname": "Host.example.org."},
+        ]
+        summary = self.adapter.import_server_config(
+            self.server, parse_dhcp_config(conf, 4), _reservation_snapshot(conf, 4, hosts)
+        )
+
+        self.assertEqual(summary.errors, 0, summary.warnings)
+        for hardware, published in (
+            ("aa:bb:cc:dd:ee:12", "in-subnet.lab.example.com"),
+            ("aa:bb:cc:dd:ee:13", "outside.dhcp.example.com"),
+            ("aa:bb:cc:dd:ee:14", "host.example.org"),
+        ):
+            with self.subTest(hardware=hardware):
+                self.assertEqual(
+                    MACAddress.objects.get(mac_address=hardware).description, f"dhcp_hostname: {published}"
+                )
+        self.assertEqual(
+            sorted(HostReservation.objects.values_list("hostname", flat=True)),
+            ["Host.example.org.", "in-subnet", "outside"],
+        )
+
     def test_dual_stack_global_reservations_keep_separate_rows(self):
         """One identifier reserved globally in both protocols is two Reservations, not one.
 
@@ -1142,6 +1197,33 @@ class DhcpPluginReservationSnapshotImportTest(TestCase):
             HostReservation.objects.get().hw_address,
             MACAddress.objects.get(mac_address="aa:bb:cc:dd:ee:12"),
         )
+
+    def test_addressless_reservation_without_a_known_published_name_imports_without_a_mac_name(self):
+        """A Pool suffix makes the name depend on the lease, so the MAC description gets no name."""
+        from dcim.models import MACAddress
+
+        HostReservation = apps.get_model(DHCP_PLUGIN, "HostReservation")
+        conf = {
+            "subnet4": [
+                {
+                    "id": 13,
+                    "subnet": "10.13.0.0/24",
+                    "pools": [{"pool": "10.13.0.10-10.13.0.100", "ddns-qualifying-suffix": "pool.example.com"}],
+                }
+            ]
+        }
+        hosts = [{"subnet-id": 13, "hw-address": "aa:bb:cc:dd:ee:13", "hostname": "id-only"}]
+        summary = self.adapter.import_server_config(
+            self.server, parse_dhcp_config(conf, 4), _reservation_snapshot(conf, 4, hosts)
+        )
+
+        self.assertEqual(summary.errors, 0, summary.warnings)
+        self.assertIn("reservation", summary.ownership.completed_sources)
+        reservation = HostReservation.objects.get()
+        self.assertEqual(reservation.hostname, "id-only")
+        mac = MACAddress.objects.get(mac_address="aa:bb:cc:dd:ee:13")
+        self.assertEqual(reservation.hw_address, mac)
+        self.assertEqual(mac.description, "")
 
     def test_global_v6_reservation_does_not_invent_ipam_scope(self):
         from ipam.models import IPAddress
@@ -1375,7 +1457,7 @@ class DhcpPluginStaleCleanupGuardTest(TestCase):
 
         from netbox_kea import subnet_catalogue
         from netbox_kea.integrations import dhcp_plugin
-        from netbox_kea.ipam_reconciliation import LeasePhase, ReservationPhase, reconcile
+        from netbox_kea.ipam_reconciliation import ReservationPhase, reconcile
         from netbox_kea.models import IPAMOwnershipLink
 
         from .kea_stub import _catalogue_responses_for_subnets
@@ -1394,7 +1476,6 @@ class DhcpPluginStaleCleanupGuardTest(TestCase):
         }
         dhcp_plugin.import_server_config(self.server, parse_dhcp_config(conf, 4), _reservation_snapshot(conf, 4))
         referenced = IPAddress.objects.get(address="10.77.0.50/24")
-        lease_phase = LeasePhase(max_leases=None, subnet_prefix_lengths={1: 24})
         lease = {"ip-address": "10.77.0.50", "hostname": "pc", "subnet-id": 1}
         empty_kea = {
             **_catalogue_responses_for_subnets(4, [{"id": 1, "subnet": "10.77.0.0/24"}]),
@@ -1404,13 +1485,13 @@ class DhcpPluginStaleCleanupGuardTest(TestCase):
         for mode in ("remove", "deprecate"):
             with self.subTest(mode), override_settings(PLUGINS_CONFIG=plugins_config(stale_ip_cleanup=mode)):
                 with stub_kea({"lease4-get-page": _lease_page([lease])}):
-                    reconcile(self.server, 4, [lease_phase])
+                    reconcile(self.server, 4, [lease_phase(self.server, 4, {1: 24})])
                 self.assertTrue(IPAMOwnershipLink.objects.filter(ip_address=referenced).exists())
 
                 # Both phases run, so the cleanup decides the last link of the Server.
                 with stub_kea(empty_kea):
                     reservation_phase = ReservationPhase(subnet_catalogue.for_synchronization(self.server, 4))
-                    report = reconcile(self.server, 4, [lease_phase, reservation_phase])
+                    report = reconcile(self.server, 4, [lease_phase(self.server, 4, {1: 24}), reservation_phase])
 
                 self.assertEqual((report.removed, report.deprecated), (0, 0))
                 self.assertIn(IPAddress.objects.get(pk=referenced.pk).status, {"reserved", "dhcp"})
@@ -1449,7 +1530,11 @@ class ImportSummaryCompletenessTest(TestCase):
         from netbox_kea.integrations.dhcp_plugin import ImportSummary, import_reservation_snapshot
 
         summary = ImportSummary()
-        observation = ReservationObservation(snapshot, next_confirmation_number()) if snapshot is not None else None
+        observation = (
+            ReservationObservation(snapshot, next_confirmation_number(), _catalogue({}, 4))
+            if snapshot is not None
+            else None
+        )
         import_reservation_snapshot(_make_db_server(), None, observation, None, summary)
         return summary
 

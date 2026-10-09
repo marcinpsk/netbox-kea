@@ -79,6 +79,18 @@ _Avoid_: Identifier priority, reservation key
 The place where Kea applies a Reservation. It is either Global or one specific Subnet.
 _Avoid_: Subnet ID, reservation location
 
+**Published Name**:
+The hostname that Kea gives a client for a Reservation: the stored Reservation hostname under the Effective DDNS
+Qualifying Suffix, in lower case and without a trailing dot. The Reservation forms take it, and the IPAM
+synchronization writes it to NetBox for both the lease and the Reservation source.
+_Avoid_: Stored hostname, qualified name, FQDN
+
+**Effective DDNS Qualifying Suffix**:
+The `ddns-qualifying-suffix` that Kea applies to one address: the value of the Pool that contains the address,
+else of its Subnet, its Shared Network, or the global configuration, in that order. It is unknown when a Pool of
+the Subnet sets a value and the address is not known.
+_Avoid_: Subnet suffix, domain suffix
+
 **Reservation Snapshot**:
 A time-bounded observation of Reservations for one Server, address family, and requested scope. An Incomplete Reservation Snapshot preserves valid Reservations; failed or bounded page reads can make it incomplete without a record diagnostic, while parsing failures identify records that could not be interpreted.
 _Avoid_: Reservation response, host list
@@ -150,7 +162,8 @@ _Avoid_: Partial persist, ambiguous config-set
 
 **IPAM Ownership**:
 The fact that one Server and address family synchronized a NetBox IP address, Prefix, or IP Range from one Kea
-source: a lease, Reservation, Subnet, Pool, or delegated prefix. One object can have several owners. An operator
+source: an address lease, a delegated-prefix lease, a Reservation, a Subnet, a Pool, or a Reservation delegated
+prefix. Only a Current Lease is a lease source. One object can have several owners. An operator
 ends every ownership of an object when the description no longer starts with a well-formed marker block
 (`[kea-sync: <kind>]`): the block is missing, moved or malformed. A block of another known kind still marks the
 object. Text after the block is an operator note, and the synchronization keeps it.

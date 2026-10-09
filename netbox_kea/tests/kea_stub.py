@@ -37,7 +37,7 @@ from requests.adapters import HTTPAdapter
 from netbox_kea import branching
 from netbox_kea.constants import Family
 from netbox_kea.kea import KeaClient
-from netbox_kea.leases import Lease, read_lease_collection
+from netbox_kea.leases import Lease, read_lease_collection, shown_lease
 from netbox_kea.plugin_settings import DEFAULT_SETTINGS
 from netbox_kea.reservations import (
     GlobalReservationScope,
@@ -212,6 +212,11 @@ def typed_lease(record: dict[str, Any]) -> Lease:
         raise AssertionError(f"The test lease record is not valid: {read.diagnostics}")
     (lease,) = read.records
     return lease
+
+
+def shown_token(record: dict[str, Any]) -> str:
+    """Return the shown facts of one valid Kea lease *record*, as a lease row or edit page carries them."""
+    return shown_lease(typed_lease(record)).model_dump_json()
 
 
 def lease_reply(*records: dict[str, Any]) -> dict[str, Any]:
@@ -824,6 +829,110 @@ class SubnetDaemon:
             return {"result": 3, "text": f"no subnet with id {subnet_id}"}
         self.remove(subnet_id)
         return {"result": 0, "text": f"IPv{self.family} subnet {subnet_id} deleted"}
+
+
+@cache
+def _recorded_lease_changes(family: int) -> dict[str, Any]:
+    return json.loads((_RECORDINGS / f"dhcp{family}.json").read_text())["leases"]["changes"]
+
+
+class LeaseDaemon:
+    """One Kea daemon that holds the raw leases of one family and answers the exact lease commands like Kea 3.2.0.
+
+    A lease is keyed by its type and address, so a delegated prefix needs its type, as in Kea. The replies come from
+    the recorded ``changes`` section. An update stores the sent body as Kea does: ``expire`` sets the transaction time,
+    and without it the update renews the lease now. ``before`` queues a change of another writer that runs just
+    before the next call of a command.
+    """
+
+    def __init__(self, family: Family, *records: dict[str, Any], subnet_id: int = 10) -> None:
+        self.family = family
+        self.subnet_id = subnet_id
+        self.leases: dict[tuple[str, str], dict[str, Any]] = {}
+        self._writers: dict[str, deque[Callable[[LeaseDaemon], None]]] = {}
+        for record in records:
+            self.put(record)
+
+    def _key(self, arguments: Mapping[str, Any]) -> tuple[str, str]:
+        kind = arguments.get("type", "IA_NA") if self.family == 6 else "V4"
+        return kind, str(ipaddress.ip_address(arguments["ip-address"]))
+
+    def put(self, record: dict[str, Any]) -> None:
+        """Hold *record*, or replace the lease with its key, as another writer would."""
+        self.leases[self._key(record)] = json.loads(json.dumps(record))
+
+    def lease(self, address: str, kind: str = "IA_NA") -> dict[str, Any] | None:
+        """Return the held lease at *address*, or None."""
+        return self.leases.get((kind if self.family == 6 else "V4", address))
+
+    def before(self, command: str, change: Callable[[LeaseDaemon], None]) -> None:
+        """Run *change* (a callable that takes this daemon) just before the next call of *command*."""
+        self._writers.setdefault(command, deque()).append(change)
+
+    def responses(self) -> dict[str, Any]:
+        """Return the ``stub_kea`` responses of this daemon."""
+        v = self.family
+        handlers = {
+            f"lease{v}-get": self._get,
+            f"lease{v}-update": self._update,
+            f"lease{v}-del": self._delete,
+            f"lease{v}-add": self._add,
+        }
+        return {command: self._answering(command, handler) for command, handler in handlers.items()}
+
+    def _answering(self, command: str, run: Callable[[dict[str, Any]], dict[str, Any]]) -> Callable[..., Any]:
+        def answer(body: dict[str, Any]) -> dict[str, Any]:
+            writers = self._writers.get(command)
+            if writers:
+                writers.popleft()(self)
+            return run(body["arguments"])
+
+        return answer
+
+    def _recorded(self, name: str) -> dict[str, Any]:
+        return json.loads(json.dumps(_recorded_lease_changes(self.family)[name]))
+
+    def _get(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        held = self.leases.get(self._key(arguments))
+        if held is None:
+            return {"result": 3, "text": "Lease not found."}
+        return {**self._recorded("before"), "arguments": json.loads(json.dumps(held))}
+
+    def _update(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        if "force-create" in arguments:
+            raise AssertionError("LeaseDaemon: the plugin must never send force-create.")
+        key = self._key(arguments)
+        if key not in self.leases:
+            return self._recorded("update-absent")
+        stored = json.loads(json.dumps(arguments))
+        expire = stored.pop("expire", None)
+        stored["cltt"] = int(time.time()) if expire is None else expire - stored["valid-lft"]
+        self.leases[key] = stored
+        return self._recorded("update")
+
+    def _delete(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        if self.leases.pop(self._key(arguments), None) is None:
+            return self._recorded("delete-absent")
+        return self._recorded("delete")
+
+    def _add(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        key = self._key(arguments)
+        if key in self.leases:
+            return {"result": 1, "text": f"Lease for address {key[1]} already exists."}
+        stored = {
+            "subnet-id": self.subnet_id,
+            "cltt": int(time.time()),
+            "valid-lft": 3600,
+            "state": 0,
+            "hostname": "",
+            "fqdn-fwd": False,
+            "fqdn-rev": False,
+            **json.loads(json.dumps(arguments)),
+        }
+        if self.family == 6:
+            stored = {"type": "IA_NA", "preferred-lft": 3600, **stored}
+        self.leases[key] = stored
+        return {"result": 0, "text": f"Lease for address {key[1]}, subnet-id {stored['subnet-id']} added."}
 
 
 @contextmanager

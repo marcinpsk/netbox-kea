@@ -37,6 +37,7 @@ from netbox_kea.leases import (
     LeaseQuery,
     LeaseSnapshot,
     MalformedLeaseResponse,
+    ShownLease,
     is_current,
     lease_edit,
     lease_edit_conflicts,
@@ -655,6 +656,53 @@ def test_blank_hostname_clears_and_blank_identifier_or_lifetime_keeps():
     assert changed.written == ("hostname", "client_identifier", "valid_lifetime")
     with pytest.raises(ValueError):
         lease_edit(shown, hostname="", client_identifier="00:00:00", valid_lifetime=None)
+
+
+def test_shown_facts_survive_the_page_round_trip_and_refuse_a_changed_type():
+    for lease, label in (
+        (_parsed(4, "192.0.2.10"), "192.0.2.10"),
+        (_parsed(6, "2001:db8:100:100::"), "2001:db8:100:100::/56"),
+    ):
+        shown = shown_lease(lease)
+        assert shown.label == label
+        assert ShownLease.model_validate_json(shown.model_dump_json()) == shown
+    token = shown_lease(_parsed(6, "2001:db8:1::10")).model_dump_json()
+    for changed in (token.replace('"iaid":1', '"iaid":"1"'), token.replace('"family":6', '"family":4')):
+        with pytest.raises(ValidationError):
+            ShownLease.model_validate_json(changed)
+
+
+def test_shown_facts_hold_a_prefix_length_only_for_a_delegated_prefix():
+    shown = shown_lease(_parsed(6, "2001:db8:100:100::"))
+    with pytest.raises(ValidationError):
+        ShownLease.model_validate({**shown.model_dump(), "prefix_length": None})
+    with pytest.raises(ValidationError):
+        ShownLease.model_validate({**shown_lease(_parsed(6, "2001:db8:1::10")).model_dump(), "prefix_length": 64})
+
+
+def test_a_creation_compares_only_the_facts_that_the_request_names():
+    lease = _parsed(4, "192.0.2.10")
+    request = DHCPv4LeaseRequest(address=lease.address, hw_address="aa:bb:cc:00:00:10")
+    assert leases.creation_mismatches(request, lease) == ()
+    named = request.model_copy(update={"client_id": "01:00", "subnet_id": 11, "hostname": "other"})
+    assert leases.creation_mismatches(named, lease) == ("binding", "subnet_id", "hostname")
+    v6 = _parsed(6, "2001:db8:1::10")
+    request6 = DHCPv6LeaseRequest(address=v6.address, duid=v6.duid, iaid=v6.iaid + 1)
+    assert leases.creation_mismatches(request6, v6) == ("binding",)
+
+
+def test_a_conflict_names_at_least_one_known_fact():
+    for fields in ((), ("owner",)):
+        with pytest.raises(ValidationError):
+            leases.LeaseConflict(fields=fields)
+
+
+def test_a_change_reply_is_applied_only_on_success():
+    assert leases.read_lease_change([{"result": 0, "text": "IPv6 lease updated."}], refused=4)
+    assert not leases.read_lease_change([_recorded(6)["changes"]["update-absent"]], refused=4)
+    assert not leases.read_lease_change([_recorded(6)["changes"]["delete-absent"]], refused=3)
+    with pytest.raises(MalformedLeaseResponse):
+        leases.read_lease_change([_recorded(6)["changes"]["update-absent"]], refused=3)
 
 
 def test_renewal_alone_is_no_conflict_but_shown_facts_are():

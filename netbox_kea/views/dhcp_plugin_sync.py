@@ -94,7 +94,7 @@ def _fetch_reservation_snapshot(server: Server, version: Family):
     try:
         client = server.get_client(version=version)
         catalogue = for_synchronization(server, version)
-        return ReservationObservation(client.reservation_snapshot(version, catalogue), cutoff)
+        return ReservationObservation(client.reservation_snapshot(version, catalogue), cutoff, catalogue)
     except (KeaException, requests.RequestException, RuntimeError, ValueError):
         logger.warning(
             "DHCP-plugin sync: Reservation Snapshot failed for %s (v%s)", server.name, version, exc_info=True

@@ -8,6 +8,8 @@ import logging
 
 from django.test import TestCase, override_settings
 
+from netbox_kea.subnet_catalogue import for_synchronization
+
 from .kea_stub import _catalogue_responses_for_subnets, _typed_reservation, complete_lease, stub_kea, typed_lease
 from .utils import _make_db_server, plugins_config
 
@@ -346,7 +348,9 @@ class TestOwnershipClaimBehavior(TestCase):
             },
             prefix_length=24,
         )
-        return claim(self.server, 4, [reservation], force=force).addresses["198.18.0.20"]
+        with stub_kea(_catalogue_responses_for_subnets(4, [{"id": 1, "subnet": "198.18.0.0/24"}])):
+            catalogue = for_synchronization(self.server, 4)
+        return claim(self.server, 4, [reservation], force=force, catalogue=catalogue).addresses["198.18.0.20"]
 
     def test_repeated_lease_claim_is_idempotent_and_keeps_the_mac(self):
         from dcim.models import MACAddress

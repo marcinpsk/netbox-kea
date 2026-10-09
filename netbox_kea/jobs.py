@@ -67,11 +67,14 @@ def _sync_one_server(
     """Reconcile every enabled family and publish completion from the whole run."""
     from .ipam_reconciliation import (
         LeasePhase,
+        LeasePrefixPhase,
         Phase,
         PoolPhase,
         ReservationPhase,
         SubnetPhase,
+        lease_prefixes_enabled,
         read_catalogue,
+        read_leases,
         reconcile,
     )
 
@@ -101,14 +104,17 @@ def _sync_one_server(
             )
 
         phases: list[Phase] = []
-        if sync_leases:
-            phases.append(LeasePhase(max_leases=max_leases or None, subnet_prefix_lengths=subnet_prefix_map))
+        leases = read_leases(server, version, max_leases or None) if sync_leases else None
+        if leases is not None:
+            phases.append(LeasePhase(leases, subnet_prefix_lengths=subnet_prefix_map))
         if sync_reservations:
             phases.append(ReservationPhase(catalogue=catalogue))
         if sync_prefixes:
             phases.append(SubnetPhase(observation))
         if sync_ip_ranges:
             phases.append(PoolPhase(observation))
+        if leases is not None and lease_prefixes_enabled(version, sync_leases, sync_prefixes):
+            phases.append(LeasePrefixPhase(leases, catalogue))
         reports[version] = reconcile(server, version, phases)
         combined.merge(reports[version])
 
@@ -122,6 +128,14 @@ def _sync_one_server(
             len(combined.disagreements),
             len(sample),
             ", ".join(sample),
+        )
+    if combined.unclassified:
+        logger.warning(
+            "Server %s: %d NetBox IP address(es) keep a stale DHCPv6 lease link of unknown allocation kind;"
+            " a later Kea report of the address or of its delegated prefix classifies the link,"
+            " and removing the sync marker releases it",
+            server.name,
+            combined.unclassified,
         )
     if combined.conflicts:
         sample = sorted(combined.conflicts)[:_CONFLICT_SAMPLE_SIZE]
@@ -386,6 +400,7 @@ class KeaIpamSyncJob(JobRunner):
                     f" disagreements={len(report.disagreements)}"
                     f" skipped={len(report.skipped_reservations)}"
                     f" waiting={report.waiting}"
+                    f" unclassified={report.unclassified}"
                 )
                 # No row pks here: the list URL applies the viewer's own IPAM permissions.
                 for dup in report.duplicates:
@@ -411,6 +426,7 @@ class KeaIpamSyncJob(JobRunner):
                         "disagreements": len(report.disagreements),
                         "skipped": len(report.skipped_reservations),
                         "waiting": report.waiting,
+                        "unclassified": report.unclassified,
                     }
                 )
 
@@ -422,7 +438,7 @@ class KeaIpamSyncJob(JobRunner):
                 f" created={total.created} updated={total.updated}"
                 f" errors={total.errors} prefix_errors={total.prefix_errors}"
                 f" conflicts={total_conflicts} disagreements={total_disagreements} skipped={len(total.skipped_reservations)}"
-                f" unowned={total.unowned} waiting={total.waiting}"
+                f" unowned={total.unowned} waiting={total.waiting} unclassified={total.unclassified}"
             )
             if total.errors > 0 or total.prefix_errors > 0:
                 raise JobFailed

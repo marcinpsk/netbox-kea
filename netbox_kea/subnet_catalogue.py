@@ -14,7 +14,7 @@ from django.core.cache import cache
 from django.utils import timezone
 
 from . import constants, server_configuration
-from .constants import MAX_SUBNET_ID, MIN_SUBNET_ID, Family, IPNetworkValue
+from .constants import MAX_SUBNET_ID, MIN_SUBNET_ID, Family, IPAddressValue, IPNetworkValue
 from .kea import SUBNET_LIST, KeaClient, KeaException, MalformedReply, subnet_network
 
 if TYPE_CHECKING:
@@ -103,6 +103,8 @@ class VerifiedSubnet:
     shared_network: SharedNetworkMembership | None
     # False when no source showed the membership, so *shared_network* None does not mean none.
     membership_known: bool
+    # The effective DDNS qualifying suffix. None: the configuration does not show it.
+    qualifying_suffix: str | None
 
     @property
     def subnet_id(self) -> int:
@@ -127,6 +129,8 @@ class ConfiguredSubnet:
     candidate_identity: SubnetIdentity
     configuration: SubnetConfiguration
     shared_network: SharedNetworkMembership | None
+    # The effective DDNS qualifying suffix. None: the configuration does not show it.
+    qualifying_suffix: str | None
 
     @property
     def identity(self) -> SubnetIdentity:
@@ -150,6 +154,8 @@ class CatalogueSnapshot:
     configuration_complete: bool
     consistent: bool
     configuration_hash: str | None
+    # The global DDNS qualifying suffix. None: the configuration does not show it.
+    global_qualifying_suffix: str | None
     subnet_cmds_available: bool = True
 
     def _display_subnets(self) -> tuple[VerifiedSubnet | ConfiguredSubnet, ...]:
@@ -191,6 +197,64 @@ class CatalogueSnapshot:
         network = subnet_network(cidr, self.family)
         return next((subnet for subnet in self._display_subnets() if subnet.identity.network == network), None)
 
+    def subnet_qualifying_suffix(self, identity: SubnetIdentity, address: IPAddressValue | None) -> str:
+        """Return the DDNS qualifying suffix that Kea applies to *address* in the Subnet *identity*.
+
+        The Pool that contains the address comes first, then the effective suffix of the Subnet. Without an address,
+        a Pool suffix makes the value depend on the dynamic lease, so it is unknown.
+
+        Raises:
+            CatalogueUnavailable: When the snapshot does not show the Subnet with this identity or its suffix.
+
+        """
+        subnet = self.find_by_id(identity.subnet_id)
+        if (
+            subnet is None
+            or subnet.identity != identity
+            or subnet.configuration is None
+            or subnet.qualifying_suffix is None
+        ):
+            raise CatalogueUnavailable(f"The DDNS qualifying suffix of Subnet {identity.cidr} is unknown.")
+        pool_suffixes = subnet.configuration.pool_qualifying_suffixes
+        if address is None and pool_suffixes:
+            raise CatalogueUnavailable(
+                f"A Pool of Subnet {identity.cidr} sets a DDNS qualifying suffix, so it depends on the address."
+            )
+        return next(
+            (suffix for pool, suffix in pool_suffixes if address is not None and pool.contains(address)),
+            subnet.qualifying_suffix,
+        )
+
+    def has_pool_qualifying_suffix(self, identity: SubnetIdentity) -> bool:
+        """Return whether a Pool of the shown Subnet *identity* sets a suffix, so a name without an address is unknown."""
+        subnet = self.find_by_id(identity.subnet_id)
+        return (
+            subnet is not None
+            and subnet.identity == identity
+            and subnet.configuration is not None
+            and bool(subnet.configuration.pool_qualifying_suffixes)
+        )
+
+    def address_qualifying_suffix(self, address: IPAddressValue | None) -> str:
+        """Return the DDNS qualifying suffix of the Subnet that contains *address*, else the global suffix.
+
+        Raises:
+            CatalogueUnavailable: When the snapshot cannot show the suffix.
+
+        """
+        if address is not None:
+            subnet = next(
+                (subnet for subnet in self._display_subnets() if address in subnet.identity.network),
+                None,
+            )
+            if subnet is not None:
+                return self.subnet_qualifying_suffix(subnet.identity, address)
+            if not self.configuration_complete:
+                raise CatalogueUnavailable(f"No complete configuration shows the Subnet of {address}.")
+        if self.global_qualifying_suffix is None:
+            raise CatalogueUnavailable("The global DDNS qualifying suffix is unknown.")
+        return self.global_qualifying_suffix
+
 
 @dataclass(frozen=True)
 class CompleteCatalogueSnapshot(CatalogueSnapshot):
@@ -226,6 +290,7 @@ class _ConfiguredFact:
     configuration: SubnetConfiguration
     shared_network_name: str | None
     membership_complete: bool
+    qualifying_suffix: str | None
 
 
 @dataclass(frozen=True)
@@ -245,6 +310,7 @@ class _ConfigurationObservation:
     diagnostics: tuple[Diagnostic, ...]
     available: bool
     complete: bool
+    global_qualifying_suffix: str | None
     configuration_hash: str | None = None
     quarantined_ids: frozenset[int] = frozenset()
     quarantined_networks: frozenset[IPNetworkValue] = frozenset()
@@ -261,7 +327,7 @@ def _validate_family(family: int) -> Family:
 
 def _cache_key(server: Server, family: Family, generation: str | None = None) -> str:
     generation = generation or server_configuration._cache_generation(server, family)
-    return f"{constants.SUBNET_CATALOGUE_CACHE_PREFIX}v1:{_require_persisted_server(server)}:{family}:snapshot:{generation}"
+    return f"{constants.SUBNET_CATALOGUE_CACHE_PREFIX}v2:{_require_persisted_server(server)}:{family}:snapshot:{generation}"
 
 
 def _require_persisted_server(server: Server) -> int:
@@ -290,6 +356,7 @@ def _unavailable_configuration(code: str, message: str) -> _ConfigurationObserva
         diagnostics=(_diagnostic(code, message, "configuration"),),
         available=False,
         complete=False,
+        global_qualifying_suffix=None,
     )
 
 
@@ -449,6 +516,7 @@ def _configuration_observation(snapshot: server_configuration.ServerConfiguratio
                 configuration=declared.configuration,
                 shared_network_name=declared.shared_network_name,
                 membership_complete=membership_complete,
+                qualifying_suffix=server_configuration.effective_qualifying_suffix(snapshot, declared),
             )
         )
     kept, collisions, ids, networks = _quarantine_collisions(facts, "configuration")
@@ -461,6 +529,7 @@ def _configuration_observation(snapshot: server_configuration.ServerConfiguratio
         configuration_hash=snapshot.configuration_hash,
         quarantined_ids=frozenset(ids),
         quarantined_networks=frozenset(networks),
+        global_qualifying_suffix=snapshot.ddns_qualifying_suffix,
     )
 
 
@@ -669,6 +738,7 @@ def _reconcile(
                     configuration=configured_fact.configuration,
                     shared_network=_membership(shared_network_name),
                     membership_known=configured_fact.membership_complete or identity_fact.membership_complete,
+                    qualifying_suffix=configured_fact.qualifying_suffix,
                 )
             )
         elif not configuration.available or not configuration.complete or not consistent:
@@ -679,6 +749,7 @@ def _reconcile(
                     configuration=None,
                     shared_network=_membership(identity_fact.shared_network_name),
                     membership_known=identity_fact.membership_complete,
+                    qualifying_suffix=None,
                 )
             )
 
@@ -690,6 +761,7 @@ def _reconcile(
                 candidate_identity=configured_fact.identity,
                 configuration=configured_fact.configuration,
                 shared_network=_membership(configured_fact.shared_network_name),
+                qualifying_suffix=configured_fact.qualifying_suffix,
             )
         )
 
@@ -718,6 +790,7 @@ def _reconcile(
         configuration_complete=configuration.complete,
         consistent=consistent,
         configuration_hash=configuration.configuration_hash,
+        global_qualifying_suffix=configuration.global_qualifying_suffix,
         subnet_cmds_available=identity.subnet_cmds_available,
     )
 
@@ -890,7 +963,9 @@ class MutationScope(_SubnetLookup, AbstractContextManager["MutationScope"]):
 
 
 # A check read sends no config-get, so its Subnets are verified by the subnet{v}-list read alone.
-_CONFIGURATION_NOT_READ = _ConfigurationObservation(facts=(), diagnostics=(), available=False, complete=False)
+_CONFIGURATION_NOT_READ = _ConfigurationObservation(
+    facts=(), diagnostics=(), available=False, complete=False, global_qualifying_suffix=None
+)
 
 
 class IdentityRead(_SubnetLookup):

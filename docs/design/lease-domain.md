@@ -13,9 +13,13 @@ SPDX-License-Identifier: Apache-2.0
 This design session replaces raw Lease dictionaries at the domain interface. The accepted decisions below
 record the operator's answers. Issue 291 implements the typed values and observation contracts in
 `netbox_kea/leases.py`, with tests. Issue 292 moves every Lease read to them: KeaClient reads, browsing,
-combined views, exports, REST, Reservation matching and the IPAM lease phase. Lease creation and edits
-still build raw Kea bodies until issue 293 lands, and the IPAM lease phase keeps its address-only
-ownership until issue 294 lands.
+combined views, exports, REST, Reservation matching and the IPAM lease phase. Issue 293 moves the
+actions to them: Edit and Delete carry the `ShownLease` facts and read the target again in `KeaClient`
+before a change, creation and CSV import send typed requests, Reserve fills the prefix field for a
+delegated prefix, and the lease signals carry typed values. Issue 294 adds the `lease-prefix` ownership
+source: the job reads one Lease Snapshot for its address and delegated-prefix phases, both take only Current
+Leases, a manual Sync claims a delegated prefix as a Prefix, and a recorded allocation kind repairs the IP
+addresses that earlier releases made of delegated prefixes.
 
 ## Accepted decisions
 
@@ -62,8 +66,8 @@ ownership until issue 294 lands.
   the existing value. State this behavior in the form help text and represent it as explicit edit
   intent before changing Kea.
 - Manual single-Lease Sync remains available when automatic synchronization is disabled. Require
-  IPAddress add and change permissions for address allocations, and Prefix add and change permissions
-  for delegated prefixes. Preserve the existing explicit adoption of unmanaged objects. Require a
+  unconstrained IPAddress and MACAddress add and change permissions for address allocations, and
+  unconstrained Prefix add and change permissions for delegated prefixes. Preserve the existing explicit adoption of unmanaged objects. Require a
   fresh Current Lease and verified allocation facts. A single-Lease claim never cleans up other
   objects.
 - Repair IPAddress ownership previously derived from delegated-prefix leases through fresh
