@@ -1007,7 +1007,7 @@ def _claim(
             return "disagreement" if report.disagreement else "unchanged"
         status = _status({source})
         ip = IPAddress(
-            address=f"{report.address}/{facts.prefix_length}",
+            address=IPNetwork(f"{report.address}/{facts.prefix_length}"),
             vrf_id=vrf_id,
             status=status,
             dns_name=facts.hostname,
@@ -1067,9 +1067,11 @@ def _apply_claim(
         # The new marker and the operator note do not fit: the object stays as it is, and the owner keeps its link.
         _store_link(own, server, family, source, ip, facts.stored(), stale_mark=_kept_mark(own), adopted=adopted)
         return "conflict"
-    fields = _ip_fields(status, applied.hostname, description)
-    fields["address"] = f"{report.address}/{applied.prefix_length}"
-    changed = any(str(getattr(ip, name)) != value for name, value in fields.items())
+    fields: dict[str, object] = {
+        **_ip_fields(status, applied.hostname, description),
+        "address": IPNetwork(f"{report.address}/{applied.prefix_length}"),
+    }
+    changed = any(str(getattr(ip, name)) != str(value) for name, value in fields.items())
     if changed:
         if before_write is not None:
             before_write()
@@ -1385,7 +1387,7 @@ def _claim_network(
     if source != "pool":
         query = Prefix.objects.select_for_update().filter(vrf_id=server.sync_vrf_id, prefix=row.address)
         filters = {"prefix": row.address, "vrf_id": server.sync_vrf_id or "null"}
-        fields: dict[str, Any] = {"prefix": row.address}
+        fields: dict[str, Any] = {"prefix": IPNetwork(row.address)}
     else:
         query = IPRange.objects.select_for_update().filter(
             vrf_id=server.sync_vrf_id, start_address__net_host=row.start, end_address__net_host=row.end
