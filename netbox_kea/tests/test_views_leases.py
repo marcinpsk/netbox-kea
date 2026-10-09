@@ -76,6 +76,24 @@ def _assert_rendered_error_template(test, response):
     test.assertRegex(response.content.decode(), _ERROR_TEMPLATE)
 
 
+def _assert_lease_read_failed(test, response):
+    """Assert the partial keeps the form and shows the unavailable Lease Notice in place of the table."""
+    test.assertEqual(response.status_code, 200)
+    test.assertContains(
+        response, '<div class="alert alert-danger" role="alert">Failed to query server</div>', html=True
+    )
+    test.assertContains(response, 'id="lease-search-btn"')
+    test.assertNotContains(response, 'id="lease-delete-form"')
+    _assert_no_error_template(test, response)
+
+
+def _lease_lines(response) -> list[str]:
+    """Return one line per excluded record of the Lease Notice, as the partial lists them."""
+    found = response.context["lease_notice"]
+    diagnostics = found.diagnostics if found is not None else ()
+    return [f"{item.source_position} ({item.field or 'record'}): {item.message}" for item in diagnostics]
+
+
 def _assert_no_error_template(test, response):
     """Assert the HTMX handler rendered no part of exception_htmx.html."""
     test.assertNotRegex(response.content.decode(), _ERROR_TEMPLATE)
@@ -981,9 +999,7 @@ class TestEnrichLeasesErrorPaths(_ViewTestBase):
                 self.assertEqual(response.status_code, 200)
                 self.assertNotIn("reservation-get", kea.commands())
                 self.assertEqual(list(response.context["table"].rows), [])
-                self.assertEqual(
-                    response.context["lease_diagnostics"], ["arguments (subnet-id): A lease field has the wrong type."]
-                )
+                self.assertEqual(_lease_lines(response), ["arguments (subnet-id): A lease field has the wrong type."])
                 self.assertContains(response, "1 lease record that could not be read")
 
     def test_unknown_subnet_id_keeps_reservation_dependent_actions_unavailable(self):
@@ -1863,8 +1879,7 @@ class TestLeaseSearchHostBitsSubnet(_ViewTestBase):
             )
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("lease4-get-all", kea.commands())
-        self.assertTemplateUsed(response, "netbox_kea/exception_htmx.html")
-        self.assertContains(response, "An internal error occurred")
+        _assert_lease_read_failed(self, response)
 
 
 # ---------------------------------------------------------------------------
@@ -3195,7 +3210,7 @@ class TestFetchOneEmptyLease(_ViewTestBase):
         with _lease_stub({"subnet4-list": subnets, "lease4-get": {"result": 0, "arguments": arguments}}) as kea:
             response = self.client.get(url, {"by": "ip", "q": "10.0.0.1"}, HTTP_HX_REQUEST="true")
         self.assertEqual(response.status_code, 200)
-        self.assertTrue(response.context["lease_diagnostics"])
+        self.assertTrue(_lease_lines(response))
         self.assertNotIn("reservation-get", kea.commands())
 
 
@@ -3809,9 +3824,7 @@ class TestGetLeasesPageDefensiveChecks(_ViewTestBase):
             response = self.client.get(self._url(), {"by": ""}, HTTP_HX_REQUEST="true")
         self.assertEqual(response.status_code, 200)
         _assert_no_error_template(self, response)
-        self.assertIn(
-            "leases[0] (ip-address): A required lease field is missing.", response.context["lease_diagnostics"]
-        )
+        self.assertIn("leases[0] (ip-address): A required lease field is missing.", _lease_lines(response))
         self.assertNotContains(response, "bad")
 
 
@@ -3869,8 +3882,8 @@ class TestExportAllDefensiveChecks(_ViewTestBase):
 class TestGetLeasesPageMalformedResponse(_ViewTestBase):
     """get_leases_page() must raise RuntimeError on malformed Kea responses.
 
-    These paths use the global paged search. The view catches RuntimeError and
-    renders the HTMX error template (200, not 500).
+    These paths use the global paged search. The loader turns the RuntimeError into
+    the unavailable Lease Notice (200, not 500).
     """
 
     def _htmx_get(self, url, data):
@@ -3886,16 +3899,14 @@ class TestGetLeasesPageMalformedResponse(_ViewTestBase):
         page = {"result": 0, "arguments": {"leases": "not-a-list", "count": 1}}
         with _lease_stub({"subnet4-list": self._SUBNETS4, "lease4-get-page": page}):
             response = self._htmx_get(self._url(), {"by": ""})
-        self.assertEqual(response.status_code, 200)
-        _assert_rendered_error_template(self, response)
+        _assert_lease_read_failed(self, response)
 
     def test_non_int_count_renders_error(self):
         """When Kea returns non-int 'count', the HTMX handler catches RuntimeError."""
         page = {"result": 0, "arguments": {"leases": [], "count": "not-an-int"}}
         with _lease_stub({"subnet4-list": self._SUBNETS4, "lease4-get-page": page}):
             response = self._htmx_get(self._url(), {"by": ""})
-        self.assertEqual(response.status_code, 200)
-        _assert_rendered_error_template(self, response)
+        _assert_lease_read_failed(self, response)
 
     def test_full_page_all_filtered_renders_error(self):
         """Full page (count==per_page) but all entries invalid must trigger RuntimeError."""
@@ -3907,30 +3918,26 @@ class TestGetLeasesPageMalformedResponse(_ViewTestBase):
                 self._url(),
                 {"by": "", "per_page": str(per_page)},
             )
-        self.assertEqual(response.status_code, 200)
-        _assert_rendered_error_template(self, response)
+        _assert_lease_read_failed(self, response)
 
     def test_none_arguments_renders_error(self):
         """When resp[0]['arguments'] is None, the HTMX handler catches RuntimeError."""
         with _lease_stub({"subnet4-list": self._SUBNETS4, "lease4-get-page": {"result": 0, "arguments": None}}):
             response = self._htmx_get(self._url(), {"by": ""})
-        self.assertEqual(response.status_code, 200)
-        _assert_rendered_error_template(self, response)
+        _assert_lease_read_failed(self, response)
 
     def test_empty_response_list_renders_error(self):
         """When Kea returns an empty list, get_leases_page raises RuntimeError."""
         # A real command returning [] passes the result-code check but fails the resp guard.
         with _lease_stub({"subnet4-list": self._SUBNETS4, "lease4-get-page": lambda body: []}):
             response = self._htmx_get(self._url(), {"by": ""})
-        self.assertEqual(response.status_code, 200)
-        _assert_rendered_error_template(self, response)
+        _assert_lease_read_failed(self, response)
 
     def test_non_dict_first_element_renders_error(self):
         """When resp[0] is not a dict, the HTMX handler catches RuntimeError."""
         with _lease_stub({"subnet4-list": self._SUBNETS4, "lease4-get-page": lambda _body: ["not-a-dict"]}):
             response = self._htmx_get(self._url(), {"by": ""})
-        self.assertEqual(response.status_code, 200)
-        _assert_rendered_error_template(self, response)
+        _assert_lease_read_failed(self, response)
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
@@ -3954,9 +3961,7 @@ class TestGetLeasesSingleResultValidation(_ViewTestBase):
             response = self._htmx_get(self._url(), {"by": "ip", "q": "10.0.0.5"})
         self.assertEqual(response.status_code, 200)
         _assert_no_error_template(self, response)
-        self.assertIn(
-            "arguments (ip-address): A required lease field is missing.", response.context["lease_diagnostics"]
-        )
+        self.assertIn("arguments (ip-address): A required lease field is missing.", _lease_lines(response))
 
     def test_records_that_are_not_objects_are_diagnostics(self):
         resp = {"result": 0, "arguments": {"leases": ["bad", 123, None], "count": 3}}
@@ -3965,7 +3970,7 @@ class TestGetLeasesSingleResultValidation(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         _assert_no_error_template(self, response)
         self.assertEqual(
-            response.context["lease_diagnostics"],
+            _lease_lines(response),
             [f"leases[{index}] (record): Kea returned a lease that is not an object." for index in range(3)],
         )
 
@@ -3974,15 +3979,22 @@ class TestGetLeasesSingleResultValidation(_ViewTestBase):
         resp = {"result": 0, "arguments": None}
         with _lease_stub({"subnet4-list": self._SUBNETS4, "lease4-get-by-hw-address": resp}):
             response = self._htmx_get(self._url(), {"by": "hw", "q": "aa:bb:cc:dd:ee:ff"})
-        self.assertEqual(response.status_code, 200)
-        _assert_rendered_error_template(self, response)
+        _assert_lease_read_failed(self, response)
 
     def test_multiple_result_non_list_leases_renders_error(self):
         """Multiple-result with non-list leases must trigger RuntimeError."""
         resp = {"result": 0, "arguments": {"leases": "not-a-list"}}
         with _lease_stub({"subnet4-list": self._SUBNETS4, "lease4-get-by-hw-address": resp}):
             response = self._htmx_get(self._url(), {"by": "hw", "q": "aa:bb:cc:dd:ee:ff"})
+        _assert_lease_read_failed(self, response)
+
+    def test_a_client_that_cannot_be_built_keeps_the_error_template(self):
+        """A ValueError is outside the Notice rule, so the partial still shows the error template."""
+        Server.objects.filter(pk=self.server.pk).update(client_key_path="/tls/client.key", client_cert_path="")
+        with _lease_stub({}) as kea:
+            response = self._htmx_get(self._url(), {"by": "hw", "q": "aa:bb:cc:dd:ee:ff"})
         self.assertEqual(response.status_code, 200)
+        self.assertEqual(kea.commands(), [])
         _assert_rendered_error_template(self, response)
 
 
@@ -4148,9 +4160,7 @@ class TestFetchOneMacValueError(_ViewTestBase):
             response = self._htmx_get(url, {"by": "ip", "q": "10.0.0.5"})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(list(response.context["table"].rows), [])
-        self.assertEqual(
-            response.context["lease_diagnostics"], ["arguments (subnet-id): A lease field has the wrong type."]
-        )
+        self.assertEqual(_lease_lines(response), ["arguments (subnet-id): A lease field has the wrong type."])
         self.assertNotIn("reservation-get", kea.commands())
 
     def test_null_subnet_id_is_rejected_before_reservation_lookup(self):
@@ -4169,7 +4179,7 @@ class TestFetchOneMacValueError(_ViewTestBase):
         with _lease_stub({"subnet4-list": self._SUBNETS4, "lease4-get": {"result": 0, "arguments": lease}}) as kea:
             response = self._htmx_get(url, {"by": "ip", "q": "10.0.0.6"})
         self.assertEqual(response.status_code, 200)
-        self.assertTrue(response.context["lease_diagnostics"])
+        self.assertTrue(_lease_lines(response))
         self.assertNotIn("reservation-get", kea.commands())
 
 

@@ -46,6 +46,7 @@ from ..subnet_catalogue import VerifiedSubnet
 from ..subnet_catalogue import display as subnet_catalogue
 from ..sync_permissions import SyncGate, sync_gate
 from ..utilities import OptionalViewTab
+from .notices import Notice, load_snapshot, notice, show_notices
 
 logger = logging.getLogger(__name__)
 
@@ -523,17 +524,25 @@ def _reservation_list_context(
     search_form = forms.ReservationSearchForm(request.GET or None)
     filters = search_form.cleaned_data if search_form.is_valid() else {}
     snapshot = _empty_reservation_snapshot(version)
+    reservation_notice: Notice | None = None
     try:
-        snapshot = _fetch_reservation_page(server, version, request.GET.get("cursor"), **filters)
-    except KeaException as exc:
-        if exc.unsupported_command:
-            hook_available = False
-        else:
-            logger.exception("Failed to fetch DHCPv%s Reservations", version)
-            messages.error(request, "Failed to load Reservations from Kea.")
-    except (requests.RequestException, RuntimeError, ValueError):
+        loaded = load_snapshot(
+            server,
+            "reservation",
+            lambda: _fetch_reservation_page(server, version, request.GET.get("cursor"), **filters),
+        )
+    except ValueError:
         logger.exception("Unexpected error fetching DHCPv%s Reservations", version)
         messages.error(request, "Failed to load Reservations from Kea.")
+    else:
+        if isinstance(loaded, Notice):
+            # A missing host_cmds hook has its own panel, so one cause shows one banner.
+            hook_available = not loaded.unsupported_command
+            reservation_notice = loaded if hook_available else None
+        else:
+            snapshot = loaded
+            reservation_notice = notice(snapshot)
+    show_notices(request, reservation_notice)
 
     reservations = [_reservation_table_record(record, server) for record in snapshot.records]
     if search_form.is_valid():
@@ -579,7 +588,7 @@ def _reservation_list_context(
         "hook_available": hook_available,
         "search_form": search_form,
         "snapshot_complete": snapshot.complete,
-        "reservation_diagnostics": snapshot.diagnostics,
+        "reservation_notice": reservation_notice,
         "next_page_url": _next_reservation_page_url(request, snapshot.next_cursor),
         "mutation_unavailable": mutation_unavailable,
         "mutation_unavailable_reason": mutation_unavailable_reason,

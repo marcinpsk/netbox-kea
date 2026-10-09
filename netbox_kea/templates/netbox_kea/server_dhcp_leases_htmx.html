@@ -87,15 +87,19 @@
     </div>
   </div>
 
-  {% if not is_embedded and form.is_valid %}
-    {% if lease_diagnostics %}
+  {% if not is_embedded and form.is_valid and lease_notice.unavailable %}
+    <div class="alert alert-danger" role="alert">{{ lease_notice.headline }}</div>
+  {% elif not is_embedded and form.is_valid %}
+    {% if lease_notice %}
+    {% with diagnostics=lease_notice.diagnostics %}
     <div class="alert alert-warning" role="alert">
-      <strong>Kea returned {{ lease_diagnostics|length }} lease record{{ lease_diagnostics|length|pluralize }} that could not be read.</strong>
+      <strong>Kea returned {{ diagnostics|length }} lease record{{ diagnostics|length|pluralize }} that could not be read.</strong>
       The table shows the other leases. A complete export is refused.
       <ul class="mb-0 mt-1">
-        {% for line in lease_diagnostics %}<li>{{ line }}</li>{% endfor %}
+        {% for diagnostic in diagnostics %}<li>{{ diagnostic.source_position }} ({{ diagnostic.field|default:"record" }}): {{ diagnostic.message }}</li>{% endfor %}
       </ul>
     </div>
+    {% endwith %}
     {% endif %}
     {% include "inc/table_controls_htmx.html" with table_modal="LeasesTable_config" %}
     {% with preferences|get_key:"pagination.placement" as paginator_placement %}

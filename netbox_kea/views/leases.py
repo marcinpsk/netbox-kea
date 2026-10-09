@@ -85,7 +85,7 @@ from ..utilities import (
     snapshot_rows,
 )
 from ._base import ConditionalLoginRequiredMixin, _KeaChangeMixin, _safe_return_url, _strip_empty_params
-from .notices import notice
+from .notices import Notice, load_snapshot, notice
 
 logger = logging.getLogger(__name__)
 
@@ -216,14 +216,6 @@ def _add_lease_journal(
         kind="info",
         comments="; ".join(parts),
     )
-
-
-def _diagnostic_lines(snapshot: LeaseSnapshot) -> list[str]:
-    """Return one safe line for each lease record that *snapshot* excluded."""
-    return [
-        f"{diagnostic.source_position} ({diagnostic.field or 'record'}): {diagnostic.message}"
-        for diagnostic in snapshot.diagnostics
-    ]
 
 
 def _incomplete_export_message(snapshot: LeaseSnapshot) -> str:
@@ -446,24 +438,31 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
             state_filter: LeaseState | None = form.cleaned_data.get("state")
             client = instance.get_client(version=self.dhcp_version)
             is_subnet_search = by in (constants.BY_SUBNET, constants.BY_SUBNET_ID)
+            state_in_kea = state_filter if is_subnet_search else None
             if by == "":
-                snapshot = self.get_leases_page(
-                    client,
-                    instance,
-                    form.cleaned_data["page"],
-                    per_page=get_paginate_count(request),
+                page, per_page = form.cleaned_data["page"], get_paginate_count(request)
+                loaded = load_snapshot(
+                    instance, "lease", lambda: self.get_leases_page(client, instance, page, per_page=per_page)
                 )
-                next_page = None if snapshot.next_cursor is None else str(snapshot.next_cursor)
             else:
-                next_page = None
-                state_in_kea = state_filter if is_subnet_search else None
-                snapshot = self.get_leases(
-                    client,
-                    instance,
-                    str(q.cidr) if by == constants.BY_SUBNET else q,
-                    by,
-                    state=state_in_kea,
+                value = str(q.cidr) if by == constants.BY_SUBNET else q
+                loaded = load_snapshot(
+                    instance, "lease", lambda: self.get_leases(client, instance, value, by, state=state_in_kea)
                 )
+            if isinstance(loaded, Notice):
+                return render(
+                    request,
+                    "netbox_kea/server_dhcp_leases_htmx.html",
+                    {
+                        "is_embedded": False,
+                        "form": form,
+                        "table": self.get_table([], request),
+                        "paginate": False,
+                        "lease_notice": loaded,
+                    },
+                )
+            snapshot = loaded
+            next_page = None if by != "" or snapshot.next_cursor is None else str(snapshot.next_cursor)
             leases = snapshot_rows(snapshot, None if is_subnet_search else state_filter)
 
             can_delete = request.user.has_perm(
@@ -514,7 +513,7 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
                     "form": form,
                     "table": table,
                     "next_page": next_page,
-                    "lease_diagnostics": _diagnostic_lines(snapshot),
+                    "lease_notice": notice(snapshot),
                     "paginate": True,
                     "page_lengths": EnhancedPaginator.default_page_lengths,
                 },
@@ -539,7 +538,8 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
                     "paginate": False,
                 },
             )
-        except (KeaException, requests.RequestException, RuntimeError, ValueError):
+        # A Kea, transport or malformed-reply failure of the read is a Notice above; this is a request error.
+        except ValueError:
             error_id = str(uuid.uuid4())
             logger.exception("HTMX leases handler error [%s]", error_id)
             return render(

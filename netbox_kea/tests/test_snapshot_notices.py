@@ -262,3 +262,41 @@ class TestLeaseSearchFormNotice(_ViewTestBase):
             html=True,
         )
         self.assertNotContains(response, HEADLINES["catalogue"])
+
+
+class TestRecordPagesShowAFailedReadThroughTheLoader(_ViewTestBase):
+    """A failed Reservation or Lease read shows the unavailable Notice in the channel of its page."""
+
+    def test_the_reservation_page_shows_the_headline_as_a_message_and_styles_its_record_list(self):
+        responses = {**_catalogue_responses(4, 20, "198.18.0.0/24"), "reservation-get-page": ["not", "entries"]}
+        with stub_kea(responses):
+            response = self.client.get(reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk]))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(_page_messages(response), [(django_messages.ERROR, HEADLINES["reservation"])])
+        self.assertContains(response, '<div class="alert alert-danger" role="alert">')
+        self.assertNotContains(response, "This bounded Snapshot is complete")
+
+    def test_the_lease_search_partial_shows_the_headline_inline(self):
+        with stub_kea({**_COMPLETE, "lease4-get-by-hw-address": requests.ConnectionError("unreachable")}):
+            response = self.client.get(
+                reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk]),
+                {"by": "hw", "q": "aa:bb:cc:dd:ee:ff"},
+                HTTP_HX_REQUEST="true",
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(
+            response, f'<div class="alert alert-danger" role="alert">{HEADLINES["lease"]}</div>', html=True
+        )
+        self.assertNotContains(response, 'id="lease-delete-form"')
+
+    @override_settings(PLUGINS_CONFIG=plugins_config(lease_query_max_unpaged_leases=100))
+    def test_a_refused_lease_query_keeps_its_own_message(self):
+        with stub_kea({**_COMPLETE, "stat-lease4-get": {"result": 2, "text": "unknown command"}}):
+            response = self.client.get(
+                reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk]),
+                {"by": "subnet_id", "q": "1"},
+                HTTP_HX_REQUEST="true",
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Load the stat_cmds hook or disable the guard explicitly.")
+        self.assertNotContains(response, HEADLINES["lease"])

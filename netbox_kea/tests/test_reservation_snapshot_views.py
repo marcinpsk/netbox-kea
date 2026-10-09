@@ -6,8 +6,10 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 import requests
 import yaml
 from bs4 import BeautifulSoup
+from django.contrib import messages as django_messages
 from django.urls import reverse
 
+from netbox_kea.views.notices import Notice
 from netbox_kea.views.reservations import _RESERVATION_PAGE_SIZE
 
 from .kea_stub import (
@@ -82,7 +84,7 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["table"].data.data, [])
         self.assertIn(
-            "unverified-scope", [diagnostic.code for diagnostic in response.context["reservation_diagnostics"]]
+            "unverified-scope", [diagnostic.code for diagnostic in response.context["reservation_notice"].diagnostics]
         )
         self.assertNotIn("subnet-id", kea.bodies("reservation-get-page")[0]["arguments"])
 
@@ -222,7 +224,7 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
 
         self.assertEqual(response.status_code, 200)
         self.assertFalse(response.context["snapshot_complete"])
-        self.assertEqual(response.context["reservation_diagnostics"], ())
+        self.assertEqual(response.context["reservation_notice"], Notice("reservation", django_messages.ERROR))
         self.assertEqual(response.context["table"].data.data, [])
         self.assertContains(response, "Snapshot is incomplete")
         self.assertNotContains(response, "diagnostic below")
@@ -259,7 +261,7 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
 
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.context["snapshot_complete"])
-        self.assertEqual(response.context["reservation_diagnostics"], ())
+        self.assertIsNone(response.context["reservation_notice"])
         self.assertIsNotNone(response.context["next_page_url"])
         self.assertContains(response, "This bounded Snapshot is complete")
 
