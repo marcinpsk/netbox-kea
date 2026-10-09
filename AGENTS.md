@@ -429,7 +429,8 @@ resort, reserved for true external boundaries you cannot run locally.
   production code for Kea command names, hyphenated payload keys, and family-suffixed
   configuration keys or service names. String templates (f-strings, `.format`, `%`, `+`)
   count when they can build a wire literal. Wire owners are `kea.py`, `server_configuration.py`,
-  `subnet_catalogue.py`, `reservations.py`, `dhcp_options.py`, and `leases.py`, relative to `netbox_kea/`.
+  `subnet_catalogue.py`, `reservations.py`, `dhcp_options.py`, `leases.py`, and `subnet_settings.py`, relative to
+  `netbox_kea/`.
   The checker excludes these exact modules, tests, and migrations. The transport stub
   `tests/kea_stub.py` may also use wire literals to model Kea responses.
   It also checks `arguments` when code uses it as a raw payload key. Prefer typed domain

@@ -13,6 +13,8 @@ SPDX-License-Identifier: Apache-2.0
 _Amended 2026-09-27 by ADR 0005, which gives Configuration Changes to a `config_write` module.
 `server_configuration` stays read only._
 _Amended 2026-10-09 (#313): the Presentation rule covers every Snapshot kind and lives in one function._
+_Amended 2026-10-09 (#319): `SubnetSettings` and the Kea key of each scalar field live in `subnet_settings`. No module
+re-exports `SubnetSettings`._
 
 ## Context
 

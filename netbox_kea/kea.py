@@ -88,6 +88,7 @@ from .reservations import (
     reservation_identifier_types,
     reservation_matches_intent,
 )
+from .subnet_settings import setting_key
 
 logger = logging.getLogger(__name__)
 
@@ -735,22 +736,17 @@ class SubnetDefinition:
         subnet["option-data"] = _replace_managed_option(
             options, self.family, "ntp_servers", ", ".join(fields.ntp_servers)
         )
+        suffix_key = setting_key("ddns_qualifying_suffix")
         if fields.ddns_qualifying_suffix:
-            subnet["ddns-qualifying-suffix"] = fields.ddns_qualifying_suffix
+            subnet[suffix_key] = fields.ddns_qualifying_suffix
         else:
-            subnet.pop("ddns-qualifying-suffix", None)
+            subnet.pop(suffix_key, None)
         live_pools = self._pools_by_range(subnet.get("pools", []))
         subnet["pools"] = [{**live_pools.get(pool, {}), "pool": pool} for pool in fields.pools]
-        # A Subnet takes the *-lifetime keys; valid-lft is a lease field that Kea refuses here.
-        for key, value in (
-            ("valid-lifetime", edit.valid_lifetime),
-            ("min-valid-lifetime", edit.min_valid_lifetime),
-            ("max-valid-lifetime", edit.max_valid_lifetime),
-            ("renew-timer", edit.renew_timer),
-            ("rebind-timer", edit.rebind_timer),
-        ):
+        for field in ("valid_lifetime", "min_valid_lifetime", "max_valid_lifetime", "renew_timer", "rebind_timer"):
+            value = getattr(edit, field)
             if value is not None:
-                subnet[key] = value
+                subnet[setting_key(field)] = value
         return subnet
 
     def _pools_by_range(self, pools: list[Any]) -> dict[str, dict[str, Any]]:
@@ -1636,7 +1632,7 @@ class KeaClient:
         if option_data:
             subnet["option-data"] = option_data
         if fields.ddns_qualifying_suffix:
-            subnet["ddns-qualifying-suffix"] = fields.ddns_qualifying_suffix
+            subnet[setting_key("ddns_qualifying_suffix")] = fields.ddns_qualifying_suffix
         self._config_mutation_command(SUBNET_ADD[version], version, {f"subnet{version}": [subnet]})
 
     def subnet_del(self, version: Family, subnet_id: int) -> None:

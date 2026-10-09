@@ -27,7 +27,15 @@ from pathlib import Path
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 _BASELINE_PATH = Path(__file__).with_name("kea_wire_discipline_baseline.txt")
 _OWNERS = frozenset(
-    {"kea.py", "server_configuration.py", "subnet_catalogue.py", "reservations.py", "dhcp_options.py", "leases.py"}
+    {
+        "kea.py",
+        "server_configuration.py",
+        "subnet_catalogue.py",
+        "reservations.py",
+        "dhcp_options.py",
+        "leases.py",
+        "subnet_settings.py",
+    }
 )
 
 _RECORDINGS = Path(__file__).with_name("kea_recordings")

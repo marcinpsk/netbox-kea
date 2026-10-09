@@ -36,7 +36,7 @@ from netbox_kea.reservations import (
     reservation_fingerprint,
     reservation_identifier_types,
 )
-from netbox_kea.server_configuration import SubnetConfiguration, SubnetSettings
+from netbox_kea.server_configuration import SubnetConfiguration
 from netbox_kea.subnet_catalogue import (
     CatalogueSnapshot,
     ConfiguredSubnet,
@@ -44,6 +44,7 @@ from netbox_kea.subnet_catalogue import (
     SubnetIdentity,
     VerifiedSubnet,
 )
+from netbox_kea.subnet_settings import SubnetSettings
 
 from .kea_stub import _res_get, _res_page, _typed_reservation, kea_client, queued, stub_kea
 
