@@ -60,12 +60,12 @@ def snapshot_rows(snapshot: LeaseSnapshot, state_filter: LeaseState | None) -> l
     return lease_rows(snapshot_leases(snapshot, state_filter), evaluated_at=snapshot.evaluated_at)
 
 
-class _Explained(Protocol):
+class _HasMessage(Protocol):
     @property
     def message(self) -> str: ...
 
 
-def diagnostic_reasons(diagnostics: Iterable[_Explained]) -> str:
+def diagnostic_reasons(diagnostics: Iterable[_HasMessage]) -> str:
     """Return each distinct safe reason of *diagnostics* once, in order."""
     return "; ".join(dict.fromkeys(diagnostic.message for diagnostic in diagnostics))
 

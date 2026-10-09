@@ -396,6 +396,20 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
             snapshot.records, family=self.dhcp_version, evaluated_at=snapshot.evaluated_at, filename="leases_all.csv"
         )
 
+    def _search_without_table(self, request: HttpRequest, form, lease_notice: Notice | None = None) -> HttpResponse:
+        """Render the search partial with the form and an empty table: a refused search or a failed read."""
+        return render(
+            request,
+            "netbox_kea/server_dhcp_leases_htmx.html",
+            {
+                "is_embedded": False,
+                "form": form,
+                "table": self.get_table([], request),
+                "paginate": False,
+                "lease_notice": lease_notice,
+            },
+        )
+
     def get(self, request: HttpRequest, **kwargs) -> HttpResponse:
         """Dispatch to export, HTMX partial, or full page render as appropriate."""
         instance: Server = self.get_object(**kwargs)
@@ -416,17 +430,7 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
         # `form.cleaned_data`, so neither may depend on how far into the try we got.
         form = self._make_search_form(instance, request.GET)
         if not form.is_valid():
-            table = self.get_table([], request)
-            return render(
-                request,
-                "netbox_kea/server_dhcp_leases_htmx.html",
-                {
-                    "is_embedded": False,
-                    "form": form,
-                    "table": table,
-                    "paginate": False,
-                },
-            )
+            return self._search_without_table(request, form)
 
         try:
             by = form.cleaned_data["by"]
@@ -446,17 +450,7 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
                     instance, "lease", lambda: self.get_leases(client, instance, value, by, state=state_in_kea)
                 )
             if isinstance(loaded, Notice):
-                return render(
-                    request,
-                    "netbox_kea/server_dhcp_leases_htmx.html",
-                    {
-                        "is_embedded": False,
-                        "form": form,
-                        "table": self.get_table([], request),
-                        "paginate": False,
-                        "lease_notice": loaded,
-                    },
-                )
+                return self._search_without_table(request, form, loaded)
             snapshot = loaded
             next_page = None if by != "" or snapshot.next_cursor is None else str(snapshot.next_cursor)
             leases = snapshot_rows(snapshot, None if is_subnet_search else state_filter)
@@ -523,17 +517,7 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
             logger.info("Rejected unsafe Subnet lease query on server %s: %s", instance.pk, exc)
             field = "q" if isinstance(exc, LeaseQueryUnknownSubnet) else "state"
             form.add_error(field, lease_query_guard_message(exc, form.cleaned_data.get("state")))
-            table = self.get_table([], request)
-            return render(
-                request,
-                "netbox_kea/server_dhcp_leases_htmx.html",
-                {
-                    "is_embedded": False,
-                    "form": form,
-                    "table": table,
-                    "paginate": False,
-                },
-            )
+            return self._search_without_table(request, form)
         # A Kea, transport or malformed-reply failure of the read is a Notice above; this is a request error.
         except ValueError:
             error_id = str(uuid.uuid4())

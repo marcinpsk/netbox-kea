@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """The one Snapshot notice rule of ADR 0003, from the rule to the rendered page."""
 
+from typing import Any, cast
+
 import requests
 from django.contrib import messages as django_messages
 from django.contrib.messages import get_messages
@@ -10,6 +12,7 @@ from django.urls import reverse
 
 from netbox_kea import server_configuration, subnet_catalogue
 from netbox_kea.kea import LeaseQueryPreflightUnavailable
+from netbox_kea.server_configuration import Diagnostic
 from netbox_kea.views.notices import HEADLINES, Notice, ServerNotices, load_snapshot, notice, show_notices
 
 from .kea_stub import _catalogue_responses, _res_page, _subnet_list, complete_lease, lease_page, queued, stub_kea
@@ -76,6 +79,10 @@ class TestConfigurationSnapshotNotices(_ViewTestBase):
         for read in (self._catalogue, self._configuration):
             with self.subTest(read=read.__name__, state="complete"):
                 self.assertIsNone(notice(read(_COMPLETE)))
+
+    def test_another_type_is_not_a_snapshot(self):
+        with self.assertRaisesRegex(TypeError, "Diagnostic is not a Snapshot"):
+            notice(cast(Any, Diagnostic("code", "message", "source")))
 
     def test_the_configuration_snapshot_answers_the_catalogue_predicate(self):
         self.assertTrue(self._configuration(_UNAVAILABLE).unavailable)

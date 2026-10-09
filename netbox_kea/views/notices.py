@@ -86,7 +86,9 @@ def _kind(snapshot: Snapshot) -> SnapshotKind:
         return "configuration"
     if isinstance(snapshot, ReservationSnapshot):
         return "reservation"
-    return "lease"
+    if isinstance(snapshot, LeaseSnapshot):
+        return "lease"
+    raise TypeError(f"{type(snapshot).__name__} is not a Snapshot.")
 
 
 def notice(snapshot: Snapshot) -> Notice | None:
