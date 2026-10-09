@@ -206,6 +206,89 @@ class TestCheckDhcpEnabled(TestCase):
         mock_redirect.assert_called_once_with("/plugins/kea/servers/1/")
 
 
+class TestKeaErrorHint(TestCase):
+    """Tests for kea_error_hint() — maps KeaException result codes to user hints."""
+
+    def _make_exc(self, result_code: int, text: str = "some error"):  # type: ignore[return]
+        from netbox_kea.kea import KeaException
+
+        return KeaException({"result": result_code, "text": text, "arguments": None}, index=0)
+
+    def test_import_available(self):
+        """kea_error_hint can be imported from utilities."""
+        from netbox_kea.utilities import kea_error_hint  # noqa: F401
+
+    def test_result_2_mentions_hook(self):
+        """result=2 (not supported) returns a hint about hook libraries."""
+        from netbox_kea.utilities import kea_error_hint
+
+        hint = kea_error_hint(self._make_exc(2))
+        self.assertIn("hook", hint.lower())
+
+    def test_result_3_mentions_not_found(self):
+        """result=3 (empty result) returns a not-found hint."""
+        from netbox_kea.utilities import kea_error_hint
+
+        hint = kea_error_hint(self._make_exc(3))
+        self.assertIn("found", hint.lower())
+
+    def test_result_128_mentions_connectivity(self):
+        """result=128 returns a connectivity/daemon hint."""
+        from netbox_kea.utilities import kea_error_hint
+
+        hint = kea_error_hint(self._make_exc(128))
+        self.assertTrue("connect" in hint.lower() or "reach" in hint.lower() or "daemon" in hint.lower())
+
+    def test_result_1_returns_non_empty_string(self):
+        """result=1 (generic error) returns a non-empty string."""
+        from netbox_kea.utilities import kea_error_hint
+
+        hint = kea_error_hint(self._make_exc(1))
+        self.assertIsInstance(hint, str)
+        self.assertTrue(len(hint) > 0)
+
+    def test_result_1_ipv4_subnet_mismatch_returns_specific_hint(self):
+        """host_cmds' IPv4 out-of-subnet error returns a specific, actionable hint."""
+        from netbox_kea.utilities import kea_error_hint
+
+        text = "specified reservation '10.0.0.5' is not matching the IPv4 subnet prefix '192.168.1.0/24'"
+        hint = kea_error_hint(self._make_exc(1, text=text))
+        self.assertEqual(hint, "The reserved IP address is outside the subnet's CIDR range.")
+
+    def test_result_1_ipv6_subnet_mismatch_returns_specific_hint(self):
+        """host_cmds' IPv6 out-of-subnet error returns a specific, actionable hint."""
+        from netbox_kea.utilities import kea_error_hint
+
+        text = "specified reservation '2001:db8:9::1' is not matching the IPv6 subnet prefix '2001:db8:1::/64'"
+        hint = kea_error_hint(self._make_exc(1, text=text))
+        self.assertEqual(hint, "The reserved IP address is outside the subnet's CIDR range.")
+
+    def test_result_1_other_errors_still_use_generic_message(self):
+        """A result=1 error unrelated to subnet mismatch keeps the generic hint (no Kea text leaked)."""
+        from netbox_kea.utilities import kea_error_hint
+
+        hint = kea_error_hint(self._make_exc(1, text="Host database not available, cannot add host."))
+        self.assertEqual(hint, "Kea reported an error. Check the server logs for details.")
+
+    def test_unknown_code_includes_code_in_message(self):
+        """Unknown result codes are included in the returned hint."""
+        from netbox_kea.utilities import kea_error_hint
+
+        hint = kea_error_hint(self._make_exc(42))
+        self.assertIn("42", hint)
+
+    def test_returns_string_type(self):
+        """kea_error_hint always returns str, never None."""
+        from netbox_kea.utilities import kea_error_hint
+
+        for code in (0, 1, 2, 3, 128, 999):
+            result = kea_error_hint(self._make_exc(code))
+            self.assertIsInstance(result, str)
+
+
+# ---------------------------------------------------------------------------
+
+
 # ---------------------------------------------------------------------------
 # TestParseLeaseCsv
 # ---------------------------------------------------------------------------
