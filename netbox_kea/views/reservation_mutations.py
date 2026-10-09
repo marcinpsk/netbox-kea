@@ -45,7 +45,7 @@ from ..reservations import (
     reservation_identifier_types,
 )
 from ..signals import reservation_created, reservation_deleted, reservation_updated
-from ..subnet_catalogue import CatalogueSnapshot, CatalogueUnavailable, MutationScope, VerifiedSubnet
+from ..subnet_catalogue import CatalogueSnapshot, CatalogueUnavailable, MutationScope, SubnetIdentity, VerifiedSubnet
 from ..sync_permissions import sync_gate
 from ..utilities import kea_error_hint
 from ._base import _diagnostic_messages, _KeaChangeMixin, _safe_return_url
@@ -206,6 +206,18 @@ def _shown_suffix(reservation: Reservation, catalogue: CatalogueSnapshot) -> str
     return catalogue.subnet_qualifying_suffix(subnet, _first_address(reservation.addresses))
 
 
+class _UnknownSuffix(Exception):
+    """The DDNS qualifying suffix at the submitted addresses is unknown, so no stored form of the entered name is."""
+
+
+def _entered_suffix(catalogue: CatalogueSnapshot, subnet: SubnetIdentity, addresses: tuple[IPAddressValue, ...]) -> str:
+    """Return the qualifying suffix of an entered hostname at the submitted *addresses*."""
+    try:
+        return catalogue.subnet_qualifying_suffix(subnet, _first_address(addresses))
+    except CatalogueUnavailable as exc:
+        raise _UnknownSuffix(str(exc)) from exc
+
+
 def _hostname_change(
     current: Reservation,
     entered: str,
@@ -229,7 +241,7 @@ def _hostname_change(
     # The token holds no suffix when the form showed no hostname; reservation_change() refuses a changed Reservation.
     if current.hostname and shown_suffix is not None and shown_suffix != _shown_suffix(current, catalogue):
         raise ReservationConflict("The DDNS qualifying suffix of the Subnet changed after the edit form was opened.")
-    suffix = catalogue.subnet_qualifying_suffix(_in_subnet_scope(current).subnet, _first_address(addresses))
+    suffix = _entered_suffix(catalogue, _in_subnet_scope(current).subnet, addresses)
     stored = stored_hostname(entered, suffix)
     if published_name(stored, suffix) == published_name(current.hostname, suffix):
         return Unchanged()
@@ -242,7 +254,7 @@ def _stored_for(
     """Return the hostname to store so that Kea publishes *name* at *addresses* in *subnet*."""
     if not name:
         return ""
-    return stored_hostname(name, catalogue.subnet_qualifying_suffix(subnet.identity, _first_address(addresses)))
+    return stored_hostname(name, _entered_suffix(catalogue, subnet.identity, addresses))
 
 
 def _payload_from_post(token: str, reservation: Reservation) -> dict[str, Any]:
@@ -592,6 +604,8 @@ class _ReservationAddView(_ReservationMutationView):
                 )
                 messages.success(request, "Reservation created.")
                 return redirect(self._return_url(server))
+            except _UnknownSuffix as exc:
+                form.add_error("hostname", str(exc))
             except KeaException as exc:
                 logger.exception("Kea rejected a DHCPv%s Reservation create", self.dhcp_version)
                 messages.error(request, kea_error_hint(exc))
@@ -747,6 +761,8 @@ class _ReservationEditView(_ReservationMutationView):
                         return redirect(return_url)
                     except ReservationConflict as exc:
                         form.add_error(None, f"{exc} Reload the form before you try again.")
+                    except _UnknownSuffix as exc:
+                        form.add_error("hostname", str(exc))
                     except KeaException as exc:
                         logger.exception("Kea rejected a Reservation update")
                         messages.error(request, kea_error_hint(exc))

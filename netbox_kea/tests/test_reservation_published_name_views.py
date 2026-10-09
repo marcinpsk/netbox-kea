@@ -121,9 +121,11 @@ class TestReservationAddPublishedName(_PublishedNameViewTest):
 
     def test_a_name_without_an_address_in_a_subnet_with_a_pool_suffix_is_refused(self):
         # Kea takes the suffix from the Pool of the dynamic lease, so no stored form is known.
-        response, kea = self._post_add(4, 21, "host.office.example.org", "")
+        with self.assertNoLogs("netbox_kea.views.reservation_mutations", level="ERROR"):
+            response, kea = self._post_add(4, 21, "host.office.example.org", "")
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("reservation-add", kea.commands())
+        self.assertIn("so it depends on the address.", " ".join(response.context["form"].errors["hostname"]))
 
     def test_add_without_a_hostname_sends_none(self):
         self.assertNotIn("hostname", self._add(4, 21, ""))
@@ -297,6 +299,13 @@ class TestReservationEditPublishedName(_PublishedNameViewTest):
             "Save an address first, then change the hostname.",
             " ".join(response.context["form"].non_field_errors()),
         )
+
+    def test_a_name_without_the_address_under_a_pool_suffix_is_refused_on_its_field(self):
+        with self.assertNoLogs("netbox_kea.views.reservation_mutations", level="ERROR"):
+            response, kea = self._save(4, 21, "host", "db", address="")
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("reservation-update", kea.commands())
+        self.assertIn("so it depends on the address.", " ".join(response.context["form"].errors["hostname"]))
 
     def test_an_unknown_suffix_does_not_open_the_form_of_a_named_reservation(self):
         with stub_kea(
