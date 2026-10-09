@@ -387,13 +387,9 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
             )
             return redirect(request.path)
         if not snapshot.complete:
-            logger.warning(
-                "Refused an incomplete DHCPv%s lease export for server %s: %d excluded record(s)",
-                self.dhcp_version,
-                instance.pk,
-                len(snapshot.diagnostics),
-            )
-            messages.warning(request, _incomplete_export_message(snapshot))
+            refusal = _incomplete_export_message(snapshot)
+            logger.warning("Refused a DHCPv%s lease export for server %s: %s", self.dhcp_version, instance.pk, refusal)
+            messages.warning(request, refusal)
             return redirect(request.path)
 
         return lease_csv_response(
@@ -1322,10 +1318,8 @@ def _enrich_leases_with_badges(
     client: KeaClient | None = None
     catalogue = None
     try:
-        from ..subnet_catalogue import display
-
         client = server.get_client(version=version)
-        catalogue = display(server, version)
+        catalogue = subnet_catalogue.display(server, version)
         reservation_by_ip, host_cmds_available, failed_ips = _fetch_reservations_for_leases(
             client, version, catalogue, leases
         )
