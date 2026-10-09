@@ -1027,10 +1027,26 @@ def _claim_config_networks(server, config):
     return claim(server, config.family, subnets, force=False), claim(server, config.family, pools, force=False)
 
 
-def import_permissions(server) -> tuple[str, ...]:
-    """Return the IPAM and DCIM permissions that :func:`import_server_config` can use.
+# The DHCP plugin writes of import_server_config: it only creates Pools and custom OptionDefinitions.
+_PLUGIN_WRITES = tuple(
+    f"{PLUGIN_APP_LABEL}.{action}_{model}"
+    for model, actions in (
+        ("dhcpserver", ("add", "change")),
+        ("optiondefinition", ("add",)),
+        ("option", ("add", "change")),
+        ("clientclass", ("add", "change")),
+        ("subnet", ("add", "change")),
+        ("pool", ("add",)),
+        ("hostreservation", ("add", "change")),
+    )
+    for action in actions
+)
 
-    The import claims Subnets, Pools and Reservations, and reconciles delegated Prefixes.
+
+def import_permissions(server) -> tuple[str, ...]:
+    """Return the IPAM, DCIM and DHCP plugin permissions that :func:`import_server_config` can use.
+
+    The import claims Subnets, Pools and Reservations, reconciles delegated Prefixes, and writes the DHCP plugin rows.
     """
     from ..ipam_reconciliation import (
         RESERVATION,
@@ -1042,7 +1058,7 @@ def import_permissions(server) -> tuple[str, ...]:
     )
 
     claims = claim_permissions(SubnetPhase.source, PoolPhase.source, RESERVATION)
-    return tuple(dict.fromkeys((*claims, *reconcile_permissions(server, DelegatedPrefixPhase.source))))
+    return tuple(dict.fromkeys((*claims, *reconcile_permissions(server, DelegatedPrefixPhase.source), *_PLUGIN_WRITES)))
 
 
 @coordinated_import

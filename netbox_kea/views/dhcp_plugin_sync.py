@@ -257,7 +257,7 @@ class ServerDhcpPluginView(generic.ObjectView):
 def _sync_refusal(user, server: Server) -> str:
     """Return why *user* may not run the import on *server*, or an empty string when the user may.
 
-    The import needs change permission on the Server and the manual Sync rule for its IPAM and DCIM writes.
+    The import needs change permission on the Server and the manual Sync rule for its IPAM, DCIM and DHCP plugin writes.
     """
     if not Server.objects.restrict(user, "change").filter(pk=server.pk).exists():
         return "Sync to DHCP plugin needs change permission on this Server."

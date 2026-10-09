@@ -454,13 +454,16 @@ permission that the Sync can use. An enabled ObjectPermission of the user, or of
 | --- | --- |
 | Lease **Sync**, lease add with **Sync to NetBox IPAM** | `ipam.add_ipaddress`, `ipam.change_ipaddress`, `dcim.add_macaddress`, `dcim.change_macaddress` |
 | Reservation **Sync all** and **Sync All to NetBox**, Reservation add or edit with **Sync to NetBox IPAM** | The same as for a lease |
-| **Sync to DHCP plugin now** | The same as for a lease, and `ipam.add_prefix`, `ipam.change_prefix`, `ipam.add_iprange`, `ipam.change_iprange`, and change permission on the Server |
+| **Sync to DHCP plugin now** | The same as for a lease, `ipam.add_prefix`, `ipam.change_prefix`, `ipam.add_iprange`, `ipam.change_iprange`, change permission on the Server, and the `netbox_dhcp` permissions below |
 
 **Sync All to NetBox** runs only the reservation phase. Its stale cleanup cannot delete an IP address, so it needs no
 delete permission. When a user does not have a required grant, the Sync control is disabled. Its tooltip names each
-missing or constrained permission, and the server refuses the request with the same text. This rule does not check
-the permissions of the `netbox_dhcp` objects that the DHCP plugin import writes. A grant that only an LDAP group
-mapping (`FIND_GROUP_PERMS`) gives does not count.
+missing or constrained permission, and the server refuses the request with the same text. A grant that only an LDAP
+group mapping (`FIND_GROUP_PERMS`) gives does not count.
+
+**Sync to DHCP plugin now** also writes the DHCP plugin objects. It needs add and change on DHCP Server, Option,
+Client Class, Subnet and Host Reservation, and add on Option Definition and Pool. The import never changes a Pool or
+an Option Definition that exists.
 
 ### Upgrade to ownership links
 
