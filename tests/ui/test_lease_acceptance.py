@@ -28,9 +28,10 @@ RELEASED_ADDRESS4 = "192.0.2.2"
 ADDED_ADDRESS4 = "192.0.2.30"
 IN_USE_ADDRESS4 = "192.0.2.31"
 
+# An address Sync writes the IP address and the MAC address; no grant covers a Prefix.
 _SYNC_USER_PERMISSIONS = [
     {"actions": ["view"], "object_types": ["netbox_kea.server"]},
-    {"actions": ["view", "add", "change"], "object_types": ["ipam.ipaddress"]},
+    {"actions": ["view", "add", "change"], "object_types": ["ipam.ipaddress", "dcim.macaddress"]},
 ]
 
 
@@ -209,6 +210,9 @@ def test_a_delegated_prefix_sync_creates_a_netbox_prefix(
         _delete_prefixes(nb_api, PD_PREFIX)
 
 
+_PREFIX_SYNC_REFUSAL = "Manual Sync needs unconstrained ipam.add_prefix, ipam.change_prefix permissions"
+
+
 @pytest.mark.parametrize(
     ("netbox_username", "netbox_password", "netbox_user_permissions"),
     [("lease-sync-user", "lease-sync-user12Characters", _SYNC_USER_PERMISSIONS)],
@@ -228,14 +232,16 @@ def test_sync_needs_the_permissions_of_the_netbox_model_it_writes(
         prefix_row = _lease_row(page, PD_PREFIX)
         expect(address_row).to_have_count(1)
         expect(prefix_row).to_have_count(1)
-        expect(address_row.get_by_role("button", name="Sync", exact=True)).to_have_count(1)
-        expect(prefix_row.get_by_role("button", name="Sync", exact=True)).to_have_count(0)
+        expect(address_row.get_by_role("button", name="Sync", exact=True, disabled=False)).to_have_count(1)
+        expect(prefix_row.get_by_role("button", name="Sync", exact=True, disabled=False)).to_have_count(0)
+        expect(prefix_row.get_by_role("button", name="Sync", exact=True, disabled=True)).to_have_count(1)
+        expect(prefix_row.get_by_title(_PREFIX_SYNC_REFUSAL, exact=False)).to_have_count(1)
 
         response = _post_with_csrf(
             page, f"{plugin_base}/servers/{with_test_server.id}/leases6/sync/", {"ip_address": PD_PREFIX}
         )
         assert response.ok
-        assert "You do not have permission to sync to NetBox IPAM." in response.text()
+        assert _PREFIX_SYNC_REFUSAL in response.text()
         assert not list(nb_api.ipam.prefixes.filter(prefix=PD_PREFIX))
     finally:
         _delete_prefixes(nb_api, PD_PREFIX)
@@ -265,7 +271,9 @@ def test_lease_row_actions_follow_the_user_permissions(
 
     expect(page.locator('input[name="pk"]')).to_have_count(actions)
     expect(page.get_by_role("button", name="Delete Selected")).to_have_count(min(actions, 1))
-    expect(rows.get_by_role("button", name="Sync", exact=True)).to_have_count(actions)
+    expect(rows.get_by_role("button", name="Sync", exact=True, disabled=False)).to_have_count(actions)
+    # A refused user sees the Sync control disabled.
+    expect(rows.get_by_role("button", name="Sync", exact=True, disabled=True)).to_have_count(2 - actions)
     # A closed dropdown hides its items from get_by_role, so count the DOM elements.
     expect(rows.locator("a.dropdown-item", has_text="Edit lease")).to_have_count(actions)
     expect(rows.locator("a.badge", has_text="+ Reserve")).to_have_count(actions)
