@@ -81,7 +81,6 @@ from ..utilities import (
     export_table,
     kea_error_hint,
     lease_csv_response,
-    snapshot_leases,
     snapshot_rows,
 )
 from ._base import ConditionalLoginRequiredMixin, _KeaChangeMixin, _safe_return_url, _strip_empty_params
@@ -252,9 +251,13 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
             return self.form(**kwargs)
         return self.form(data, **kwargs)
 
-    def get_leases_page(self, client: KeaClient, server: Server, page: str | None, per_page: int) -> LeaseSnapshot:
+    def get_leases_page(
+        self, client: KeaClient, server: Server, page: str | None, per_page: int, *, state: LeaseState | None = None
+    ) -> LeaseSnapshot:
         """Read one validated lease page of the Server."""
-        return client.lease_get_page(self.dhcp_version, limit=per_page, cursor=page or None, server_id=server.pk)
+        return client.lease_get_page(
+            self.dhcp_version, limit=per_page, cursor=page or None, state=state, server_id=server.pk
+        )
 
     def get_leases(
         self,
@@ -314,9 +317,8 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
             messages.error(request, "Failed to connect to Kea: see server logs.")
             return redirect(request.path)
         try:
-            state_in_kea = state_filter if by in (constants.BY_SUBNET, constants.BY_SUBNET_ID) else None
             snapshot = self.get_leases(
-                client, instance, str(q.cidr) if by == constants.BY_SUBNET else q, by, state=state_in_kea
+                client, instance, str(q.cidr) if by == constants.BY_SUBNET else q, by, state=state_filter
             )
         except LeaseQueryGuardError as exc:
             messages.warning(request, lease_query_guard_message(exc, state_filter))
@@ -334,13 +336,11 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
         if not limited and not snapshot.complete:
             messages.warning(request, _incomplete_export_message(snapshot))
             return redirect(request.path)
-        # A Subnet search filters by state in Kea; every other search filters here.
-        local_state = state_filter if by not in (constants.BY_SUBNET, constants.BY_SUBNET_ID) else None
         if limited:
-            table = self.get_table(snapshot_rows(snapshot, local_state), request)
+            table = self.get_table(snapshot_rows(snapshot), request)
             return export_table(table, "leases_limited_coverage.csv", use_selected_columns=True)
         return lease_csv_response(
-            snapshot_leases(snapshot, local_state),
+            snapshot.records,
             family=self.dhcp_version,
             evaluated_at=snapshot.evaluated_at,
             filename="leases.csv",
@@ -437,23 +437,23 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
             q = form.cleaned_data["q"]
             state_filter: LeaseState | None = form.cleaned_data.get("state")
             client = instance.get_client(version=self.dhcp_version)
-            is_subnet_search = by in (constants.BY_SUBNET, constants.BY_SUBNET_ID)
-            state_in_kea = state_filter if is_subnet_search else None
             if by == "":
                 page, per_page = form.cleaned_data["page"], get_paginate_count(request)
                 loaded = load_snapshot(
-                    instance, "lease", lambda: self.get_leases_page(client, instance, page, per_page=per_page)
+                    instance,
+                    "lease",
+                    lambda: self.get_leases_page(client, instance, page, per_page=per_page, state=state_filter),
                 )
             else:
                 value = str(q.cidr) if by == constants.BY_SUBNET else q
                 loaded = load_snapshot(
-                    instance, "lease", lambda: self.get_leases(client, instance, value, by, state=state_in_kea)
+                    instance, "lease", lambda: self.get_leases(client, instance, value, by, state=state_filter)
                 )
             if isinstance(loaded, Notice):
                 return self._search_without_table(request, form, loaded)
             snapshot = loaded
             next_page = None if by != "" or snapshot.next_cursor is None else str(snapshot.next_cursor)
-            leases = snapshot_rows(snapshot, None if is_subnet_search else state_filter)
+            leases = snapshot_rows(snapshot)
 
             can_delete = request.user.has_perm(
                 "netbox_kea.bulk_delete_lease_from_server",

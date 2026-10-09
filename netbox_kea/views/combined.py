@@ -55,17 +55,17 @@ def _fetch_leases_from_server(
     return client.lease_search(version, by, value, state=state, server_id=server.pk)
 
 
-def _fetch_all_leases_from_server(server: "Server", version: Family, max_leases: int = 1000) -> LeaseSnapshot:
+def _fetch_all_leases_from_server(
+    server: "Server", version: Family, max_leases: int = 1000, *, state: LeaseState | None = None
+) -> LeaseSnapshot:
     """Read every lease on *server* up to *max_leases* raw records; reaching the cap gives ``page`` coverage."""
     client = server.get_client(version=version)
-    return client.lease_get_all(version, max_leases=max_leases, server_id=server.pk)
+    return client.lease_get_all(version, max_leases=max_leases, state=state, server_id=server.pk)
 
 
-def _server_lease_rows(
-    server: Server, snapshot: LeaseSnapshot, state_filter: LeaseState | None
-) -> list[dict[str, Any]]:
+def _server_lease_rows(server: Server, snapshot: LeaseSnapshot) -> list[dict[str, Any]]:
     """Return the presentation rows of one server's Snapshot, tagged with the server."""
-    rows = snapshot_rows(snapshot, state_filter)
+    rows = snapshot_rows(snapshot)
     for row in rows:
         row["server_name"] = server.name
         row["server_pk"] = server.pk
@@ -80,9 +80,9 @@ class _CombinedLeaseRead:
     notices: ServerNotices = field(default_factory=ServerNotices)
     truncated_servers: list[str] = field(default_factory=list)
 
-    def add(self, server: Server, snapshot: LeaseSnapshot, state_filter: LeaseState | None) -> None:
+    def add(self, server: Server, snapshot: LeaseSnapshot) -> None:
         """Add the valid Leases of one server and its Notice."""
-        self.rows.extend(_server_lease_rows(server, snapshot, state_filter))
+        self.rows.extend(_server_lease_rows(server, snapshot))
         self.notices.add(server, notice(snapshot))
         if snapshot.coverage != "exhaustive":
             self.truncated_servers.append(server.name)
@@ -93,15 +93,15 @@ def _read_combined_leases(
 ) -> _CombinedLeaseRead:
     """Search each server, or read each one up to its cap for a state-only filter."""
     read = _CombinedLeaseRead()
-    subnet_search = by in (constants.BY_SUBNET, constants.BY_SUBNET_ID)
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
         if q and by:
-            state_in_kea = state_filter if subnet_search else None
             futures = {
-                executor.submit(_fetch_leases_from_server, s, q, by, version, state=state_in_kea): s for s in servers
+                executor.submit(_fetch_leases_from_server, s, q, by, version, state=state_filter): s for s in servers
             }
         else:
-            futures = {executor.submit(_fetch_all_leases_from_server, s, version): s for s in servers}
+            futures = {
+                executor.submit(_fetch_all_leases_from_server, s, version, state=state_filter): s for s in servers
+            }
         for future in concurrent.futures.as_completed(futures):
             server = futures[future]
             # A refused query and a ValueError are outside the notice rule; each keeps its own message.
@@ -116,7 +116,7 @@ def _read_combined_leases(
                 if isinstance(loaded, Notice):
                     read.notices.add(server, loaded)
                 else:
-                    read.add(server, loaded, None if subnet_search else state_filter)
+                    read.add(server, loaded)
     return read
 
 
