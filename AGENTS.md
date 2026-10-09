@@ -257,7 +257,9 @@ Exception
 **`views/notices.py` owns every Snapshot notice** (ADR 0003, Presentation). A view passes a Catalogue or Server
 Configuration Snapshot to `notice()` and runs a Reservation or Lease read through `load_snapshot()`, which turns a
 Kea, transport or malformed-reply failure into an unavailable Notice. The view shows the Notice with
-`show_notices()`, in a template, or with `ServerNotices` on a combined page; it never chooses a level. Two OpenGrep
+`show_notices()`, in a template, or with `ServerNotices` on a combined page; it never chooses the level of a
+Snapshot. A refused Lease query (`LeaseQueryGuardError`) and a `ValueError` are outside the rule: the view shows its
+own warning or error for them, and a combined page adds them to the `ServerNotices` lists itself. Two OpenGrep
 rules (`kea-snapshot-notice-outside-notice-module`, `kea-snapshot-read-without-notice`) and
 `test_snapshot_notice_sweep.py` guard it. A new Server page that reads no Snapshot needs an entry with a reason in
 the sweep's exempt list.

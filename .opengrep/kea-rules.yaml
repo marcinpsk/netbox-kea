@@ -1016,7 +1016,8 @@ rules:
       builds its Snapshot in _fetch_reservation_page(), the lease export refusal in
       _incomplete_export_message(), and a function that parses a Reservation Transfer Document.
       Limits: an alias (a messages constant imported by name, or the diagnostics of a variable passed
-      to a helper outside views/) and templates are not seen.
+      to a helper outside views/) and templates are not seen. A messages.error() or messages.warning()
+      call is not seen either, because non-Snapshot messages use these calls correctly.
     metadata:
       category: maintainability
       confidence: HIGH
