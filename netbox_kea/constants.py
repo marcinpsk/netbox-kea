@@ -93,14 +93,8 @@ LEASE_STATE_CHOICES = [("", "Any")] + [
     (str(LEASE_STATE_CODES[state]), LEASE_STATE_LABELS[state]) for state in LEASE_FILTER_STATES
 ]
 
-# ---------------------------------------------------------------------------
-# Standard DHCP option names shipped with Kea's built-in option definitions.
-# Used to populate editable dropdowns (<datalist>) on the option-data editors.
-# These are suggestions only — users may still type any option name (including
-# custom ones defined via option-def). Each entry is (name, code).
-# Reference: Kea ARM "Standard DHCPv4/DHCPv6 Options".
-# ---------------------------------------------------------------------------
-
+# Kea standard option definitions (name, code) for the dhcp4 and dhcp6 spaces, which also back the option-name
+# suggestion list. Source: isc-projects/kea src/lib/dhcp/std_option_defs.h at tag Kea-3.2.0.
 KEA_DHCP4_STD_OPTIONS: list[tuple[str, int]] = [
     ("subnet-mask", 1),
     ("time-offset", 2),
@@ -137,7 +131,7 @@ KEA_DHCP4_STD_OPTIONS: list[tuple[str, int]] = [
     ("static-routes", 33),
     ("trailer-encapsulation", 34),
     ("arp-cache-timeout", 35),
-    ("ethernet-encapsulation", 36),
+    ("ieee802-3-encapsulation", 36),
     ("default-tcp-ttl", 37),
     ("tcp-keepalive-interval", 38),
     ("tcp-keepalive-garbage", 39),
@@ -195,27 +189,51 @@ KEA_DHCP4_STD_OPTIONS: list[tuple[str, int]] = [
     ("client-ndi", 94),
     ("uuid-guid", 97),
     ("uap-servers", 98),
+    ("geoconf-civic", 99),
+    ("pcode", 100),
+    ("tcode", 101),
+    ("v6-only-preferred", 108),
     ("netinfo-server-address", 112),
     ("netinfo-server-tag", 113),
-    ("default-url", 114),
+    ("v4-captive-portal", 114),
     ("auto-config", 116),
     ("name-service-search", 117),
     ("subnet-selection", 118),
     ("domain-search", 119),
     ("classless-static-route", 121),
+    ("cablelabs-client-conf", 122),
     ("vivco-suboptions", 124),
     ("vivso-suboptions", 125),
     ("pana-agent", 136),
     ("v4-lost", 137),
     ("capwap-ac-v4", 138),
     ("sip-ua-cs-domains", 141),
+    ("v4-sztp-redirect", 143),
     ("rdnss-selection", 146),
+    ("status-code", 151),
+    ("base-time", 152),
+    ("start-time-of-state", 153),
+    ("query-start-time", 154),
+    ("query-end-time", 155),
+    ("dhcp-state", 156),
+    ("data-source", 157),
     ("v4-portparams", 159),
-    ("v4-captive-portal", 160),
+    ("v4-dnr", 162),
+    ("option-6rd", 212),
+    ("v4-access-domain", 213),
 ]
 
 KEA_DHCP6_STD_OPTIONS: list[tuple[str, int]] = [
+    ("clientid", 1),
+    ("serverid", 2),
+    ("ia-na", 3),
+    ("ia-ta", 4),
+    ("iaaddr", 5),
+    ("oro", 6),
     ("preference", 7),
+    ("elapsed-time", 8),
+    ("relay-msg", 9),
+    ("auth", 11),
     ("unicast", 12),
     ("status-code", 13),
     ("rapid-commit", 14),
@@ -229,6 +247,8 @@ KEA_DHCP6_STD_OPTIONS: list[tuple[str, int]] = [
     ("sip-server-addr", 22),
     ("dns-servers", 23),
     ("domain-search", 24),
+    ("ia-pd", 25),
+    ("iaprefix", 26),
     ("nis-servers", 27),
     ("nisp-servers", 28),
     ("nis-domain-name", 29),
@@ -250,6 +270,12 @@ KEA_DHCP6_STD_OPTIONS: list[tuple[str, int]] = [
     ("clt-time", 46),
     ("lq-relay-data", 47),
     ("lq-client-link", 48),
+    ("v6-lost", 51),
+    ("capwap-ac-v6", 52),
+    ("relay-id", 53),
+    ("ntp-server", 56),
+    ("v6-access-domain", 57),
+    ("sip-ua-cs-list", 58),
     ("bootfile-url", 59),
     ("bootfile-param", 60),
     ("client-arch-type", 61),
@@ -260,10 +286,20 @@ KEA_DHCP6_STD_OPTIONS: list[tuple[str, int]] = [
     ("pd-exclude", 67),
     ("rdnss-selection", 74),
     ("client-linklayer-addr", 79),
+    ("link-address", 80),
     ("solmax-rt", 82),
     ("inf-max-rt", 83),
+    ("dhcpv4-message", 87),
     ("dhcp4o6-server-addr", 88),
+    ("s46-cont-mape", 94),
+    ("s46-cont-mapt", 95),
+    ("s46-cont-lw", 96),
     ("v6-captive-portal", 103),
+    ("relay-source-port", 135),
+    ("v6-sztp-redirect", 136),
+    ("ipv6-address-andsf", 143),
+    ("v6-dnr", 144),
+    ("addr-reg-enable", 148),
 ]
 
 

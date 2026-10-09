@@ -468,6 +468,18 @@ class TestServerOptionsView(_ViewTestBase):
         self.assertIn("Could not load server options from Kea. The form cannot be displayed.", message_text)
         self.assertTrue(any("configuration facts are unavailable" in message for message in message_text))
 
+    def test_get_suggests_every_kea_standard_option_name(self):
+        """The name list holds options that Kea 3.2.0 defines, with the code that Kea gives them."""
+        cases = (
+            (4, _SERVER_OPTIONS_CONFIG_GET, ("v6-only-preferred", 108), ("v4-captive-portal", 114)),
+            (6, _SERVER_OPTIONS_CONFIG_GET_V6, ("ntp-server", 56), ("v6-dnr", 144)),
+        )
+        for version, config_get, *expected in cases:
+            with self.subTest(version=version), stub_kea({"config-get": config_get}):
+                content = self.client.get(self._url(version=version)).content.decode()
+                for name, code in expected:
+                    self.assertIn(f'<option value="{name}">code {code}</option>', content)
+
     def test_get_refuses_incomplete_options_instead_of_offering_a_filtered_list(self):
         """Saving a filtered list would delete the entry the parser omitted."""
         responses = _catalogue_responses_for_subnets(
