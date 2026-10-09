@@ -399,6 +399,22 @@ class TestCombinedReservationFanOut(_ViewTestBase):
         self.assertEqual(response.context["errors"], [("broken-kea", HEADLINES["reservation"])])
         self.assertEqual(response.context["mutation_unavailable_servers"], [])
 
+    def test_a_server_that_cannot_be_reached_gets_no_capability_read(self):
+        # A second read of an unreachable Server only adds its timeout to the page.
+        responses = {
+            **_catalogue_responses(4, 1, "198.18.0.0/24"),
+            "reservation-get-page": requests.ConnectionError,
+            "list-commands": _reservation_mutation_commands(),
+        }
+        url = reverse("plugins:netbox_kea:combined_reservations4") + f"?server={self.server.pk}"
+
+        with stub_kea(responses) as kea:
+            response = self.client.get(url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["errors"], [(self.server.name, HEADLINES["reservation"])])
+        self.assertNotIn("list-commands", kea.commands())
+
 
 class TestCombinedReservationSyncControl(_ViewTestBase):
     """The combined tab must offer the same Reservation synchronization as one server.
