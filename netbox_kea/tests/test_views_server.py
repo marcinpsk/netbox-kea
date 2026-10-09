@@ -581,8 +581,8 @@ class TestServerStatusGlobalOptions(_ViewTestBase):
 
         self.assertEqual(self._rows(response, "DHCPv4")[0][:2], ("ntp-servers", 42))
         self.assertEqual(self._rows(response, "DHCPv6")[0][:2], ("new-tzdb-timezone", 42))
-        self.assertContains(response, "<td>ntp-servers</td>")
-        self.assertContains(response, "<td>new-tzdb-timezone</td>")
+        self.assertContains(response, '<td class="text-nowrap">ntp-servers</td>')
+        self.assertContains(response, '<td class="text-nowrap">new-tzdb-timezone</td>')
 
     def test_status_still_200_when_config_get_fails(self):
         """If ``config-get`` raises, the status page must still return 200 (graceful degradation)."""

@@ -66,7 +66,7 @@
           <tbody>
             {% for row in rows %}
             <tr>
-              <td>{{ row.name|placeholder }}</td>
+              <td class="text-nowrap">{{ row.name|placeholder }}</td>
               <td>{{ row.option.code|placeholder }}</td>
               <td>{{ row.option.space|placeholder }}</td>
               <td>{% for tag in row.option.client_classes %}<code>{{ tag }}</code>{% if not forloop.last %}, {% endif %}{% empty %}{{ None|placeholder }}{% endfor %}</td>
