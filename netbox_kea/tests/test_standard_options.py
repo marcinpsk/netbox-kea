@@ -8,12 +8,14 @@ import re
 
 from django.test import SimpleTestCase
 
-from netbox_kea.constants import (
+from netbox_kea.dhcp_options import (
+    _SHOWN_OPTIONS,
     KEA_DHCP4_STD_OPTIONS,
     KEA_DHCP6_STD_OPTIONS,
+    form_managed_options,
     kea_std_options,
+    standard_option_code,
 )
-from netbox_kea.dhcp_options import _SHOWN_OPTIONS, form_managed_options, standard_option_code
 
 _NAME_RE = re.compile(r"^[\w-]+$")
 

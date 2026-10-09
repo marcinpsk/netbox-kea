@@ -6,7 +6,7 @@
 # Budgets permit replacement within a scope; they do not identify exact literals.
 # Update: python3 netbox_kea/tests/kea_wire_discipline.py --update-baseline
 
-constants.py::<module>	153
+constants.py::<module>	2
 integrations/dhcp_plugin.py::<module>	44
 integrations/dhcp_plugin.py::_apply_reservation_identifier	4
 integrations/dhcp_plugin.py::_create_custom_option_def	1
