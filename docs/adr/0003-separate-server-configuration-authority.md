@@ -148,6 +148,8 @@ Configuration, Reservation and Lease Snapshots. A view does not choose a level.
 - A Reservation or Lease read raises when it fails, and it keeps raising, because the IPAM sync, the REST API and
   the export depend on that failure. A views-layer loader turns a Kea, transport or malformed-reply failure into an
   unavailable Notice. A refused Lease query and a `ValueError` stay outside the rule.
+- When Kea refuses a Reservation read because the `host_cmds` hook is not loaded, the Reservation page shows its
+  hook panel instead of the headline. The panel names the cause and the fix.
 - An unavailable Notice has one headline per Snapshot kind, then the diagnostics. A view writes no headline of its
   own.
 - A Snapshot that is incomplete only because more pages remain, with no diagnostics, gives no Notice.
