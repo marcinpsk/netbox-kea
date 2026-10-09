@@ -2801,25 +2801,20 @@ def _compose_build_args(sandbox: Path) -> list[str]:
     return [value for flag, value in itertools.pairwise(build) if flag == "--build-arg"]
 
 
-def test_the_setup_script_passes_the_set_proxy_variables_to_the_image_build():
-    """Compose does not forward the proxy of the host to a build, so the image cannot reach PyPI behind one."""
-    proxy = {"HTTPS_PROXY": "http://proxy.example:3128", "no_proxy": "localhost,.example"}
+def test_the_setup_script_passes_the_proxy_variables_to_the_image_build_by_name():
+    """Compose does not forward the proxy of the host to a build, so the image cannot reach PyPI behind one.
+
+    A name without a value makes Compose read the value from the environment, and skip a variable that is not set.
+    The script runs with xtrace, so a value in the arguments would put proxy credentials in the log.
+    """
+    proxy = {"HTTPS_PROXY": "http://user:secret@proxy.example:3128", "no_proxy": "localhost,.example"}
     with tempfile.TemporaryDirectory() as directory:
         sandbox = Path(directory)
         result = _run_setup_script(sandbox, ("netbox_kea_ng-1.9.0-py3-none-any.whl",), proxy)
 
         assert result.returncode == 0, result.stderr
-        proxy_args = [arg for arg in _compose_build_args(sandbox) if arg.split("=")[0] in _PROXY_VARIABLES]
-        assert proxy_args == ["HTTPS_PROXY=http://proxy.example:3128", "no_proxy=localhost,.example"]
-
-
-def test_the_setup_script_passes_no_proxy_argument_without_a_proxy():
-    with tempfile.TemporaryDirectory() as directory:
-        sandbox = Path(directory)
-        result = _run_setup_script(sandbox, ("netbox_kea_ng-1.9.0-py3-none-any.whl",))
-
-        assert result.returncode == 0, result.stderr
-        assert [arg.split("=")[0] for arg in _compose_build_args(sandbox)] == ["FROM", "WHL_FILE"]
+        assert _compose_build_args(sandbox)[2:] == list(_PROXY_VARIABLES)
+        assert "secret" not in result.stderr
 
 
 def _secret_source_is_inside_the_compose_project(source: str) -> bool:
