@@ -7,6 +7,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from .constants import kea_std_options
+
 
 class DHCPOptionConflict(ValueError):
     """An existing DHCP Option cannot be identified safely for an edit."""
@@ -80,25 +82,38 @@ class DHCPOption:
         return same_space and self.name is not None and self.name == intended.name
 
 
+_STANDARD_CODES: dict[int, dict[str, int]] = {version: dict(kea_std_options(version)) for version in (4, 6)}
+
+
+def standard_option_code(version: int, name: str) -> int | None:
+    """Return the code of the standard DHCP Option *name* of the family *version*, or None when Kea has none."""
+    return _STANDARD_CODES[version].get(name)
+
+
 @dataclass(frozen=True)
 class FormManagedOption:
-    """One default-space DHCP Option that a Subnet or Shared Network form field edits."""
+    """One default-space standard DHCP Option that a Subnet or Shared Network form field edits."""
 
     field: str
     name: str
-    code: int
+    family: int
+
+    @property
+    def code(self) -> int:
+        """Return the code that the Kea standard option definitions of the family give the option."""
+        return _STANDARD_CODES[self.family][self.name]
 
 
 # The form reader and the kea.py writer both use this table, so the two cannot disagree.
 _FORM_MANAGED_OPTIONS: dict[int, tuple[FormManagedOption, ...]] = {
     4: (
-        FormManagedOption("gateway", "routers", 3),
-        FormManagedOption("dns_servers", "domain-name-servers", 6),
-        FormManagedOption("ntp_servers", "ntp-servers", 42),
+        FormManagedOption("gateway", "routers", 4),
+        FormManagedOption("dns_servers", "domain-name-servers", 4),
+        FormManagedOption("ntp_servers", "ntp-servers", 4),
     ),
     6: (
-        FormManagedOption("dns_servers", "dns-servers", 23),
-        FormManagedOption("ntp_servers", "sntp-servers", 31),
+        FormManagedOption("dns_servers", "dns-servers", 6),
+        FormManagedOption("ntp_servers", "sntp-servers", 6),
     ),
 }
 

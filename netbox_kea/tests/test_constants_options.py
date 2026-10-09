@@ -13,6 +13,7 @@ from netbox_kea.constants import (
     KEA_DHCP6_STD_OPTIONS,
     kea_std_options,
 )
+from netbox_kea.dhcp_options import form_managed_options, standard_option_code
 
 _NAME_RE = re.compile(r"^[\w-]+$")
 
@@ -47,3 +48,14 @@ class TestStdOptionLists(SimpleTestCase):
         self.assertIs(kea_std_options(6), KEA_DHCP6_STD_OPTIONS)
         # Anything that is not 6 falls back to the v4 list.
         self.assertIs(kea_std_options(0), KEA_DHCP4_STD_OPTIONS)
+
+
+class TestStandardTableCoversManagedOptions(SimpleTestCase):
+    """Each option that a form edits takes its code from the standard table of its family."""
+
+    def test_each_form_managed_option_has_a_standard_definition(self):
+        for version in (4, 6):
+            for option in form_managed_options(version).values():
+                with self.subTest(version=version, name=option.name):
+                    self.assertIsNotNone(standard_option_code(version, option.name))
+                    self.assertEqual(option.code, standard_option_code(version, option.name))
