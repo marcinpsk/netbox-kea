@@ -1897,9 +1897,18 @@ def _classify(
     server: Server, family: Family, source: str, addresses: Iterable[str], kind: AllocationKind, report: SyncReport
 ) -> None:
     """Classify the Server's unclassified lease links at each of *addresses*, one row each."""
+    # A new lease link always has a kind, so this set only shrinks; usually it is empty.
+    pending = {
+        _host(address)
+        for address in IPAMOwnershipLink.objects.filter(
+            server=server, family=family, source=LEASE, allocation_kind=""
+        ).values_list("ip_address__address", flat=True)
+    }
+    if not pending:
+        return
     list(
         _each_row(
-            addresses,
+            [address for address in addresses if address in pending],
             report,
             source,
             lambda address: _classify_links(server, family, address, kind),

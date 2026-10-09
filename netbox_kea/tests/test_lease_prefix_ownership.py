@@ -11,7 +11,9 @@ from __future__ import annotations
 from contextlib import suppress
 
 from core.exceptions import JobFailed
+from django.db import connection
 from django.test import TestCase, override_settings
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from ipam.models import VRF, Prefix
 from ipam.models import IPAddress as NbIP
@@ -307,6 +309,17 @@ class LegacyPrefixLeaseRepairTest(TestCase):
         summary = _run_job(server, [_address(state=3)])
         self.assertEqual((summary["unclassified"], summary["errors"]), (0, 0))
         self.assertFalse(NbIP.objects.filter(pk=ip.pk).exists())
+
+    def test_inactive_leases_cost_no_queries_once_no_link_is_unclassified(self):
+        def queries(released: int) -> int:
+            server = _server(f"released-{released}")
+            leases = [_address(f"2001:db8::{100 + n:x}", state=3) for n in range(released)]
+            with CaptureQueriesContext(connection) as captured:
+                _run_job(server, leases)
+            return len(captured.captured_queries)
+
+        queries(0)  # The first run fills caches that later runs reuse.
+        self.assertEqual(queries(1), queries(6))
 
     def test_another_owner_claiming_the_address_keeps_an_already_stale_unclassified_link(self):
         server, other = _server(), _server("other")
