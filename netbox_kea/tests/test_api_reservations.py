@@ -868,6 +868,21 @@ class TestReservation6API(_APITestBase):
         self.assertFalse(response.json()["complete"])
         self.assertEqual(kea.commands(), ["subnet6-list", "config-get", "reservation-get-by-hostname"])
 
+    def test_a_hostname_in_another_case_finds_the_reservation(self):
+        responses = _catalogue_responses(6, 10, "2001:db8::/64")
+        # Kea 3.2.0 matches the hostname without case and returns it as stored.
+        responses["reservation-get-by-hostname"] = {
+            "result": 0,
+            "arguments": {"hosts": [{"subnet-id": 10, "duid": "00-01-02-03", "hostname": "MixedHost.Example"}]},
+        }
+
+        with stub_kea(responses):
+            response = self.api_client.get(self._url(), {"hostname": "mixedhost.example"})
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual((response.json()["count"], response.json()["diagnostics"]), (1, []))
+        self.assertEqual(response.json()["results"][0]["hostname"], "MixedHost.Example")
+
     def test_uses_dhcp6_service(self):
         responses = _catalogue_responses(6, 10, "2001:db8::/64")
         responses["reservation-get-by-hostname"] = {"result": 3}
