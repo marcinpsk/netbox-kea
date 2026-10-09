@@ -82,7 +82,8 @@ _Avoid_: Subnet ID, reservation location
 **Published Name**:
 The hostname that Kea gives a client for a Reservation: the stored Reservation hostname under the Effective DDNS
 Qualifying Suffix, in lower case and without a trailing dot. The Reservation forms take it, and the IPAM
-synchronization writes it to NetBox for both the lease and the Reservation source.
+synchronization writes it to NetBox for the Reservation source. The lease source writes the observed Lease hostname,
+which Kea stores already qualified, without a trailing dot.
 _Avoid_: Stored hostname, qualified name, FQDN
 
 **Effective DDNS Qualifying Suffix**:
