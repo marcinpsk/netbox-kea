@@ -1163,10 +1163,7 @@ rules:
       - pattern-not-inside: |
           def _enrich_leases_with_badges(...):
               ...
-      # The DDNS suffix of a hostname preview and of the Reservation edit form.
+      # The DDNS suffix of a hostname preview.
       - pattern-not-inside: |
           def _published_name_preview(...):
-              ...
-      - pattern-not-inside: |
-          def _displayed_suffix(...):
               ...

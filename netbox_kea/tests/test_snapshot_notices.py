@@ -15,7 +15,16 @@ from netbox_kea.kea import LeaseQueryPreflightUnavailable
 from netbox_kea.server_configuration import Diagnostic
 from netbox_kea.views.notices import HEADLINES, Notice, ServerNotices, load_snapshot, notice, show_notices
 
-from .kea_stub import _catalogue_responses, _res_page, _subnet_list, complete_lease, lease_page, queued, stub_kea
+from .kea_stub import (
+    _catalogue_responses,
+    _res_get,
+    _res_page,
+    _subnet_list,
+    complete_lease,
+    lease_page,
+    queued,
+    stub_kea,
+)
 from .utils import _ViewTestBase, plugins_config
 
 _IDENTITY_UNAVAILABLE = "Kea subnet identity facts are unavailable."
@@ -367,3 +376,31 @@ class TestCombinedPagesKeepANoticePerServer(_ViewTestBase):
         self.assertEqual(kea.commands(), [])
         self.assertEqual(reservations.context["errors"], [(self.server.name, HEADLINES["reservation"])])
         self.assertEqual(leases.context["errors"], [(self.server.name, HEADLINES["lease"])])
+
+
+class TestReservationEditNotice(_ViewTestBase):
+    """The Reservation edit page reads the displayed Catalogue for its hostname suffix, so it shows its Notice."""
+
+    def _edit(self, responses: dict):
+        url = reverse("plugins:netbox_kea:server_reservation4_edit", args=[self.server.pk, 20])
+        current = {"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:ff"}
+        with stub_kea({**responses, "reservation-get": _res_get(current)}):
+            return self.client.get(url, {"identifier_type": "hw-address", "identifier": "aa:bb:cc:dd:ee:ff"})
+
+    def test_an_incomplete_catalogue_is_a_warning_on_the_form(self):
+        identity_only = {
+            **_catalogue_responses(4, 20, "198.18.0.0/24"),
+            "config-get": requests.ConnectionError("configuration unavailable"),
+        }
+        response = self._edit(identity_only)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn((django_messages.WARNING, "Kea configuration facts are unavailable."), _page_messages(response))
+
+    def test_an_unavailable_catalogue_is_an_error_before_the_failed_target_read(self):
+        failure = requests.ConnectionError("unreachable")
+        response = self._edit({"subnet4-list": failure, "config-get": failure, "list-commands": failure})
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(_page_messages(response)[0], (django_messages.ERROR, HEADLINES["catalogue"]))
+        self.assertIn(
+            (django_messages.ERROR, "The Reservation could not be loaded. See server logs."), _page_messages(response)
+        )

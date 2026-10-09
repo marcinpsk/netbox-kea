@@ -51,16 +51,20 @@ _EXEMPT = {
     "server_option_def6_delete": "A confirmation page that reads no Kea data.",
     "server_reservation4_bulk_import": "An upload form that reads no Kea data.",
     "server_reservation6_bulk_import": "An upload form that reads no Kea data.",
-    "server_reservation4_edit": "It reads one Reservation exactly, not a Snapshot, and shows its own error.",
-    "server_reservation6_edit": "It reads one Reservation exactly, not a Snapshot, and shows its own error.",
-    "server_reservation4_delete": "It reads one Reservation exactly, not a Snapshot, and shows its own error.",
-    "server_reservation6_delete": "It reads one Reservation exactly, not a Snapshot, and shows its own error.",
+    "server_reservation4_delete": "It confirms the Subnet identity and reads one Reservation exactly; no Snapshot.",
+    "server_reservation6_delete": "It confirms the Subnet identity and reads one Reservation exactly; no Snapshot.",
     "server_reservation4_published_name": "An htmx preview that shows no suffix when the Catalogue cannot.",
     "server_reservation6_published_name": "An htmx preview that shows no suffix when the Catalogue cannot.",
     "server_shared_network4_add": "A form that reads no Kea data.",
     "server_shared_network6_add": "A form that reads no Kea data.",
     "server_shared_network4_delete": "A confirmation page that reads no Kea data.",
     "server_shared_network6_delete": "A confirmation page that reads no Kea data.",
+}
+
+#: The query that a page needs before it reads anything.
+_QUERIES = {
+    "server_reservation4_edit": {"identifier_type": "hw-address", "identifier": "aa:bb:cc:dd:ee:ff"},
+    "server_reservation6_edit": {"identifier_type": "duid", "identifier": "00:01:02:03"},
 }
 
 #: The htmx search of each lease page, which reads a Lease Snapshot after the page itself.
@@ -110,7 +114,7 @@ class TestEveryServerPageShowsAFailedRead(_ViewTestBase):
                 family = _FAMILY.search(name)
                 arguments = {"pk": self.server.pk, **_ARGUMENTS[int(family.group(1)) if family else 4]}
                 url = reverse(_NAMESPACE + name, kwargs={key: arguments[key] for key in parameters})
-                requests_ = [(url, {}, {})]
+                requests_ = [(url, _QUERIES.get(name, {}), {})]
                 if name in _HTMX_SEARCHES:
                     requests_.append((url, _HTMX_SEARCHES[name], {"HTTP_HX_REQUEST": "true"}))
                 for path, query, headers in requests_:

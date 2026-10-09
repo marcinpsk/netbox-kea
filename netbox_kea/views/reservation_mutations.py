@@ -219,11 +219,6 @@ def _entered_suffix(catalogue: CatalogueSnapshot, subnet: SubnetIdentity, addres
         raise _UnknownSuffix(str(exc)) from exc
 
 
-def _displayed_suffix(server: Server, family: Family, reservation: Reservation) -> str | None:
-    """Return the DDNS suffix that the displayed Subnet Catalogue shows for *reservation*."""
-    return _shown_suffix(reservation, subnet_catalogue.display(server, family))
-
-
 def _hostname_change(
     current: Reservation,
     entered: str,
@@ -700,9 +695,11 @@ class _ReservationEditView(_ReservationMutationView):
     def get(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         server = self.get_object(pk=pk)
         identity = _identity_from_request(request, self.dhcp_version)
+        catalogue = subnet_catalogue.display(server, self.dhcp_version)
+        show_notices(request, notice(catalogue))
         try:
             reservation = _load_target(server, self.dhcp_version, subnet_id, identity)
-            suffix = _displayed_suffix(server, self.dhcp_version, reservation)
+            suffix = _shown_suffix(reservation, catalogue)
         except (KeaException, requests.RequestException, RuntimeError, ValueError):
             logger.exception("Could not load the Reservation edit target")
             messages.error(request, "The Reservation could not be loaded. See server logs.")
