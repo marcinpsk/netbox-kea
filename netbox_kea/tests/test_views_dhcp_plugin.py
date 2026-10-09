@@ -19,7 +19,7 @@ from django.test import SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
-from netbox_kea.kea import KeaClient, KeaException
+from netbox_kea.kea import KeaException
 from netbox_kea.views import dhcp_plugin_sync as dps
 
 from .kea_stub import _res_page, _subnet_list, stub_kea
@@ -126,32 +126,15 @@ class FetchReservationSnapshotTest(TestCase):
 
 
 class ExtractDhcpConfTest(SimpleTestCase):
-    """`_extract_dhcp_conf` pulls the right block and *raises* on malformed shapes."""
+    """`_extract_dhcp_conf` pulls the right block and *raises* on malformed arguments."""
 
     def test_extracts_dhcp4_block(self):
         resp = [{"result": 0, "arguments": {"Dhcp4": {"subnet4": []}}}]
         self.assertEqual(dps._extract_dhcp_conf(resp, 4), {"subnet4": []})
 
-    def test_wrong_result_code_returns_none(self):
-        # A non-zero Kea result is a legitimate "no config", not a contract failure.
-        self.assertIsNone(dps._extract_dhcp_conf([{"result": 1, "arguments": {"Dhcp4": {}}}], 4))
-
     def test_missing_block_returns_none(self):
         # The version's block simply being absent is legitimate "no config".
         self.assertIsNone(dps._extract_dhcp_conf([{"result": 0, "arguments": {}}], 6))
-
-    def test_non_list_raises(self):
-        # Malformed *shape* must surface, not be silently downgraded to "no config".
-        with self.assertRaises(RuntimeError):
-            dps._extract_dhcp_conf({"not": "a list"}, 4)
-
-    def test_empty_list_raises(self):
-        with self.assertRaises(RuntimeError):
-            dps._extract_dhcp_conf([], 4)
-
-    def test_non_dict_item_raises(self):
-        with self.assertRaises(RuntimeError):
-            dps._extract_dhcp_conf(["not-a-dict"], 4)
 
     def test_non_dict_arguments_raises(self):
         with self.assertRaises(RuntimeError):
@@ -309,16 +292,6 @@ class SyncNowEndToEndTest(TestCase):
         self.assertNotContains(resp, "are not imported")
 
 
-class _MalformedConfigClient(KeaClient):
-    """Fake client whose ``config-get`` returns a malformed (non-list) shape."""
-
-    def __init__(self):
-        pass
-
-    def command(self, command, service=None, arguments=None, check=(0,)):
-        return {"not": "a list"}
-
-
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class FetchConfigIntentTest(TestCase):
     """`_fetch_config_intent` surfaces a malformed config-get as a logged skip, not a crash."""
@@ -327,14 +300,16 @@ class FetchConfigIntentTest(TestCase):
         self.server = _make_db_server(dhcp4=True, dhcp6=False)
 
     def test_malformed_config_get_is_logged_and_skipped(self):
-        with patch("netbox_kea.models.Server.get_client", return_value=_MalformedConfigClient(), autospec=True):
-            with self.assertLogs("netbox_kea.views.dhcp_plugin_sync", level="WARNING") as cm:
+        for reply in ([], {"result": 0, "arguments": ["not", "a", "dict"]}):
+            with (
+                self.subTest(reply=reply),
+                stub_kea({"config-get": reply}),
+                self.assertLogs("netbox_kea.views.dhcp_plugin_sync", level="WARNING") as cm,
+            ):
                 result = dps._fetch_config_intent(self.server, 4)
-        # Malformed shape → RuntimeError raised in _extract_dhcp_conf, caught here as a
-        # read failure: the version is skipped (None) and the problem is logged, not
-        # silently downgraded to "no config".
-        self.assertIsNone(result)
-        self.assertTrue(any("config-get failed" in line for line in cm.output))
+            # A malformed reply is a logged read failure, not a silent "no config".
+            self.assertIsNone(result)
+            self.assertTrue(any("config-get failed" in line for line in cm.output))
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)

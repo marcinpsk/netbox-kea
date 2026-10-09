@@ -25,7 +25,7 @@ from ..constants import Family
 from ..dhcp_mapping_lifecycle import MetadataBusy
 from ..integrations import dhcp_plugin
 from ..ipam_reconciliation import complete_import_observation
-from ..kea import KeaCommand, KeaException
+from ..kea import KeaCommand, KeaException, KeaResponse
 from ..mappers.kea_to_dhcp import parse_dhcp_config
 from ..models import Server
 from ..utilities import OptionalViewTab
@@ -48,23 +48,15 @@ def _enabled_versions(server: Server) -> list[Family]:
     return versions
 
 
-def _extract_dhcp_conf(resp, version: Family) -> dict | None:
-    """Pull the ``Dhcp4``/``Dhcp6`` block out of a ``config-get`` response, or ``None``.
+def _extract_dhcp_conf(resp: list[KeaResponse], version: Family) -> dict | None:
+    """Pull the ``Dhcp4``/``Dhcp6`` block out of a checked ``config-get`` reply, or ``None`` when it is absent.
 
-    Raises ``RuntimeError`` on a malformed response *shape* so a protocol/contract
-    failure is surfaced rather than silently downgraded to "no config". Returns
-    ``None`` only for the legitimate cases: a non-zero Kea ``result`` or this
-    version's block simply being absent.
+    Raises ``RuntimeError`` when ``arguments`` is not a mapping.
     """
-    dhcp_key = f"Dhcp{version}"
-    if not isinstance(resp, list) or not resp or not isinstance(resp[0], dict):
-        raise RuntimeError("Malformed Kea config-get response: expected a non-empty list of dicts")
-    if resp[0].get("result") != 0:
-        return None
     args = resp[0].get("arguments") or {}
     if not isinstance(args, dict):
         raise RuntimeError("Malformed Kea config-get response: 'arguments' must be a dict")
-    conf = args.get(dhcp_key)
+    conf = args.get(f"Dhcp{version}")
     return conf if isinstance(conf, dict) else None
 
 

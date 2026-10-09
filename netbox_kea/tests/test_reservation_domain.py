@@ -412,7 +412,7 @@ class TestReservationPage(SimpleTestCase):
 
     def test_rejects_a_malformed_response_envelope(self):
         with stub_kea({"reservation-get-page": []}):
-            with self.assertRaisesRegex(RuntimeError, "empty reply"):
+            with self.assertRaisesRegex(RuntimeError, "one valid result"):
                 self.kea.reservation_page(4, _catalogue(4, 10, "198.18.0.0/24"))
 
     def test_rejects_a_malformed_page_cursor(self):
@@ -1775,3 +1775,46 @@ class TestRawRecordBoundary(SimpleTestCase):
             self._reservation_commands(ast.parse(source)),
             ["KeaCommand.RESERVATION_GET_PAGE (line 2)", "KeaCommand.RESERVATION_GET (line 3)"],
         )
+
+
+class TestSingleServiceReadsNeedOneReply(SimpleTestCase):
+    """A single-service read refuses a reply with more than one entry instead of reading the first."""
+
+    def setUp(self):
+        self.kea = kea_client(url="http://kea.example.invalid", send_service=False)
+        self.catalogue = _catalogue(4, 20, "198.18.0.0/24")
+        self.scope = InSubnetReservationScope(SubnetIdentity(20, ip_network("198.18.0.0/24")))
+
+    def test_two_entry_replies_are_malformed(self):
+        identity = ReservationIdentity("hw-address", "aa:bb:cc:dd:ee:ff")
+        host = {"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:ff", "ip-address": "198.18.0.20"}
+        subnet = {"id": 20, "subnet": "198.18.0.0/24"}
+        cases = (
+            ("list-commands", {"result": 0, "arguments": ["config-get"]}, lambda: self.kea.get_available_commands(4)),
+            ("reservation-get-page", _res_page([host]), lambda: self.kea.reservation_page(4, self.catalogue)),
+            (
+                "reservation-get-by-hostname",
+                {"result": 0, "arguments": {"hosts": [host]}},
+                lambda: self.kea.reservations_by_hostname(4, self.catalogue, "printer"),
+            ),
+            (
+                "reservation-get",
+                _res_get(host),
+                lambda: self.kea.reservation_by_identity(4, self.catalogue, self.scope, identity),
+            ),
+            (
+                "reservation-get",
+                _res_get(host),
+                lambda: self.kea.reservation_by_address(4, self.catalogue, self.scope, "198.18.0.20"),
+            ),
+            (
+                "config-get",
+                {"result": 0, "arguments": {"Dhcp4": {"subnet4": [subnet]}}},
+                lambda: self.kea.configured_subnet_id_from_cidr(4, "198.18.0.0/24"),
+            ),
+            ("subnet4-get", {"result": 0, "arguments": {"subnet4": [subnet]}}, lambda: self.kea.subnet_get(4, 20)),
+        )
+        for command, entry, call in cases:
+            with self.subTest(command=command), stub_kea({command: [entry, entry]}):
+                with self.assertRaisesRegex(kea.MalformedReply, "one valid result"):
+                    call()

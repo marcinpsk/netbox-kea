@@ -289,11 +289,8 @@ class KeaResponse(TypedDict):
     text: str | None
 
 
-def _reservation_get_arguments(response: list[KeaResponse]) -> dict[str, Any] | None:
+def _reservation_get_arguments(result: KeaResponse) -> dict[str, Any] | None:
     """Return reservation-get arguments or classify Kea's not-found responses."""
-    if not response or not isinstance(response[0], dict):
-        raise RuntimeError("reservation-get returned a malformed response.")
-    result = response[0]
     if result.get("result") == 3 or (result.get("result") == 0 and result.get("text") == "Host not found."):
         return None
     arguments = result.get("arguments")
@@ -1056,12 +1053,10 @@ class KeaClient:
             Set of command name strings reported by ``list-commands``.
 
         """
-        resp = self.command(KeaCommand.LIST_COMMANDS, family)
-        if not resp or not isinstance(resp[0], dict):
-            raise RuntimeError(f"list-commands returned malformed response: {resp!r}")
-        arguments = resp[0].get("arguments")
+        reply = self._one_command(KeaCommand.LIST_COMMANDS, family)
+        arguments = reply.get("arguments")
         if not isinstance(arguments, list) or any(not isinstance(command, str) for command in arguments):
-            raise RuntimeError(f"list-commands returned malformed arguments: {resp[0]!r}")
+            raise RuntimeError(f"list-commands returned malformed arguments: {reply!r}")
         return set(arguments)
 
     def reservation_capabilities(self, version: Family) -> ReservationCapabilities:
@@ -1162,17 +1157,10 @@ class KeaClient:
         arguments: dict[str, Any] = {"source-index": source_index, "from": from_index, "limit": limit}
         if subnet_id is not None:
             arguments["subnet-id"] = subnet_id
-        resp = self.command(
-            KeaCommand.RESERVATION_GET_PAGE,
-            family,
-            arguments=arguments,
-            check=(0, 3),
-        )
-        if not resp or not isinstance(resp[0], dict):
-            raise RuntimeError("reservation-get-page returned a malformed response.")
-        if resp[0].get("result") == 3:
+        reply = self._one_command(KeaCommand.RESERVATION_GET_PAGE, family, arguments, (0, 3))
+        if reply["result"] == 3:
             return [], 0, 0
-        args = resp[0].get("arguments")
+        args = reply.get("arguments")
         if not isinstance(args, dict) or not isinstance(args.get("hosts"), list):
             raise RuntimeError("reservation-get-page returned malformed arguments.")
         next_obj = args.get("next")
@@ -1277,17 +1265,13 @@ class KeaClient:
     ) -> dict[str, Any] | None:
         """Fetch one exact raw Reservation for private read-modify-write use."""
         subnet_id = _reservation_scope_subnet_id(scope)
-        response = self.command(
+        reply = self._one_command(
             KeaCommand.RESERVATION_GET,
             version,
-            arguments={
-                "subnet-id": subnet_id,
-                "identifier-type": identity.identifier_type,
-                "identifier": identity.value,
-            },
-            check=(0, 3),
+            {"subnet-id": subnet_id, "identifier-type": identity.identifier_type, "identifier": identity.value},
+            (0, 3),
         )
-        return _reservation_get_arguments(response)
+        return _reservation_get_arguments(reply)
 
     def _reservation_raw_by_address(
         self,
@@ -1296,13 +1280,10 @@ class KeaClient:
         address: str,
     ) -> dict[str, Any] | None:
         """Fetch one scoped raw Reservation by allocation address."""
-        response = self.command(
-            KeaCommand.RESERVATION_GET,
-            version,
-            arguments={"subnet-id": scope.subnet.subnet_id, "ip-address": address},
-            check=(0, 3),
+        reply = self._one_command(
+            KeaCommand.RESERVATION_GET, version, {"subnet-id": scope.subnet.subnet_id, "ip-address": address}, (0, 3)
         )
-        return _reservation_get_arguments(response)
+        return _reservation_get_arguments(reply)
 
     def reservation_by_address(
         self,
@@ -1344,17 +1325,10 @@ class KeaClient:
             raise ValueError(f"version must be 4 or 6, got {version!r}")
         if not isinstance(hostname, str) or not hostname:
             raise ValueError("hostname must be a non-empty string.")
-        response = self.command(
-            KeaCommand.RESERVATION_GET_BY_HOSTNAME,
-            version,
-            arguments={"hostname": hostname},
-            check=(0, 3),
-        )
-        if not response or not isinstance(response[0], dict):
-            raise RuntimeError("reservation-get-by-hostname returned a malformed response.")
-        if response[0].get("result") == 3:
+        reply = self._one_command(KeaCommand.RESERVATION_GET_BY_HOSTNAME, version, {"hostname": hostname}, (0, 3))
+        if reply["result"] == 3:
             return _parse_reservation_page([], version, catalogue, None)
-        arguments = response[0].get("arguments")
+        arguments = reply.get("arguments")
         if not isinstance(arguments, dict):
             raise RuntimeError("reservation-get-by-hostname returned malformed arguments.")
         return _parse_reservation_page(
@@ -1580,10 +1554,7 @@ class KeaClient:
         if network.version != version:
             raise ValueError(f"Subnet family IPv{network.version} does not match DHCPv{version}.")
 
-        response = self.command(KeaCommand.CONFIG_GET, version)
-        if not response or not isinstance(response[0], dict):
-            raise RuntimeError("config-get returned a malformed response.")
-        arguments = response[0].get("arguments")
+        arguments = self._one_command(KeaCommand.CONFIG_GET, version).get("arguments")
         dhcp_config = arguments.get(f"Dhcp{version}") if isinstance(arguments, dict) else None
         if not isinstance(dhcp_config, dict):
             raise RuntimeError(f"config-get returned malformed Dhcp{version} configuration.")
@@ -2274,10 +2245,7 @@ class KeaClient:
 
         """
         subnet_key = f"subnet{version}"
-        resp = self.command(SUBNET_GET[version], version, arguments={"id": subnet_id})
-        if not isinstance(resp, list) or not resp or not isinstance(resp[0], dict):
-            raise RuntimeError(f"subnet{version}-get returned an invalid response envelope")
-        args = resp[0].get("arguments") or {}
+        args = self._one_command(SUBNET_GET[version], version, {"id": subnet_id}).get("arguments") or {}
         if not isinstance(args, dict) or not isinstance(args.get(subnet_key, []), list):
             raise RuntimeError(f"subnet{version}-get returned an invalid subnet collection")
         subnets = args.get(subnet_key, [])

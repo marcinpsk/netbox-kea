@@ -27,8 +27,6 @@ logger = logging.getLogger(__name__)
 
 def _response_arguments(response: list[KeaResponse], command: str, *, require_nonempty: bool = False) -> dict:
     """Return one validated Kea arguments mapping."""
-    if not response or not isinstance(response[0], dict):
-        raise RuntimeError(f"Kea {command} returned an invalid response entry")
     arguments = response[0].get("arguments")
     if not isinstance(arguments, dict) or (require_nonempty and not arguments):
         raise RuntimeError(f"Kea {command} returned invalid arguments")
