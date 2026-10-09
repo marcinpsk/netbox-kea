@@ -156,6 +156,7 @@ URL request
   → urls.py             (routes to view classes)
   → views/              (view modules; each calls server.get_client() → KeaClient)
       _base.py          (ConditionalLoginRequiredMixin, _KeaChangeMixin, shared helpers)
+      notices.py        (the one Snapshot notice rule: notice(), load_snapshot() and the channels; ADR 0003)
       server.py         (Server CRUD, status tab)
       leases.py         (DHCPv4/v6 lease search, add, edit, delete, badge enrichment)
       reservations.py   (DHCPv4/v6 reservation CRUD)
@@ -252,6 +253,14 @@ Exception
  ├── KeaException                  # base: any non-ok result from Kea
  └── ConfigChangeRejected          # config_write: the change is not live, with a reason
 ```
+
+**`views/notices.py` owns every Snapshot notice** (ADR 0003, Presentation). A view passes a Catalogue or Server
+Configuration Snapshot to `notice()` and runs a Reservation or Lease read through `load_snapshot()`, which turns a
+Kea, transport or malformed-reply failure into an unavailable Notice. The view shows the Notice with
+`show_notices()`, in a template, or with `ServerNotices` on a combined page; it never chooses a level. Two OpenGrep
+rules (`kea-snapshot-notice-outside-notice-module`, `kea-snapshot-read-without-notice`) and
+`test_snapshot_notice_sweep.py` guard it. A new Server page that reads no Snapshot needs an entry with a reason in
+the sweep's exempt list.
 
 **`config_write` owns every Configuration Change** (ADR 0005). An
 operation returns a `ConfigChangeOutcome` (`applied`/`unknown` and
