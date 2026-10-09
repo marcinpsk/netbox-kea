@@ -81,7 +81,6 @@ _EXPECTED: dict[str, frozenset[SnapshotKind]] = {
     "server_reservation_edit": frozenset({"catalogue"}),
     "server_reservations": frozenset({"reservation"}),
 }
-#: The htmx lease search shows the Catalogue Notice in its form and the Lease Notice below it.
 
 #: The query that a page needs before it reads anything.
 _QUERIES = {
@@ -89,7 +88,6 @@ _QUERIES = {
     "server_reservation6_edit": {"identifier_type": "duid", "identifier": "00:01:02:03"},
 }
 
-#: The htmx search of each lease page, which reads a Lease Snapshot after the page itself.
 #: The htmx partial request of a page, and the Snapshot kinds whose error headline it must show inline.
 _HTMX_SEARCHES: dict[str, tuple[dict[str, str], frozenset[SnapshotKind]]] = {
     "server_leases4": ({"by": "hw", "q": "aa:bb:cc:dd:ee:ff"}, frozenset({"catalogue", "lease"})),
