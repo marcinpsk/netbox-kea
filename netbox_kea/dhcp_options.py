@@ -457,6 +457,11 @@ def address_list(text: str) -> tuple[str, ...]:
     return tuple(addresses)
 
 
+def address_list_data(addresses: Sequence[str]) -> str:
+    """Return the option data of *addresses*: each address joined with a comma and a space, as in the Kea ARM."""
+    return ", ".join(addresses)
+
+
 def parse_dhcp_option(entry: Any) -> DHCPOption:
     """Parse one raw Kea option-data entry.
 

@@ -23,6 +23,7 @@ from .dhcp_options import (
     DHCPOption,
     InvalidAddress,
     address_list,
+    address_list_data,
     form_managed_entry,
     form_managed_options,
     form_shows,
@@ -732,9 +733,9 @@ class SubnetDefinition:
         options = subnet.get("option-data", [])
         if self.family == 4:
             options = _replace_managed_option(options, 4, "gateway", fields.gateway)
-        options = _replace_managed_option(options, self.family, "dns_servers", ", ".join(fields.dns_servers))
+        options = _replace_managed_option(options, self.family, "dns_servers", address_list_data(fields.dns_servers))
         subnet["option-data"] = _replace_managed_option(
-            options, self.family, "ntp_servers", ", ".join(fields.ntp_servers)
+            options, self.family, "ntp_servers", address_list_data(fields.ntp_servers)
         )
         suffix_key = setting_key("ddns_qualifying_suffix")
         if fields.ddns_qualifying_suffix:
@@ -852,8 +853,8 @@ class CandidateConfiguration:
         else:
             network.pop("relay", None)
         options = list(_config_entries(network, "option-data", self.service))
-        options = _replace_managed_option(options, self.family, "dns_servers", ",".join(edit.dns_servers))
-        options = _replace_managed_option(options, self.family, "ntp_servers", ",".join(edit.ntp_servers))
+        options = _replace_managed_option(options, self.family, "dns_servers", address_list_data(edit.dns_servers))
+        options = _replace_managed_option(options, self.family, "ntp_servers", address_list_data(edit.ntp_servers))
         network["option-data"] = options
 
 
@@ -1626,9 +1627,9 @@ class KeaClient:
         if fields.gateway and version == 4:
             option_data.append({"name": managed["gateway"].name, "data": fields.gateway})
         if fields.dns_servers:
-            option_data.append({"name": managed["dns_servers"].name, "data": ", ".join(fields.dns_servers)})
+            option_data.append({"name": managed["dns_servers"].name, "data": address_list_data(fields.dns_servers)})
         if fields.ntp_servers:
-            option_data.append({"name": managed["ntp_servers"].name, "data": ", ".join(fields.ntp_servers)})
+            option_data.append({"name": managed["ntp_servers"].name, "data": address_list_data(fields.ntp_servers)})
         if option_data:
             subnet["option-data"] = option_data
         if fields.ddns_qualifying_suffix:

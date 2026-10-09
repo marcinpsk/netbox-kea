@@ -16,7 +16,7 @@ from django.test import SimpleTestCase, override_settings
 from django.urls import reverse
 
 from netbox_kea import server_configuration
-from netbox_kea.dhcp_options import address_list, form_managed_options, form_option_fields
+from netbox_kea.dhcp_options import address_list, form_option_fields
 from netbox_kea.subnet_settings import SETTING_KEYS, SubnetSettings
 
 from .kea_stub import SubnetDaemon, _catalogue_responses_for_subnets, stub_kea
@@ -42,8 +42,8 @@ _EDITED_SETTINGS = {
     "ddns_qualifying_suffix": ("ddns_qualifying_suffix", "office.example.org."),
 }
 _OPTIONS = {
-    4: {"gateway": "192.0.2.1", "dns_servers": "192.0.2.53, 192.0.2.54", "ntp_servers": "192.0.2.123"},
-    6: {"dns_servers": "2001:db8::53, 2001:db8::54", "ntp_servers": "2001:db8::123"},
+    4: {"gateway": "192.0.2.1", "dns_servers": "192.0.2.53,192.0.2.54", "ntp_servers": "192.0.2.123"},
+    6: {"dns_servers": "2001:db8::53,2001:db8::54", "ntp_servers": "2001:db8:0::123"},
 }
 
 
@@ -114,11 +114,12 @@ class TestWrittenValuesReadBack(_ViewTestBase):
         (subnet,) = server_configuration.for_verification(self.server, family).subnets
         return subnet.configuration
 
-    def _assert_options(self, options, family: int) -> None:
+    def _assert_options(self, options, family: int, sent: dict[str, str]) -> None:
         shown = form_option_fields(options, family)
-        self.assertEqual(set(shown), set(form_managed_options(family)))
-        for field, text in _OPTIONS[family].items():
-            self.assertEqual(address_list(shown[field]), address_list(text), field)
+        self.assertEqual(set(shown), set(sent))
+        for field, text in sent.items():
+            # Each writer joins an address list with a comma and a space, as the Kea ARM examples do.
+            self.assertEqual(shown[field], ", ".join(address_list(text)), field)
 
     def test_subnet_edit(self):
         for family in (4, 6):
@@ -134,7 +135,7 @@ class TestWrittenValuesReadBack(_ViewTestBase):
                     {field: getattr(configuration.settings, field) for field in _EDITED_SETTINGS},
                     {field: value for field, (_form_field, value) in _EDITED_SETTINGS.items()},
                 )
-                self._assert_options(configuration.options, family)
+                self._assert_options(configuration.options, family, _OPTIONS[family])
 
     def test_subnet_add(self):
         for family in (4, 6):
@@ -150,7 +151,7 @@ class TestWrittenValuesReadBack(_ViewTestBase):
                 self.assertEqual(self.client.post(url, data).status_code, 302)
                 configuration = self._read_back(family)
                 self.assertEqual(configuration.settings.ddns_qualifying_suffix, "office.example.org.")
-                self._assert_options(configuration.options, family)
+                self._assert_options(configuration.options, family, _OPTIONS[family])
 
     def test_shared_network_edit(self):
         for family in (4, 6):
@@ -164,6 +165,16 @@ class TestWrittenValuesReadBack(_ViewTestBase):
                 options = {field: text for field, text in _OPTIONS[family].items() if field != "gateway"}
                 self.assertEqual(self.client.post(url, {**page, **options}).status_code, 302)
                 (read,) = server_configuration.for_verification(self.server, family).shared_networks
-                shown = form_option_fields(read.options, family)
-                for field, text in options.items():
-                    self.assertEqual(address_list(shown[field]), address_list(text), field)
+                self._assert_options(read.options, family, options)
+
+    def test_an_unchanged_address_list_keeps_its_live_text(self):
+        """The edit compares parsed address lists, so a save of other fields does not rewrite the live data."""
+        live = [{"name": "domain-name-servers", "data": "192.0.2.53,192.0.2.54"}]
+        network = {"name": "office", "subnet4": [], "option-data": live}
+        daemon = _RunningConfiguration(_catalogue_responses_for_subnets(4, [], shared_networks=[network])["config-get"])
+        url = reverse("plugins:netbox_kea:server_shared_network4_edit", args=[self.server.pk, "office"])
+        with stub_kea(daemon.responses()):
+            page = _page_data(self.client.get(url))
+            self.assertEqual(self.client.post(url, {**page, "description": "Floor 2"}).status_code, 302)
+        self.assertEqual(daemon.network(4)["user-context"], {"comment": "Floor 2"})
+        self.assertEqual(daemon.network(4)["option-data"], live)
