@@ -222,8 +222,11 @@ def _enrich_subnet_statistics(rows: list[dict[str, Any]], server: Server, versio
     """Add available utilization measurements to Subnet presentation rows."""
     try:
         utilization = server.get_client(version=version).subnet_utilization(version)
-    except KeaException:
-        logger.debug("stat_cmds hook unavailable", exc_info=True)
+    except KeaException as exc:
+        if exc.unsupported_command:
+            logger.debug("stat_cmds hook unavailable", exc_info=True)
+        else:
+            logger.warning("Kea refused the Subnet utilization read of server %s", server.pk, exc_info=True)
         return
     except (requests.RequestException, RuntimeError, ValueError):
         logger.warning("Could not read Subnet utilization from server %s", server.pk, exc_info=True)

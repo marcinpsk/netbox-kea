@@ -3814,6 +3814,21 @@ class TestSubnetViewCoverageGaps(_ViewTestBase):
             self.assertEqual(len(response.context["table"].data), 1)
             self.assertNotIn("utilization", next(iter(response.context["table"].data)))
 
+    def test_a_statistics_error_warns_and_a_missing_hook_does_not(self):
+        """Only a missing stat_cmds hook is an expected state; another Kea error is a failed read."""
+        for stat, logs in (
+            ({"result": 1, "text": "database failure"}, self.assertLogs),
+            (_STAT_ABSENT4, self.assertNoLogs),
+        ):
+            with (
+                self.subTest(stat=stat),
+                logs("netbox_kea.views._base", level="WARNING"),
+                self._list_stub(_config_with_one_subnet()[0], stat=stat),
+            ):
+                response = self.client.get(self._subnets4_url())
+            self.assertEqual(response.status_code, 200)
+            self.assertNotIn("utilization", next(iter(response.context["table"].data)))
+
     def test_stats_request_exception_still_renders_subnets(self):
         """When stat-lease4-get raises RequestException, subnets render without utilisation."""
         with self._list_stub(_config_with_one_subnet()[0], stat=requests.RequestException("timeout")):
