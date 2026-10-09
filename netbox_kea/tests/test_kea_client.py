@@ -943,6 +943,17 @@ class TestLeaseChanges(TestCase):
         self.assertEqual(result, LeaseAbsent(identity=shown.identity))
         self.assertEqual(kea.commands(), ["lease4-get", "lease4-del"])
 
+    def test_the_daemon_derives_the_transaction_time_of_an_add_from_its_expire(self):
+        # The add request of `_renewal` in scripts/record_kea_config_get.py; Kea 3.2.0 answered the recorded read.
+        added = {"ip-address": "192.0.2.30", "subnet-id": 10, "hw-address": "aa:bb:cc:00:00:30", "valid-lft": 3600}
+        recordings = Path(__file__).with_name("kea_recordings") / "dhcp4.json"
+        recorded = json.loads(recordings.read_text())["leases"]["lease4-update"]["before"]["arguments"]
+        with stub_kea(LeaseDaemon(4).responses()):
+            self.client.command(KeaCommand.LEASE4_ADD, 4, {**added, "expire": 2_000_000_000})
+            read = self.client.command(KeaCommand.LEASE4_GET, 4, {"ip-address": "192.0.2.30"})
+
+        self.assertEqual(read[0]["arguments"], recorded)
+
     def test_a_creation_sends_only_the_facts_of_the_request(self):
         requests_by_family = {
             4: DHCPv4LeaseRequest(address=ipaddress.IPv4Address("192.0.2.50"), hw_address="aa:bb:cc:00:00:50"),
