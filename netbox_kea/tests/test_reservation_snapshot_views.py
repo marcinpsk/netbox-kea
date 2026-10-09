@@ -539,7 +539,7 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
 
 
 class TestCombinedReservationSnapshots(_ViewTestBase):
-    def test_failed_page_read_warns_that_the_combined_snapshot_is_incomplete(self):
+    def test_failed_page_read_is_an_error_without_a_second_incomplete_warning(self):
         responses = _catalogue_responses(4, 20, "198.18.0.0/24")
         responses.update(
             {
@@ -555,8 +555,9 @@ class TestCombinedReservationSnapshots(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         self.assertFalse(response.context["snapshot_complete"])
         self.assertEqual(response.context["reservation_diagnostics"], [])
-        self.assertContains(response, "Snapshot is incomplete")
-        self.assertNotContains(response, "diagnostic below")
+        self.assertEqual(response.context["errors"], [(self.server.name, HEADLINES["reservation"])])
+        # The error list names the failed Server; the page adds no second, incomplete-Snapshot warning.
+        self.assertNotContains(response, "Snapshot is incomplete")
         self.assertNotContains(response, "This bounded Snapshot is complete")
 
     def test_combined_view_fetches_one_bounded_page_and_offers_the_next_cursor(self):

@@ -86,7 +86,9 @@ class BaseServerDHCPSubnetsView(generic.ObjectChildrenView):
     def get_children(self, request: HttpRequest, parent: Server) -> list[dict[str, Any]]:
         """Return safe Subnet Catalogue rows for this Server."""
         snapshot = subnet_catalogue.display(parent, self.dhcp_version)
-        show_notices(request, notice(snapshot))
+        # NetBox renders htmx/table.html without messages; the full page already showed the Notice.
+        if not htmx_partial(request):
+            show_notices(request, notice(snapshot))
         if snapshot.unavailable:
             return []
         can_change = Server.objects.restrict(request.user, "change").filter(pk=parent.pk).exists()
@@ -262,6 +264,7 @@ class _BasePoolAddView(_KeaChangeMixin, generic.ObjectView):
         catalogue, subnet = _displayed_subnet(request, server, self.dhcp_version, subnet_id)
         if subnet is None:
             return _unconfirmed_subnet(request, subnet_id, self._subnets_url(pk))
+        show_notices(request, notice(catalogue))
         form = forms.PoolAddForm(
             initial={"subnet_cidr": subnet.cidr}, subnet=subnet, absence_confirmed=catalogue.confirms_absence
         )
@@ -272,6 +275,8 @@ class _BasePoolAddView(_KeaChangeMixin, generic.ObjectView):
         catalogue, subnet = _displayed_subnet(request, server, self.dhcp_version, subnet_id)
         form = forms.PoolAddForm(request.POST, subnet=subnet, absence_confirmed=catalogue.confirms_absence)
         if not form.is_valid() or form.subnet is None:
+            if subnet is not None:
+                show_notices(request, notice(catalogue))
             return self._render(request, server, subnet_id, form)
         pool: Pool = form.cleaned_data["pool"]
         cidr: str = form.cleaned_data["subnet_cidr"]
@@ -315,9 +320,10 @@ class _BasePoolDeleteView(_KeaChangeMixin, generic.ObjectView):
         if not _POOL_RE.match(re.sub(r"\s+", "", pool)):
             return HttpResponse("Invalid pool format.", status=400)
         server = self.get_object(pk=pk)
-        _, subnet = _displayed_subnet(request, server, self.dhcp_version, subnet_id)
+        catalogue, subnet = _displayed_subnet(request, server, self.dhcp_version, subnet_id)
         if subnet is None:
             return _unconfirmed_subnet(request, subnet_id, self._subnets_url(pk))
+        show_notices(request, notice(catalogue))
         return render(
             request,
             self.template_name,

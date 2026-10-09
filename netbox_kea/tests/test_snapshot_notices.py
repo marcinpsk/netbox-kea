@@ -395,3 +395,36 @@ class TestReservationEditNotice(_ViewTestBase):
         self.assertIn(
             (django_messages.ERROR, "The Reservation could not be loaded. See server logs."), _page_messages(response)
         )
+
+
+_CONFIGURATION_UNAVAILABLE = "Kea configuration facts are unavailable."
+_IDENTITY_ONLY = {"subnet4-list": _subnet_list(4, [_SUBNET]), "config-get": requests.ConnectionError("unavailable")}
+
+
+class TestNoticeGapsFromReview(_ViewTestBase):
+    """Pages that read a Snapshot show its Notice once, in a channel that renders it."""
+
+    def test_a_subnets_table_refresh_queues_no_message(self):
+        # NetBox renders htmx/table.html without messages, so a queued one would surface on the next page.
+        server_configuration.invalidate(self.server, 4)
+        with stub_kea(_UNAVAILABLE):
+            response = self.client.get(
+                reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk]), HTTP_HX_REQUEST="true"
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(_page_messages(response), [])
+
+    def test_the_pool_forms_warn_about_an_incomplete_catalogue(self):
+        urls = (
+            reverse("plugins:netbox_kea:server_subnet4_pool_add", args=[self.server.pk, 1]),
+            reverse(
+                "plugins:netbox_kea:server_subnet4_pool_delete", args=[self.server.pk, 1, "198.18.0.10-198.18.0.20"]
+            ),
+        )
+        for url in urls:
+            with self.subTest(url=url):
+                server_configuration.invalidate(self.server, 4)
+                with stub_kea(_IDENTITY_ONLY):
+                    response = self.client.get(url)
+                self.assertEqual(response.status_code, 200)
+                self.assertIn((django_messages.WARNING, _CONFIGURATION_UNAVAILABLE), _page_messages(response))

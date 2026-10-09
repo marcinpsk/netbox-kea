@@ -77,7 +77,7 @@
 </div>
 {% endif %}
 
-{% if not snapshot_complete %}
+{% if snapshot_incomplete %}
 <div class="alert alert-warning mt-3" role="alert">
   <strong>Snapshot is incomplete.</strong>
   The Reservation Snapshot could not be read completely.
@@ -91,7 +91,7 @@
   </ul>
   {% endif %}
 </div>
-{% else %}
+{% elif snapshot_complete %}
 <div class="alert alert-success py-2 mt-3" role="status">
   <i class="mdi mdi-check-circle-outline" aria-hidden="true"></i>
   This bounded Snapshot is complete for the current page.

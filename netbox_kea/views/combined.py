@@ -569,6 +569,8 @@ class _CombinedReservationsView(_CombinedViewMixin):
                 "mutation_unavailable_servers": mutation_unavailable_servers,
                 "reservation_diagnostics": notices.record_diagnostics,
                 "snapshot_complete": not notices.errors and all(snapshot.complete for snapshot in snapshots.values()),
+                # A failed Server read is already in the error list, so only a read Snapshot can be incomplete.
+                "snapshot_incomplete": any(not snapshot.complete for snapshot in snapshots.values()),
                 "next_page_url": f"{request.path}?{next_query.urlencode()}" if has_next else None,
                 "dhcp_version": self.dhcp_version,
                 "page_title": f"DHCPv{self.dhcp_version} Reservations",
