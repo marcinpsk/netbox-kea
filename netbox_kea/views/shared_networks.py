@@ -17,11 +17,11 @@ from ..models import Server
 from ..utilities import check_dhcp_enabled
 from ._base import (
     ConditionalLoginRequiredMixin,
-    _diagnostic_messages,
     _KeaChangeMixin,
     _run_config_change,
     _shared_network_row,
 )
+from .notices import notice, show_notices
 from .subnets import _SUBNETS_TAB, subnets_nav_context
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -42,11 +42,8 @@ class BaseServerSharedNetworksView(generic.ObjectChildrenView):
         if check_dhcp_enabled(parent, self.dhcp_version) is not None:
             return []
         snapshot = server_configuration.display(parent, self.dhcp_version)
-        _diagnostic_messages(
-            request, snapshot.diagnostics, messages.ERROR if not snapshot.available else messages.WARNING
-        )
-        if not snapshot.available:
-            messages.error(request, "Failed to load Shared Network configuration from Kea.")
+        show_notices(request, notice(snapshot))
+        if snapshot.unavailable:
             return []
         can_change = Server.objects.restrict(request.user, "change").filter(pk=parent.pk).exists()
         return [
@@ -235,11 +232,7 @@ class BaseServerSharedNetworkEditView(_KeaChangeMixin, ConditionalLoginRequiredM
         """Render the edit form pre-populated with current values."""
         server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
         configuration = server_configuration.for_verification(server, self.dhcp_version)
-        _diagnostic_messages(
-            request,
-            configuration.diagnostics,
-            messages.ERROR if not configuration.available else messages.WARNING,
-        )
+        show_notices(request, notice(configuration))
         shown = server_configuration.shown_shared_network(configuration, network_name)
         if shown is None:
             messages.error(request, f"Shared network '{network_name}' not found or could not be retrieved.")

@@ -9,7 +9,7 @@ import logging
 import re
 from collections.abc import Callable, Iterable, Iterator
 from datetime import datetime
-from typing import Any
+from typing import Any, Protocol
 
 from django.http import HttpResponse
 from django.shortcuts import redirect
@@ -26,10 +26,11 @@ from .leases import (
     DHCPv4LeaseRequest,
     DHCPv6LeaseRequest,
     Lease,
-    LeaseDiagnostic,
     LeaseRequest,
     LeaseSnapshot,
+    is_current,
     lease_record_data,
+    lifetime_ended,
     request_errors,
     shown_lease,
 )
@@ -47,19 +48,17 @@ def format_duration(s: int | None) -> str | None:
     return f"{hours:02}:{minutes:02}:{seconds:02}"
 
 
-def snapshot_leases(snapshot: LeaseSnapshot, state_filter: int | None) -> tuple[Lease, ...]:
-    """Return the valid Leases of *snapshot*, or only those with the Kea state code *state_filter*."""
-    if state_filter is None:
-        return snapshot.records
-    return tuple(lease for lease in snapshot.records if constants.LEASE_STATE_CODES[lease.state] == state_filter)
+def snapshot_rows(snapshot: LeaseSnapshot) -> list[dict[str, Any]]:
+    """Return the presentation rows of the valid Leases of *snapshot*."""
+    return lease_rows(snapshot.records, evaluated_at=snapshot.evaluated_at)
 
 
-def snapshot_rows(snapshot: LeaseSnapshot, state_filter: int | None) -> list[dict[str, Any]]:
-    """Return the presentation rows of :func:`snapshot_leases`."""
-    return lease_rows(snapshot_leases(snapshot, state_filter), evaluated_at=snapshot.evaluated_at)
+class _HasMessage(Protocol):
+    @property
+    def message(self) -> str: ...
 
 
-def diagnostic_reasons(diagnostics: Iterable[LeaseDiagnostic]) -> str:
+def diagnostic_reasons(diagnostics: Iterable[_HasMessage]) -> str:
     """Return each distinct safe reason of *diagnostics* once, in order."""
     return "; ".join(dict.fromkeys(diagnostic.message for diagnostic in diagnostics))
 
@@ -122,7 +121,7 @@ def _lease_row(lease: Lease, now: datetime) -> dict[str, Any]:
     expires_at = lease.expires_at
     expires_in = None if expires_at is None else max(0, int((expires_at - now).total_seconds()))
     expiry_class = ""
-    if expires_at is not None and expires_at < now:
+    if lifetime_ended(lease, now):
         expiry_class = "text-danger"
     elif expires_in is not None and expires_in < 300:
         expiry_class = "text-warning"
@@ -146,6 +145,7 @@ def _lease_row(lease: Lease, now: datetime) -> dict[str, Any]:
         "expires_at": expires_at,
         "expires_in": expires_in,
         "expiry_class": expiry_class,
+        "current": is_current(lease, now),
     }
     if isinstance(lease, DHCPv4AddressLease):
         row["client_id"] = lease.client_id
@@ -229,58 +229,6 @@ def parse_delegated_prefixes(value: str, separator: str = ",") -> list[str]:
     if len(prefixes) > MAX_DELEGATED_PREFIXES:
         raise ValueError(f"At most {MAX_DELEGATED_PREFIXES} delegated prefixes per reservation.")
     return prefixes
-
-
-_KNOWN_CODES_V4: dict[int, str] = {
-    1: "subnet_mask",
-    3: "gateway",
-    6: "dns_servers",
-    15: "domain_name",
-    28: "broadcast_address",
-    42: "ntp_servers",
-    44: "netbios_name_servers",
-    119: "domain_search",
-    121: "classless_static_routes",
-}
-_KNOWN_CODES_V6: dict[int, str] = {
-    23: "dns_servers",
-    24: "domain_search",
-    31: "ntp_servers",
-}
-
-
-def format_option_data(option_list: list[dict[str, Any]], version: Family) -> dict[str, str]:
-    """Parse a Kea ``option-data`` list into a friendly ``{name: value}`` dict.
-
-    Well-known DHCP option codes are mapped to canonical names using a
-    version-specific lookup table (v4 and v6 share some code numbers with
-    different meanings, so the caller must pass the DHCP version).  Unknown codes
-    use the option's own ``name`` field (dashes converted to underscores) or
-    fall back to ``option_<code>`` when no name is present.
-
-    Args:
-        option_list: Raw ``option-data`` list from a Kea response.
-        version: DHCP version (4 or 6). v4 and v6 reuse option codes with different
-            meanings, so the caller must say which family the list came from.
-
-    Returns:
-        A ``{field_name: value_str}`` dict suitable for template rendering.
-
-    """
-    known_codes = _KNOWN_CODES_V6 if version == 6 else _KNOWN_CODES_V4
-
-    result: dict[str, str] = {}
-    for opt in option_list:
-        code = opt.get("code")
-        data = opt.get("data", "")
-        if code in known_codes:
-            key = known_codes[code]
-        elif opt.get("name"):
-            key = opt["name"].replace("-", "_")
-        else:
-            key = f"option_{code}"
-        result[key] = data
-    return result
 
 
 def check_dhcp_enabled(instance: Server, version: Family) -> HttpResponse | None:

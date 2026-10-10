@@ -39,11 +39,12 @@ from .kea import (
 )
 from .models import Server
 from .pools import Pool, parse_pool
+from .subnet_settings import SETTING_KEYS, SubnetSettings, setting_key
 from .utilities import kea_error_hint
 
 logger = logging.getLogger(__name__)
 
-_DDNS_QUALIFYING_SUFFIX = "ddns-qualifying-suffix"
+_DDNS_QUALIFYING_SUFFIX = setting_key("ddns_qualifying_suffix")
 
 
 @dataclass(frozen=True)
@@ -54,28 +55,6 @@ class Diagnostic:
     message: str
     source: str
     path: str = ""
-
-
-@dataclass(frozen=True)
-class SubnetSettings:
-    """Effective typed DHCP settings that the repository currently consumes."""
-
-    valid_lifetime: int | None = None
-    min_valid_lifetime: int | None = None
-    max_valid_lifetime: int | None = None
-    preferred_lifetime: int | None = None
-    min_preferred_lifetime: int | None = None
-    max_preferred_lifetime: int | None = None
-    offer_lifetime: int | None = None
-    renew_timer: int | None = None
-    rebind_timer: int | None = None
-    allocator: str | None = None
-    pd_allocator: str | None = None
-    ddns_qualifying_suffix: str | None = None
-    interface_id: str | None = None
-    relay_addresses: tuple[IPAddressValue, ...] = ()
-    client_classes: tuple[str, ...] = ()
-    require_client_classes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -154,6 +133,11 @@ class ServerConfigurationSnapshot:
     global_options_complete: bool = False
     # Collection and member shapes, string names, and valid member IDs unique across Shared Networks.
     shared_networks_complete: bool = False
+
+    @property
+    def unavailable(self) -> bool:
+        """Return true when the read failed, so the Snapshot holds no facts; the Catalogue Snapshot answers the same."""
+        return not self.available
 
     def subnet_with_membership(self, subnet_id: int) -> DeclaredSubnet | None:
         """Return a unique declaration with known Shared Network membership."""
@@ -692,24 +676,21 @@ def _parse_settings(
     path: str,
     diagnostics: list[Diagnostic],
 ) -> SubnetSettings:
+    scalars: dict[str, Any] = {field: _parse_setting(entry, field, path, diagnostics) for field in SETTING_KEYS}
     return SubnetSettings(
-        valid_lifetime=_optional_nonnegative_int(entry, "valid-lifetime", path, diagnostics),
-        min_valid_lifetime=_optional_nonnegative_int(entry, "min-valid-lifetime", path, diagnostics),
-        max_valid_lifetime=_optional_nonnegative_int(entry, "max-valid-lifetime", path, diagnostics),
-        preferred_lifetime=_optional_nonnegative_int(entry, "preferred-lifetime", path, diagnostics),
-        min_preferred_lifetime=_optional_nonnegative_int(entry, "min-preferred-lifetime", path, diagnostics),
-        max_preferred_lifetime=_optional_nonnegative_int(entry, "max-preferred-lifetime", path, diagnostics),
-        offer_lifetime=_optional_nonnegative_int(entry, "offer-lifetime", path, diagnostics),
-        renew_timer=_optional_nonnegative_int(entry, "renew-timer", path, diagnostics),
-        rebind_timer=_optional_nonnegative_int(entry, "rebind-timer", path, diagnostics),
-        allocator=_optional_string(entry, "allocator", path, diagnostics),
-        pd_allocator=_optional_string(entry, "pd-allocator", path, diagnostics),
-        ddns_qualifying_suffix=_optional_string(entry, _DDNS_QUALIFYING_SUFFIX, path, diagnostics, allow_empty=True),
-        interface_id=_optional_string(entry, "interface-id", path, diagnostics),
+        **scalars,
         relay_addresses=_relay_addresses(entry.get("relay"), family, path, diagnostics),
         client_classes=_client_classes(entry, path, diagnostics),
         require_client_classes=_additional_classes(entry, path, diagnostics),
     )
+
+
+def _parse_setting(entry: dict[str, Any], field: str, path: str, diagnostics: list[Diagnostic]) -> int | str | None:
+    """Read the scalar Subnet Settings field *field* with the key and the value kind of the settings table."""
+    setting = SETTING_KEYS[field]
+    if setting.kind == "integer":
+        return _optional_nonnegative_int(entry, setting.key, path, diagnostics)
+    return _optional_string(entry, setting.key, path, diagnostics, allow_empty=setting.kind == "string_or_empty")
 
 
 def _optional_nonnegative_int(

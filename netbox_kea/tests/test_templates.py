@@ -378,6 +378,57 @@ class TestHtmxTableContainer(SimpleTestCase):
         self.assertEqual(missing, [], "Without an .htmx-container ancestor, a click on a column header swaps nothing")
 
 
+class TestRowActionButtons(SimpleTestCase):
+    """Every htmx POST button is a table row button, so each takes the shared row attributes."""
+
+    @staticmethod
+    def _button_tags(text: str) -> list[str]:
+        """Return the source from the start of each tag with ``hx-post=`` to the end of that tag."""
+        return [
+            text[text.rindex("<", 0, found.start()) : text.index(">", found.end())]
+            for found in re.finditer("hx-post=", text)
+        ]
+
+    def test_every_hx_post_button_includes_the_row_action_attributes(self):
+        sources = _plugin_templates()
+        sources["tables.py"] = (Path(netbox_kea.__file__).parent / "tables.py").read_text()
+        include = 'include "netbox_kea/inc/row_action_htmx.html"'
+        missing = sorted(
+            name for name, text in sources.items() for tag in self._button_tags(text) if include not in tag
+        )
+        # The lease search pushes its URL and swaps itself; a row button without the include does both.
+        self.assertEqual(missing, [])
+
+
+def _tables_outside_table_responsive(text: str) -> int:
+    """Count the ``render_table`` tags of *text* that no open ``.table-responsive`` element contains."""
+    outside = 0
+    open_divs: list[str] = []
+    for token in re.finditer(r"<div\b[^>]*>|</div\s*>|{%\s*render_table\b", text):
+        if token.group().startswith("</"):
+            # A block of a child template can close a div of its parent.
+            if open_divs:
+                open_divs.pop()
+        elif token.group().startswith("<"):
+            open_divs.append(token.group())
+        elif not any("table-responsive" in div for div in open_divs):
+            outside += 1
+    return outside
+
+
+class TestTablesScrollInsideTheirContainer(SimpleTestCase):
+    """A wide table must scroll inside a ``.table-responsive`` element, not make the whole page scroll."""
+
+    def test_every_rendered_table_sits_in_a_table_responsive_element(self):
+        missing = [name for name, text in _plugin_templates().items() if _tables_outside_table_responsive(text)]
+        self.assertEqual(sorted(missing), [])
+
+    def test_a_wrapper_closed_before_the_table_does_not_contain_it(self):
+        inside = '<div class="table-responsive"><div>{% render_table table %}</div></div>'
+        closed = '<div class="table-responsive"></div>{% render_table table %}'
+        self.assertEqual((_tables_outside_table_responsive(inside), _tables_outside_table_responsive(closed)), (0, 1))
+
+
 _PLUGIN_URL_TAG = re.compile(r"\{%\s*url\s+['\"]plugins:netbox_kea:([^'\"]+)['\"]")
 
 

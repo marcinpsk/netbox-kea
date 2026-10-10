@@ -336,33 +336,3 @@ class TestLeaseSearchSubnetId(SimpleTestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["count"], 1)
         self.assertEqual(kea.commands(), ["lease4-get-all"])
-
-    def test_state_requires_subnet_id(self):
-        view, _ = _make_view()
-        with stub_kea({}) as kea:
-            response = view._lease_search(_make_request({"hostname": "host1", "state": "1"}), version=4)
-
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("subnet_id", response.data["detail"])
-        self.assertEqual(kea.commands(), [])
-
-    def test_state_rejects_an_earlier_selected_filter(self):
-        view, _ = _make_view()
-        with stub_kea({}) as kea:
-            response = view._lease_search(
-                _make_request({"ip_address": "198.18.0.1", "subnet_id": "1", "state": "1"}),
-                version=4,
-            )
-
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("selected filter", response.data["detail"])
-        self.assertEqual(kea.commands(), [])
-
-    def test_expired_state_is_not_safe_for_subnet_query(self):
-        view, _ = _make_view()
-        with stub_kea({}) as kea:
-            response = view._lease_search(_make_request({"subnet_id": "1", "state": "2"}), version=4)
-
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("Active or Declined", response.data["detail"])
-        self.assertEqual(kea.commands(), [])

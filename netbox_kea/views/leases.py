@@ -7,6 +7,7 @@ import threading
 import uuid
 from abc import ABCMeta
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import partial
 from typing import Any, Generic, Literal, TypeVar
@@ -27,8 +28,8 @@ from netbox.views import generic
 from utilities.paginator import EnhancedPaginator, get_paginate_count
 from utilities.views import GetReturnURLMixin, register_model_view
 
-from .. import constants, forms, subnet_catalogue, tables
-from ..constants import Family
+from .. import constants, event_scope, forms, subnet_catalogue, tables
+from ..constants import Family, LeaseState
 from ..ipam_reconciliation import LEASE, LEASE_PREFIX, claim, claim_permissions
 from ..kea import (
     KeaClient,
@@ -81,10 +82,11 @@ from ..utilities import (
     export_table,
     kea_error_hint,
     lease_csv_response,
-    snapshot_leases,
     snapshot_rows,
 )
 from ._base import ConditionalLoginRequiredMixin, _KeaChangeMixin, _safe_return_url, _strip_empty_params
+from .notices import Notice, load_snapshot, notice
+from .reservations import empty_text
 
 logger = logging.getLogger(__name__)
 
@@ -164,6 +166,8 @@ def _run_lease_sync_to_netbox(
         else:
             nb_action = outcome if outcome in {"created", "updated"} else "already up to date"
             messages.success(request, f"IPAddress {address} {nb_action} in NetBox.")
+    except event_scope.EventDispatchError:
+        raise
     except (CatalogueUnavailable, RuntimeError, OSError, ValueError, DatabaseError, ValidationError):
         logger.exception("Failed to sync lease %s to NetBox", address)
         messages.warning(request, "Lease created but NetBox IPAM sync failed; see server logs.")
@@ -215,14 +219,6 @@ def _add_lease_journal(
     )
 
 
-def _diagnostic_lines(snapshot: LeaseSnapshot) -> list[str]:
-    """Return one safe line for each lease record that *snapshot* excluded."""
-    return [
-        f"{diagnostic.source_position} ({diagnostic.field or 'record'}): {diagnostic.message}"
-        for diagnostic in snapshot.diagnostics
-    ]
-
-
 def _incomplete_export_message(snapshot: LeaseSnapshot) -> str:
     """Return why a complete export of *snapshot* is refused."""
     reasons = diagnostic_reasons(snapshot.diagnostics)
@@ -230,6 +226,89 @@ def _incomplete_export_message(snapshot: LeaseSnapshot) -> str:
         f"Export refused: Kea returned {len(snapshot.diagnostics)} lease record(s) that could not be read"
         f" ({reasons}). A complete export cannot leave them out."
     )
+
+
+@dataclass(frozen=True)
+class LeaseSearch:
+    """What one Lease read asks of a Server.
+
+    A selector *by* searches by the value *q*. Without one, the read covers every Lease: the page of *per_page*
+    Leases after *cursor*, or with *max_leases* every page until that many raw records.
+    """
+
+    by: str = ""
+    q: Any = None
+    state: LeaseState | None = None
+    cursor: str | None = None
+    per_page: int = 250
+    max_leases: int | None = None
+
+
+def _read_leases(client: KeaClient, family: Family, search: LeaseSearch, server_id: int) -> LeaseSnapshot:
+    """Run the Kea read of *search*; the client applies its state."""
+    if search.by:
+        value = str(search.q.cidr) if search.by == constants.BY_SUBNET else search.q
+        return client.lease_search(family, search.by, value, state=search.state, server_id=server_id)
+    if search.max_leases is not None:
+        return client.lease_get_all(
+            family, per_page=search.per_page, max_leases=search.max_leases, state=search.state, server_id=server_id
+        )
+    return client.lease_get_page(
+        family, limit=search.per_page, cursor=search.cursor, state=search.state, server_id=server_id
+    )
+
+
+def fetch(server: Server, family: Family, search: LeaseSearch) -> LeaseSnapshot | Notice:
+    """Read the Lease Snapshot of *search* from Kea, or the Notice of a failed read. It is safe in a worker thread.
+
+    Raises:
+        LeaseQueryGuardError: If Kea cannot answer a Subnet query safely.
+        ValueError: If the Server configuration or the search is not valid.
+
+    """
+    return load_snapshot(
+        server, "lease", lambda: _read_leases(server.get_client(version=family), family, search, server.pk)
+    )
+
+
+@dataclass(frozen=True)
+class PresentedLeases:
+    """The Lease table of one Snapshot for one user, with the actions that the user may take."""
+
+    table: BaseTable
+    can_delete: bool
+    #: The Lease search page without empty parameters; the row actions return to it.
+    return_url: str
+
+
+def present(
+    request: HttpRequest, server: Server, snapshot: LeaseSnapshot, table_class: type[T], *, visible_only: bool
+) -> PresentedLeases:
+    """Build the Lease table of *snapshot* and fill its badge and action fields. It must run in the main thread.
+
+    With *visible_only*, only the rows of the shown table page get badges, because each badge reads Kea.
+    """
+    rows = snapshot_rows(snapshot)
+    # A state filter keeps the raw continuation, so a batch can hold no match while more Leases remain.
+    batch_empty_text = empty_text(snapshot.query.state is not None, snapshot.next_cursor is not None)
+    table = table_class(rows, user=request.user, empty_text=batch_empty_text)
+    table.configure(request)
+    if visible_only:
+        rows = [row.record for row in table.paginated_rows]
+    can_delete = request.user.has_perm("netbox_kea.bulk_delete_lease_from_server", obj=server)
+    return_url = _strip_empty_params(request.get_full_path())
+    _enrich_leases_with_badges(
+        rows,
+        server,
+        snapshot.family,
+        can_delete=can_delete,
+        can_change=request.user.has_perm("netbox_kea.change_server", obj=server),
+        sync=lease_sync_gates(request.user),
+        return_url=return_url,
+    )
+    if not can_delete:
+        table.columns.hide("pk")
+    return PresentedLeases(table, can_delete, return_url)
 
 
 class BaseServerLeasesView(generic.ObjectView, Generic[T]):
@@ -251,28 +330,11 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
         kwargs = {
             "subnet_choices": snapshot.subnet_choices,
             "subnet_cmds_available": snapshot.subnet_cmds_available,
-            "subnet_diagnostics": tuple(dict.fromkeys(diagnostic.message for diagnostic in snapshot.diagnostics)),
-            "subnet_catalogue_unavailable": snapshot.unavailable,
+            "subnet_notice": notice(snapshot),
         }
         if data is None:
             return self.form(**kwargs)
         return self.form(data, **kwargs)
-
-    def get_leases_page(self, client: KeaClient, server: Server, page: str | None, per_page: int) -> LeaseSnapshot:
-        """Read one validated lease page of the Server."""
-        return client.lease_get_page(self.dhcp_version, limit=per_page, cursor=page or None, server_id=server.pk)
-
-    def get_leases(
-        self,
-        client: KeaClient,
-        server: Server,
-        q: Any,
-        by: str,
-        *,
-        state: int | None = None,
-    ) -> LeaseSnapshot:
-        """Read the leases matching *q* by search attribute *by*."""
-        return client.lease_search(self.dhcp_version, by, q, state=state, server_id=server.pk)
 
     def get_extra_context(self, request: HttpRequest, instance: Server) -> dict[str, Any]:
         """Return an empty table, the search form, and the add-lease URL for the initial (non-HTMX) page load."""
@@ -311,8 +373,7 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
             messages.warning(request, "A search attribute is required to export.")
             return redirect(request.path)
 
-        q = form.cleaned_data["q"]
-        state_filter: int | None = form.cleaned_data.get("state")
+        state_filter: LeaseState | None = form.cleaned_data.get("state")
         try:
             client = instance.get_client(version=self.dhcp_version)
         except ValueError:
@@ -320,10 +381,8 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
             messages.error(request, "Failed to connect to Kea: see server logs.")
             return redirect(request.path)
         try:
-            state_in_kea = state_filter if by in (constants.BY_SUBNET, constants.BY_SUBNET_ID) else None
-            snapshot = self.get_leases(
-                client, instance, str(q.cidr) if by == constants.BY_SUBNET else q, by, state=state_in_kea
-            )
+            search = LeaseSearch(by, form.cleaned_data["q"], state_filter)
+            snapshot = _read_leases(client, self.dhcp_version, search, instance.pk)
         except LeaseQueryGuardError as exc:
             messages.warning(request, lease_query_guard_message(exc, state_filter))
             return redirect(request.path)
@@ -340,13 +399,11 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
         if not limited and not snapshot.complete:
             messages.warning(request, _incomplete_export_message(snapshot))
             return redirect(request.path)
-        # A Subnet search filters by state in Kea; every other search filters here.
-        local_state = state_filter if by not in (constants.BY_SUBNET, constants.BY_SUBNET_ID) else None
         if limited:
-            table = self.get_table(snapshot_rows(snapshot, local_state), request)
+            table = present(request, instance, snapshot, self.table, visible_only=False).table
             return export_table(table, "leases_limited_coverage.csv", use_selected_columns=True)
         return lease_csv_response(
-            snapshot_leases(snapshot, local_state),
+            snapshot.records,
             family=self.dhcp_version,
             evaluated_at=snapshot.evaluated_at,
             filename="leases.csv",
@@ -393,17 +450,27 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
             )
             return redirect(request.path)
         if not snapshot.complete:
-            logger.warning(
-                "Refused an incomplete DHCPv%s lease export for server %s: %d excluded record(s)",
-                self.dhcp_version,
-                instance.pk,
-                len(snapshot.diagnostics),
-            )
-            messages.warning(request, _incomplete_export_message(snapshot))
+            refusal = _incomplete_export_message(snapshot)
+            logger.warning("Refused a DHCPv%s lease export for server %s: %s", self.dhcp_version, instance.pk, refusal)
+            messages.warning(request, refusal)
             return redirect(request.path)
 
         return lease_csv_response(
             snapshot.records, family=self.dhcp_version, evaluated_at=snapshot.evaluated_at, filename="leases_all.csv"
+        )
+
+    def _search_without_table(self, request: HttpRequest, form, lease_notice: Notice | None = None) -> HttpResponse:
+        """Render the search partial with the form and an empty table: a refused search or a failed read."""
+        return render(
+            request,
+            "netbox_kea/server_dhcp_leases_htmx.html",
+            {
+                "is_embedded": False,
+                "form": form,
+                "table": self.get_table([], request),
+                "paginate": False,
+                "lease_notice": lease_notice,
+            },
         )
 
     def get(self, request: HttpRequest, **kwargs) -> HttpResponse:
@@ -426,79 +493,34 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
         # `form.cleaned_data`, so neither may depend on how far into the try we got.
         form = self._make_search_form(instance, request.GET)
         if not form.is_valid():
-            table = self.get_table([], request)
-            return render(
-                request,
-                "netbox_kea/server_dhcp_leases_htmx.html",
-                {
-                    "is_embedded": False,
-                    "form": form,
-                    "table": table,
-                    "paginate": False,
-                },
-            )
+            return self._search_without_table(request, form)
 
         try:
             by = form.cleaned_data["by"]
-            q = form.cleaned_data["q"]
-            state_filter: int | None = form.cleaned_data.get("state")
-            client = instance.get_client(version=self.dhcp_version)
-            is_subnet_search = by in (constants.BY_SUBNET, constants.BY_SUBNET_ID)
+            search = LeaseSearch(
+                by,
+                form.cleaned_data["q"],
+                form.cleaned_data.get("state"),
+                cursor=form.cleaned_data["page"] or None,
+                per_page=get_paginate_count(request),
+            )
+            loaded = fetch(instance, self.dhcp_version, search)
+            if isinstance(loaded, Notice):
+                return self._search_without_table(request, form, loaded)
+            snapshot = loaded
+            # A search reads its whole scope and pages here; a read of every Lease reads one page from Kea.
+            presented = present(request, instance, snapshot, self.table, visible_only=by != "")
+            table = presented.table
             if by == "":
-                snapshot = self.get_leases_page(
-                    client,
-                    instance,
-                    form.cleaned_data["page"],
-                    per_page=get_paginate_count(request),
-                )
                 next_page = None if snapshot.next_cursor is None else str(snapshot.next_cursor)
             else:
-                next_page = None
-                state_in_kea = state_filter if is_subnet_search else None
-                snapshot = self.get_leases(
-                    client,
-                    instance,
-                    str(q.cidr) if by == constants.BY_SUBNET else q,
-                    by,
-                    state=state_in_kea,
-                )
-            leases = snapshot_rows(snapshot, None if is_subnet_search else state_filter)
-
-            can_delete = request.user.has_perm(
-                "netbox_kea.bulk_delete_lease_from_server",
-                obj=instance,
-            )
-            can_change = request.user.has_perm(
-                "netbox_kea.change_server",
-                obj=instance,
-            )
-
-            table = self.get_table(leases, request)
-            visible_leases = leases
-            if by != "":
-                visible_leases = [row.record for row in table.paginated_rows]
                 next_page = table.page.next_page_number() if table.page.has_next() else None
-
-            stripped_return_url = _strip_empty_params(request.get_full_path())
-            # Enrich only the visible table page with reservation badges and NetBox IPAM status.
-            _enrich_leases_with_badges(
-                visible_leases,
-                instance,
-                self.dhcp_version,
-                can_delete=can_delete,
-                can_change=can_change,
-                sync=lease_sync_gates(request.user),
-                return_url=stripped_return_url,
-            )
-
-            if not can_delete:
-                table.columns.hide("pk")
 
             response = render(
                 request,
                 "netbox_kea/server_dhcp_leases_htmx.html",
                 {
-                    "can_delete": can_delete,
+                    "can_delete": presented.can_delete,
                     "is_embedded": False,
                     "delete_action": (
                         reverse(
@@ -506,13 +528,13 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
                             args=[instance.pk],
                         )
                         + "?"
-                        + _urlencode({"return_url": stripped_return_url})
+                        + _urlencode({"return_url": presented.return_url})
                     ),
-                    "return_url": stripped_return_url,
+                    "return_url": presented.return_url,
                     "form": form,
                     "table": table,
                     "next_page": next_page,
-                    "lease_diagnostics": _diagnostic_lines(snapshot),
+                    "lease_notice": notice(snapshot),
                     "paginate": True,
                     "page_lengths": EnhancedPaginator.default_page_lengths,
                 },
@@ -521,23 +543,14 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
             # URL may include empty params (e.g. state=) that HTMX would otherwise
             # push verbatim; sending the stripped URL as HX-Push-Url overrides
             # that so the address bar always shows the clean URL.
-            response["HX-Push-Url"] = stripped_return_url
+            response["HX-Push-Url"] = presented.return_url
         except LeaseQueryGuardError as exc:
             logger.info("Rejected unsafe Subnet lease query on server %s: %s", instance.pk, exc)
             field = "q" if isinstance(exc, LeaseQueryUnknownSubnet) else "state"
             form.add_error(field, lease_query_guard_message(exc, form.cleaned_data.get("state")))
-            table = self.get_table([], request)
-            return render(
-                request,
-                "netbox_kea/server_dhcp_leases_htmx.html",
-                {
-                    "is_embedded": False,
-                    "form": form,
-                    "table": table,
-                    "paginate": False,
-                },
-            )
-        except (KeaException, requests.RequestException, RuntimeError, ValueError):
+            return self._search_without_table(request, form)
+        # A Kea, transport or malformed-reply failure of the read is a Notice above; this is a request error.
+        except ValueError:
             error_id = str(uuid.uuid4())
             logger.exception("HTMX leases handler error [%s]", error_id)
             return render(
@@ -618,20 +631,20 @@ class BaseServerLeasesDeleteView(GetReturnURLMixin, generic.ObjectView, metaclas
         """Show confirmation page or delete leases if confirmed."""
         instance: Server = self.get_object(**kwargs)
 
-        if resp := check_dhcp_enabled(instance, self.dhcp_version):
-            return resp
+        if check_dhcp_enabled(instance, self.dhcp_version):
+            return _after_lease_delete(request, instance.get_absolute_url())
 
         if not request.user.has_perm("netbox_kea.bulk_delete_lease_from_server", obj=instance):
             return HttpResponseForbidden("This user does not have permission to delete DHCP leases.")
 
         form = self.form(request.POST)
 
+        return_url = _strip_empty_params(self.get_return_url(request, obj=instance))
         if not form.is_valid():
             messages.warning(request, str(form.errors))
-            return redirect(_strip_empty_params(self.get_return_url(request, obj=instance)))
+            return _after_lease_delete(request, return_url)
 
         selected: tuple[ShownLease, ...] = form.cleaned_data["pk"]
-        return_url = _strip_empty_params(self.get_return_url(request, obj=instance))
         if "_confirm" not in request.POST:
             return render(
                 request,
@@ -649,7 +662,7 @@ class BaseServerLeasesDeleteView(GetReturnURLMixin, generic.ObjectView, metaclas
         except ValueError:
             logger.exception("Failed to create Kea client for server %s", instance.pk)
             messages.error(request, "Failed to connect to Kea: see server logs for details.")
-            return redirect(return_url)
+            return _after_lease_delete(request, return_url)
 
         deleted: list[Lease] = []
         failed_count = 0
@@ -687,11 +700,16 @@ class BaseServerLeasesDeleteView(GetReturnURLMixin, generic.ObjectView, metaclas
 
         if failed_count:
             messages.warning(request, f"Failed to delete {failed_count} lease(s). See above for details.")
-        if request.headers.get("HX-Request"):
-            response = HttpResponse()
-            response["HX-Refresh"] = "true"
-            return response
-        return redirect(return_url)
+        return _after_lease_delete(request, return_url)
+
+
+def _after_lease_delete(request: HttpRequest, return_url: str) -> HttpResponse:
+    """Show the queued messages: reload the page for the one-click row button, else redirect to *return_url*."""
+    if request.headers.get("HX-Request"):
+        response = HttpResponse()
+        response["HX-Refresh"] = "true"
+        return response
+    return redirect(return_url)
 
 
 class ServerLeases6DeleteView(BaseServerLeasesDeleteView):
@@ -1315,10 +1333,8 @@ def _enrich_leases_with_badges(
     client: KeaClient | None = None
     catalogue = None
     try:
-        from ..subnet_catalogue import display
-
         client = server.get_client(version=version)
-        catalogue = display(server, version)
+        catalogue = subnet_catalogue.display(server, version)
         reservation_by_ip, host_cmds_available, failed_ips = _fetch_reservations_for_leases(
             client, version, catalogue, leases
         )
@@ -1348,9 +1364,9 @@ def _enrich_leases_with_badges(
     edit_url_name = f"plugins:netbox_kea:server_lease{version}_edit"
     edit_query = f"?{_urlencode({'return_url': return_url})}" if return_url else ""
     # A delegated prefix is not an IP Address, so only an address Lease links one.
-    nb_ips = bulk_fetch_netbox_ips([_row_address(lease) for lease in leases if lease["lease"].kind == "address"])
+    addresses = [_row_address(lease) for lease in leases if lease["lease"].kind == "address"]
+    nb_ips = bulk_fetch_netbox_ips(addresses, vrf_id=server.sync_vrf_id)
     nb_prefixes = _sync_vrf_prefixes(server, [lease["lease"] for lease in leases])
-    now = datetime.now(tz=timezone.utc)
     for lease in leases:
         ip = _row_address(lease)
         observed = lease["lease"]
@@ -1362,7 +1378,7 @@ def _enrich_leases_with_badges(
             lease[url_key] = synced.get_absolute_url()
         # Sync needs a Current Lease; don't offer it for leases with indeterminate reservation state.
         elif (
-            is_current(observed, now)
+            lease["current"]
             and host_cmds_available
             and not lease.get("pending_ip_change")
             and not lease.get("stale_mac")

@@ -1788,8 +1788,9 @@ def _verified_subnet(cidr="10.0.0.0/24", pools=("10.0.0.10-10.0.0.20",), *, conf
     import ipaddress
 
     from netbox_kea.pools import parse_pool
-    from netbox_kea.server_configuration import SubnetConfiguration, SubnetSettings
+    from netbox_kea.server_configuration import SubnetConfiguration
     from netbox_kea.subnet_catalogue import SubnetIdentity, VerifiedSubnet
+    from netbox_kea.subnet_settings import SubnetSettings
 
     network = ipaddress.ip_network(cidr)
     facts = SubnetConfiguration(

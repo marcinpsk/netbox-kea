@@ -6,8 +6,10 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 import requests
 import yaml
 from bs4 import BeautifulSoup
+from django.contrib import messages as django_messages
 from django.urls import reverse
 
+from netbox_kea.views.notices import HEADLINES, Notice
 from netbox_kea.views.reservations import _RESERVATION_PAGE_SIZE
 
 from .kea_stub import (
@@ -65,11 +67,59 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
         add = reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk])
         self.assertContains(page, f'href="{add}?{urlencode({"return_url": search})}"')
 
+    def test_a_refused_reservation_read_keeps_the_add_button(self):
+        # Kea answered, so the capability read can still confirm the mutation commands.
+        responses = _catalogue_responses(4, 20, "198.18.0.0/24")
+        responses.update(
+            {
+                "reservation-get-page": {"result": 1, "text": "Unable to read the host database"},
+                "list-commands": _reservation_mutation_commands(),
+            }
+        )
+        with stub_kea(responses):
+            page = self.client.get(self._url())
+        self.assertEqual(page.status_code, 200)
+        self.assertIsNotNone(page.context["add_url"])
+        self.assertNotContains(page, "Reservation mutation controls are unavailable")
+
     def test_combined_row_actions_return_to_the_combined_search(self):
         url = reverse("plugins:netbox_kea:combined_reservations4")
         row, search = self._searched_row(url, {"server": self.server.pk, "q": "searched"})
         self.assertEqual(_return_url(row["edit_url"]), [search])
         self.assertEqual(_return_url(row["delete_url"]), [search])
+
+    def test_a_client_that_cannot_be_built_shows_the_headline_as_a_message(self):
+        # A client certificate without its key fails the client construction with a ValueError.
+        self.server.client_cert_path = "/cert"
+        self.server.save()
+
+        with stub_kea({}) as kea, self.assertLogs("netbox_kea.views.reservations", level="ERROR"):
+            response = self.client.get(self._url())
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(kea.commands(), [])
+        self.assertIn(HEADLINES["reservation"], [str(message) for message in response.context["messages"]])
+        self.assertIsNone(response.context["reservation_notice"])
+        self.assertFalse(response.context["snapshot_complete"])
+        self.assertEqual(response.context["table"].data.data, [])
+        self.assertEqual(
+            response.context["mutation_unavailable_reason"],
+            "Live Reservation mutation capabilities could not be confirmed.",
+        )
+
+    def test_the_tab_and_the_combined_view_present_the_same_row(self):
+        tab_row, _ = self._searched_row(self._url(), {})
+        url = reverse("plugins:netbox_kea:combined_reservations4")
+        combined_row, _ = self._searched_row(url, {"server": self.server.pk})
+
+        # The return URL of each action is the page that shows the row.
+        actions = {"edit_url", "delete_url"}
+        self.assertEqual(
+            {key: value for key, value in tab_row.items() if key not in actions},
+            {key: value for key, value in combined_row.items() if key not in actions},
+        )
+        self.assertTrue(actions <= tab_row.keys() & combined_row.keys())
+        self.assertNotIn("can_change", tab_row)
 
     def test_configured_only_subnet_filter_does_not_authorize_a_scoped_read(self):
         responses = _catalogue_responses(4, 20, "198.18.0.0/24")
@@ -82,7 +132,7 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["table"].data.data, [])
         self.assertIn(
-            "unverified-scope", [diagnostic.code for diagnostic in response.context["reservation_diagnostics"]]
+            "unverified-scope", [diagnostic.code for diagnostic in response.context["reservation_notice"].diagnostics]
         )
         self.assertNotIn("subnet-id", kea.bodies("reservation-get-page")[0]["arguments"])
 
@@ -202,13 +252,8 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
         self.assertIsNone(global_row["delete_url"])
         self.assertIsNone(global_row["sync_url"])
 
-    def test_a_failed_page_read_warns_that_the_snapshot_is_incomplete(self):
-        """A read failure is the one path that is incomplete and carries no diagnostic.
-
-        ``_parse_reservation_page`` sets ``complete`` from the diagnostics, so a page that
-        stops early with every record parsed is complete. Only the view's empty fallback
-        reports incomplete with nothing to list, which is the branch the banner guards.
-        """
+    def test_a_failed_page_read_shows_the_reservation_headline(self):
+        """A read failure is an unavailable Notice: it carries no diagnostic and is not an incomplete Snapshot."""
         responses = _catalogue_responses(4, 20, "198.18.0.0/24")
         responses.update(
             {
@@ -222,15 +267,16 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
 
         self.assertEqual(response.status_code, 200)
         self.assertFalse(response.context["snapshot_complete"])
-        self.assertEqual(response.context["reservation_diagnostics"], ())
-        self.assertEqual(response.context["table"].data.data, [])
-        self.assertContains(response, "Snapshot is incomplete")
-        self.assertNotContains(response, "diagnostic below")
-        self.assertNotContains(response, "This bounded Snapshot is complete")
-        self.assertIn(
-            "Failed to load Reservations from Kea.",
-            [str(message) for message in response.context["messages"]],
+        self.assertEqual(
+            response.context["reservation_notice"], Notice("reservation", django_messages.ERROR, unreachable=True)
         )
+        self.assertEqual(response.context["table"].data.data, [])
+        self.assertNotContains(response, "Snapshot is incomplete")
+        self.assertContains(
+            response, f'<div class="alert alert-danger" role="alert">{HEADLINES["reservation"]}</div>', html=True
+        )
+        self.assertNotContains(response, "This bounded Snapshot is complete")
+        self.assertNotIn(HEADLINES["reservation"], [str(message) for message in response.context["messages"]])
 
     def test_a_full_page_with_more_to_come_is_reported_complete(self):
         """A filled page offers the next cursor and is still complete for this page.
@@ -259,7 +305,7 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
 
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.context["snapshot_complete"])
-        self.assertEqual(response.context["reservation_diagnostics"], ())
+        self.assertIsNone(response.context["reservation_notice"])
         self.assertIsNotNone(response.context["next_page_url"])
         self.assertContains(response, "This bounded Snapshot is complete")
 
@@ -543,7 +589,7 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
 
 
 class TestCombinedReservationSnapshots(_ViewTestBase):
-    def test_failed_page_read_warns_that_the_combined_snapshot_is_incomplete(self):
+    def test_failed_page_read_is_an_error_without_a_second_incomplete_warning(self):
         responses = _catalogue_responses(4, 20, "198.18.0.0/24")
         responses.update(
             {
@@ -559,8 +605,9 @@ class TestCombinedReservationSnapshots(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         self.assertFalse(response.context["snapshot_complete"])
         self.assertEqual(response.context["reservation_diagnostics"], [])
-        self.assertContains(response, "Snapshot is incomplete")
-        self.assertNotContains(response, "diagnostic below")
+        self.assertEqual(response.context["errors"], [(self.server.name, HEADLINES["reservation"])])
+        # The error list names the failed Server; the page adds no second, incomplete-Snapshot warning.
+        self.assertNotContains(response, "Snapshot is incomplete")
         self.assertNotContains(response, "This bounded Snapshot is complete")
 
     def test_combined_view_fetches_one_bounded_page_and_offers_the_next_cursor(self):

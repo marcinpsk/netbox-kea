@@ -34,6 +34,8 @@ from django.contrib.messages import get_messages
 from django.test import override_settings
 from django.urls import reverse
 
+from ..dhcp_options import ShownOption
+from ..views.notices import HEADLINES
 from ..views.subnets import _NO_SUBNET_CIDR
 from .kea_stub import (
     Applied,
@@ -283,6 +285,86 @@ class TestSubnetEnrichment(_ViewTestBase):
         first_row = next(iter(table.data))
         expected = int(ipaddress.ip_network("10.0.0.0/24").network_address)
         self.assertEqual(first_row["_subnet_sort_key"], expected)
+
+
+class TestSubnetOptionsColumn(_ViewTestBase):
+    """The Options column selects each field's entry with the rule of the edit form."""
+
+    def _page(self, version: int, *options: dict) -> str:
+        cidr = "192.0.2.0/24" if version == 4 else "2001:db8:1::/64"
+        subnet = {"id": 1, "subnet": cidr, "option-data": list(options)}
+        config = {"result": 0, "arguments": {f"Dhcp{version}": {f"subnet{version}": [subnet]}}}
+        with stub_kea({**_ABSENT_READ_HOOKS, "config-get": config}):
+            response = self.client.get(reverse(f"plugins:netbox_kea:server_subnets{version}", args=[self.server.pk]))
+        self.assertEqual(response.status_code, 200)
+        return response.content.decode()
+
+    def test_a_class_tagged_entry_does_not_replace_the_default_entry(self):
+        content = self._page(
+            4,
+            {"code": 6, "name": "domain-name-servers", "data": "192.0.2.53"},
+            {"code": 6, "name": "domain-name-servers", "data": "198.51.100.53", "client-classes": ["lab"]},
+        )
+        self.assertIn('title="DNS: 192.0.2.53"', content)
+        self.assertNotIn("198.51.100.53", content)
+
+    def test_the_column_and_the_edit_form_show_the_same_entry(self):
+        options = [
+            {"code": 3, "data": "192.0.2.1", "space": "vendor-x"},
+            {"name": "routers", "data": "192.0.2.254"},
+            {"code": 6, "data": "198.51.100.53", "client-classes": ["lab"]},
+            {"code": 6, "data": "192.0.2.53"},
+            {"name": "ntp-servers", "data": "192.0.2.123"},
+        ]
+        daemon = SubnetDaemon(4, [{"id": 42, "subnet": "192.0.2.0/24", "pools": [], "option-data": options}])
+        with stub_kea({**_ABSENT_READ_HOOKS, **daemon.responses()}):
+            table = self.client.get(reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk]))
+            form = self.client.get(reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, 42]))
+
+        initial = form.context["form"].initial
+        (row,) = table.context["table"].data
+        self.assertEqual(
+            {field: shown.data for field, shown in row["options"].items()},
+            {field: initial[field] for field in ("gateway", "dns_servers", "ntp_servers")},
+        )
+
+    def test_more_than_one_fitting_entry_shows_a_badge_and_no_value(self):
+        content = self._page(
+            4,
+            {"code": 6, "data": "192.0.2.53"},
+            {"name": "domain-name-servers", "data": "198.51.100.53"},
+            {"code": 42, "data": "192.0.2.123"},
+        )
+        self.assertIn('class="badge text-bg-warning"', content)
+        self.assertIn("More than one DHCP Option entry fits this field", content)
+        self.assertNotIn("192.0.2.53", content)
+        self.assertNotIn("198.51.100.53", content)
+        self.assertIn("NTP: 192.0.2.123", content)
+
+    def test_data_that_the_edit_form_cannot_show_still_shows(self):
+        content = self._page(
+            4,
+            {"name": "routers", "data": "192.0.2.1, 192.0.2.2"},
+            {"code": 6, "data": "C0000235", "csv-format": False},
+        )
+        self.assertIn("GW: 192.0.2.1, 192.0.2.2", content)
+        self.assertIn('title="DNS: C0000235"', content)
+        self.assertNotIn('class="badge text-bg-warning"', content)
+
+    def test_the_domain_name_uses_the_same_rule(self):
+        content = self._page(
+            4,
+            {"code": 6, "data": "192.0.2.53"},
+            {"code": 15, "data": "example.test"},
+            {"code": 15, "data": "lab.example.test", "client-classes": ["lab"]},
+        )
+        self.assertIn("DNS: example.test", content)
+        self.assertNotIn("lab.example.test", content)
+
+    def test_a_dhcpv6_entry_with_a_code_only_shows(self):
+        content = self._page(6, {"code": 23, "data": "2001:db8::53"}, {"code": 31, "data": "2001:db8::123"})
+        self.assertIn('title="DNS: 2001:db8::53"', content)
+        self.assertIn("NTP: 2001:db8::123", content)
 
 
 class TestSubnetSnapshotDiagnostics(_ViewTestBase):
@@ -623,7 +705,10 @@ class TestServerSubnet4EditView(_ViewTestBase):
         with self._post_stub(live):
             get = self.client.get(self._url())
         self.assertEqual(get.status_code, 302)
-        self.assertIn("Could not load subnet configuration from Kea.", [str(m) for m in get_messages(get.wsgi_request)])
+        self.assertIn(
+            "NetBox cannot show the configuration of Subnet 42, so the edit form cannot open.",
+            [str(m) for m in get_messages(get.wsgi_request)],
+        )
 
     def test_displayed_suppressed_options_preserve_metadata_unless_cleared(self):
         options = [
@@ -1280,11 +1365,14 @@ class TestSubnetEditNetworkChoicesNoneArguments(_ViewTestBase):
                     reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk]),
                     fetch_redirect_response=False,
                 )
-                self.assertTrue(
-                    any(
-                        message.level == django_messages.ERROR and "Could not load subnet configuration" in str(message)
-                        for message in get_messages(response.wsgi_request)
-                    )
+                shown = [(message.level, str(message)) for message in get_messages(response.wsgi_request)]
+                self.assertIn((django_messages.ERROR, HEADLINES["configuration"]), shown)
+                self.assertIn(
+                    (
+                        django_messages.ERROR,
+                        "NetBox cannot show the configuration of Subnet 42, so the edit form cannot open.",
+                    ),
+                    shown,
                 )
 
     def test_get_ignores_membership_under_a_duplicate_shared_network_name(self):
@@ -2743,7 +2831,7 @@ class TestFetchSubnetsFromServer(_ViewTestBase):
         )
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["pools"], ["10.0.0.10-10.0.0.20"])
-        self.assertEqual(result[0]["options"], {"dns_servers": "10.0.0.53"})
+        self.assertEqual(result[0]["options"], {"dns_servers": ShownOption(data="10.0.0.53", ambiguous=False)})
 
     def test_stat_cmds_success_updates_subnet(self):
         """Valid stat-lease4-get data is merged into the subnet dict."""

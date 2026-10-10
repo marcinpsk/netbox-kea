@@ -515,13 +515,10 @@ class TestServerStatusGlobalOptions(_ViewTestBase):
         with _global_options_stub():
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
-        self.assertIn("global_options", response.context)
-        opts = response.context["global_options"]
-        # Server has dhcp4 enabled — DHCPv4 options must be present specifically under the "DHCPv4" key.
-        # DHCPv4 code 6 (domain-name-servers) maps to "dns_servers" → "Dns Servers" after title-case.
-        # Assert both the key and the underlying option value from the fixture.
-        self.assertIn("Dns Servers", opts.get("DHCPv4", {}))
-        self.assertEqual(opts.get("DHCPv4", {}).get("Dns Servers"), "8.8.8.8, 8.8.4.4")
+        self.assertEqual(
+            [(row.name, row.option.data) for row in response.context["global_options"]["DHCPv4"]],
+            [("domain-name-servers", "8.8.8.8, 8.8.4.4"), ("domain-name", "example.com")],
+        )
 
     def test_global_options_dns_rendered_in_html(self):
         """DNS server IP must appear somewhere in the rendered status page."""
@@ -536,6 +533,56 @@ class TestServerStatusGlobalOptions(_ViewTestBase):
         with _global_options_stub():
             response = self.client.get(url)
         self.assertContains(response, "example.com")
+
+    def _status_page(self, options4=(), options6=()):
+        configs = {
+            "dhcp4": _catalogue_responses_for_subnets(4, [], global_options=options4)["config-get"],
+            "dhcp6": _catalogue_responses_for_subnets(6, [], global_options=options6)["config-get"],
+        }
+        with _global_options_stub(**{"config-get": lambda body: configs[body["service"][0]]}):
+            response = self.client.get(reverse("plugins:netbox_kea:server_status", args=[self.server.pk]))
+        self.assertEqual(response.status_code, 200)
+        return response
+
+    @staticmethod
+    def _rows(response, label):
+        fields = ("code", "space", "client_classes", "data", "always_send", "never_send")
+        return [
+            (row.name, *(getattr(row.option, field) for field in fields))
+            for row in response.context["global_options"][label]
+        ]
+
+    def test_each_entry_is_one_row_with_its_space_class_tags_and_flags(self):
+        response = self._status_page(
+            options4=(
+                {"code": 6, "name": "domain-name-servers", "data": "192.0.2.53", "always-send": True},
+                {"code": 6, "name": "domain-name-servers", "data": "198.51.100.53", "client-classes": ["lab"]},
+                {"code": 6, "space": "vendor-x", "data": "01", "never-send": False},
+            )
+        )
+
+        self.assertEqual(
+            self._rows(response, "DHCPv4"),
+            [
+                ("domain-name-servers", 6, None, (), "192.0.2.53", True, None),
+                ("domain-name-servers", 6, None, ("lab",), "198.51.100.53", None, None),
+                (None, 6, "vendor-x", (), "01", None, False),
+            ],
+        )
+        self.assertNotIn("DHCPv6", response.context["global_options"])
+        for text in ("192.0.2.53", "198.51.100.53", "<code>lab</code>", "<td>vendor-x</td>", "Always send"):
+            self.assertContains(response, text)
+
+    def test_a_code_only_entry_shows_its_standard_name(self):
+        response = self._status_page(
+            options4=({"code": 42, "data": "192.0.2.123"},),
+            options6=({"code": 42, "data": "Europe/Warsaw"},),
+        )
+
+        self.assertEqual(self._rows(response, "DHCPv4")[0][:2], ("ntp-servers", 42))
+        self.assertEqual(self._rows(response, "DHCPv6")[0][:2], ("new-tzdb-timezone", 42))
+        self.assertContains(response, '<td class="text-nowrap">ntp-servers</td>')
+        self.assertContains(response, '<td class="text-nowrap">new-tzdb-timezone</td>')
 
     def test_status_still_200_when_config_get_fails(self):
         """If ``config-get`` raises, the status page must still return 200 (graceful degradation)."""
@@ -925,7 +972,10 @@ class TestGetGlobalOptionsGenericException(_ViewTestBase):
             response = self.client.get(self._url())
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.context["global_options"]["DHCPv4"], {"Domain Name": "example.com"})
+        self.assertEqual(
+            [(row.name, row.option.data) for row in response.context["global_options"]["DHCPv4"]],
+            [("domain-name", "example.com")],
+        )
         warnings = [str(m) for m in response.context["messages"] if m.level == django_messages.WARNING]
         self.assertTrue(warnings, list(response.context["messages"]))
 
@@ -942,7 +992,7 @@ class TestGetGlobalOptionsGenericException(_ViewTestBase):
             response = self.client.get(self._url())
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.context["global_options"]["DHCPv4"]["Dns Servers"], "8.8.8.8, 8.8.4.4")
+        self.assertEqual(response.context["global_options"]["DHCPv4"][0].option.data, "8.8.8.8, 8.8.4.4")
         warnings = [str(m) for m in response.context["messages"] if m.level == django_messages.WARNING]
         self.assertIn("Kea returned an invalid Pool.", warnings)
 

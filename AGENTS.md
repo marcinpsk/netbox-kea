@@ -156,6 +156,7 @@ URL request
   → urls.py             (routes to view classes)
   → views/              (view modules; each calls server.get_client() → KeaClient)
       _base.py          (ConditionalLoginRequiredMixin, _KeaChangeMixin, shared helpers)
+      notices.py        (the one Snapshot notice rule: notice(), load_snapshot() and the channels; ADR 0003)
       server.py         (Server CRUD, status tab)
       leases.py         (DHCPv4/v6 lease search, add, edit, delete, badge enrichment)
       reservations.py   (DHCPv4/v6 reservation CRUD)
@@ -164,6 +165,7 @@ URL request
       options.py        (global and per-subnet DHCP option editing)
       dhcp_control.py   (enable/disable DHCP daemons)
       combined.py       (cross-server dashboard, leases, reservations, subnets)
+      fan_out.py        (the per-Server read pool of combined Subnets, Shared Networks, Reservations)
       sync_views.py     (per-server IPAM sync UI)
       sync_jobs.py      (jobs tab, periodic sync management, SyncConfig admin)
   → config_write.py     (Configuration Changes: typed outcome, advisory lock, persist step)
@@ -252,6 +254,16 @@ Exception
  ├── KeaException                  # base: any non-ok result from Kea
  └── ConfigChangeRejected          # config_write: the change is not live, with a reason
 ```
+
+**`views/notices.py` owns every Snapshot notice** (ADR 0003, Presentation). A view passes a Catalogue or Server
+Configuration Snapshot to `notice()` and runs a Reservation or Lease read through `load_snapshot()`, which turns a
+Kea, transport or malformed-reply failure into an unavailable Notice. The view shows the Notice with
+`show_notices()`, in a template, or with `ServerNotices` on a combined page; it never chooses the level of a
+Snapshot. A refused Lease query (`LeaseQueryGuardError`) and a `ValueError` are outside the rule: the view shows its
+own warning or error for them, and a combined page adds them to the `ServerNotices` lists itself. Two OpenGrep
+rules (`kea-snapshot-notice-outside-notice-module`, `kea-snapshot-read-without-notice`) and
+`test_snapshot_notice_sweep.py` guard it. A new Server page that reads no Snapshot needs an entry with a reason in
+the sweep's exempt list.
 
 **`config_write` owns every Configuration Change** (ADR 0005). An
 operation returns a `ConfigChangeOutcome` (`applied`/`unknown` and
@@ -418,13 +430,16 @@ resort, reserved for true external boundaries you cannot run locally.
   production code for Kea command names, hyphenated payload keys, and family-suffixed
   configuration keys or service names. String templates (f-strings, `.format`, `%`, `+`)
   count when they can build a wire literal. Wire owners are `kea.py`, `server_configuration.py`,
-  `subnet_catalogue.py`, `reservations.py`, `dhcp_options.py`, and `leases.py`, relative to `netbox_kea/`.
+  `subnet_catalogue.py`, `reservations.py`, `dhcp_options.py`, `leases.py`, and `subnet_settings.py`, relative to
+  `netbox_kea/`.
   The checker excludes these exact modules, tests, and migrations. The transport stub
   `tests/kea_stub.py` may also use wire literals to model Kea responses.
   It also checks `arguments` when code uses it as a raw payload key. Prefer typed domain
   interfaces when the gate fails. The baseline is the follow-up brief and only shrinks.
   Use `--update-baseline` to record decreases. It refuses new sites and higher counts
   without changing the baseline. A test prevents the baseline from adding files.
+  A real-tree test fails while a budget is above the count in the tree. Record a decrease in
+  the change that makes it.
   The pre-commit hook and the real-tree suite test enforce the budgets.
 - **Standard NetBox model coverage via mixins.** For the `Server` model (a
   `NetBoxModel` with standard generic views + `NetBoxModelViewSet`), use NetBox's
@@ -494,8 +509,8 @@ resort, reserved for true external boundaries you cannot run locally.
   (opengrep `kea-raw-atomic`). At the top level of a tracked request, on a NetBox release whose `event_tracking` nests (`event_scope._nested_tracking`), it is a unit, whose events
   dispatch after its COMMIT or not at all. Put `except event_scope.EventDispatchError: raise` before a broad
   `except`. Read `docs/design/savepoint-event-queue.md` (sections 22 and 24) before you change it.
-- **Kea option aliases**: DNS options can be `domain-name-servers` or `dns-servers`;
-  NTP can be `ntp-servers` or `sntp-servers`. Search both alias tuples.
+- **Kea option names per family**: DNS is `domain-name-servers` (v4) or `dns-servers` (v6), and NTP is
+  `ntp-servers` (v4) or `sntp-servers` (v6). `dhcp_options._FORM_MANAGED_OPTIONS` maps each form field to them.
 - **Forms**: lease search forms inherit `BaseLeasesSarchForm` (the typo is
   intentional/existing); inner `Meta.ip_version` drives validation. The Subnet and
   Shared Network forms clean in the field class (`_AddressListField` for `dns_servers`,
@@ -504,6 +519,9 @@ resort, reserved for true external boundaries you cannot run locally.
   `_ShownValuesForm` and names its managed fields once, in `shown_names`.
   `dhcp_options.form_managed_entry` picks the one DHCP Option entry that a form field
   manages, for the display and for the save. Two fitting entries refuse the form.
+  The Subnet table column uses the same rule (`dhcp_options.shown_options`) and shows a badge for two fitting
+  entries. Option codes come from the Kea standard option table in `dhcp_options`, and the Subnet Settings keys
+  from `subnet_settings.SETTING_KEYS`.
 - **API URL naming**: the serializer's `HyperlinkedIdentityField` uses
   `view_name="plugins-api:netbox_kea-api:server-detail"` — `plugins-api:` prefix and
   `-api:` namespace suffix are NetBox conventions.

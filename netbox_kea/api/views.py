@@ -12,7 +12,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 
 from .. import constants, filtersets, models
-from ..constants import Family
+from ..constants import Family, LeaseState
 from ..decimal_text import parse_decimal
 from ..kea import KeaException, LeaseQueryGuardError, lease_query_guard_message
 from ..leases import LeaseSnapshot, lease_record_data
@@ -109,19 +109,14 @@ def _single_reservation_response(version: int, reservation: Reservation | None) 
     return Response(_reservation_snapshot_data(snapshot))
 
 
-def _parse_subnet_lease_state(raw_state, selector) -> tuple[int | None, str | None]:
-    """Return a safe Subnet lease state and an optional parameter error."""
+def _parse_lease_state(raw_state) -> tuple[LeaseState | None, str | None]:
+    """Return the lease state of a Kea state code and an optional parameter error."""
     if raw_state in (None, ""):
         return None, None
-    if selector != constants.BY_SUBNET_ID:
-        return None, "state requires subnet_id as the selected filter."
     try:
-        state = parse_decimal(raw_state)
-    except (TypeError, ValueError):
-        return None, "A Subnet query supports only the Active or Declined state."
-    if state not in constants.LEASE_QUERY_STATE_CODES:
-        return None, "A Subnet query supports only the Active or Declined state."
-    return state, None
+        return constants.LEASE_STATES[parse_decimal(raw_state)], None
+    except (IndexError, ValueError):
+        return None, f"state must be a Kea lease state code from 0 to {len(constants.LEASE_STATES) - 1}."
 
 
 def _lease_parameter_error(params, version: int) -> str | None:
@@ -173,7 +168,7 @@ class ServerViewSet(NetBoxModelViewSet):
         - ``hw_address``: lookup by MAC address (requires lease_cmds hook)
         - ``hostname``: lookup by hostname (requires lease_cmds hook)
         - ``subnet_id``: lookup all leases in a subnet (requires lease_cmds hook)
-        - ``state``: narrow a subnet lookup to Active (0) or Declined (1)
+        - ``state``: keep only the leases in this Kea state code; a subnet lookup takes only 0 or 1
 
         The response is one normalized Lease observation with its query scope and coverage.
         """
@@ -188,7 +183,7 @@ class ServerViewSet(NetBoxModelViewSet):
         - ``duid``: lookup by DUID (requires lease_cmds hook)
         - ``hostname``: lookup by hostname (requires lease_cmds hook)
         - ``subnet_id``: lookup all leases in a subnet (requires lease_cmds hook)
-        - ``state``: narrow a subnet lookup to Active (0) or Declined (1)
+        - ``state``: keep only the leases in this Kea state code; a subnet lookup takes only 0 or 1
 
         The response is one normalized Lease observation with its query scope and coverage.
         """
@@ -217,7 +212,7 @@ class ServerViewSet(NetBoxModelViewSet):
             (constants.BY_SUBNET_ID, subnet_id),
         )
         selector, value = next((query for query in queries if query[1]), (None, None))
-        lease_state, state_error = _parse_subnet_lease_state(raw_state, selector)
+        lease_state, state_error = _parse_lease_state(raw_state)
         if state_error is not None:
             return Response({"detail": state_error}, status=status.HTTP_400_BAD_REQUEST)
 

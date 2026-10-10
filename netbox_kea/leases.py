@@ -380,7 +380,7 @@ class LeaseRead(_Value):
 
 
 class LeaseQuery(_Value):
-    """The scope that one Lease observation requested from Kea."""
+    """The scope of one Lease observation: the Kea query and the state of the Leases that it keeps."""
 
     family: Family
     selector: str
@@ -399,14 +399,9 @@ class LeaseQuery(_Value):
             valid = isinstance(self.value, str) and bool(self.value)
         if not valid:
             raise ValueError("The Lease query value does not fit its selector.")
-        if self.state is not None and (self.selector not in _SUBNET_SELECTORS or self.state not in LEASE_QUERY_STATES):
-            raise ValueError("Only a Subnet query can filter by state, and only by a state that Kea can count.")
+        if self.state is not None and self.selector in _SUBNET_SELECTORS and self.state not in LEASE_QUERY_STATES:
+            raise ValueError("A Subnet query can filter only by a state that Kea can count.")
         return self
-
-    @property
-    def covers_family(self) -> bool:
-        """Return whether the query asks for every Lease of the family."""
-        return self.selector == ALL_LEASES and self.state is None
 
 
 LeaseCoverage = Literal["page", "exhaustive"]
@@ -460,15 +455,6 @@ class LeaseSnapshot(_Value):
     def current_records(self) -> tuple[Lease, ...]:
         """Return the Current Leases at the evaluation time."""
         return tuple(record for record in self.records if is_current(record, self.evaluated_at))
-
-    def attests_absence(self, identity: LeaseIdentity) -> bool:
-        """Return whether the Snapshot proves that Kea had no Lease with *identity*."""
-        return (
-            self.complete
-            and self.query.covers_family
-            and identity.family == self.family
-            and identity not in self._identities
-        )
 
 
 class LeaseFound(_Value):
@@ -666,12 +652,21 @@ def is_current(lease: Lease, at: datetime) -> bool:
         ValueError: If *at* is naive.
 
     """
+    ended = lifetime_ended(lease, at)
+    return not ended and (lease.state == "assigned" or (lease.state == "registered" and lease.kind == "address"))
+
+
+def lifetime_ended(lease: Lease, at: datetime) -> bool:
+    """Return whether the valid lifetime of *lease* has ended at the aware time *at*.
+
+    Raises:
+        ValueError: If *at* is naive.
+
+    """
     if at.tzinfo is None or at.utcoffset() is None:
         raise ValueError("Lease current use needs an aware evaluation time.")
-    if lease.state != "assigned" and not (lease.state == "registered" and lease.kind == "address"):
-        return False
     # Kea compares whole seconds: a finite lifetime ends when its last second is before now.
-    return lease.infinite or lease.cltt + lease.valid_lifetime >= math.floor(at.timestamp())
+    return not lease.infinite and lease.cltt + lease.valid_lifetime < math.floor(at.timestamp())
 
 
 def shown_lease(lease: Lease) -> ShownLease:
@@ -940,7 +935,7 @@ def _read_records(raw_leases: list[Any], family: Family) -> tuple[tuple[Lease, .
     return records, tuple(diagnostic for _index, diagnostic in sorted(diagnostics, key=lambda item: item[0]))
 
 
-def _reply(response: Any, results: tuple[int, int] = (0, 3)) -> tuple[int, Any]:
+def _reply(response: Any, results: tuple[int, ...] = (0, 3)) -> tuple[int, Any]:
     """Return the result code and arguments of a one-service lease reply, or fail the read."""
     if not isinstance(response, list) or len(response) != 1 or not isinstance(response[0], dict):
         raise MalformedLeaseResponse("Kea returned a malformed lease response.")
@@ -1089,6 +1084,16 @@ def read_lease_change(response: Any, *, refused: int) -> bool:
     """
     result, _arguments = _reply(response, (0, refused))
     return result == 0
+
+
+def confirm_lease_creation(response: Any) -> None:
+    """Read one ``lease{4,6}-add`` reply that ``KeaClient.command`` checked; only one success entry confirms it.
+
+    Raises:
+        MalformedLeaseResponse: If the envelope is unusable.
+
+    """
+    _reply(response, (0,))
 
 
 def _edited_arguments(raw: Mapping[str, Any], fresh: Lease, edit: LeaseEdit) -> dict[str, Any]:

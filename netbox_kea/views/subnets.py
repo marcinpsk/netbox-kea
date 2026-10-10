@@ -15,7 +15,7 @@ from netbox.views import generic
 from utilities.htmx import htmx_partial
 from utilities.views import register_model_view
 
-from .. import config_write, forms, server_configuration, tables
+from .. import config_write, forms, server_configuration, subnet_catalogue, tables
 from ..constants import Family
 from ..dhcp_options import AmbiguousFormOption, DHCPOption, form_option_fields
 from ..kea import KeaException, subnet_network
@@ -30,7 +30,6 @@ from ..subnet_catalogue import (
     SubnetIdExhausted,
     VerifiedSubnet,
 )
-from ..subnet_catalogue import display as subnet_catalogue
 from ..utilities import (
     OptionalViewTab,
     check_dhcp_enabled,
@@ -40,11 +39,11 @@ from ..utilities import (
 from ._base import (
     _POOL_RE,
     _catalogue_subnet_row,
-    _diagnostic_messages,
     _enrich_subnet_statistics,
     _KeaChangeMixin,
     _run_config_change,
 )
+from .notices import notice, show_notices
 
 logger = logging.getLogger(__name__)
 
@@ -84,14 +83,11 @@ class BaseServerDHCPSubnetsView(generic.ObjectChildrenView):
     queryset = Server.objects.all()
     template_name = "netbox_kea/server_dhcp_subnets.html"
 
-    def get_children(self, request: HttpRequest, parent: Server) -> list[dict[str, Any]]:
+    def _catalogue_rows(
+        self, request: HttpRequest, parent: Server, snapshot: CatalogueSnapshot
+    ) -> list[dict[str, Any]]:
         """Return safe Subnet Catalogue rows for this Server."""
-        snapshot = subnet_catalogue(parent, self.dhcp_version)
-        _diagnostic_messages(
-            request, snapshot.diagnostics, messages.ERROR if snapshot.unavailable else messages.WARNING
-        )
         if snapshot.unavailable:
-            messages.error(request, "Failed to load subnet configuration from Kea.")
             return []
         can_change = Server.objects.restrict(request.user, "change").filter(pk=parent.pk).exists()
         subnets: tuple[VerifiedSubnet | ConfiguredSubnet, ...] = (*snapshot.subnets, *snapshot.configured_subnets)
@@ -106,7 +102,9 @@ class BaseServerDHCPSubnetsView(generic.ObjectChildrenView):
             return resp
 
         # We can't use the original get() since it calls get_table_configs which requires a NetBox model.
-        child_objects = self.get_children(request, instance)
+        snapshot = subnet_catalogue.display(instance, self.dhcp_version)
+        subnet_notice = notice(snapshot)
+        child_objects = self._catalogue_rows(request, instance, snapshot)
 
         table_data = self.prep_table_data(request, child_objects, instance)
         table = self.get_table(table_data, request, False)
@@ -122,13 +120,16 @@ class BaseServerDHCPSubnetsView(generic.ObjectChildrenView):
         if htmx_partial(request):
             return render(
                 request,
-                "htmx/table.html",
+                "netbox_kea/inc/subnets_table_htmx.html",
                 {
                     "object": instance,
                     "table": table,
                     "model": self.child_model,
+                    "notice": subnet_notice,
                 },
             )
+
+        show_notices(request, subnet_notice)
 
         return render(
             request,
@@ -228,11 +229,11 @@ def _displayed_subnet(
     request: HttpRequest, server: Server, family: Family, subnet_id: int
 ) -> tuple[CatalogueSnapshot, VerifiedSubnet | None]:
     """Return the displayed Subnet Catalogue and its Verified Subnet with *subnet_id*; show why it is missing."""
-    catalogue = subnet_catalogue(server, family)
+    catalogue = subnet_catalogue.display(server, family)
     found = catalogue.find_by_id(subnet_id)
     if isinstance(found, VerifiedSubnet):
         return catalogue, found
-    _diagnostic_messages(request, catalogue.diagnostics, messages.ERROR if catalogue.unavailable else messages.WARNING)
+    show_notices(request, notice(catalogue))
     return catalogue, None
 
 
@@ -266,6 +267,7 @@ class _BasePoolAddView(_KeaChangeMixin, generic.ObjectView):
         catalogue, subnet = _displayed_subnet(request, server, self.dhcp_version, subnet_id)
         if subnet is None:
             return _unconfirmed_subnet(request, subnet_id, self._subnets_url(pk))
+        show_notices(request, notice(catalogue))
         form = forms.PoolAddForm(
             initial={"subnet_cidr": subnet.cidr}, subnet=subnet, absence_confirmed=catalogue.confirms_absence
         )
@@ -276,6 +278,8 @@ class _BasePoolAddView(_KeaChangeMixin, generic.ObjectView):
         catalogue, subnet = _displayed_subnet(request, server, self.dhcp_version, subnet_id)
         form = forms.PoolAddForm(request.POST, subnet=subnet, absence_confirmed=catalogue.confirms_absence)
         if not form.is_valid() or form.subnet is None:
+            if subnet is not None:
+                show_notices(request, notice(catalogue))
             return self._render(request, server, subnet_id, form)
         pool: Pool = form.cleaned_data["pool"]
         cidr: str = form.cleaned_data["subnet_cidr"]
@@ -319,9 +323,10 @@ class _BasePoolDeleteView(_KeaChangeMixin, generic.ObjectView):
         if not _POOL_RE.match(re.sub(r"\s+", "", pool)):
             return HttpResponse("Invalid pool format.", status=400)
         server = self.get_object(pk=pk)
-        _, subnet = _displayed_subnet(request, server, self.dhcp_version, subnet_id)
+        catalogue, subnet = _displayed_subnet(request, server, self.dhcp_version, subnet_id)
         if subnet is None:
             return _unconfirmed_subnet(request, subnet_id, self._subnets_url(pk))
+        show_notices(request, notice(catalogue))
         return render(
             request,
             self.template_name,
@@ -378,14 +383,6 @@ class ServerSubnet6PoolDeleteView(_BasePoolDeleteView):
 # ---------------------------------------------------------------------------
 # Subnet add / delete views
 # ---------------------------------------------------------------------------
-
-
-def _configuration_messages(
-    request: HttpRequest, configuration: server_configuration.ServerConfigurationSnapshot
-) -> None:
-    _diagnostic_messages(
-        request, configuration.diagnostics, messages.WARNING if configuration.available else messages.ERROR
-    )
 
 
 def _offer_networks(
@@ -474,14 +471,14 @@ class _BaseSubnetAddView(_KeaChangeMixin, generic.ObjectView):
         server = self.get_object(pk=pk)
         form = forms.SubnetAddForm()
         configuration = server_configuration.display(server, self.dhcp_version)
-        _configuration_messages(request, configuration)
+        show_notices(request, notice(configuration))
         _offer_networks(request, form, configuration)
         return self._render(request, server, form)
 
     def _render_post(self, request: HttpRequest, server: Server, form: forms.SubnetAddForm) -> HttpResponse:
         """Show the submitted form again, with the Shared Networks of the cached configuration."""
         configuration = server_configuration.display(server, self.dhcp_version)
-        _configuration_messages(request, configuration)
+        show_notices(request, notice(configuration))
         _offer_networks(request, form, configuration)
         return self._render(request, server, form)
 
@@ -556,8 +553,9 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
 
     def get(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         server = self.get_object(pk=pk)
-        snapshot = subnet_catalogue(server, self.dhcp_version)
+        catalogue = subnet_catalogue.display(server, self.dhcp_version)
         configuration = server_configuration.for_verification(server, self.dhcp_version)
+        show_notices(request, notice(catalogue), notice(configuration))
         configured_target = configuration.subnet_with_membership(subnet_id)
         subnet_configuration = None
         subnet_cidr = ""
@@ -577,15 +575,12 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
             else server_configuration.shown_subnet(subnet_configuration, self.dhcp_version)
         )
         if shown is None:
-            _diagnostic_messages(request, snapshot.diagnostics, messages.ERROR)
-            messages.error(request, "Could not load subnet configuration from Kea.")
+            messages.error(
+                request, f"NetBox cannot show the configuration of Subnet {subnet_id}, so the edit form cannot open."
+            )
             return redirect(self._subnets_url(pk))
-        _diagnostic_messages(
-            request,
-            snapshot.diagnostics + configuration.diagnostics,
-            messages.WARNING if configuration.available else messages.ERROR,
-        )
-        membership_confirmed = configuration.available and configured_target is not None
+        # Only an available configuration declares the target.
+        membership_confirmed = configured_target is not None
         if not membership_confirmed:
             messages.warning(
                 request,
@@ -630,7 +625,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
     ) -> HttpResponse:
         """Show the submitted form again, with the Shared Networks and option hints of the cached configuration."""
         configuration = server_configuration.display(server, self.dhcp_version)
-        _configuration_messages(request, configuration)
+        show_notices(request, notice(configuration))
         _offer_networks(request, form, configuration)
         submitted = {name: value for name, value in form.data.items() if name in form.fields}
         inherited_options = (
@@ -711,9 +706,7 @@ class _BaseSubnetDeleteView(_KeaChangeMixin, generic.ObjectView):
     def get(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         server = self.get_object(pk=pk)
         configuration = server_configuration.for_verification(server, self.dhcp_version)
-        _diagnostic_messages(
-            request, configuration.diagnostics, messages.WARNING if configuration.available else messages.ERROR
-        )
+        show_notices(request, notice(configuration))
         declared = [subnet for subnet in configuration.subnets if subnet.declared_subnet_id == subnet_id]
         if len(declared) != 1:
             return _unconfirmed_subnet(request, subnet_id, self._subnets_url(pk))
@@ -775,9 +768,7 @@ class _BaseSubnetWipeView(_KeaChangeMixin, generic.ObjectView):
     def get(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         server = self.get_object(pk=pk)
         configuration = server_configuration.for_verification(server, self.dhcp_version)
-        _diagnostic_messages(
-            request, configuration.diagnostics, messages.WARNING if configuration.available else messages.ERROR
-        )
+        show_notices(request, notice(configuration))
         declared = [subnet for subnet in configuration.subnets if subnet.declared_subnet_id == subnet_id]
         subnet_cidr = declared[0].declared_cidr if len(declared) == 1 else ""
         return render(

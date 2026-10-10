@@ -4,7 +4,7 @@
 
 from django import template
 
-from ..constants import kea_std_options
+from ..dhcp_options import kea_std_options
 
 register = template.Library()
 

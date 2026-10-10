@@ -352,17 +352,7 @@ class SubnetTable(GenericTable):
     options = tables.TemplateColumn(
         verbose_name="Options",
         orderable=False,
-        template_code="""{% with opts=record.options %}
-{% if opts or record.ddns_qualifying_suffix %}
-<span>
-{% if opts.gateway %}<span title="Gateway">GW: {{ opts.gateway }}</span>{% endif %}
-{% if opts.dns_servers %} <span data-bs-toggle="tooltip" title="DNS: {{ opts.dns_servers }}">
-  <abbr>DNS{% if opts.domain_name %}: {{ opts.domain_name }}{% endif %}</abbr>
-</span>{% endif %}
-{% if opts.ntp_servers %} <span data-bs-toggle="tooltip" title="NTP">NTP: {{ opts.ntp_servers }}</span>{% endif %}
-{% if record.ddns_qualifying_suffix %} <span data-bs-toggle="tooltip" title="DDNS qualifying suffix: {{ record.ddns_qualifying_suffix }}">DDNS: {{ record.ddns_qualifying_suffix }}</span>{% endif %}
-</span>
-{% endif %}{% endwith %}""",
+        template_name="netbox_kea/inc/subnet_options_cell.html",
     )
     actions = ActionsColumn(SUBNET_ACTIONS)
 
@@ -410,7 +400,6 @@ class BaseLeaseTable(GenericTable):
     reserved = tables.TemplateColumn(
         verbose_name="Reserved",
         orderable=False,
-        exclude_from_export=True,
         template_code=(
             "{% if record.is_reserved %}"
             "{% if record.can_change_reservation and record.reservation_url %}"
@@ -430,6 +419,7 @@ class BaseLeaseTable(GenericTable):
             ' style="cursor:pointer"'
             ' aria-label="Delete lease {{ record.ip_address|escapejs }} held by {{ record.stale_lease_mac|escapejs }}"'
             ' hx-post="{{ record.delete_lease_url }}"'
+            ' {% include "netbox_kea/inc/row_action_htmx.html" %}'
             ' hx-confirm="Delete lease {{ record.ip_address|escapejs }} held by {{ record.stale_lease_mac|escapejs }}?'
             ' The old device must re-request this IP via DORA."'
             ' hx-vals=\'{"pk":"{{ record.selection|escapejs }}","_confirm":"1"}\'>'
@@ -474,26 +464,22 @@ class BaseLeaseTable(GenericTable):
     netbox_ip = tables.TemplateColumn(
         verbose_name="NetBox IP",
         orderable=False,
-        exclude_from_export=True,
         template_code=(
             "{% if record.netbox_ip_url %}"
             '<a href="{{ record.netbox_ip_url }}" class="badge text-bg-success text-decoration-none">'
-            '<i class="mdi mdi-link-variant"></i> Synced</a>'
+            '<i class="mdi mdi-link-variant" aria-hidden="true"></i> Synced</a>'
             "{% elif record.netbox_prefix_url %}"
             '<a href="{{ record.netbox_prefix_url }}" class="badge text-bg-success text-decoration-none">'
-            '<i class="mdi mdi-link-variant"></i> Synced</a>'
+            '<i class="mdi mdi-link-variant" aria-hidden="true"></i> Synced</a>'
             "{% elif record.sync_url %}"
             '<button type="button"'
             ' hx-post="{{ record.sync_url }}"'
             # The label is the address, or address/length for a delegated prefix.
             ' hx-vals=\'{"ip_address":"{{ record.label|escapejs }}","hostname":"{{ record.hostname|default:""|escapejs }}"}\''
-            ' hx-target="closest td"'
-            ' hx-swap="innerHTML"'
-            # The lease search container pushes its URL; a Sync POST must not replace the page URL.
-            ' hx-push-url="false"'
+            ' {% include "netbox_kea/inc/row_action_htmx.html" %}'
             ' class="badge text-bg-secondary border-0"'
             ' style="cursor:pointer">'
-            '<i class="mdi mdi-sync"></i> Sync</button>'
+            '<i class="mdi mdi-sync" aria-hidden="true"></i> Sync</button>'
             "{% elif record.sync_refusal %}"
             '{% include "netbox_kea/inc/sync_refused.html" with reason=record.sync_refusal label="Sync"'
             ' icon="mdi-sync" button_class="badge text-bg-secondary border-0 opacity-50" %}'
@@ -566,7 +552,7 @@ class LeaseDeleteTable(GenericTable):
 # (``views.reservations._attach_reservation_action_urls``) rather than reversed here.
 # A reservation that reserves no address has no address-keyed URL, and ``{% url %}``
 # with an empty ``ip_address`` raised NoReverseMatch, taking the whole table down
-# (issue #110). ``can_change`` is already folded into the precomputed values.
+# (issue #110). A URL is set only when the user can change the Reservation.
 RESERVATION_ACTIONS = """
 {% if record.edit_url or record.delete_url %}
 <span class="btn-group">

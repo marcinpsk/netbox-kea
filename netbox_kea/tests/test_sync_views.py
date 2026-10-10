@@ -27,6 +27,8 @@ via ``kea_stub.stub_kea``:
 
 from __future__ import annotations
 
+import sys
+
 import requests
 from django.contrib import messages as django_messages
 from django.contrib.auth import get_user_model
@@ -93,6 +95,10 @@ def _make_server(**kwargs) -> Server:
     return Server.objects.create(**defaults)
 
 
+#: A refusal is a 200 reply: htmx swaps no 4xx or 5xx reply into the cell of the row button.
+_ROW_ERROR_BADGE = '<span class="badge text-bg-danger'
+
+
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class _SyncViewBase(TestCase):
     def setUp(self):
@@ -135,8 +141,7 @@ class TestMalformedLeaseSyncView(_SyncViewBase):
                         reverse(f"plugins:netbox_kea:server_lease{family}_sync", args=[self.server.pk]),
                         {"ip_address": address},
                     )
-                    self.assertEqual(response.status_code, 500)
-                    self.assertEqual(response.content, b"Sync error: see server logs for details.")
+                    self.assertContains(response, "Sync error: see server logs for details.")
                     self.assertFalse(NbIP.objects.exists())
                     self.assertFalse(IPAMOwnershipLink.objects.exists())
 
@@ -205,7 +210,7 @@ class TestLease4SyncView(_SyncViewBase):
                 ),
             ):
                 response = self.client.post(self._url(), {"ip_address": address})
-                self.assertContains(response, "Sync error: see server logs", status_code=500)
+                self.assertContains(response, "Sync error: see server logs")
                 self.assertFalse(NbIP.objects.filter(address__net_host=address).exists())
                 self.assertFalse(IPAMOwnershipLink.objects.filter(ip_address__address__net_host=address).exists())
 
@@ -233,8 +238,8 @@ class TestLease4SyncView(_SyncViewBase):
             }
         ):
             response = self.client.post(self._url(), {"ip_address": "198.18.0.10"})
-        self.assertContains(response, "Sync error: see server logs", status_code=500)
-        self.assertNotContains(response, "private diagnostic", status_code=500)
+        self.assertContains(response, "Sync error: see server logs")
+        self.assertNotContains(response, "private diagnostic")
         self.assertFalse(NbIP.objects.exists())
         self.assertFalse(IPAMOwnershipLink.objects.exists())
 
@@ -248,7 +253,7 @@ class TestLease4SyncView(_SyncViewBase):
             reverse("plugins:netbox_kea:server_lease4_sync", args=[self.server.pk]),
             {"ip_address": "198.18.0.10"},
         )
-        self.assertContains(response, "Sync error: see server logs", status_code=500)
+        self.assertContains(response, "Sync error: see server logs")
         self.assertEqual(list(NbIP.objects.order_by("pk").values()), before)
         self.assertFalse(IPAMOwnershipLink.objects.exists())
 
@@ -266,7 +271,7 @@ class TestLease4SyncView(_SyncViewBase):
 
     def test_returns_200_on_valid_post(self):
         response = self.client.post(self._url(), {"ip_address": "192.168.10.5", "hostname": "host-a"})
-        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, _ROW_ERROR_BADGE)
 
     def test_creates_netbox_ip_on_post(self):
 
@@ -292,16 +297,16 @@ class TestLease4SyncView(_SyncViewBase):
         # Response must contain a link to the NetBox IP detail page
         self.assertContains(response, "/ipam/ip-addresses/")
 
-    def test_returns_400_when_ip_address_missing(self):
+    def test_refuses_a_missing_ip_address_in_the_row(self):
         response = self.client.post(self._url(), {"hostname": "no-ip"})
-        self.assertEqual(response.status_code, 400)
+        self.assertContains(response, _ROW_ERROR_BADGE)
 
-    def test_malformed_lease_response_returns_400(self):
+    def test_a_malformed_lease_response_is_refused_in_the_row(self):
         """A malformed Kea response does not escape the live-data boundary."""
         with stub_kea({"lease4-get": {"result": 0, "arguments": None}}):
             response = self.client.post(self._url(), {"ip_address": "192.168.10.5"})
-        self.assertEqual(response.status_code, 400)
-        self.assertContains(response, "Could not fetch live data", status_code=400)
+        self.assertContains(response, _ROW_ERROR_BADGE)
+        self.assertContains(response, "Could not fetch live data")
 
     def test_idempotent_second_post_does_not_create_duplicate(self):
 
@@ -347,7 +352,7 @@ class TestLease6SyncView(_SyncViewBase):
             self._url(),
             {"ip_address": "2001:db8::1", "hostname": "v6host"},
         )
-        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, _ROW_ERROR_BADGE)
 
     def test_creates_netbox_ip_with_kea_subnet_mask_for_ipv6(self):
 
@@ -368,12 +373,12 @@ class TestLease6SyncView(_SyncViewBase):
         ip = NbIP.objects.filter(address__net_host="2001:db8::3").first()
         self.assertEqual(ip.status, "dhcp")
 
-    def test_malformed_lease_response_returns_400(self):
+    def test_a_malformed_lease_response_is_refused_in_the_row(self):
         """A malformed DHCPv6 lease response does not escape the live-data boundary."""
         with stub_kea({"lease6-get": {"result": 0, "arguments": None}}):
             response = self.client.post(self._url(), {"ip_address": "2001:db8::4"})
-        self.assertEqual(response.status_code, 400)
-        self.assertContains(response, "Could not fetch live data", status_code=400)
+        self.assertContains(response, _ROW_ERROR_BADGE)
+        self.assertContains(response, "Could not fetch live data")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -523,7 +528,8 @@ class TestLeaseSyncByKind(_SyncViewBase):
 
         response, _kea = self._post(_PD_LABEL, _pd_record())
 
-        self.assertEqual(response.status_code, 200, response.content)
+        self.assertNotContains(response, _ROW_ERROR_BADGE)
+        self.assertTrue(IPAMOwnershipLink.objects.filter(prefix__prefix=_PD_LABEL, source="lease-prefix").exists())
         self.assertTrue(IPAMOwnershipLink.objects.filter(prefix=stale, source="lease-prefix").exists())
         stale.refresh_from_db()
         self.assertEqual(stale.status, "active")
@@ -533,7 +539,7 @@ class TestLeaseSyncByKind(_SyncViewBase):
 
         response, kea = self._post(_PD_LABEL, _pd_record())
 
-        self.assertEqual(response.status_code, 403)
+        self.assertContains(response, _ROW_ERROR_BADGE)
         self.assertEqual(kea.commands(), [])
         self._assert_no_ipam_rows()
 
@@ -542,7 +548,7 @@ class TestLeaseSyncByKind(_SyncViewBase):
 
         response, kea = self._post(_PD_ADDRESS_LABEL, lease_record(_PD_ADDRESS_LABEL, subnet_id=10))
 
-        self.assertEqual(response.status_code, 403)
+        self.assertContains(response, _ROW_ERROR_BADGE)
         self.assertEqual(kea.commands(), [])
         self._assert_no_ipam_rows()
 
@@ -551,7 +557,7 @@ class TestLeaseSyncByKind(_SyncViewBase):
             with self.subTest(codenames=codenames):
                 self._login_with(*codenames)
                 response, _kea = self._post(_PD_LABEL, _pd_record())
-                self.assertEqual(response.status_code, 403)
+                self.assertContains(response, _ROW_ERROR_BADGE)
                 self._assert_no_ipam_rows()
 
     def test_prefix_permissions_authorize_a_delegated_prefix_sync(self):
@@ -579,7 +585,7 @@ class TestLeaseSyncByKind(_SyncViewBase):
         for case, (label, record) in cases.items():
             with self.subTest(case=case):
                 response, kea = self._post(label, record)
-                self.assertContains(response, "not current", status_code=409)
+                self.assertContains(response, "not current")
                 self.assertEqual(kea.commands(), ["lease6-get"])
                 self._assert_no_ipam_rows()
 
@@ -597,20 +603,20 @@ class TestLeaseSyncByKind(_SyncViewBase):
                 }
                 with stub_kea(responses):
                     response = self.client.post(url, {"ip_address": "192.0.2.10"})
-                self.assertContains(response, "not current", status_code=409)
+                self.assertContains(response, "not current")
                 self._assert_no_ipam_rows()
 
     def test_a_changed_prefix_length_is_not_synchronized(self):
         response, _kea = self._post(_PD_LABEL, _pd_record(prefix_len=60))
 
-        self.assertContains(response, "The lease changed in Kea", status_code=409)
+        self.assertContains(response, "The lease changed in Kea")
         self._assert_no_ipam_rows()
 
     def test_a_subnet_id_absent_from_the_catalogue_is_a_generic_error(self):
         response, _kea = self._post(_PD_LABEL, _pd_record(subnet_id=99))
 
-        self.assertEqual(response.content, b"Sync error: see server logs for details.")
-        self.assertEqual(response.status_code, 500)
+        self.assertContains(response, "Sync error: see server logs for details.")
+        self.assertNotContains(response, "private diagnostic")
         self._assert_no_ipam_rows()
 
     def test_an_unavailable_catalogue_is_a_generic_error_for_a_delegated_prefix(self):
@@ -622,15 +628,15 @@ class TestLeaseSyncByKind(_SyncViewBase):
         with stub_kea(responses):
             response = self.client.post(self._url(), {"ip_address": _PD_LABEL})
 
-        self.assertEqual(response.content, b"Sync error: see server logs for details.")
-        self.assertEqual(response.status_code, 500)
+        self.assertContains(response, "Sync error: see server logs for details.")
+        self.assertNotContains(response, "private diagnostic")
         self._assert_no_ipam_rows()
 
     def test_an_invalid_selection_is_refused_before_kea_is_read(self):
         for label in ("2001:db8:100:101::/56", "not-an-address", "192.0.2.0/24", "2001:db8::/129"):
             with self.subTest(label=label):
                 response, kea = self._post(label, _pd_record())
-                self.assertEqual(response.status_code, 400)
+                self.assertContains(response, _ROW_ERROR_BADGE)
                 self.assertEqual(kea.commands(), [])
                 self._assert_no_ipam_rows()
 
@@ -663,7 +669,7 @@ class TestReservation4SyncView(_SyncViewBase):
 
     def test_returns_200_on_valid_post(self):
         response = self.client.post(self._url(), {"ip_address": "10.0.0.50", "hostname": "res-host"})
-        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, _ROW_ERROR_BADGE)
 
     def test_creates_ip_with_reserved_status(self):
 
@@ -706,7 +712,7 @@ class TestReservation4SyncView(_SyncViewBase):
         with self.assertLogs("netbox_kea.views.sync_views", level="ERROR"):
             response = self.client.post(self._url())
 
-        self.assertContains(response, "Reservation synchronization failed", status_code=500)
+        self.assertContains(response, "Reservation synchronization failed")
         self.assertEqual(NbIP.objects.count(), 0)
 
     def test_kea_error_returns_an_actionable_hint(self):
@@ -720,7 +726,19 @@ class TestReservation4SyncView(_SyncViewBase):
             with self.assertLogs("netbox_kea.views.sync_views", level="ERROR"):
                 response = self.client.post(self._url())
 
-        self.assertContains(response, "The required hook library may not be loaded", status_code=500)
+        self.assertContains(response, "The required hook library may not be loaded")
+
+    def test_a_reservation_gone_from_kea_is_refused_in_the_row(self):
+        for responses in (
+            {**_catalogue_responses(4, 1, "10.0.0.0/24"), "reservation-get": {"result": 3, "text": "Host not found."}},
+            _catalogue_responses(4, 2, "10.0.0.0/24"),
+        ):
+            with self.subTest(sorted(responses)), stub_kea(responses):
+                response = self.client.post(self._url())
+
+                self.assertContains(response, _ROW_ERROR_BADGE)
+                self.assertContains(response, "no longer in Kea")
+                self.assertFalse(NbIP.objects.exists())
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -755,7 +773,7 @@ class TestReservation6SyncView(_SyncViewBase):
             self._url(),
             {"ip_address": "2001:db8:1::50", "hostname": "v6res"},
         )
-        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, _ROW_ERROR_BADGE)
 
     def test_creates_ip_with_reserved_status(self):
 
@@ -993,13 +1011,15 @@ class TestSyncViewPermissionChecks(_SyncViewBase):
         self._login_limited()
         url = reverse("plugins:netbox_kea:server_lease4_sync", args=[self.server.pk])
         response = self.client.post(url, {"ip_address": "192.168.99.1"})
-        self.assertEqual(response.status_code, 403)
+        self.assertContains(response, _ROW_ERROR_BADGE)
 
     def test_reservation4_sync_requires_ipam_add_permission(self):
         self._login_limited()
         url = reverse("plugins:netbox_kea:server_reservation4_sync", args=[self.server.pk, 1])
         response = self.client.post(url, {"ip_address": "192.168.99.2"})
-        self.assertEqual(response.status_code, 403)
+        # The row button swaps the refusal into its cell, so the reason is a badge.
+        self.assertContains(response, _ROW_ERROR_BADGE)
+        self.assertContains(response, "Manual Sync needs unconstrained")
 
     def test_superuser_can_still_sync(self):
         # self.user is superuser — should succeed as before
@@ -1010,7 +1030,7 @@ class TestSyncViewPermissionChecks(_SyncViewBase):
         }
         with stub_kea(stub):
             response = self.client.post(url, {"ip_address": "192.168.99.3"})
-        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, _ROW_ERROR_BADGE)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1150,6 +1170,20 @@ class TestReservationCheckNetboxIPView(_SyncViewBase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.content.decode().strip(), "")
 
+    def test_only_an_ip_in_the_sync_vrf_is_reported(self):
+        from ipam.models import VRF
+
+        sync_vrf = VRF.objects.create(name="check-ip-sync-vrf")
+        self.server.sync_vrf = sync_vrf
+        self.server.save()
+        NbIP.objects.create(address="10.0.40.1/24", description="[kea-sync: reservation]")
+        NbIP.objects.create(address="10.0.40.1/24", vrf=VRF.objects.create(name="check-ip-other-vrf"))
+
+        self.assertEqual(self.client.get(self._url(), {"ip": "10.0.40.1"}).content.decode().strip(), "")
+
+        NbIP.objects.create(address="10.0.40.1/24", vrf=sync_vrf, description="[kea-sync: reservation]")
+        self.assertIn("Already in NetBox IPAM", self.client.get(self._url(), {"ip": "10.0.40.1"}).content.decode())
+
     def test_info_alert_for_kea_managed_ip(self):
         NbIP.objects.create(address="10.0.40.1/24", status="reserved", description="[kea-sync: reservation]")
         response = self.client.get(self._url(), {"ip": "10.0.40.1"})
@@ -1279,3 +1313,64 @@ class TestLeaseSyncEventDispatch(TransactionTestCase):
         ):
             self.client.post(url, {"ip_address": _PD_LABEL})
         self.assertTrue(Prefix.objects.filter(prefix=_PD_LABEL).exists())
+
+    def test_a_committed_reservation_claim_whose_events_fail_to_dispatch_is_not_reported_as_refused(self):
+        from netbox_kea.event_scope import _NESTED_TRACKING, EventDispatchError
+
+        if not _NESTED_TRACKING:
+            self.skipTest("Before NetBox 4.6.9 a claim row is a plain transaction and dispatches with the request")
+        self.client.force_login(User.objects.create_superuser(username="dispatch-res-user", password="dispatch-pass"))
+        server = _make_server()
+        responses = {
+            **_catalogue_responses(4, 1, "10.0.0.0/24"),
+            "reservation-get": _reservation_get("mock-res.local", "10.0.0.50", **{"hw-address": "aa:bb:cc:00:00:02"}),
+        }
+        url = reverse("plugins:netbox_kea:server_reservation4_sync", args=[server.pk, 1])
+        with (
+            override_settings(EVENTS_PIPELINE=["netbox_kea.tests.test_event_scope.fail_dispatch"]),
+            stub_kea(responses),
+            self.assertRaises(EventDispatchError),
+        ):
+            self.client.post(f"{url}?identifier_type=hw-address&identifier=aa%3Abb%3Acc%3A00%3A00%3A02")
+        self.assertTrue(NbIP.objects.filter(address__net_host="10.0.0.50").exists())
+
+    def test_a_committed_claim_after_a_lease_creation_whose_events_fail_to_dispatch_is_not_reported_as_failed(self):
+        from django.core.signals import got_request_exception
+
+        from netbox_kea.event_scope import _NESTED_TRACKING, EventDispatchError
+
+        from .kea_stub import LeaseDaemon
+
+        if not _NESTED_TRACKING:
+            self.skipTest("Before NetBox 4.6.9 a claim row is a plain transaction and dispatches with the request")
+        self.client.force_login(User.objects.create_superuser(username="dispatch-add-user", password="dispatch-pass"))
+        server = _make_server()
+        responses = {
+            **_catalogue_responses_for_subnets(4, [{"id": 10, "subnet": "192.0.2.0/24"}]),
+            **LeaseDaemon(4).responses(),
+        }
+        data = {
+            "ip_address": "192.0.2.50",
+            "hw_address": "aa:bb:cc:00:00:50",
+            "subnet_id": "10",
+            "sync_to_netbox": "on",
+        }
+        raised = []
+
+        def record(sender, request, **kwargs):
+            raised.append(sys.exc_info()[1])
+
+        # Django turns the view error into a 500 inside NetBox's request scope, which then flushes the journal event
+        # and fails again; the test client re-raises only that last error, so the view error is read from the signal.
+        got_request_exception.connect(record)
+        try:
+            with (
+                override_settings(EVENTS_PIPELINE=["netbox_kea.tests.test_event_scope.fail_dispatch"]),
+                stub_kea(responses),
+                self.assertRaises(RuntimeError),
+            ):
+                self.client.post(reverse("plugins:netbox_kea:server_lease4_add", args=[server.pk]), data)
+        finally:
+            got_request_exception.disconnect(record)
+        self.assertTrue(any(isinstance(error, EventDispatchError) for error in raised), raised)
+        self.assertTrue(NbIP.objects.filter(address__net_host="192.0.2.50").exists())

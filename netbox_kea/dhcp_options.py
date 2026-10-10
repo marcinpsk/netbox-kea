@@ -7,6 +7,220 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
+# Kea standard option definitions (name, code) for the dhcp4 and dhcp6 spaces, which also back the option-name
+# suggestion list. Source: isc-projects/kea src/lib/dhcp/std_option_defs.h at tag Kea-3.2.0.
+KEA_DHCP4_STD_OPTIONS: list[tuple[str, int]] = [
+    ("subnet-mask", 1),
+    ("time-offset", 2),
+    ("routers", 3),
+    ("time-servers", 4),
+    ("name-servers", 5),
+    ("domain-name-servers", 6),
+    ("log-servers", 7),
+    ("cookie-servers", 8),
+    ("lpr-servers", 9),
+    ("impress-servers", 10),
+    ("resource-location-servers", 11),
+    ("host-name", 12),
+    ("boot-size", 13),
+    ("merit-dump", 14),
+    ("domain-name", 15),
+    ("swap-server", 16),
+    ("root-path", 17),
+    ("extensions-path", 18),
+    ("ip-forwarding", 19),
+    ("non-local-source-routing", 20),
+    ("policy-filter", 21),
+    ("max-dgram-reassembly", 22),
+    ("default-ip-ttl", 23),
+    ("path-mtu-aging-timeout", 24),
+    ("path-mtu-plateau-table", 25),
+    ("interface-mtu", 26),
+    ("all-subnets-local", 27),
+    ("broadcast-address", 28),
+    ("perform-mask-discovery", 29),
+    ("mask-supplier", 30),
+    ("router-discovery", 31),
+    ("router-solicitation-address", 32),
+    ("static-routes", 33),
+    ("trailer-encapsulation", 34),
+    ("arp-cache-timeout", 35),
+    ("ieee802-3-encapsulation", 36),
+    ("default-tcp-ttl", 37),
+    ("tcp-keepalive-interval", 38),
+    ("tcp-keepalive-garbage", 39),
+    ("nis-domain", 40),
+    ("nis-servers", 41),
+    ("ntp-servers", 42),
+    ("vendor-encapsulated-options", 43),
+    ("netbios-name-servers", 44),
+    ("netbios-dd-server", 45),
+    ("netbios-node-type", 46),
+    ("netbios-scope", 47),
+    ("font-servers", 48),
+    ("x-display-manager", 49),
+    ("dhcp-requested-address", 50),
+    ("dhcp-lease-time", 51),
+    ("dhcp-option-overload", 52),
+    ("dhcp-message-type", 53),
+    ("dhcp-server-identifier", 54),
+    ("dhcp-parameter-request-list", 55),
+    ("dhcp-message", 56),
+    ("dhcp-max-message-size", 57),
+    ("dhcp-renewal-time", 58),
+    ("dhcp-rebinding-time", 59),
+    ("vendor-class-identifier", 60),
+    ("dhcp-client-identifier", 61),
+    ("nwip-domain-name", 62),
+    ("nwip-suboptions", 63),
+    ("nisplus-domain-name", 64),
+    ("nisplus-servers", 65),
+    ("tftp-server-name", 66),
+    ("boot-file-name", 67),
+    ("mobile-ip-home-agent", 68),
+    ("smtp-server", 69),
+    ("pop-server", 70),
+    ("nntp-server", 71),
+    ("www-server", 72),
+    ("finger-server", 73),
+    ("irc-server", 74),
+    ("streettalk-server", 75),
+    ("streettalk-directory-assistance-server", 76),
+    ("user-class", 77),
+    ("slp-directory-agent", 78),
+    ("slp-service-scope", 79),
+    ("fqdn", 81),
+    ("dhcp-agent-options", 82),
+    ("nds-servers", 85),
+    ("nds-tree-name", 86),
+    ("nds-context", 87),
+    ("bcms-controller-names", 88),
+    ("bcms-controller-address", 89),
+    ("authenticate", 90),
+    ("client-last-transaction-time", 91),
+    ("associated-ip", 92),
+    ("client-system", 93),
+    ("client-ndi", 94),
+    ("uuid-guid", 97),
+    ("uap-servers", 98),
+    ("geoconf-civic", 99),
+    ("pcode", 100),
+    ("tcode", 101),
+    ("v6-only-preferred", 108),
+    ("netinfo-server-address", 112),
+    ("netinfo-server-tag", 113),
+    ("v4-captive-portal", 114),
+    ("auto-config", 116),
+    ("name-service-search", 117),
+    ("subnet-selection", 118),
+    ("domain-search", 119),
+    ("classless-static-route", 121),
+    ("cablelabs-client-conf", 122),
+    ("vivco-suboptions", 124),
+    ("vivso-suboptions", 125),
+    ("pana-agent", 136),
+    ("v4-lost", 137),
+    ("capwap-ac-v4", 138),
+    ("sip-ua-cs-domains", 141),
+    ("v4-sztp-redirect", 143),
+    ("rdnss-selection", 146),
+    ("status-code", 151),
+    ("base-time", 152),
+    ("start-time-of-state", 153),
+    ("query-start-time", 154),
+    ("query-end-time", 155),
+    ("dhcp-state", 156),
+    ("data-source", 157),
+    ("v4-portparams", 159),
+    ("v4-dnr", 162),
+    ("option-6rd", 212),
+    ("v4-access-domain", 213),
+]
+
+KEA_DHCP6_STD_OPTIONS: list[tuple[str, int]] = [
+    ("clientid", 1),
+    ("serverid", 2),
+    ("ia-na", 3),
+    ("ia-ta", 4),
+    ("iaaddr", 5),
+    ("oro", 6),
+    ("preference", 7),
+    ("elapsed-time", 8),
+    ("relay-msg", 9),
+    ("auth", 11),
+    ("unicast", 12),
+    ("status-code", 13),
+    ("rapid-commit", 14),
+    ("user-class", 15),
+    ("vendor-class", 16),
+    ("vendor-opts", 17),
+    ("interface-id", 18),
+    ("reconf-msg", 19),
+    ("reconf-accept", 20),
+    ("sip-server-dns", 21),
+    ("sip-server-addr", 22),
+    ("dns-servers", 23),
+    ("domain-search", 24),
+    ("ia-pd", 25),
+    ("iaprefix", 26),
+    ("nis-servers", 27),
+    ("nisp-servers", 28),
+    ("nis-domain-name", 29),
+    ("nisp-domain-name", 30),
+    ("sntp-servers", 31),
+    ("information-refresh-time", 32),
+    ("bcmcs-server-dns", 33),
+    ("bcmcs-server-addr", 34),
+    ("geoconf-civic", 36),
+    ("remote-id", 37),
+    ("subscriber-id", 38),
+    ("client-fqdn", 39),
+    ("pana-agent", 40),
+    ("new-posix-timezone", 41),
+    ("new-tzdb-timezone", 42),
+    ("ero", 43),
+    ("lq-query", 44),
+    ("client-data", 45),
+    ("clt-time", 46),
+    ("lq-relay-data", 47),
+    ("lq-client-link", 48),
+    ("v6-lost", 51),
+    ("capwap-ac-v6", 52),
+    ("relay-id", 53),
+    ("ntp-server", 56),
+    ("v6-access-domain", 57),
+    ("sip-ua-cs-list", 58),
+    ("bootfile-url", 59),
+    ("bootfile-param", 60),
+    ("client-arch-type", 61),
+    ("nii", 62),
+    ("aftr-name", 64),
+    ("erp-local-domain-name", 65),
+    ("rsoo", 66),
+    ("pd-exclude", 67),
+    ("rdnss-selection", 74),
+    ("client-linklayer-addr", 79),
+    ("link-address", 80),
+    ("solmax-rt", 82),
+    ("inf-max-rt", 83),
+    ("dhcpv4-message", 87),
+    ("dhcp4o6-server-addr", 88),
+    ("s46-cont-mape", 94),
+    ("s46-cont-mapt", 95),
+    ("s46-cont-lw", 96),
+    ("v6-captive-portal", 103),
+    ("relay-source-port", 135),
+    ("v6-sztp-redirect", 136),
+    ("ipv6-address-andsf", 143),
+    ("v6-dnr", 144),
+    ("addr-reg-enable", 148),
+]
+
+
+def kea_std_options(version: int) -> list[tuple[str, int]]:
+    """Return the standard option (name, code) list for the given DHCP version."""
+    return {4: KEA_DHCP4_STD_OPTIONS, 6: KEA_DHCP6_STD_OPTIONS}[version]
+
 
 class DHCPOptionConflict(ValueError):
     """An existing DHCP Option cannot be identified safely for an edit."""
@@ -80,26 +294,55 @@ class DHCPOption:
         return same_space and self.name is not None and self.name == intended.name
 
 
+_STANDARD_CODES: dict[int, dict[str, int]] = {version: dict(kea_std_options(version)) for version in (4, 6)}
+
+
+_STANDARD_NAMES: dict[int, dict[int, str]] = {
+    version: {code: name for name, code in codes.items()} for version, codes in _STANDARD_CODES.items()
+}
+
+
+def _in_default_space(option: DHCPOption, version: int) -> bool:
+    return option.space in (None, f"dhcp{version}")
+
+
+def option_name(option: DHCPOption, version: int) -> str | None:
+    """Return the name of *option*. A default-space entry with a code only takes the standard name of its code."""
+    if option.name is not None or option.code is None or not _in_default_space(option, version):
+        return option.name
+    return _STANDARD_NAMES[version].get(option.code)
+
+
 @dataclass(frozen=True)
 class FormManagedOption:
-    """One default-space DHCP Option that a Subnet or Shared Network form field edits."""
+    """One default-space standard DHCP Option that a Subnet or Shared Network form field edits."""
 
     field: str
     name: str
-    code: int
+    family: int
+
+    @property
+    def code(self) -> int:
+        """Return the code that the Kea standard option definitions of the family give the option."""
+        return _STANDARD_CODES[self.family][self.name]
 
 
 # The form reader and the kea.py writer both use this table, so the two cannot disagree.
 _FORM_MANAGED_OPTIONS: dict[int, tuple[FormManagedOption, ...]] = {
     4: (
-        FormManagedOption("gateway", "routers", 3),
-        FormManagedOption("dns_servers", "domain-name-servers", 6),
-        FormManagedOption("ntp_servers", "ntp-servers", 42),
+        FormManagedOption("gateway", "routers", 4),
+        FormManagedOption("dns_servers", "domain-name-servers", 4),
+        FormManagedOption("ntp_servers", "ntp-servers", 4),
     ),
     6: (
-        FormManagedOption("dns_servers", "dns-servers", 23),
-        FormManagedOption("ntp_servers", "sntp-servers", 31),
+        FormManagedOption("dns_servers", "dns-servers", 6),
+        FormManagedOption("ntp_servers", "sntp-servers", 6),
     ),
+}
+# The Subnet table also shows the domain name, which no form edits. DHCPv6 has no domain-name option.
+_SHOWN_OPTIONS: dict[int, tuple[FormManagedOption, ...]] = {
+    4: (*_FORM_MANAGED_OPTIONS[4], FormManagedOption("domain_name", "domain-name", 4)),
+    6: _FORM_MANAGED_OPTIONS[6],
 }
 
 
@@ -122,17 +365,45 @@ def form_managed_entry(options: Sequence[DHCPOption], version: int, field: str) 
         AmbiguousFormOption: If more than one entry fits.
 
     """
-    managed = form_managed_options(version)[field]
-    fits = [
-        index
-        for index, option in enumerate(options)
-        if option.space in (None, f"dhcp{version}")
-        and not option.client_classes
-        and (option.code == managed.code if option.code is not None else option.name == managed.name)
-    ]
+    fits = _fitting_entries(options, version, form_managed_options(version)[field])
     if len(fits) > 1:
         raise AmbiguousFormOption(f"More than one DHCP Option entry fits the {field} field.")
     return fits[0] if fits else None
+
+
+def _fitting_entries(options: Sequence[DHCPOption], version: int, managed: FormManagedOption) -> list[int]:
+    """Return the index of each default-space entry with no class tag and the code (or name) of *managed*."""
+    return [
+        index
+        for index, option in enumerate(options)
+        if _in_default_space(option, version)
+        and not option.client_classes
+        and (option.code == managed.code if option.code is not None else option.name == managed.name)
+    ]
+
+
+@dataclass(frozen=True)
+class ShownOption:
+    """What the Subnet table shows for one field: the data of its entry, or that more than one entry fits."""
+
+    data: str
+    ambiguous: bool
+
+
+def shown_options(options: Sequence[DHCPOption], version: int) -> dict[str, ShownOption]:
+    """Return what the Subnet table shows for each field that has a fitting entry, keyed by field.
+
+    The rule is the one of ``form_managed_entry``. The table shows data that the form cannot edit, such as binary
+    data or a router list, because ``form_shows`` controls editing only.
+    """
+    shown: dict[str, ShownOption] = {}
+    for managed in _SHOWN_OPTIONS[version]:
+        fits = _fitting_entries(options, version, managed)
+        if len(fits) > 1:
+            shown[managed.field] = ShownOption(data="", ambiguous=True)
+        elif fits and options[fits[0]].data:
+            shown[managed.field] = ShownOption(data=options[fits[0]].data, ambiguous=False)
+    return shown
 
 
 def form_shows(option: DHCPOption, field: str) -> bool:
@@ -183,6 +454,11 @@ def address_list(text: str) -> tuple[str, ...]:
         except ValueError as exc:
             raise InvalidAddress(entry) from exc
     return tuple(addresses)
+
+
+def address_list_data(addresses: Sequence[str]) -> str:
+    """Return the option data of *addresses*: each address joined with a comma and a space, as in the Kea ARM."""
+    return ", ".join(addresses)
 
 
 def parse_dhcp_option(entry: Any) -> DHCPOption:
