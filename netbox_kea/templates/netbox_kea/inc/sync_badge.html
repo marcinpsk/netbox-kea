@@ -8,11 +8,11 @@
 <a href="{{ nb_ip.get_absolute_url }}"
    class="badge text-bg-success text-decoration-none"
    title="{{ nb_ip.address }} — {{ nb_ip.get_status_display }}">
-  <i class="mdi mdi-link-variant"></i>&nbsp;{{ nb_ip.address }}
+  <i class="mdi mdi-link-variant" aria-hidden="true"></i>&nbsp;{{ nb_ip.address }}
 </a>
 {% else %}
 <span class="badge text-bg-warning text-decoration-none"
       title="Sync error: could not resolve IP">
-  <i class="mdi mdi-alert-circle-outline"></i>&nbsp;Sync error
+  <i class="mdi mdi-alert-circle-outline" aria-hidden="true"></i>&nbsp;Sync error
 </span>
 {% endif %}

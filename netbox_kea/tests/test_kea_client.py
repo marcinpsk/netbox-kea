@@ -64,6 +64,7 @@ from netbox_kea.tests.kea_stub import (
     lease_page,
     lease_pages,
     lease_record,
+    lease_reply,
     queued,
     record_transport,
     stub_kea,
@@ -972,6 +973,13 @@ class TestLeaseChanges(TestCase):
         with stub_kea({"lease4-add": {"result": 1, "text": "address already in use"}}), self.assertRaises(KeaException):
             self.client.lease_add(creation)
 
+    def test_a_reply_without_one_success_entry_confirms_no_creation(self):
+        creation = DHCPv4LeaseRequest(address=ipaddress.IPv4Address("192.0.2.50"), hw_address="aa:bb:cc:00:00:50")
+        ok = {"result": 0, "text": "Lease added."}
+        for name, reply, error in (("empty", [], MalformedReply), ("two entries", [ok, ok], MalformedLeaseResponse)):
+            with self.subTest(name), stub_kea({"lease4-add": reply}), self.assertRaises(error):
+                self.client.lease_add(creation)
+
 
 # ---------------------------------------------------------------------------
 # TestNetworkSubnetAdd
@@ -1131,10 +1139,10 @@ class TestLeaseQueryGuardMessage(TestCase):
 
     def test_each_guard_failure_has_actionable_guidance(self):
         cases = (
-            (LeaseQueryNotMeasurable(2), 2, "cannot safely measure"),
+            (LeaseQueryNotMeasurable("expired-reclaimed"), "expired-reclaimed", "cannot safely measure"),
             (LeaseQueryPreflightUnavailable(), None, "stat_cmds"),
             (LeaseQueryTooBroad(101, 100), None, "Select the Active or Declined state"),
-            (LeaseQueryTooBroad(101, 100), 0, "exact IP or client identifier"),
+            (LeaseQueryTooBroad(101, 100), "assigned", "exact IP or client identifier"),
             (LeaseQueryGuardError(), None, "more specific search"),
         )
 
@@ -1160,7 +1168,6 @@ class TestLeaseSearch(TestCase):
         cases = (
             (5, "ip", "198.18.0.10", None, "version must be 4 or 6"),
             (4, "subnet", "", None, "non-empty CIDR"),
-            (4, "hostname", "host.example.invalid", 0, "state can only"),
             (4, "hostname", "", None, "non-empty string"),
             (4, "subnet_id", True, None, "positive integer"),
             (4, "subnet_id", 1.5, None, "positive integer"),
@@ -1275,7 +1282,7 @@ class TestLeaseSearch(TestCase):
                     }
                 ) as kea,
             ):
-                result = client.lease_search(version, "subnet_id", 12, state=1, server_id=1)
+                result = client.lease_search(version, "subnet_id", 12, state="declined", server_id=1)
 
                 self.assertEqual(result.records, _typed(lease))
                 self.assertEqual(kea.commands(), [f"stat-lease{version}-get", f"lease{version}-get-by-state"])
@@ -1286,8 +1293,8 @@ class TestLeaseSearch(TestCase):
 
     def test_unmeasured_subnet_state_is_rejected_before_any_request(self):
         with stub_kea({}) as kea:
-            with self.assertRaisesRegex(LeaseQueryNotMeasurable, "state 2"):
-                self.client.lease_search(4, "subnet_id", 12, state=2, server_id=1)
+            with self.assertRaisesRegex(LeaseQueryNotMeasurable, "state expired-reclaimed"):
+                self.client.lease_search(4, "subnet_id", 12, state="expired-reclaimed", server_id=1)
 
         self.assertEqual(kea.commands(), [])
 
@@ -1331,9 +1338,9 @@ class TestLeaseSearch(TestCase):
             }
         ) as kea:
             with self.assertRaises(LeaseQueryPreflightUnavailable) as ctx:
-                client.lease_search(4, "subnet_id", 12, state=0, server_id=1)
+                client.lease_search(4, "subnet_id", 12, state="assigned", server_id=1)
 
-        self.assertIn("3.1.5", lease_query_guard_message(ctx.exception, 0))
+        self.assertIn("3.1.5", lease_query_guard_message(ctx.exception, "assigned"))
         self.assertEqual(kea.commands(), ["lease4-get-by-state"])
 
     def test_missing_state_command_does_not_fetch_unmeasured_retained_rows(self):
@@ -1357,7 +1364,7 @@ class TestLeaseSearch(TestCase):
                     ) as kea:
                         try:
                             with self.assertRaises(LeaseQueryPreflightUnavailable) as ctx:
-                                client.lease_search(version, "subnet_id", 12, state=0, server_id=1)
+                                client.lease_search(version, "subnet_id", 12, state="assigned", server_id=1)
                             self.assertEqual(ctx.exception.reason, "state-command")
                         finally:
                             self.assertEqual(kea.commands(), commands)
@@ -1371,7 +1378,7 @@ class TestLeaseSearch(TestCase):
             }
         ) as kea:
             with self.assertRaises(LeaseQueryPreflightUnavailable):
-                client.lease_search(4, "subnet_id", 12, state=1, server_id=1)
+                client.lease_search(4, "subnet_id", 12, state="declined", server_id=1)
         self.assertEqual(kea.commands(), ["stat-lease4-get", "lease4-get-by-state"])
 
     def test_non_hook_statistics_error_propagates(self):
@@ -1416,7 +1423,7 @@ class TestLeaseSearch(TestCase):
         client = kea_client(url="http://kea:8000", max_unpaged_leases=100)
         with stub_kea({"stat-lease6-get": _subnet_stats(6, 12, assigned=0, declined=0, assigned_pds=101)}) as kea:
             with self.assertRaisesRegex(LeaseQueryTooBroad, "101.*100"):
-                client.lease_search(6, "subnet_id", 12, state=0, server_id=1)
+                client.lease_search(6, "subnet_id", 12, state="assigned", server_id=1)
 
         self.assertEqual(kea.commands(), ["stat-lease6-get"])
 
@@ -1432,7 +1439,7 @@ class TestLeaseSearch(TestCase):
                 "lease4-get-by-state": {"result": 0, "arguments": {"leases": [lease]}},
             }
         ) as kea:
-            result = self.client.lease_search(4, "subnet", "198.18.0.0/24", state=0, server_id=1)
+            result = self.client.lease_search(4, "subnet", "198.18.0.0/24", state="assigned", server_id=1)
 
         self.assertEqual(result.records, _typed(lease))
         self.assertEqual(
@@ -2018,6 +2025,48 @@ class TestLeaseGetPage(TestCase):
             self.client.lease_get_page(version=4, limit=10, server_id=1)
 
 
+class TestLeaseStateFilter(TestCase):
+    """KeaClient applies a Lease state filter to every query kind: in Kea for a Subnet search, else locally."""
+
+    def setUp(self):
+        self.client = kea_client(url="http://kea:8000")
+
+    def test_a_search_that_kea_cannot_filter_keeps_only_leases_in_the_state(self):
+        assigned = lease_record("198.18.0.10", hostname="host")
+        declined = lease_record("198.18.0.11", hostname="host", state=1)
+        with stub_kea({"lease4-get-by-hostname": lease_reply(assigned, declined)}) as kea:
+            snapshot = self.client.lease_search(4, "hostname", "host", state="declined", server_id=1)
+
+        self.assertEqual(snapshot.records, _typed(declined))
+        self.assertEqual((snapshot.query.state, snapshot.complete), ("declined", True))
+        self.assertEqual(kea.bodies("lease4-get-by-hostname")[0]["arguments"], {"hostname": "host"})
+
+    def test_an_exact_address_search_keeps_only_a_lease_in_the_state(self):
+        lease = lease_record("198.18.0.10")
+        with stub_kea({"lease4-get": {"result": 0, "arguments": lease}}):
+            declined = self.client.lease_search(4, "ip", "198.18.0.10", state="declined", server_id=1)
+            assigned = self.client.lease_search(4, "ip", "198.18.0.10", state="assigned", server_id=1)
+
+        self.assertEqual((declined.records, assigned.records), ((), _typed(lease)))
+
+    def test_a_filtered_page_keeps_the_continuation_of_the_raw_page(self):
+        records = [lease_record("198.18.0.10"), lease_record("198.18.0.11", state=1)]
+        with stub_kea({"lease4-get-page": lease_page(*records)}) as kea:
+            snapshot = self.client.lease_get_page(4, limit=2, state="assigned", server_id=1)
+
+        self.assertEqual(snapshot.records, _typed(records[0]))
+        self.assertEqual((snapshot.coverage, str(snapshot.next_cursor)), ("page", "198.18.0.11"))
+        self.assertEqual(kea.bodies("lease4-get-page")[0]["arguments"]["limit"], 2)
+
+    def test_a_read_of_every_lease_keeps_only_leases_in_the_state(self):
+        records = [lease_record("198.18.0.10", state=1), lease_record("198.18.0.11"), lease_record("198.18.0.12")]
+        with stub_kea({"lease4-get-page": lease_pages(records)}):
+            snapshot = self.client.lease_get_all(4, per_page=2, state="declined", server_id=1)
+
+        self.assertEqual(snapshot.records, _typed(records[0]))
+        self.assertEqual((snapshot.query.state, snapshot.coverage), ("declined", "exhaustive"))
+
+
 class TestLeaseGetAllPagination(TestCase):
     """KeaClient.lease_get_all() reads every page, accounts raw records and proves the end or reports it."""
 
@@ -2041,7 +2090,7 @@ class TestLeaseGetAllPagination(TestCase):
         snapshot, requests_sent = self._all(records, per_page=2)
 
         self.assertEqual(snapshot.records, _typed(*records))
-        self.assertTrue(snapshot.attests_absence(_identity("10.0.0.9")))
+        self.assertTrue(snapshot.complete)
         self.assertEqual([body["from"] for body in requests_sent], ["0.0.0.0", "10.0.0.2"])  # noqa: S104
 
     def test_a_page_with_zero_accepted_records_still_reaches_later_valid_data(self):
@@ -2058,7 +2107,6 @@ class TestLeaseGetAllPagination(TestCase):
         self.assertEqual([body["from"] for body in requests_sent], ["0.0.0.0", "10.0.0.2"])  # noqa: S104
         self.assertEqual(snapshot.coverage, "exhaustive")
         self.assertFalse(snapshot.complete)
-        self.assertFalse(snapshot.attests_absence(_identity("10.0.0.9")))
 
     def test_a_page_that_repeats_the_cursor_fails_the_read(self):
         page = lease_page(lease_record("198.18.0.10"))

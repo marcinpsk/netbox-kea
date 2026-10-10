@@ -137,14 +137,14 @@ class TestPerRowSyncPublishedName(_ChangeRecords):
         responses = {**_catalogue(family), "reservation-get": _res_get(_CASES[family]["reservation"])}
         with stub_kea(responses):
             response = self.client.post(f"{url}?{query}")
-        self.assertEqual(response.status_code, 200, response.content)
+        self.assertNotContains(response, "text-bg-danger")
 
     def _sync_lease(self, family: int, hostname: str | None = None) -> None:
         url = reverse(f"plugins:netbox_kea:server_lease{family}_sync", args=[self.server.pk])
         responses = {**_catalogue(family), f"lease{family}-get": {"result": 0, "arguments": _lease(family, hostname)}}
         with stub_kea(responses):
             response = self.client.post(url, {"ip_address": _CASES[family]["address"]})
-        self.assertEqual(response.status_code, 200, response.content)
+        self.assertNotContains(response, "text-bg-danger")
 
     def test_a_reservation_sync_then_a_lease_sync_records_no_name_change(self):
         for family in (4, 6):

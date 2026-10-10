@@ -754,7 +754,8 @@ def _parse_record_at(
 ) -> tuple[Reservation | None, ReservationDiagnostic | None]:
     try:
         reservation = _parse_reservation(raw, family, catalogue)
-        if expected_hostname is not None and reservation.hostname != expected_hostname:
+        # Kea matches a hostname lookup without case and returns the hostname as stored.
+        if expected_hostname is not None and reservation.hostname.lower() != expected_hostname.lower():
             raise MalformedReservation(
                 "target-mismatch",
                 "Kea returned a Reservation that does not match the requested hostname.",

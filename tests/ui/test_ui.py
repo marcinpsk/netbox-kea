@@ -1172,6 +1172,27 @@ def test_lease_deleted_before_delete(
 
 
 @pytest.mark.parametrize("family", (6, 4))
+def test_a_refused_lease_sync_shows_its_reason_in_the_row(
+    page: Page,
+    kea: KeaClient,
+    family: Literal[6, 4],
+    request: pytest.FixtureRequest,
+) -> None:
+    ip = request.getfixturevalue(f"lease{family}")["ip-address"]
+    search_lease(page, family, "IP Address", ip)
+    row = page.locator(".object-list > tbody > tr")
+    expect(row).to_have_count(1)
+    search_url = page.url
+
+    kea.command(f"lease{family}-del", family, arguments={"ip-address": ip})
+    row.get_by_role("button", name="Sync", exact=True).click()
+
+    # htmx swaps no error reply by default; the cell of the row button accepts this one.
+    expect(row.locator("span.badge.text-bg-danger")).to_have_text("Could not fetch live data from Kea.")
+    assert page.url == search_url
+
+
+@pytest.mark.parametrize("family", (6, 4))
 def test_lease_deleted_invalid_ip(
     page: Page,
     kea: KeaClient,

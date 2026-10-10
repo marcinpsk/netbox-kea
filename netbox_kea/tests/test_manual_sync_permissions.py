@@ -94,7 +94,17 @@ class _PermissionTestBase(TestCase):
         self.assertFalse(MACAddress.objects.exists())
 
 
-class TestLeaseRowSync(_PermissionTestBase):
+class _RowSyncTestBase(_PermissionTestBase):
+    """A row button swaps the refusal into its cell, so the reason comes back as a 200 error badge."""
+
+    def _assert_refused(self, response, names: str):
+        self.assertContains(response, '<span class="badge text-bg-danger')
+        self.assertContains(response, _reason(names))
+        self.assertFalse(IPAddress.objects.exists())
+        self.assertFalse(MACAddress.objects.exists())
+
+
+class TestLeaseRowSync(_RowSyncTestBase):
     """The lease row Sync claims one lease: an IP address and its MAC address."""
 
     def _post(self):
@@ -265,7 +275,7 @@ class TestLeaseAddSync(_PermissionTestBase):
         self.assertTrue(IPAddress.objects.filter(address__net_host="10.0.0.200").exists())
 
 
-class TestReservationRowSync(_PermissionTestBase):
+class TestReservationRowSync(_RowSyncTestBase):
     """The Reservation row Sync all claims each address of one Reservation and its MAC address."""
 
     def _post(self):

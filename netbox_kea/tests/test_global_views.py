@@ -56,8 +56,6 @@ from ipam.models import IPAddress
 
 from netbox_kea import constants
 from netbox_kea.models import Server
-from netbox_kea.reservations import ReservationSnapshot
-from netbox_kea.views.combined import _fetch_reservations_from_server
 
 from .kea_stub import _res_get, _res_page, _reservation_mutation_commands, complete_lease, queued, stub_kea
 from .utils import _PLUGINS_CONFIG, User, _make_db_server
@@ -417,23 +415,14 @@ class TestCombinedReservations4View(_CombinedViewBase):
             next_from=100,
             next_source=1,
         )
-        url = reverse("plugins:netbox_kea:combined_reservations4") + f"?server={self.v4_server.pk}"
+        # A search with no match on the first page reads the next one, and that read fails.
+        url = reverse("plugins:netbox_kea:combined_reservations4") + f"?server={self.v4_server.pk}&q=needle"
 
-        def fetch_full_snapshot(server, version, cursor=None, **_kwargs):
-            return _fetch_reservations_from_server(server, version, cursor, full_snapshot=True)
-
-        with (
-            patch(
-                "netbox_kea.views.combined._fetch_reservations_from_server",
-                autospec=True,
-                side_effect=fetch_full_snapshot,
-            ),
-            _reservation_stub(
-                4,
-                {
-                    "reservation-get-page": queued(first_page, requests.ConnectionError("page failed")),
-                },
-            ),
+        with _reservation_stub(
+            4,
+            {
+                "reservation-get-page": queued(first_page, requests.ConnectionError("page failed")),
+            },
         ):
             response = self.client.get(url)
 
@@ -474,17 +463,17 @@ class TestCombinedReservations4View(_CombinedViewBase):
         self.assertEqual([record["hostname"] for record in document["reservations"]], ["host-v4"])
         self.assertEqual(document["reservations"][0]["addresses"], ["10.0.0.100"])
 
-    def test_export_rejects_an_incomplete_snapshot_without_diagnostics(self):
-        snapshot = ReservationSnapshot(family=4, records=(), diagnostics=(), complete=False, next_cursor=None)
+    def test_export_rejects_an_incomplete_snapshot(self):
+        first_page = _res_page([dict(_MOCK_RESERVATION_V4)], next_from=1, next_source=1)
         url = reverse("plugins:netbox_kea:combined_reservations4")
         url += f"?server={self.v4_server.pk}&export=yaml"
 
-        with patch(
-            "netbox_kea.views.combined._fetch_reservations_from_server",
-            autospec=True,
-            return_value=snapshot,
-        ):
+        with _reservation_stub(
+            4, {"reservation-get-page": queued(first_page, requests.ConnectionError("page failed"))}
+        ) as kea:
             response = self.client.get(url)
+
+        self.assertEqual(len(kea.bodies("reservation-get-page")), 2)
 
         self.assertEqual(response.status_code, 409)
         self.assertContains(response, "Snapshot is incomplete", status_code=409)
@@ -1147,6 +1136,47 @@ class TestCombinedReservations4Enrichment(_CombinedViewBase):
             response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Synchronized 1/1")
+
+    def test_only_a_managed_address_in_the_sync_vrf_counts_as_synchronized(self):
+        from ipam.models import VRF
+
+        sync_vrf = VRF.objects.create(name="reservation-sync-vrf")
+        self.v4_server.sync_vrf = sync_vrf
+        self.v4_server.save()
+        IPAddress.objects.create(address="10.0.0.5/32", description="[kea-sync: reservation]")
+        other = VRF.objects.create(name="reservation-other-vrf")
+        IPAddress.objects.create(address="10.0.0.5/32", vrf=other, description="[kea-sync: reservation]")
+        stub = {
+            "reservation-get-page": _res_page([dict(_MOCK_RESERVATION_ENRICHED)]),
+            "lease4-get-by-state": _leases([]),
+        }
+        with _reservation_stub(4, stub):
+            response = self.client.get(self._url())
+        self.assertContains(response, "Not Synchronized 0/1")
+
+        synced = IPAddress.objects.create(address="10.0.0.5/32", vrf=sync_vrf, description="[kea-sync: reservation]")
+        with _reservation_stub(4, stub):
+            response = self.client.get(self._url())
+        self.assertContains(response, "Synchronized 1/1")
+        self.assertContains(response, f'href="{synced.get_absolute_url()}"')
+
+    def test_an_unreadable_ipam_state_is_unknown(self):
+        from django.db import DatabaseError
+
+        stub = {
+            "reservation-get-page": _res_page([dict(_MOCK_RESERVATION_ENRICHED)]),
+            "lease4-get-by-state": _leases([]),
+        }
+        with (
+            _reservation_stub(4, stub),
+            patch("netbox_kea.sync.bulk_fetch_netbox_ips", autospec=True, side_effect=DatabaseError("read failed")),
+            self.assertLogs("netbox_kea.views.reservations", level="ERROR"),
+        ):
+            response = self.client.get(self._url())
+
+        row = next(iter(response.context["table"].rows)).record
+        self.assertEqual(row["sync_state"].code, "unknown")
+        self.assertEqual(row["sync_state"].reason, "NetBox IPAM state could not be read.")
 
     def test_blank_description_row_is_not_synchronized_and_stays_unchanged(self):
         from netbox_kea.models import IPAMOwnershipLink

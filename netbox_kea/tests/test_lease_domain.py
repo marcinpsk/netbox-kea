@@ -329,15 +329,13 @@ def test_diagnostics_hold_no_rejected_value_or_exception_text():
     }
 
 
-def test_a_mixed_collection_keeps_good_siblings_and_cannot_attest_absence():
+def test_a_mixed_collection_keeps_good_siblings_and_is_incomplete():
     good = _raw(4, "192.0.2.10")
     read = _collection(4, _reply(good, {**_raw(4, "192.0.2.11"), "valid-lft": "3600"}, _raw(4, "192.0.2.13")))
     assert [str(lease.identity.address) for lease in read.records] == ["192.0.2.10", "192.0.2.13"]
     assert [(d.code, d.source_position) for d in read.diagnostics] == [("invalid-type", "leases[1]")]
     snapshot = _snapshot(read, coverage="exhaustive")
     assert not snapshot.complete
-    absent = LeaseIdentity(family=4, kind="address", address=ipaddress.ip_address("192.0.2.11"))
-    assert not snapshot.attests_absence(absent)
 
 
 def test_duplicate_identities_quarantine_every_copy():
@@ -410,28 +408,10 @@ def test_a_valid_page_is_distinct_from_exhaustive_coverage():
     read = _read_page(4, first, limit=3)
     page = _snapshot(read, coverage="page")
     assert read.diagnostics == () and not page.complete
-    assert not page.attests_absence(LeaseIdentity(family=4, kind="address", address=ipaddress.ip_address("192.0.2.99")))
     whole = _snapshot(_collection(4, _recorded(4)["lease4-get-all"]), coverage="exhaustive")
     assert whole.complete
-    assert whole.attests_absence(LeaseIdentity(family=4, kind="address", address=ipaddress.ip_address("192.0.2.99")))
-    assert not whole.attests_absence(
-        LeaseIdentity(family=4, kind="address", address=ipaddress.ip_address("192.0.2.10"))
-    )
     with pytest.raises(ValidationError):
         _snapshot(read, coverage="exhaustive")
-
-
-def test_a_filtered_query_never_attests_absence_for_the_whole_family():
-    read = _collection(4, _recorded(4)["lease4-get-all"])
-    absent = LeaseIdentity(family=4, kind="address", address=ipaddress.ip_address("192.0.2.99"))
-    for query in (
-        LeaseQuery(family=4, selector=constants.BY_SUBNET_ID, value=10),
-        LeaseQuery(family=4, selector=constants.BY_SUBNET_ID, value=10, state="assigned"),
-        LeaseQuery(family=4, selector=constants.BY_SUBNET, value="192.0.2.0/24", state="declined"),
-        LeaseQuery(family=4, selector=constants.BY_HW_ADDRESS, value="aa:bb:cc:00:00:10"),
-    ):
-        snapshot = _snapshot(read, coverage="exhaustive", query=query)
-        assert snapshot.complete and not snapshot.attests_absence(absent)
 
 
 def test_a_snapshot_requires_an_aware_read_interval_and_its_own_family():
@@ -837,8 +817,8 @@ def test_query_selectors_and_state_filters_match_lease_search():
             LeaseQuery(family=4, selector=constants.BY_SUBNET_ID, value=10, state=state)
     with pytest.raises(ValidationError):
         LeaseQuery(family=6, selector=constants.BY_HW_ADDRESS, value="aa:bb:cc:00:00:10")
-    with pytest.raises(ValidationError):
-        LeaseQuery(family=4, selector=constants.BY_IP, value="192.0.2.10", state="assigned")
+    # Kea cannot filter another query by state, so the client keeps any state there.
+    assert LeaseQuery(family=4, selector=constants.BY_IP, value="192.0.2.10", state="released").state == "released"
 
 
 def test_a_snapshot_query_belongs_to_the_snapshot_family():

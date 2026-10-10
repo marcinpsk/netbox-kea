@@ -17,12 +17,13 @@ import requests
 from requests.models import HTTPBasicAuth
 
 from . import constants
-from .constants import Family, IPAddressValue, IPNetworkValue, Persistence
+from .constants import Family, IPAddressValue, IPNetworkValue, LeaseState, Persistence
 from .decimal_text import parse_decimal
 from .dhcp_options import (
     DHCPOption,
     InvalidAddress,
     address_list,
+    address_list_data,
     form_managed_entry,
     form_managed_options,
     form_shows,
@@ -52,6 +53,7 @@ from .leases import (
     _creation_arguments,
     _edited_arguments,
     allocation_identities,
+    confirm_lease_creation,
     lease_edit_conflicts,
     lookup_arguments,
     read_exact_lease,
@@ -87,6 +89,7 @@ from .reservations import (
     reservation_identifier_types,
     reservation_matches_intent,
 )
+from .subnet_settings import setting_key
 
 logger = logging.getLogger(__name__)
 
@@ -337,7 +340,7 @@ class LeaseQueryTooBroad(LeaseQueryGuardError):
 class LeaseQueryNotMeasurable(LeaseQueryGuardError):
     """Raised when Kea cannot count a requested Subnet lease category."""
 
-    def __init__(self, state: int) -> None:
+    def __init__(self, state: LeaseState) -> None:
         self.state = state
         super().__init__(f"Kea cannot measure Subnet lease state {state} before an unpaged query.")
 
@@ -354,7 +357,7 @@ class LeaseQueryUnknownSubnet(LeaseQueryGuardError):
     """Raised when a Subnet CIDR query names no configured Subnet, so no Subnet ID scopes the read."""
 
 
-def lease_query_guard_message(exc: LeaseQueryGuardError, state: int | None) -> str:
+def lease_query_guard_message(exc: LeaseQueryGuardError, state: LeaseState | None) -> str:
     """Return safe, actionable guidance for one rejected lease query."""
     if isinstance(exc, LeaseQueryUnknownSubnet):
         # Kea can hold leases under a Subnet ID that its configuration no longer has.
@@ -456,14 +459,16 @@ def _subnet_id_value(value: Any) -> int:
 def _lease_snapshot(
     server_id: int, query: LeaseQuery, started: datetime, read: LeaseRead, coverage: LeaseCoverage
 ) -> LeaseSnapshot:
-    """Return the Snapshot of *read*, observed between *started* and now."""
+    """Return the Snapshot of *read*, observed between *started* and now, with only the Leases in the query state."""
+    # Kea already filters a Subnet query by state; this filters every other read.
+    records = tuple(record for record in read.records if query.state in (None, record.state))
     return LeaseSnapshot(
         server_id=server_id,
         family=query.family,
         query=query,
         read_started=started,
         read_finished=_now(),
-        records=read.records,
+        records=records,
         diagnostics=read.diagnostics,
         coverage=coverage,
         next_cursor=read.next_cursor,
@@ -730,26 +735,21 @@ class SubnetDefinition:
         options = subnet.get("option-data", [])
         if self.family == 4:
             options = _replace_managed_option(options, 4, "gateway", fields.gateway)
-        options = _replace_managed_option(options, self.family, "dns_servers", ", ".join(fields.dns_servers))
+        options = _replace_managed_option(options, self.family, "dns_servers", address_list_data(fields.dns_servers))
         subnet["option-data"] = _replace_managed_option(
-            options, self.family, "ntp_servers", ", ".join(fields.ntp_servers)
+            options, self.family, "ntp_servers", address_list_data(fields.ntp_servers)
         )
+        suffix_key = setting_key("ddns_qualifying_suffix")
         if fields.ddns_qualifying_suffix:
-            subnet["ddns-qualifying-suffix"] = fields.ddns_qualifying_suffix
+            subnet[suffix_key] = fields.ddns_qualifying_suffix
         else:
-            subnet.pop("ddns-qualifying-suffix", None)
+            subnet.pop(suffix_key, None)
         live_pools = self._pools_by_range(subnet.get("pools", []))
         subnet["pools"] = [{**live_pools.get(pool, {}), "pool": pool} for pool in fields.pools]
-        # A Subnet takes the *-lifetime keys; valid-lft is a lease field that Kea refuses here.
-        for key, value in (
-            ("valid-lifetime", edit.valid_lifetime),
-            ("min-valid-lifetime", edit.min_valid_lifetime),
-            ("max-valid-lifetime", edit.max_valid_lifetime),
-            ("renew-timer", edit.renew_timer),
-            ("rebind-timer", edit.rebind_timer),
-        ):
+        for field in ("valid_lifetime", "min_valid_lifetime", "max_valid_lifetime", "renew_timer", "rebind_timer"):
+            value = getattr(edit, field)
             if value is not None:
-                subnet[key] = value
+                subnet[setting_key(field)] = value
         return subnet
 
     def _pools_by_range(self, pools: list[Any]) -> dict[str, dict[str, Any]]:
@@ -855,8 +855,8 @@ class CandidateConfiguration:
         else:
             network.pop("relay", None)
         options = list(_config_entries(network, "option-data", self.service))
-        options = _replace_managed_option(options, self.family, "dns_servers", ",".join(edit.dns_servers))
-        options = _replace_managed_option(options, self.family, "ntp_servers", ",".join(edit.ntp_servers))
+        options = _replace_managed_option(options, self.family, "dns_servers", address_list_data(edit.dns_servers))
+        options = _replace_managed_option(options, self.family, "ntp_servers", address_list_data(edit.ntp_servers))
         network["option-data"] = options
 
 
@@ -1629,13 +1629,13 @@ class KeaClient:
         if fields.gateway and version == 4:
             option_data.append({"name": managed["gateway"].name, "data": fields.gateway})
         if fields.dns_servers:
-            option_data.append({"name": managed["dns_servers"].name, "data": ", ".join(fields.dns_servers)})
+            option_data.append({"name": managed["dns_servers"].name, "data": address_list_data(fields.dns_servers)})
         if fields.ntp_servers:
-            option_data.append({"name": managed["ntp_servers"].name, "data": ", ".join(fields.ntp_servers)})
+            option_data.append({"name": managed["ntp_servers"].name, "data": address_list_data(fields.ntp_servers)})
         if option_data:
             subnet["option-data"] = option_data
         if fields.ddns_qualifying_suffix:
-            subnet["ddns-qualifying-suffix"] = fields.ddns_qualifying_suffix
+            subnet[setting_key("ddns_qualifying_suffix")] = fields.ddns_qualifying_suffix
         self._config_mutation_command(SUBNET_ADD[version], version, {f"subnet{version}": [subnet]})
 
     def subnet_del(self, version: Family, subnet_id: int) -> None:
@@ -1779,9 +1779,11 @@ class KeaClient:
 
         Raises:
             KeaException: If Kea refuses the Lease, for example because the address is in use.
+            MalformedLeaseResponse: If the reply confirms no creation.
 
         """
-        self.command(LEASE_ADD[request.family], request.family, arguments=_creation_arguments(request))
+        response = self.command(LEASE_ADD[request.family], request.family, arguments=_creation_arguments(request))
+        confirm_lease_creation(response)
 
     def lease_get(self, identity: LeaseIdentity) -> ExactLeaseResult:
         """Read the one Lease with *identity*: found, confirmed absent, or a failed observation.
@@ -1866,10 +1868,12 @@ class KeaClient:
         selector: str,
         value: Any,
         *,
-        state: int | None = None,
+        state: LeaseState | None = None,
         server_id: int,
     ) -> LeaseSnapshot:
         """Return the Lease Snapshot of one supported selector; it covers the query scope, never the whole daemon.
+
+        A *state* keeps only the Leases in that state. Kea filters a Subnet query; the client filters every other one.
 
         Raises:
             ValueError: If the selector, value or state does not fit the family.
@@ -1886,13 +1890,11 @@ class KeaClient:
         }
         if version not in (4, 6):
             raise ValueError(f"version must be 4 or 6, got {version!r}")
-        if state is not None and selector not in (constants.BY_SUBNET, constants.BY_SUBNET_ID):
-            raise ValueError("state can only be combined with a Subnet ID search.")
         started = _now()
         if selector == constants.BY_IP:
-            return self._exact_lease_snapshot(version, value, started=started, server_id=server_id)
+            return self._exact_lease_snapshot(version, value, state=state, started=started, server_id=server_id)
         if selector in (constants.BY_SUBNET, constants.BY_SUBNET_ID):
-            if state is not None and (isinstance(state, bool) or state not in constants.LEASE_QUERY_STATE_CODES):
+            if state is not None and state not in constants.LEASE_QUERY_STATES:
                 raise LeaseQueryNotMeasurable(state)
             if selector == constants.BY_SUBNET:
                 if not isinstance(value, str) or not value:
@@ -1911,7 +1913,7 @@ class KeaClient:
                 raise ValueError(f"Lease selector {selector!r} is not supported for DHCPv{version}.")
             if not isinstance(value, str) or not value:
                 raise ValueError(f"{selector} must be a non-empty string.")
-            query = self._lease_query(version, selector, value, None)
+            query = self._lease_query(version, selector, value, state)
             command, arguments = spec[0][version], {spec[1]: value}
 
         response = self._lease_search_response(version, command, arguments)
@@ -1923,15 +1925,12 @@ class KeaClient:
         return _lease_snapshot(server_id, query, started, read, coverage="exhaustive")
 
     @staticmethod
-    def _lease_query(version: Family, selector: str, value: Any, state: int | None) -> LeaseQuery:
-        return LeaseQuery(
-            family=version,
-            selector=selector,
-            value=value,
-            state=None if state is None else constants.LEASE_STATES[state],
-        )
+    def _lease_query(version: Family, selector: str, value: Any, state: LeaseState | None) -> LeaseQuery:
+        return LeaseQuery(family=version, selector=selector, value=value, state=state)
 
-    def _exact_lease_snapshot(self, version: Family, value: Any, *, started: datetime, server_id: int) -> LeaseSnapshot:
+    def _exact_lease_snapshot(
+        self, version: Family, value: Any, *, state: LeaseState | None, started: datetime, server_id: int
+    ) -> LeaseSnapshot:
         """Return the Snapshot of every allocation at one address: each kind is read on its own.
 
         A malformed record is a diagnostic, so absence is complete only when Kea confirms it for every kind.
@@ -1950,7 +1949,9 @@ class KeaClient:
         read = LeaseRead(
             family=version, records=records, diagnostics=diagnostics, raw_count=raw_count, next_cursor=None
         )
-        query = LeaseQuery(family=version, selector=constants.BY_IP, value=str(ipaddress.ip_address(value)))
+        query = LeaseQuery(
+            family=version, selector=constants.BY_IP, value=str(ipaddress.ip_address(value)), state=state
+        )
         return _lease_snapshot(server_id, query, started, read, coverage="exhaustive")
 
     def _lease_search_response(
@@ -1968,13 +1969,14 @@ class KeaClient:
             raise LeaseQueryPreflightUnavailable("state-command") from exc
 
     def _subnet_lease_search_spec(
-        self, version: Family, subnet_id: int, state: int | None
+        self, version: Family, subnet_id: int, state: LeaseState | None
     ) -> tuple[KeaCommand, dict[str, Any]]:
         """Guard one Subnet lease query before selecting its command."""
+        arguments: dict[str, Any]
         if self.max_unpaged_leases is None:
             if state is None:
                 return LEASE_GET_ALL[version], {"subnets": [subnet_id]}
-            return LEASE_GET_BY_STATE[version], {"subnet-id": subnet_id, "state": state}
+            return LEASE_GET_BY_STATE[version], {"subnet-id": subnet_id, "state": constants.LEASE_STATE_CODES[state]}
 
         try:
             counts = self._subnet_lease_counts(version, subnet_id)
@@ -1987,9 +1989,9 @@ class KeaClient:
             command = LEASE_GET_ALL[version]
             arguments = {"subnets": [subnet_id]}
         else:
-            observed_leases = counts.active if state == constants.LEASE_STATE_CODES["assigned"] else counts.declined
+            observed_leases = counts.active if state == "assigned" else counts.declined
             command = LEASE_GET_BY_STATE[version]
-            arguments = {"subnet-id": subnet_id, "state": state}
+            arguments = {"subnet-id": subnet_id, "state": constants.LEASE_STATE_CODES[state]}
         if observed_leases > self.max_unpaged_leases:
             raise LeaseQueryTooBroad(observed_leases, self.max_unpaged_leases)
         return command, arguments
@@ -2046,9 +2048,12 @@ class KeaClient:
         *,
         limit: int,
         cursor: str | None = None,
+        state: LeaseState | None = None,
         server_id: int,
     ) -> LeaseSnapshot:
         """Return one validated page of every Lease of the family, after *cursor* or from the start.
+
+        A *state* keeps only the Leases in that state; the continuation still follows the last raw record.
 
         Raises:
             ValueError: If *limit* or *cursor* is not valid for the family.
@@ -2062,7 +2067,8 @@ class KeaClient:
         started = _now()
         read = self._lease_page(version, limit=limit, after=after)
         coverage: LeaseCoverage = "exhaustive" if after is None and read.next_cursor is None else "page"
-        return _lease_snapshot(server_id, LeaseQuery(family=version, selector=ALL_LEASES), started, read, coverage)
+        query = LeaseQuery(family=version, selector=ALL_LEASES, state=state)
+        return _lease_snapshot(server_id, query, started, read, coverage)
 
     def _lease_page(self, version: Family, *, limit: int, after: IPAddressValue | None) -> LeaseRead:
         """Request and read one ``lease{v}-get-page`` reply."""
@@ -2082,9 +2088,17 @@ class KeaClient:
         return read_lease_page_count(response, limit=1)
 
     def lease_get_all(
-        self, version: Family, *, per_page: int = 250, max_leases: int | None = None, server_id: int
+        self,
+        version: Family,
+        *,
+        per_page: int = 250,
+        max_leases: int | None = None,
+        state: LeaseState | None = None,
+        server_id: int,
     ) -> LeaseSnapshot:
         """Return a bounded Snapshot of every Lease of the family, read page by page.
+
+        A *state* keeps only the Leases in that state; the cap still counts raw records.
 
         Pages continue from the last raw record, so a page whose every record is excluded still continues.
         *max_leases* caps the raw records read; a Snapshot that reaches the cap before Kea proves the end
@@ -2105,7 +2119,7 @@ class KeaClient:
         ):
             raise ValueError(f"max_leases must be >= 1 (or None for no cap), got {max_leases!r}")
         started = _now()
-        records: list[Any] = []
+        records: list[Lease] = []
         diagnostics: list[LeaseDiagnostic] = []
         raw_count = 0
         cursor: IPAddressValue | None = None
@@ -2134,7 +2148,8 @@ class KeaClient:
             next_cursor=cursor,
         )
         coverage: LeaseCoverage = "exhaustive" if cursor is None else "page"
-        return _lease_snapshot(server_id, LeaseQuery(family=version, selector=ALL_LEASES), started, read, coverage)
+        query = LeaseQuery(family=version, selector=ALL_LEASES, state=state)
+        return _lease_snapshot(server_id, query, started, read, coverage)
 
     def dhcp_disable(self, family: Family, max_period: int | None = None) -> None:
         """Temporarily disable DHCP processing on the daemon of *family*.

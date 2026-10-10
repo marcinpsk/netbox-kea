@@ -12,6 +12,9 @@ SPDX-License-Identifier: Apache-2.0
 
 _Amended 2026-09-27 by ADR 0005, which gives Configuration Changes to a `config_write` module.
 `server_configuration` stays read only._
+_Amended 2026-10-09 (#313): the Presentation rule covers every Snapshot kind and lives in one function._
+_Amended 2026-10-09 (#319): `SubnetSettings` and the Kea key of each scalar field live in `subnet_settings`. No module
+re-exports `SubnetSettings`._
 
 ## Context
 
@@ -138,6 +141,23 @@ A view shows an error when a Snapshot is unavailable. It shows a warning that li
 Snapshot is incomplete but usable. `Diagnostic` gains no severity field. The `available`, `complete`,
 `identity_complete`, `configuration_complete` and `consistent` flags already carry that distinction.
 
+**Amended 2026-10-09 (#313):** one notice function in the views layer codes this rule for the Catalogue, Server
+Configuration, Reservation and Lease Snapshots. A view does not choose a level.
+
+- A Notice is a level and the typed diagnostics. Each channel formats them: Django messages on a full page, an
+  inline alert in an htmx partial, and a per-Server list on a combined page.
+- The Catalogue Snapshot and the Server Configuration Snapshot answer one predicate, `unavailable`.
+- A Reservation or Lease read raises when it fails, and it keeps raising, because the IPAM sync, the REST API and
+  the export depend on that failure. A views-layer loader turns a Kea, transport or malformed-reply failure into an
+  unavailable Notice. A refused Lease query and a `ValueError` stay outside the rule.
+- When Kea refuses a Reservation read because the `host_cmds` hook is not loaded, the Reservation page shows its
+  hook panel instead of the headline. The panel names the cause and the fix.
+- An unavailable Notice has one headline per Snapshot kind, then the diagnostics. A view writes no headline of its
+  own.
+- A Snapshot that is incomplete only because more pages remain, with no diagnostics, gives no Notice.
+- When one page reads several Snapshots of one Server, each distinct message shows once, at the level of the worst
+  Snapshot that reported it. On a combined page each Server keeps its own Notice.
+
 ### Scope
 
 The module is read only. Shared Network, DHCP Option and option definition writes stay on the existing `kea.py`
@@ -197,5 +217,9 @@ Two modules now share one `config-get` read per cache generation instead of issu
   operations give a smaller and safer interface.
 - A severity field on `Diagnostic`: rejected because the completeness flags already separate unusable from
   degraded, and every existing diagnostic site would need a judgement.
+- A `notice()` method on each Snapshot (#313): rejected because a Snapshot module would then know message
+  levels, which are presentation.
+- Reservation and Lease reads that return an unavailable Snapshot instead of raising (#313): rejected because a
+  caller that forgets the check would read a failed read as no records.
 - Model everything `mappers/kea_to_dhcp.py` needs: rejected because it is the first rejected alternative under
   another name.

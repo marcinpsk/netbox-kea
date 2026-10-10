@@ -2,8 +2,6 @@ netbox_kea/tests/isolated_settings.py:0: error: Name "DATABASES" is not defined 
 netbox_kea/sync.py:0: error: "object" has no attribute "description"  [attr-defined]
 netbox_kea/sync.py:0: error: "object" has no attribute "description"  [attr-defined]
 netbox_kea/sync.py:0: error: "object" has no attribute "description"  [attr-defined]
-netbox_kea/kea.py:0: error: Dict entry 0 has incompatible type "str": "int"; expected "str": "list[int]"  [dict-item]
-netbox_kea/kea.py:0: error: Dict entry 1 has incompatible type "str": "int"; expected "str": "list[int]"  [dict-item]
 netbox_kea/models.py:0: error: Need type annotation for "name"  [var-annotated]
 netbox_kea/models.py:0: error: Need type annotation for "ca_url"  [var-annotated]
 netbox_kea/models.py:0: error: Need type annotation for "ca_username"  [var-annotated]
@@ -65,7 +63,6 @@ netbox_kea/tables.py:0: error: Incompatible types in assignment (expression has 
 netbox_kea/tables.py:0: error: Incompatible types in assignment (expression has type "tuple[str, str, str, str, str, str]", base class "Meta" defined the type as "tuple[str, str, str, str, str]")  [assignment]
 netbox_kea/tables.py:0: error: Incompatible types in assignment (expression has type "tuple[str, str, str, str, str, str]", base class "Meta" defined the type as "tuple[str, str, str, str, str]")  [assignment]
 netbox_kea/tests/test_kea_stub.py:0: note: By default the bodies of untyped functions are not checked, consider using --check-untyped-defs  [annotation-unchecked]
-netbox_kea/tests/test_reservation_sync_semantics.py:0: note: By default the bodies of untyped functions are not checked, consider using --check-untyped-defs  [annotation-unchecked]
 netbox_kea/forms.py:0: error: Signature of "render" incompatible with supertype "django.forms.widgets.Widget"  [override]
 netbox_kea/forms.py:0: note: Superclass:
 netbox_kea/forms.py:0: note: def render(self, name: str, value: Any, attrs: dict[str, Any] | None = ..., renderer: BaseRenderer | None = ...) -> SafeString

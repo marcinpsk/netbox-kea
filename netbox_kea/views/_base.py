@@ -18,10 +18,10 @@ from netbox.tables import BaseTable
 
 from ..config_write import ConfigChangeOutcome, ConfigChangeRejected, RejectionReason
 from ..constants import Family
-from ..dhcp_options import DHCPOption
+from ..dhcp_options import shown_options
 from ..kea import KeaException
 from ..models import Server
-from ..server_configuration import Diagnostic, SharedNetwork
+from ..server_configuration import SharedNetwork
 from ..subnet_catalogue import ConfiguredSubnet, VerifiedSubnet
 
 try:
@@ -125,25 +125,6 @@ def _run_config_change(
     return outcome
 
 
-def _option_payload(option: DHCPOption) -> dict[str, Any]:
-    """Serialize a catalogue option for existing option display formatting."""
-    return {
-        "data": option.data,
-        **{
-            key: value
-            for key, value in (
-                ("code", option.code),
-                ("name", option.name),
-                ("space", option.space),
-                ("csv-format", option.csv_format),
-                ("always-send", option.always_send),
-                ("never-send", option.never_send),
-            )
-            if value is not None
-        },
-    }
-
-
 def _catalogue_subnet_row(
     subnet: VerifiedSubnet | ConfiguredSubnet,
     server: Server,
@@ -151,8 +132,6 @@ def _catalogue_subnet_row(
     can_change: bool,
 ) -> dict[str, Any]:
     """Build one Subnet table row from typed catalogue facts."""
-    from ..utilities import format_option_data
-
     identity = subnet.identity if isinstance(subnet, VerifiedSubnet) else subnet.candidate_identity
     configuration = subnet.configuration
     row = {
@@ -167,10 +146,7 @@ def _catalogue_subnet_row(
         "can_change": can_change and isinstance(subnet, VerifiedSubnet),
         "can_edit_options": can_change and isinstance(subnet, VerifiedSubnet) and configuration is not None,
         "ddns_qualifying_suffix": configuration.settings.ddns_qualifying_suffix if configuration else None,
-        "options": format_option_data(
-            [_option_payload(option) for option in configuration.options] if configuration else [],
-            version=version,
-        ),
+        "options": shown_options(configuration.options, version) if configuration else {},
         "pools": [pool.range for pool in configuration.pools] if configuration else [],
     }
     if subnet.shared_network is not None:
@@ -210,12 +186,6 @@ def _shared_network_row(
     if include_server_name:
         row["server_name"] = server.name
     return row
-
-
-def _diagnostic_messages(request: HttpRequest, diagnostics: tuple[Diagnostic, ...], level: int) -> None:
-    """Show each distinct Snapshot diagnostic at its presentation level."""
-    for message in dict.fromkeys(diagnostic.message for diagnostic in diagnostics):
-        messages.add_message(request, level, message)
 
 
 def _enrich_subnet_statistics(rows: list[dict[str, Any]], server: Server, version: Family) -> None:

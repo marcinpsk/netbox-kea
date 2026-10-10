@@ -13,12 +13,13 @@ import io
 import json
 import re
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import urlencode
 
 import requests
+from django.contrib import messages as django_messages
 from django.contrib.messages import get_messages
 from django.test import override_settings
 from django.urls import reverse
@@ -125,13 +126,9 @@ class LeaseBrowsingTest(_ViewTestBase):
         self.assertEqual(
             [row.record["ip_address"] for row in response.context["table"].rows], ["192.0.2.10", "192.0.2.13"]
         )
-        self.assertEqual(
-            response.context["lease_diagnostics"],
-            [
-                "leases[1] (ip-address): The lease address is not valid.",
-                "leases[2] (state): A lease field has the wrong type.",
-            ],
-        )
+        self.assertContains(response, "<li>leases[1] (ip-address): The lease address is not valid.</li>", html=True)
+        self.assertContains(response, "<li>leases[2] (state): A lease field has the wrong type.</li>", html=True)
+        self.assertEqual(response.context["lease_notice"].level, django_messages.WARNING)
         self.assertContains(response, "2 lease records that could not be read")
         self.assertNotContains(response, "private-state-value")
         self.assertNotContains(response, "not-an-address")
@@ -179,6 +176,26 @@ class LeaseBrowsingTest(_ViewTestBase):
         self.assertTrue(rows["address"].get("sync_url"))
         # Sync claims a delegated prefix as a Prefix.
         self.assertEqual(rows["delegated-prefix"].get("sync_url"), rows["address"]["sync_url"])
+
+    def test_the_sync_offer_uses_the_evaluation_time_of_the_observation(self):
+        class _TwoHoursLater(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return datetime.now(tz) + timedelta(hours=2)
+
+        responses = {
+            **_catalogue_responses_for_subnets(4, _SUBNETS4),
+            "lease4-get-all": lease_reply(lease_record("192.0.2.10", subnet_id=10, valid_lft=3600)),
+            "reservation-get": {"result": 3},
+        }
+        # mock-ok: the clock is the boundary; only the view module reads it later than the observation.
+        with stub_kea(responses), patch("netbox_kea.views.leases.datetime", _TwoHoursLater):
+            response = self.client.get(self._url(4), {"by": "subnet_id", "q": "10"}, HTTP_HX_REQUEST="true")
+
+        (row,) = (row.record for row in response.context["table"].rows)
+        self.assertEqual(row["state_label"], "Active")
+        self.assertEqual(row["expiry_class"], "")
+        self.assertTrue(row.get("sync_url"))
 
     def test_only_an_address_lease_row_links_its_netbox_ip_address(self):
         # NetBox holds an IP Address at the network address of the prefix, which is not the delegated prefix.
@@ -474,9 +491,11 @@ class CombinedLeaseViewTest(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["errors"], [])
         self.assertEqual([row["ip_address"] for row in response.context["table"].data], ["192.0.2.10"])
-        self.assertEqual(
-            response.context["incomplete_servers"],
-            [(self.server.name, "1 record(s) could not be read: The lease address is not valid.")],
+        self.assertEqual(response.context["warnings"], [])
+        self.assertContains(
+            response,
+            f"<li><strong>{self.server.name}</strong>: 1 record(s) could not be read: The lease address is not valid.</li>",
+            html=True,
         )
 
 

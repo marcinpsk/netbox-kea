@@ -1,10 +1,10 @@
 # SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
 import logging
+from dataclasses import dataclass
 from typing import Any
 
 import requests
-from django.contrib import messages
 from django.http.request import HttpRequest
 from django.urls import reverse
 from netbox.views import generic
@@ -13,6 +13,7 @@ from utilities.views import ViewTab, register_model_view
 
 from .. import forms, server_configuration, tables
 from ..constants import Family
+from ..dhcp_options import DHCPOption, option_name
 from ..filtersets import ServerFilterSet
 from ..kea import KeaClient, KeaCommand, KeaException, KeaResponse
 from ..models import Server
@@ -20,7 +21,7 @@ from ..server_connection import connection_values, validate_connection_change
 from ..utilities import (
     format_duration,
 )
-from ._base import _diagnostic_messages, _option_payload
+from .notices import Notice, notice, show_notices
 
 logger = logging.getLogger(__name__)
 
@@ -46,43 +47,42 @@ def _status_duration(arguments: dict[str, Any], field: str) -> str:
     return formatted
 
 
-def _get_global_options(request: HttpRequest, server: "Server") -> dict[str, dict[str, str]]:
-    """Return formatted global DHCP Options for each enabled DHCP version.
+@dataclass(frozen=True)
+class GlobalOptionRow:
+    """One server-global DHCP Option entry of the status page, with the name that the page shows for it."""
 
-    Any per-service failure is logged and skipped so the status page always
-    renders.
+    name: str | None
+    option: DHCPOption
 
-    Args:
-        request: The request that receives the snapshot diagnostics as messages.
-        server: The Kea :class:`Server` to query.
 
-    Returns:
-        A ``{"DHCPv4": {field_name: value}, "DHCPv6": {...}}`` dict containing
-        only the versions that returned valid options.
+def _get_global_options(request: HttpRequest, server: "Server") -> dict[str, list[GlobalOptionRow]]:
+    """Return one row per server-global DHCP Option entry for each enabled DHCP version that has entries.
 
+    A failed read is logged and skipped, so the status page always renders. The snapshot diagnostics go to the
+    request as messages.
     """
-    from ..utilities import format_option_data
-
     families: dict[str, Family] = {}
     if server.dhcp4:
         families["DHCPv4"] = 4
     if server.dhcp6:
         families["DHCPv6"] = 6
 
-    result: dict[str, dict[str, str]] = {}
+    result: dict[str, list[GlobalOptionRow]] = {}
+    notices: list[Notice | None] = []
     for label, version in families.items():
         snapshot = server_configuration.display(server, version)
-        diagnostics = "; ".join(diagnostic.message for diagnostic in snapshot.diagnostics)
-        _diagnostic_messages(request, snapshot.diagnostics, messages.WARNING if snapshot.available else messages.ERROR)
-        if not snapshot.available:
-            logger.warning("Global DHCP Options are unavailable for %s: %s", label, diagnostics)
+        notices.append(found := notice(snapshot))
+        reasons = "; ".join(found.lines) if found is not None else ""
+        if snapshot.unavailable:
+            logger.warning("Global DHCP Options are unavailable for %s: %s", label, reasons)
             continue
         if not snapshot.global_options_complete:
-            logger.warning("Global DHCP Options are incomplete for %s: %s", label, diagnostics)
-        opts = format_option_data([_option_payload(option) for option in snapshot.global_options], version=version)
-        if opts:
-            # Convert snake_case keys to "Title Case" for display
-            result[label] = {k.replace("_", " ").title(): v for k, v in opts.items()}
+            logger.warning("Global DHCP Options are incomplete for %s: %s", label, reasons)
+        if snapshot.global_options:
+            result[label] = [
+                GlobalOptionRow(option_name(option, version), option) for option in snapshot.global_options
+            ]
+    show_notices(request, *notices)
     return result
 
 

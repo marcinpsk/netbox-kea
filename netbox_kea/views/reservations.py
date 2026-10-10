@@ -23,7 +23,7 @@ from netbox.views import generic
 from utilities.views import register_model_view
 
 from .. import constants, forms, tables
-from ..constants import Family
+from ..constants import Family, LeaseState
 from ..ipam_reconciliation import RESERVATION, ReservationPhase, claim_permissions, reconcile_permissions
 from ..kea import KeaClient, KeaException, LeaseQueryGuardError
 from ..leases import LeaseSnapshot
@@ -46,11 +46,13 @@ from ..subnet_catalogue import VerifiedSubnet
 from ..subnet_catalogue import display as subnet_catalogue
 from ..sync_permissions import SyncGate, sync_gate
 from ..utilities import OptionalViewTab
+from .notices import HEADLINES, Notice, load_snapshot, notice
 
 logger = logging.getLogger(__name__)
 
 _RESERVATION_PAGE_SIZE = 100
 _RESERVATION_SEARCH_PAGE_LIMIT = 5
+_MUTATION_UNCONFIRMED = "Live Reservation mutation capabilities could not be confirmed."
 
 
 def _build_reservation_options_formset(post_data: Any) -> tuple[Any, bool]:
@@ -106,7 +108,7 @@ def _current_lease_facts(snapshot: LeaseSnapshot) -> _CurrentLeaseFacts:
 def _lease_facts_in_subnet(client: KeaClient, version: Family, subnet_id: int, server_id: int) -> Any:
     """Observe the Current Leases in one Subnet, or report why they could not be read."""
     # DHCPv6 registered leases are current too, and only an unfiltered Subnet query returns them.
-    state = constants.LEASE_STATE_CODES["assigned"] if version == 4 else None
+    state: LeaseState | None = "assigned" if version == 4 else None
     with client.clone() as worker_client:
         try:
             snapshot = worker_client.lease_search(
@@ -243,19 +245,6 @@ def _lease_search_url(
     return f"{base}?{urlencode({'by': selector, 'q': value})}"
 
 
-def _filter_reservations(
-    reservations: list[dict[str, Any]],
-    q: str,
-    subnet_id: int | None,
-    version: Family,
-    scope: str = "",
-) -> list[dict[str, Any]]:
-    """Filter normalized typed Reservation rows in memory."""
-    if version not in (4, 6):
-        raise ValueError("Reservation family must be 4 or 6.")
-    return [row for row in reservations if _reservation_matches(row["reservation"], q, subnet_id, scope)]
-
-
 def _reservation_matches(reservation: Reservation, q: str, subnet_id: int | None, scope: str) -> bool:
     """Apply the same substring, Subnet, and Scope predicates before presentation."""
     in_subnet = isinstance(reservation.scope, InSubnetReservationScope)
@@ -315,20 +304,50 @@ def _reservation_table_record(reservation: Reservation, server: Server) -> dict[
     return record
 
 
+@dataclass(frozen=True)
+class ReservationQuery:
+    """What one Reservation read asks of a Server.
+
+    It reads the page after *cursor* that matches *q*, *subnet_id* and *scope*, or with *full* the complete
+    Snapshot for a transfer. With *mutations* it also reads the live mutation capabilities, for a user who can
+    change the Server.
+    """
+
+    cursor: str | None = None
+    q: str = ""
+    subnet_id: int | None = None
+    scope: str = ""
+    full: bool = False
+    mutations: bool = False
+
+    @property
+    def filtered(self) -> bool:
+        """Return whether the query searches for matches instead of browsing every Reservation."""
+        return bool(self.q or self.subnet_id is not None or self.scope)
+
+
+@dataclass(frozen=True)
+class ReservationRead:
+    """The Reservation read of one Server: its Snapshot or the Notice of a failed read, and its capabilities."""
+
+    query: ReservationQuery
+    loaded: ReservationSnapshot | Notice
+    #: ``None`` when the query did not ask for them or Kea could not confirm them.
+    capabilities: ReservationCapabilities | None
+
+
 def _empty_reservation_snapshot(version: Family) -> ReservationSnapshot:
     return ReservationSnapshot(family=version, records=(), diagnostics=(), complete=False, next_cursor=None)
 
 
-def _fetch_reservation_page(
-    server: Server,
-    version: Family,
-    cursor: str | None,
-    *,
-    q: str = "",
-    subnet_id: int | None = None,
-    scope: str = "",
-) -> ReservationSnapshot:
-    """Return a browse page or scan a bounded batch until a filtered page matches."""
+def _read_reservations(server: Server, version: Family, query: ReservationQuery) -> ReservationSnapshot:
+    """Read the complete Snapshot, a browse page, or scan a bounded batch until a filtered page matches."""
+    q, subnet_id, scope, cursor = query.q, query.subnet_id, query.scope, query.cursor
+    if query.full:
+        catalogue = subnet_catalogue(server, version)
+        return server.get_client(version=version).reservation_snapshot(
+            version, catalogue, page_size=_RESERVATION_PAGE_SIZE
+        )
     if subnet_id is not None and subnet_id > 0 and scope == "global":
         return replace(_empty_reservation_snapshot(version), complete=True)
     catalogue = subnet_catalogue(server, version)
@@ -342,7 +361,7 @@ def _fetch_reservation_page(
             return replace(_empty_reservation_snapshot(version), complete=True)
         read_subnet_id = None
     client = server.get_client(version=version)
-    if not q and subnet_id is None and not scope:
+    if not query.filtered:
         return client.reservation_page(version, catalogue, cursor=cursor, limit=_RESERVATION_PAGE_SIZE)
     diagnostics = []
     complete = True
@@ -392,12 +411,6 @@ def _fetch_reservation_page(
     return replace(page, records=matches, diagnostics=tuple(diagnostics), complete=complete)
 
 
-def _fetch_reservation_snapshot(server: Server, version: Family) -> ReservationSnapshot:
-    catalogue = subnet_catalogue(server, version)
-    client = server.get_client(version=version)
-    return client.reservation_snapshot(version, catalogue, page_size=_RESERVATION_PAGE_SIZE)
-
-
 def _configured_capabilities(server: Server, version: Family) -> ReservationCapabilities | None:
     """Return confirmed live mutation capabilities without affecting read-only display."""
     try:
@@ -406,6 +419,86 @@ def _configured_capabilities(server: Server, version: Family) -> ReservationCapa
     except (KeaException, requests.RequestException, RuntimeError, ValueError):
         logger.exception("Could not read DHCPv%s Reservation capabilities from %s", version, server.name)
         return None
+
+
+def fetch(server: Server, family: Family, query: ReservationQuery) -> ReservationRead:
+    """Read the Reservations of *query* from Kea, and the mutation capabilities when it asks.
+
+    It is safe in a worker thread. A Kea, transport or reply failure of the Reservation read is its Notice. Such a
+    failure of the capability read leaves the capabilities unconfirmed and never hides the Reservations.
+
+    Raises:
+        ValueError: If the Server configuration or the query is not valid.
+
+    """
+    loaded = load_snapshot(server, "reservation", lambda: _read_reservations(server, family, query))
+    capabilities = None
+    # A second read of a Server that did not answer would only add its timeout.
+    unreachable = isinstance(loaded, Notice) and loaded.unreachable
+    if query.mutations and not unreachable:
+        capabilities = _configured_capabilities(server, family)
+    return ReservationRead(query, loaded, capabilities)
+
+
+@dataclass(frozen=True)
+class PresentedReservations:
+    """The Reservation rows of one Server for one user, and what the page shows about them."""
+
+    rows: list[dict[str, Any]]
+    #: The Notice of a failed read, else the Notice of the Snapshot.
+    notice: Notice | None
+    #: ``None`` when the read failed.
+    snapshot: ReservationSnapshot | None
+    can_mutate: bool
+    #: Why a user who can change the Server cannot change its Reservations; empty otherwise.
+    mutation_unavailable_reason: str
+
+    @property
+    def next_cursor(self) -> str | None:
+        """Return the cursor of the next page, or ``None`` when no page remains or the read failed."""
+        return None if self.snapshot is None else self.snapshot.next_cursor
+
+    @property
+    def partial(self) -> bool:
+        """Return whether a match can be missing: the read failed, was incomplete, or more pages remain."""
+        return self.snapshot is None or not self.snapshot.complete or self.snapshot.next_cursor is not None
+
+
+def present(user: Any, server: Server, read: ReservationRead, *, return_url: str) -> PresentedReservations:
+    """Present one Server's Reservation read to *user*. It reads the ORM, so it must run in the main thread.
+
+    Each row gets its badges and, when the mutation capabilities allow, the edit and delete URLs that return to
+    *return_url*.
+    """
+    snapshot: ReservationSnapshot | None
+    read_notice: Notice | None
+    if isinstance(read.loaded, Notice):
+        snapshot, read_notice = None, read.loaded
+    else:
+        snapshot, read_notice = read.loaded, notice(read.loaded)
+    rows = [] if snapshot is None else [_reservation_table_record(record, server) for record in snapshot.records]
+    capabilities = read.capabilities
+    can_mutate = capabilities is not None and capabilities.mutation_available
+    reason = ""
+    if read.query.mutations and not can_mutate:
+        reason = (capabilities.explanation if capabilities is not None else "") or _MUTATION_UNCONFIRMED
+    if snapshot is not None and rows:
+        _enrich_reservations_with_badges(
+            rows, server, snapshot.family, sync=sync_gate(user, claim_permissions(RESERVATION))
+        )
+        _attach_reservation_action_urls(rows, server.pk, snapshot.family, can_change=can_mutate, return_url=return_url)
+    return PresentedReservations(
+        rows=rows,
+        notice=read_notice,
+        snapshot=snapshot,
+        can_mutate=can_mutate,
+        mutation_unavailable_reason=reason,
+    )
+
+
+def empty_text(filtered: bool, partial: bool) -> str | None:
+    """Return the empty table text of a filtered search that could miss a match, else ``None`` for the default."""
+    return "No matches in this search batch." if filtered and partial else None
 
 
 def _next_reservation_page_url(request: HttpRequest, cursor: str | None) -> str | None:
@@ -466,7 +559,7 @@ def _enrich_reservations_with_badges(
 
     addresses = [str(address) for row in reservations for address in row["reservation"].addresses]
     try:
-        netbox_ips = bulk_fetch_netbox_ips(addresses)
+        netbox_ips = bulk_fetch_netbox_ips(addresses, vrf_id=server.sync_vrf_id)
         synchronized = frozenset(address for address, ip in netbox_ips.items() if is_kea_managed_ip(ip))
     except DatabaseError:
         logger.exception("Could not read NetBox IPAM state for Reservation badges")
@@ -481,7 +574,8 @@ def _enrich_reservations_with_badges(
                 "NetBox IPAM state could not be read.",
             )
         else:
-            state = reservation_synchronization_state(reservation, synchronized)
+            # Without the IPAM state only a Reservation that is not applicable reaches here; it reads no address.
+            state = reservation_synchronization_state(reservation, synchronized or frozenset())
         row["sync_state"] = state
         matched = [
             netbox_ips[str(address)]
@@ -518,80 +612,44 @@ def _reservation_list_context(
     version: Family,
 ) -> dict[str, Any]:
     """Fetch and present one bounded typed Reservation page."""
-    hook_available = True
     search_form = forms.ReservationSearchForm(request.GET or None)
     filters = search_form.cleaned_data if search_form.is_valid() else {}
-    snapshot = _empty_reservation_snapshot(version)
-    try:
-        snapshot = _fetch_reservation_page(server, version, request.GET.get("cursor"), **filters)
-    except KeaException as exc:
-        if exc.unsupported_command:
-            hook_available = False
-        else:
-            logger.exception("Failed to fetch DHCPv%s Reservations", version)
-            messages.error(request, "Failed to load Reservations from Kea.")
-    except (requests.RequestException, RuntimeError, ValueError):
-        logger.exception("Unexpected error fetching DHCPv%s Reservations", version)
-        messages.error(request, "Failed to load Reservations from Kea.")
-
-    reservations = [_reservation_table_record(record, server) for record in snapshot.records]
-    if search_form.is_valid():
-        reservations = _filter_reservations(
-            reservations,
-            q=search_form.cleaned_data.get("q", ""),
-            subnet_id=search_form.cleaned_data.get("subnet_id"),
-            version=version,
-            scope=search_form.cleaned_data.get("scope", ""),
-        )
     can_change = Server.objects.restrict(request.user, "change").filter(pk=server.pk).exists()
-    capabilities = _configured_capabilities(server, version) if can_change else None
-    can_mutate = bool(can_change and capabilities and capabilities.mutation_available)
-    mutation_unavailable = can_change and not can_mutate
-    mutation_unavailable_reason = ""
-    if mutation_unavailable:
-        mutation_unavailable_reason = (
-            capabilities.explanation
-            if capabilities is not None and capabilities.explanation
-            else "Live Reservation mutation capabilities could not be confirmed."
-        )
-    sync = sync_gate(request.user, claim_permissions(RESERVATION))
+    query = ReservationQuery(cursor=request.GET.get("cursor"), mutations=can_change, **filters)
+    try:
+        read = fetch(server, version, query)
+    except ValueError:
+        logger.exception("Unexpected error fetching DHCPv%s Reservations", version)
+        messages.error(request, HEADLINES["reservation"])
+        read = ReservationRead(query, _empty_reservation_snapshot(version), capabilities=None)
+    presented = present(request.user, server, read, return_url=request.get_full_path())
+    # A missing host_cmds hook has its own panel, so one cause shows one banner.
+    hook_available = not (presented.notice is not None and presented.notice.unsupported_command)
     bulk_sync = sync_gate(request.user, reconcile_permissions(server, ReservationPhase.source))
-    _enrich_reservations_with_badges(reservations, server, version, sync=sync)
-    for reservation in reservations:
-        reservation["can_change"] = can_mutate and reservation["scope_kind"] == "in-subnet"
-    _attach_reservation_action_urls(
-        reservations, server.pk, version, can_change=can_mutate, return_url=request.get_full_path()
-    )
 
     table_class = tables.ReservationTable4 if version == 4 else tables.ReservationTable6
-    table = table_class(
-        reservations,
-        user=request.user,
-        empty_text="No matches in this search batch."
-        if any(filters.values()) and (snapshot.next_cursor or not snapshot.complete)
-        else None,
-    )
+    table = table_class(presented.rows, user=request.user, empty_text=empty_text(query.filtered, presented.partial))
     table.configure(request)
     return {
         "table": table,
         "dhcp_version": version,
         "hook_available": hook_available,
         "search_form": search_form,
-        "snapshot_complete": snapshot.complete,
-        "reservation_diagnostics": snapshot.diagnostics,
-        "next_page_url": _next_reservation_page_url(request, snapshot.next_cursor),
-        "mutation_unavailable": mutation_unavailable,
-        "mutation_unavailable_reason": mutation_unavailable_reason,
+        "snapshot_complete": presented.snapshot is not None and presented.snapshot.complete,
+        "reservation_notice": presented.notice if hook_available else None,
+        "next_page_url": _next_reservation_page_url(request, presented.next_cursor),
+        "mutation_unavailable": bool(presented.mutation_unavailable_reason),
+        "mutation_unavailable_reason": presented.mutation_unavailable_reason,
         "add_url": reverse(f"plugins:netbox_kea:server_reservation{version}_add", args=[server.pk])
         + f"?{urlencode({'return_url': request.get_full_path()})}"
-        if can_mutate
+        if presented.can_mutate
         else None,
         "bulk_sync_url": reverse(f"plugins:netbox_kea:server_reservation{version}_bulk_sync", args=[server.pk])
         if bulk_sync.allowed
         else None,
         "bulk_sync_refusal": bulk_sync.reason,
         "import_url": reverse(f"plugins:netbox_kea:server_reservation{version}_bulk_import", args=[server.pk])
-        if can_mutate
+        if presented.can_mutate
         else None,
     }
 
@@ -602,7 +660,7 @@ def _reservation_export_response(request: HttpRequest, server: Server, version: 
     if format_name not in ("yaml", "json"):
         raise BadRequest("Reservation export format must be YAML or JSON.")
     try:
-        snapshot = _fetch_reservation_snapshot(server, version)
+        snapshot = _read_reservations(server, version, ReservationQuery(full=True))
     except (KeaException, requests.RequestException, RuntimeError, ValueError):
         logger.exception("Could not export DHCPv%s Reservations", version)
         return HttpResponse("The Reservation Snapshot could not be exported.", status=502)

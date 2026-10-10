@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: Apache-2.0
 import copy
 import ipaddress
-from typing import Any, ClassVar, Generic, TypeVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Generic, TypeVar, cast
 
 from django import forms
 from django.core.exceptions import NON_FIELD_ERRORS, ValidationError
@@ -42,6 +42,9 @@ from .reservations import (
 from .server_connection import connection_values, validate_connection_change
 from .subnet_catalogue import VerifiedSubnet
 from .utilities import is_hex_string, parse_delegated_prefixes
+
+if TYPE_CHECKING:
+    from .views.notices import Notice
 
 
 class _AddressListField(forms.CharField):
@@ -479,8 +482,7 @@ class BaseLeasesSarchForm(forms.Form):
         *args,
         subnet_choices: tuple[tuple[str, int], ...] = (),
         subnet_cmds_available: bool = True,
-        subnet_diagnostics: tuple[str, ...] = (),
-        subnet_catalogue_unavailable: bool = False,
+        subnet_notice: "Notice | None" = None,
         **kwargs,
     ) -> None:
         """Stash the configured-subnet list so the template can build the Search combobox.
@@ -490,14 +492,12 @@ class BaseLeasesSarchForm(forms.Form):
         or *Subnet ID* — there is no separate subnet selector field.
         ``subnet_cmds_available`` is False when the hook that supplies those choices is
         not loaded, which the template reports instead of showing an empty combobox.
-        ``subnet_diagnostics`` are the Subnet Catalogue messages the template shows inline,
-        as an error when ``subnet_catalogue_unavailable`` and as a warning otherwise.
+        ``subnet_notice`` is the Notice of the Subnet Catalogue, which the template shows inline.
         """
         super().__init__(*args, **kwargs)
         self.subnet_choices = subnet_choices
         self.subnet_cmds_available = subnet_cmds_available
-        self.subnet_diagnostics = subnet_diagnostics
-        self.subnet_catalogue_unavailable = subnet_catalogue_unavailable
+        self.subnet_notice = subnet_notice
 
     def clean(self) -> dict[str, Any] | None:
         """Validate and normalise search fields according to the selected search type."""
@@ -549,9 +549,9 @@ class BaseLeasesSarchForm(forms.Form):
                 raise ValidationError({"q": "Invalid client ID."})
             cleaned_data["q"] = q.replace("-", "")
 
-        # Convert state to int or None for the view to use.
+        # The choice value is the Kea state code; the view takes the state name.
         state_str = cleaned_data.get("state", "")
-        cleaned_data["state"] = parse_decimal(state_str) if state_str != "" else None
+        cleaned_data["state"] = constants.LEASE_STATES[parse_decimal(state_str)] if state_str != "" else None
 
         page = cleaned_data["page"]
         if page:
@@ -950,53 +950,6 @@ class Reservation6Form(_SyncToNetBoxForm):
         except ValueError as exc:
             self.add_error("identifier", str(exc))
         return cleaned
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Phase 6: Global multi-server filter forms
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-class GlobalServer4FilterForm(forms.Form):
-    """Server multi-select for the global DHCPv4 views."""
-
-    server = forms.ModelMultipleChoiceField(
-        queryset=Server.objects.none(),
-        required=False,
-        label="Servers",
-        widget=forms.CheckboxSelectMultiple,
-        help_text="Leave blank to query all DHCPv4-enabled servers.",
-    )
-
-    def __init__(self, *args, **kwargs):
-        """Evaluate queryset at instantiation time, not class definition time."""
-        user = kwargs.pop("user", None)
-        super().__init__(*args, **kwargs)
-        qs = Server.objects.filter(dhcp4=True)
-        if user is not None:
-            qs = qs.restrict(user, "view")
-        self.fields["server"].queryset = qs
-
-
-class GlobalServer6FilterForm(forms.Form):
-    """Server multi-select for the global DHCPv6 views."""
-
-    server = forms.ModelMultipleChoiceField(
-        queryset=Server.objects.none(),
-        required=False,
-        label="Servers",
-        widget=forms.CheckboxSelectMultiple,
-        help_text="Leave blank to query all DHCPv6-enabled servers.",
-    )
-
-    def __init__(self, *args, **kwargs):
-        """Evaluate queryset at instantiation time, not class definition time."""
-        user = kwargs.pop("user", None)
-        super().__init__(*args, **kwargs)
-        qs = Server.objects.filter(dhcp6=True)
-        if user is not None:
-            qs = qs.restrict(user, "view")
-        self.fields["server"].queryset = qs
 
 
 # ─────────────────────────────────────────────────────────────────────────────

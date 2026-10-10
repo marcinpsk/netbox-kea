@@ -55,7 +55,7 @@ class TestSubnetPickerViews(_ViewTestBase):
             for label, headers in (("page", {}), ("htmx", {"HTTP_HX_REQUEST": "true"})):
                 with self.subTest(family=family, request=label), stub_kea(responses):
                     response = self.client.get(url, {"by": "ip", "q": ""}, **headers)
-                    self.assertContains(response, 'class="alert alert-danger py-2 px-3 mb-3 small"')
+                    self.assertContains(response, 'class="alert alert-danger py-2 px-3 mb-3 small"', count=1)
                     self.assertContains(response, _DISAGREEMENT)
                     self.assertEqual(list(response.context["messages"]), [])
                     self.assertNotContains(response, f'value="{listed}"')

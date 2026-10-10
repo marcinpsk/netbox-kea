@@ -17,10 +17,10 @@
 <span class="badge text-bg-warning" title="{{ state.reason }}">Unknown</span>
 {% endif %}
 {% if record.sync_url %}
-<button type="button" hx-post="{{ record.sync_url }}" hx-target="closest td" hx-swap="innerHTML"
+<button type="button" hx-post="{{ record.sync_url }}" {% include "netbox_kea/inc/row_action_htmx.html" %}
   hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'
   class="badge text-bg-primary border-0 ms-1" style="cursor:pointer">
-  <i class="mdi mdi-sync"></i> Sync all</button>
+  <i class="mdi mdi-sync" aria-hidden="true"></i> Sync all</button>
 {% elif record.sync_refusal %}
 {% include "netbox_kea/inc/sync_refused.html" with reason=record.sync_refusal label="Sync all" icon="mdi-sync" button_class="badge text-bg-primary border-0 ms-1 opacity-50" %}
 {% endif %}

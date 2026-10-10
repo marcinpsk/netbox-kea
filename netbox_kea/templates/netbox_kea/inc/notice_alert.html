@@ -1,0 +1,7 @@
+{# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com> #}
+{# SPDX-License-Identifier: Apache-2.0 #}
+{# One inline alert for a Snapshot Notice: the headline, then each distinct message. NetBox lays out an alert as a flex row, so one block holds both. #}
+<div class="alert alert-{{ notice.css }} py-2 px-3 mb-3 small" role="alert"><div>
+  {% if notice.headline %}<strong>{{ notice.headline }}</strong>{% endif %}
+  {% if notice.reasons %}<ul class="mb-0{% if notice.headline %} mt-1{% endif %}">{% for line in notice.lines %}{% if line != notice.headline %}<li>{{ line }}</li>{% endif %}{% endfor %}</ul>{% endif %}
+</div></div>
