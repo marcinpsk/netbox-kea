@@ -13,6 +13,184 @@ forked, and predate its conventional-commit history.
 
 <!-- version list -->
 
+## v3.0.0 (2026-10-10)
+
+### Bug Fixes
+
+- A lease does not rewrite the MAC description of a reserved host
+  ([`35c2241`](https://github.com/marcinpsk/netbox-kea/commit/35c22419abfc904f3f1babd4e258f6b523d56635))
+
+- Check a created Lease against its request and show a Reservation of the other kind
+  ([`cb91d86`](https://github.com/marcinpsk/netbox-kea/commit/cb91d86e82515a7b3eddffb97766415dc42398f1))
+
+- Fail only the claim rows of a Reservation without a known published name
+  ([`9f17762`](https://github.com/marcinpsk/netbox-kea/commit/9f177623bc19f47b7e5c840b11fb8e1c931f4e80))
+
+- Import an addressless Reservation without a known published name
+  ([`5fc1584`](https://github.com/marcinpsk/netbox-kea/commit/5fc1584b1d60c72b5126658ac914d083e9623b82))
+
+- Keep proxy values out of the setup script trace
+  ([`83ba776`](https://github.com/marcinpsk/netbox-kea/commit/83ba776e93b514f613d51f47565eb15ec901965b))
+
+- Keep Reservation claims free of Kea reads
+  ([`eb6af05`](https://github.com/marcinpsk/netbox-kea/commit/eb6af05c4b48c118e5bfa830a1d77ccfed512466))
+
+- Lock the legacy IP during repair and gate lease Sync on its IPAM permissions
+  ([`76dcaba`](https://github.com/marcinpsk/netbox-kea/commit/76dcaba615f7be3fa35d5006b85d12e19bbe2652))
+
+- Name every source of the qualifying suffix in the Reservation hostname help
+  ([`3ba83c8`](https://github.com/marcinpsk/netbox-kea/commit/3ba83c83d482bcbadba2520fdf80572fef95060f))
+
+- Name the changed lease facts as a list with "and"
+  ([`156626b`](https://github.com/marcinpsk/netbox-kea/commit/156626b5479e646097321c58ec9e2cb6b3caacce))
+
+- Name the file line of a lease CSV row in import errors
+  ([`e5e21a3`](https://github.com/marcinpsk/netbox-kea/commit/e5e21a37f65ca953c0e46c93c7315ad69a120c04))
+
+- Open the edit form of an addressless Reservation under a Pool suffix
+  ([`1eb3cff`](https://github.com/marcinpsk/netbox-kea/commit/1eb3cfffd541de73efb3408277e24a342d8f1f55))
+
+- Open the Reservation edit form when the DDNS suffix is unknown
+  ([`8cd906b`](https://github.com/marcinpsk/netbox-kea/commit/8cd906b40fd26c34a99380e21ec012dba825d1d6))
+
+- Prefill the published name of a lease in its Reserve link
+  ([`487579d`](https://github.com/marcinpsk/netbox-kea/commit/487579d81a7a8062734dc3c224d918dfb516d6eb))
+
+- Refuse a DHCP plugin import without unconstrained DHCP plugin grants
+  ([`8404997`](https://github.com/marcinpsk/netbox-kea/commit/84049978023714797fdd10b4c588cda737c2919f))
+
+- Reject two statistics rows for one Subnet
+  ([`9da05b2`](https://github.com/marcinpsk/netbox-kea/commit/9da05b220f79f671190d3047e99e5e2171a8fd50))
+
+- Select the Leases tab on the lease import page and show a full example file
+  ([`aa2c909`](https://github.com/marcinpsk/netbox-kea/commit/aa2c90978e2d1aea38491349f7066d269729fd02))
+
+- Show an unknown qualifying suffix on the hostname field
+  ([`496d19a`](https://github.com/marcinpsk/netbox-kea/commit/496d19a7760bffedd897718ec05d8f2814c93327))
+
+- Sync the published name from both the lease and the Reservation source
+  ([`a72ff57`](https://github.com/marcinpsk/netbox-kea/commit/a72ff57681deb8a8664c7e90904669a88a25a9b9))
+
+- Take a Pool DDNS qualifying suffix from the Pool of the address
+  ([`4559ecb`](https://github.com/marcinpsk/netbox-kea/commit/4559ecbebeebf13217a5b63aa8018aee76396d8a))
+
+- Warn when Kea refuses the Subnet utilization read
+  ([`2d6b5ce`](https://github.com/marcinpsk/netbox-kea/commit/2d6b5ce4ae0fe180ad92e89474afd0cf8822269b))
+
+- **jobs**: Write the traceback of an unhandled server error to the worker log
+  ([`6923b58`](https://github.com/marcinpsk/netbox-kea/commit/6923b584ace271ddc4a600feb301c8a2177a960a))
+
+- **leases**: Compare the hostname of a created lease without case
+  ([`ab653a7`](https://github.com/marcinpsk/netbox-kea/commit/ab653a72c63d4d1985bbd0c818ef9cc5ca8c293d))
+
+- **sync**: Classify the legacy link of a delegated prefix that is not current
+  ([`eb771ed`](https://github.com/marcinpsk/netbox-kea/commit/eb771ed91b64917e88f091604858a69155464dbf))
+
+### Build System
+
+- **deps**: Bump pydantic from 2.12.5 to 2.13.5
+  ([`b65ec3e`](https://github.com/marcinpsk/netbox-kea/commit/b65ec3e46e18ad9261668d24324bb16837ce9baf))
+
+- **deps-dev**: Bump ruff from 0.16.9 to 0.16.10
+  ([`4ad2d8a`](https://github.com/marcinpsk/netbox-kea/commit/4ad2d8ae4b9d8c9972b960b10b8c845d38473572))
+
+- **deps-dev**: Bump types-requests
+  ([`80caee0`](https://github.com/marcinpsk/netbox-kea/commit/80caee07f13dd3372bddb0feb556f5190fc816ae))
+
+### Chores
+
+- Guard the sync against a hostname that is not the published name
+  ([`31ceb88`](https://github.com/marcinpsk/netbox-kea/commit/31ceb8870ee99e3231e64300a8853ce30c9daaaa))
+
+- Match only a reported hostname in kea-sync-hostname-unpublished
+  ([`b51ccb0`](https://github.com/marcinpsk/netbox-kea/commit/b51ccb0cce4f8724ac6ca2cb34cd489c69c0848c))
+
+- **templates**: Remove the orphan dashboard and global templates
+  ([`3faf8f9`](https://github.com/marcinpsk/netbox-kea/commit/3faf8f9d089885fdc28851d5b99d2c86cbb93ff1))
+
+### Documentation
+
+- Describe the Lease action, creation and signal contract
+  ([`4362b52`](https://github.com/marcinpsk/netbox-kea/commit/4362b52689f472fd495f59654614f83483daa4c5))
+
+- Describe the published name of a Reservation hostname
+  ([`bd09763`](https://github.com/marcinpsk/netbox-kea/commit/bd097634a8dc66ff5c11a4217ff2bba374079aee))
+
+- **context**: Name the Lease hostname as the lease source's IPAM name
+  ([`923d2ab`](https://github.com/marcinpsk/netbox-kea/commit/923d2abc69fb51fdc69d7f0e763acf66459bd910))
+
+- **ipam**: Say why a Global Reservation falls through to its link reports
+  ([`0d4865f`](https://github.com/marcinpsk/netbox-kea/commit/0d4865f72df8d6c01e14e23a7adb3a2c2aef0abd))
+
+### Features
+
+- Add one owner for the name that Kea publishes for a reserved hostname
+  ([`814a8c2`](https://github.com/marcinpsk/netbox-kea/commit/814a8c287c452e65e829007c9c1867e771c91c34))
+
+- Check a fresh read before a Lease edit or delete, and create Leases from typed requests
+  ([`52ce99b`](https://github.com/marcinpsk/netbox-kea/commit/52ce99be8c9648658b2e3121d5a18aaf5150aa68))
+
+- Preview the published name in the Reservation form
+  ([`666a4d2`](https://github.com/marcinpsk/netbox-kea/commit/666a4d21e0ad8e6781ff16a05ec15eea586aa8da))
+
+- Reconcile live delegated-prefix Lease ownership safely
+  ([`14448c9`](https://github.com/marcinpsk/netbox-kea/commit/14448c97800d5f6ab310433ea14cdbae93da2ce6))
+
+- Reserve a delegated-prefix Lease as a Reservation prefix
+  ([`bd748bc`](https://github.com/marcinpsk/netbox-kea/commit/bd748bcd8258647c00c270e20fe64643e061feea))
+
+- Resolve the effective DDNS qualifying suffix of each Subnet
+  ([`5779002`](https://github.com/marcinpsk/netbox-kea/commit/5779002e70fc29d3e5ff5eb4a000e49f767e16c1))
+
+- Take the published name in the Reservation add and edit forms
+  ([`e3ac265`](https://github.com/marcinpsk/netbox-kea/commit/e3ac2652430960d4621acd21f31396f6d10e77c8))
+
+### Performance Improvements
+
+- **sync**: Skip the lease link classification when no link is unclassified
+  ([`e265d5d`](https://github.com/marcinpsk/netbox-kea/commit/e265d5d1f9675a0e99abb0be36b928522ec172ce))
+
+### Refactoring
+
+- Address the review notes on the published-name change
+  ([`738ba9e`](https://github.com/marcinpsk/netbox-kea/commit/738ba9e71f6f7be66ab6bd69b76d9403aad2c46e))
+
+- Require the catalogue for a Reservation claim
+  ([`cc1e491`](https://github.com/marcinpsk/netbox-kea/commit/cc1e49116297e558a12ff9dc5df05fed22cfefe0))
+
+### Testing
+
+- Check that each sortable htmx table sits inside its container
+  ([`3901123`](https://github.com/marcinpsk/netbox-kea/commit/3901123d9ffff1a2c1eb6bc38ecda52f0e4f6d72))
+
+- Pass the verifying catalogue to the Reservation sync state claims
+  ([`3aed9d0`](https://github.com/marcinpsk/netbox-kea/commit/3aed9d00cbd424659dc25804357116bc8d3704fe))
+
+- Post a hardware address so the lease journal error tests reach the journal
+  ([`3120413`](https://github.com/marcinpsk/netbox-kea/commit/312041379d26e7409cbddf24b6133485d6b31932))
+
+- Record the lease edit and delete replies of a real Kea 3.2
+  ([`095a7ba`](https://github.com/marcinpsk/netbox-kea/commit/095a7bab76a554e7a704543e7251678178cd15b8))
+
+- **ipam**: Keep a legacy-marked Prefix in a DNS view syncable
+  ([`05d0639`](https://github.com/marcinpsk/netbox-kea/commit/05d0639b6e8a7fbd37f655739c694e8a8f79bfea))
+
+- **jobs**: Move the unhandled server error test next to the DNS view regression
+  ([`ca32c6c`](https://github.com/marcinpsk/netbox-kea/commit/ca32c6c1a062775ef7251fa3a4808f83da9ce821))
+
+- **stub**: Derive the transaction time of a lease add from its expire
+  ([`32c255b`](https://github.com/marcinpsk/netbox-kea/commit/32c255bd900f9c34a058f2b7f5f0f53fa72aad27))
+
+### Breaking Changes
+
+- The lease_added signal sends creation (the LeaseRequest that Kea confirmed) and lease (the Lease
+  that the read back observed, or None), instead of ip_address, hw_address and hostname. The
+  leases_deleted signal sends leases (the Lease values whose deletion Kea confirmed) instead of
+  ip_addresses. A refused, changed or failed action sends no signal. The DHCPv4 lease CSV import
+  requires the hw-address column, and the import result shows the row number and the address of each
+  failed row instead of the raw row.
+
+
 ## v2.0.0 (2026-10-08)
 
 ### Bug Fixes

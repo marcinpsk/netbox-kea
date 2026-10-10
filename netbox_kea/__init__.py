@@ -8,7 +8,7 @@ from netbox.plugins import PluginConfig
 from . import branching
 from .plugin_settings import DEFAULT_SETTINGS, validate_settings
 
-__version__ = "2.0.0"
+__version__ = "3.0.0"
 
 
 class NetBoxKeaConfig(PluginConfig):
