@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 [project]
 name = "netbox-kea-ng"
-version = "3.0.0"
+version = "3.1.0"
 description = "NetBox plugin for the Kea DHCP server (fork of netbox-kea)"
 readme = "README.md"
 requires-python = ">=3.10"
