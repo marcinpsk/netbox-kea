@@ -352,17 +352,7 @@ class SubnetTable(GenericTable):
     options = tables.TemplateColumn(
         verbose_name="Options",
         orderable=False,
-        template_code="""{% with opts=record.options %}
-{% if opts or record.ddns_qualifying_suffix %}
-<span>
-{% if opts.gateway %}<span title="Gateway">GW: {{ opts.gateway }}</span>{% endif %}
-{% if opts.dns_servers %} <span data-bs-toggle="tooltip" title="DNS: {{ opts.dns_servers }}">
-  <abbr>DNS{% if opts.domain_name %}: {{ opts.domain_name }}{% endif %}</abbr>
-</span>{% endif %}
-{% if opts.ntp_servers %} <span data-bs-toggle="tooltip" title="NTP">NTP: {{ opts.ntp_servers }}</span>{% endif %}
-{% if record.ddns_qualifying_suffix %} <span data-bs-toggle="tooltip" title="DDNS qualifying suffix: {{ record.ddns_qualifying_suffix }}">DDNS: {{ record.ddns_qualifying_suffix }}</span>{% endif %}
-</span>
-{% endif %}{% endwith %}""",
+        template_name="netbox_kea/inc/subnet_options_cell.html",
     )
     actions = ActionsColumn(SUBNET_ACTIONS)
 
@@ -410,7 +400,6 @@ class BaseLeaseTable(GenericTable):
     reserved = tables.TemplateColumn(
         verbose_name="Reserved",
         orderable=False,
-        exclude_from_export=True,
         template_code=(
             "{% if record.is_reserved %}"
             "{% if record.can_change_reservation and record.reservation_url %}"
@@ -475,7 +464,6 @@ class BaseLeaseTable(GenericTable):
     netbox_ip = tables.TemplateColumn(
         verbose_name="NetBox IP",
         orderable=False,
-        exclude_from_export=True,
         template_code=(
             "{% if record.netbox_ip_url %}"
             '<a href="{{ record.netbox_ip_url }}" class="badge text-bg-success text-decoration-none">'
@@ -564,7 +552,7 @@ class LeaseDeleteTable(GenericTable):
 # (``views.reservations._attach_reservation_action_urls``) rather than reversed here.
 # A reservation that reserves no address has no address-keyed URL, and ``{% url %}``
 # with an empty ``ip_address`` raised NoReverseMatch, taking the whole table down
-# (issue #110). ``can_change`` is already folded into the precomputed values.
+# (issue #110). A URL is set only when the user can change the Reservation.
 RESERVATION_ACTIONS = """
 {% if record.edit_url or record.delete_url %}
 <span class="btn-group">

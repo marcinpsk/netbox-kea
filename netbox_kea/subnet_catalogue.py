@@ -24,11 +24,10 @@ from .server_configuration import (
     Pool,
     ServerConfigurationSnapshot,
     SubnetConfiguration,
-    SubnetSettings,
     invalidate,
 )
 
-__all__ = ["Diagnostic", "Pool", "SubnetConfiguration", "SubnetSettings", "invalidate"]
+__all__ = ["Diagnostic", "Pool", "SubnetConfiguration", "invalidate"]
 
 logger = logging.getLogger(__name__)
 

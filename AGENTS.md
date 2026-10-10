@@ -165,6 +165,7 @@ URL request
       options.py        (global and per-subnet DHCP option editing)
       dhcp_control.py   (enable/disable DHCP daemons)
       combined.py       (cross-server dashboard, leases, reservations, subnets)
+      fan_out.py        (the per-Server read pool of combined Subnets, Shared Networks, Reservations)
       sync_views.py     (per-server IPAM sync UI)
       sync_jobs.py      (jobs tab, periodic sync management, SyncConfig admin)
   → config_write.py     (Configuration Changes: typed outcome, advisory lock, persist step)
@@ -429,7 +430,8 @@ resort, reserved for true external boundaries you cannot run locally.
   production code for Kea command names, hyphenated payload keys, and family-suffixed
   configuration keys or service names. String templates (f-strings, `.format`, `%`, `+`)
   count when they can build a wire literal. Wire owners are `kea.py`, `server_configuration.py`,
-  `subnet_catalogue.py`, `reservations.py`, `dhcp_options.py`, and `leases.py`, relative to `netbox_kea/`.
+  `subnet_catalogue.py`, `reservations.py`, `dhcp_options.py`, `leases.py`, and `subnet_settings.py`, relative to
+  `netbox_kea/`.
   The checker excludes these exact modules, tests, and migrations. The transport stub
   `tests/kea_stub.py` may also use wire literals to model Kea responses.
   It also checks `arguments` when code uses it as a raw payload key. Prefer typed domain
@@ -507,8 +509,8 @@ resort, reserved for true external boundaries you cannot run locally.
   (opengrep `kea-raw-atomic`). At the top level of a tracked request, on a NetBox release whose `event_tracking` nests (`event_scope._nested_tracking`), it is a unit, whose events
   dispatch after its COMMIT or not at all. Put `except event_scope.EventDispatchError: raise` before a broad
   `except`. Read `docs/design/savepoint-event-queue.md` (sections 22 and 24) before you change it.
-- **Kea option aliases**: DNS options can be `domain-name-servers` or `dns-servers`;
-  NTP can be `ntp-servers` or `sntp-servers`. Search both alias tuples.
+- **Kea option names per family**: DNS is `domain-name-servers` (v4) or `dns-servers` (v6), and NTP is
+  `ntp-servers` (v4) or `sntp-servers` (v6). `dhcp_options._FORM_MANAGED_OPTIONS` maps each form field to them.
 - **Forms**: lease search forms inherit `BaseLeasesSarchForm` (the typo is
   intentional/existing); inner `Meta.ip_version` drives validation. The Subnet and
   Shared Network forms clean in the field class (`_AddressListField` for `dns_servers`,
@@ -517,6 +519,9 @@ resort, reserved for true external boundaries you cannot run locally.
   `_ShownValuesForm` and names its managed fields once, in `shown_names`.
   `dhcp_options.form_managed_entry` picks the one DHCP Option entry that a form field
   manages, for the display and for the save. Two fitting entries refuse the form.
+  The Subnet table column uses the same rule (`dhcp_options.shown_options`) and shows a badge for two fitting
+  entries. Option codes come from the Kea standard option table in `dhcp_options`, and the Subnet Settings keys
+  from `subnet_settings.SETTING_KEYS`.
 - **API URL naming**: the serializer's `HyperlinkedIdentityField` uses
   `view_name="plugins-api:netbox_kea-api:server-detail"` — `plugins-api:` prefix and
   `-api:` namespace suffix are NetBox conventions.

@@ -1013,7 +1013,7 @@ rules:
       views/notices.py, and show the Notice through show_notices(), a template or ServerNotices. A view
       that picks a level by hand codes the rule again, and the copies drift.
       Exempt: the Configuration Change outcome in _run_config_change(), the Reservation search that
-      builds its Snapshot in _fetch_reservation_page(), the lease export refusal in
+      builds its Snapshot in _read_reservations(), the lease export refusal in
       _incomplete_export_message(), and a function that parses a Reservation Transfer Document.
       Limits: an alias (a messages constant imported by name, or the diagnostics of a variable passed
       to a helper outside views/) and templates are not seen. A messages.error() or messages.warning()
@@ -1039,7 +1039,7 @@ rules:
               ...
       # It builds the Reservation search Snapshot from its pages; the caller loads it through load_snapshot().
       - pattern-not-inside: |
-          def _fetch_reservation_page(...):
+          def _read_reservations(...):
               ...
       # A complete export refuses an incomplete Lease Snapshot; the message names the excluded records.
       - pattern-not-inside: |
@@ -1089,10 +1089,8 @@ rules:
           - pattern: $CLIENT.lease_search(...)
           - pattern: $CLIENT.lease_get_page(...)
           - pattern: $CLIENT.lease_get_all(...)
-          - pattern: _fetch_reservation_page(...)
-          - pattern: _fetch_reservation_snapshot(...)
-          - pattern: $VIEW.get_leases(...)
-          - pattern: $VIEW.get_leases_page(...)
+          - pattern: _read_reservations(...)
+          - pattern: _read_leases(...)
           - patterns:
               - pattern: $EXECUTOR.submit($READ, ...)
               - metavariable-pattern:
@@ -1100,9 +1098,6 @@ rules:
                   pattern-either:
                     - pattern: subnet_catalogue.display
                     - pattern: server_configuration.display
-                    - pattern: _fetch_reservations_from_server
-                    - pattern: _fetch_leases_from_server
-                    - pattern: _fetch_all_leases_from_server
       - pattern-not-inside: |
           def $FUNC(...):
               ...
@@ -1113,31 +1108,16 @@ rules:
               ...
               <... load_snapshot(...) ...>
               ...
-      # Read helpers: each caller runs them through load_snapshot(), or the DHCP plugin import reads them.
+      # Read helpers: each caller runs them through load_snapshot(), or an export refuses a failed read.
       - pattern-not-inside: |
-          def _fetch_reservation_page(...):
+          def _read_reservations(...):
               ...
       - pattern-not-inside: |
-          def _fetch_reservation_snapshot(...):
-              ...
-      - pattern-not-inside: |
-          def get_leases(...):
-              ...
-      - pattern-not-inside: |
-          def get_leases_page(...):
-              ...
-      - pattern-not-inside: |
-          def _fetch_reservations_from_server(...):
-              ...
-      - pattern-not-inside: |
-          def _fetch_leases_from_server(...):
-              ...
-      - pattern-not-inside: |
-          def _fetch_all_leases_from_server(...):
+          def _read_leases(...):
               ...
       # The DHCP plugin import reads the Reservation Snapshot to synchronize it, not to show it.
       - pattern-not-inside: |
-          def run_dhcp_plugin_import(...):
+          def _read_reservation_observation(...):
               ...
       # Exports refuse a failed or incomplete read; they show no Snapshot.
       - pattern-not-inside: |

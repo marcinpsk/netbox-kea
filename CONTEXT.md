@@ -137,8 +137,9 @@ An Incomplete Catalogue Snapshot that has validated configuration facts but lack
 _Avoid_: Identity fallback
 
 **Option Definition**:
-A declaration that gives a custom DHCP Option its code, name, option space, and data type. It defines an option.
-It does not assign a value.
+A declaration that gives a DHCP Option its code, name, option space, and data type. A standard definition is built
+into Kea for the default DHCPv4 or DHCPv6 space. A custom definition comes from `option-def` in the Server
+Configuration. It defines an option. It does not assign a value.
 _Avoid_: option-def, custom option
 
 **Server Configuration**:

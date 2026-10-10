@@ -84,8 +84,8 @@ def _fetch_config_intent(server: Server, version: Family):
         return intent
 
 
-def _fetch_reservation_snapshot(server: Server, version: Family):
-    """Return a typed Reservation Snapshot, possibly incomplete, or ``None`` after a read failure."""
+def _read_reservation_observation(server: Server, version: Family):
+    """Return the Reservation observation of the import, possibly incomplete, or ``None`` after a read failure."""
     from ..ipam_reconciliation import ReservationObservation
     from ..models import next_confirmation_number
     from ..subnet_catalogue import for_synchronization
@@ -145,7 +145,7 @@ def run_dhcp_plugin_import(server: Server) -> list[tuple[Family, dhcp_plugin.Imp
         intent = _fetch_config_intent(server, version)
         if intent is None:
             continue
-        snapshot = _fetch_reservation_snapshot(server, version)
+        snapshot = _read_reservation_observation(server, version)
         results.append((version, dhcp_plugin.import_server_config(server, intent, snapshot)))
     complete_import_observation(server, {family: summary.ownership for family, summary in results})
     return results

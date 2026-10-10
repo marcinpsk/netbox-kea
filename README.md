@@ -134,8 +134,9 @@ NetBox plugin for the [Kea DHCP](https://www.isc.org/kea/) server. Manage your D
   complete; otherwise it shows *Lease Unknown* with the reason.
 - The lease REST actions (`/api/plugins/kea/servers/<pk>/leases4/` and `leases6/`) take one filter:
   `ip_address`, `hw_address` (DHCPv4), `duid` (DHCPv6), `hostname` or `subnet_id`. When a request
-  gives more than one, the first in that order is used. `state` narrows a `subnet_id` search to the
-  Kea state code `0` (assigned) or `1` (declined).
+  gives more than one, the first in that order is used. `state` keeps only the leases in one Kea state
+  code (`0` assigned to `4` registered) for every filter. A `subnet_id` search takes only `0` (assigned)
+  or `1` (declined), because Kea counts only those states for the query guard.
   They return one normalized observation: `count`, `results`, `diagnostics`, `complete`, `next_cursor`,
   `query` (`family`, `selector`, `value`, `state`), `coverage` (`exhaustive` or `page`) and `evaluated_at`.
   Each result has `family`, `kind` (`address` or `delegated-prefix`), `address`, `prefix_length`,

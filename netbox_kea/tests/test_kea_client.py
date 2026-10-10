@@ -64,6 +64,7 @@ from netbox_kea.tests.kea_stub import (
     lease_page,
     lease_pages,
     lease_record,
+    lease_reply,
     queued,
     record_transport,
     stub_kea,
@@ -1167,7 +1168,6 @@ class TestLeaseSearch(TestCase):
         cases = (
             (5, "ip", "198.18.0.10", None, "version must be 4 or 6"),
             (4, "subnet", "", None, "non-empty CIDR"),
-            (4, "hostname", "host.example.invalid", "assigned", "state can only"),
             (4, "hostname", "", None, "non-empty string"),
             (4, "subnet_id", True, None, "positive integer"),
             (4, "subnet_id", 1.5, None, "positive integer"),
@@ -2023,6 +2023,48 @@ class TestLeaseGetPage(TestCase):
         page = {"result": 0, "arguments": {"leases": [lease_record("198.18.0.10")], "count": 0}}
         with stub_kea({"lease4-get-page": page}), self.assertRaisesRegex(MalformedLeaseResponse, "count"):
             self.client.lease_get_page(version=4, limit=10, server_id=1)
+
+
+class TestLeaseStateFilter(TestCase):
+    """KeaClient applies a Lease state filter to every query kind: in Kea for a Subnet search, else locally."""
+
+    def setUp(self):
+        self.client = kea_client(url="http://kea:8000")
+
+    def test_a_search_that_kea_cannot_filter_keeps_only_leases_in_the_state(self):
+        assigned = lease_record("198.18.0.10", hostname="host")
+        declined = lease_record("198.18.0.11", hostname="host", state=1)
+        with stub_kea({"lease4-get-by-hostname": lease_reply(assigned, declined)}) as kea:
+            snapshot = self.client.lease_search(4, "hostname", "host", state="declined", server_id=1)
+
+        self.assertEqual(snapshot.records, _typed(declined))
+        self.assertEqual((snapshot.query.state, snapshot.complete), ("declined", True))
+        self.assertEqual(kea.bodies("lease4-get-by-hostname")[0]["arguments"], {"hostname": "host"})
+
+    def test_an_exact_address_search_keeps_only_a_lease_in_the_state(self):
+        lease = lease_record("198.18.0.10")
+        with stub_kea({"lease4-get": {"result": 0, "arguments": lease}}):
+            declined = self.client.lease_search(4, "ip", "198.18.0.10", state="declined", server_id=1)
+            assigned = self.client.lease_search(4, "ip", "198.18.0.10", state="assigned", server_id=1)
+
+        self.assertEqual((declined.records, assigned.records), ((), _typed(lease)))
+
+    def test_a_filtered_page_keeps_the_continuation_of_the_raw_page(self):
+        records = [lease_record("198.18.0.10"), lease_record("198.18.0.11", state=1)]
+        with stub_kea({"lease4-get-page": lease_page(*records)}) as kea:
+            snapshot = self.client.lease_get_page(4, limit=2, state="assigned", server_id=1)
+
+        self.assertEqual(snapshot.records, _typed(records[0]))
+        self.assertEqual((snapshot.coverage, str(snapshot.next_cursor)), ("page", "198.18.0.11"))
+        self.assertEqual(kea.bodies("lease4-get-page")[0]["arguments"]["limit"], 2)
+
+    def test_a_read_of_every_lease_keeps_only_leases_in_the_state(self):
+        records = [lease_record("198.18.0.10", state=1), lease_record("198.18.0.11"), lease_record("198.18.0.12")]
+        with stub_kea({"lease4-get-page": lease_pages(records)}):
+            snapshot = self.client.lease_get_all(4, per_page=2, state="declined", server_id=1)
+
+        self.assertEqual(snapshot.records, _typed(records[0]))
+        self.assertEqual((snapshot.query.state, snapshot.coverage), ("declined", "exhaustive"))
 
 
 class TestLeaseGetAllPagination(TestCase):

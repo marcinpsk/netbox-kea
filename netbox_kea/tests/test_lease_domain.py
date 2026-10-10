@@ -817,8 +817,8 @@ def test_query_selectors_and_state_filters_match_lease_search():
             LeaseQuery(family=4, selector=constants.BY_SUBNET_ID, value=10, state=state)
     with pytest.raises(ValidationError):
         LeaseQuery(family=6, selector=constants.BY_HW_ADDRESS, value="aa:bb:cc:00:00:10")
-    with pytest.raises(ValidationError):
-        LeaseQuery(family=4, selector=constants.BY_IP, value="192.0.2.10", state="assigned")
+    # Kea cannot filter another query by state, so the client keeps any state there.
+    assert LeaseQuery(family=4, selector=constants.BY_IP, value="192.0.2.10", state="released").state == "released"
 
 
 def test_a_snapshot_query_belongs_to_the_snapshot_family():

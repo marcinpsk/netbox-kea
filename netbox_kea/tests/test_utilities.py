@@ -17,7 +17,6 @@ from netbox_kea.tests.kea_stub import lease_record, typed_lease
 from netbox_kea.utilities import (
     check_dhcp_enabled,
     format_duration,
-    format_option_data,
     is_hex_string,
     lease_rows,
 )
@@ -207,108 +206,6 @@ class TestCheckDhcpEnabled(TestCase):
         mock_redirect.assert_called_once_with("/plugins/kea/servers/1/")
 
 
-# ---------------------------------------------------------------------------
-# format_option_data
-# ---------------------------------------------------------------------------
-
-
-class TestFormatOptionData(TestCase):
-    """Tests for format_option_data() — parses Kea option-data lists."""
-
-    def test_empty_list_returns_empty_dict(self):
-        self.assertEqual(format_option_data([], version=4), {})
-
-    def test_gateway_option3(self):
-        opts = [{"code": 3, "name": "routers", "data": "10.0.0.1", "csv-format": True}]
-        result = format_option_data(opts, version=4)
-        self.assertEqual(result["gateway"], "10.0.0.1")
-
-    def test_dns_servers_option6(self):
-        opts = [{"code": 6, "name": "domain-name-servers", "data": "1.1.1.1, 8.8.8.8"}]
-        result = format_option_data(opts, version=4)
-        self.assertEqual(result["dns_servers"], "1.1.1.1, 8.8.8.8")
-
-    def test_domain_name_option15(self):
-        opts = [{"code": 15, "name": "domain-name", "data": "example.com"}]
-        result = format_option_data(opts, version=4)
-        self.assertEqual(result["domain_name"], "example.com")
-
-    def test_ntp_servers_option42(self):
-        opts = [{"code": 42, "name": "ntp-servers", "data": "192.168.1.123"}]
-        result = format_option_data(opts, version=4)
-        self.assertEqual(result["ntp_servers"], "192.168.1.123")
-
-    def test_domain_search_option119(self):
-        opts = [{"code": 119, "name": "domain-search", "data": "example.com, corp.local"}]
-        result = format_option_data(opts, version=4)
-        self.assertEqual(result["domain_search"], "example.com, corp.local")
-
-    def test_v6_dns_option23(self):
-        opts = [{"code": 23, "name": "dns-servers", "data": "2001:db8::1", "space": "dhcp6"}]
-        result = format_option_data(opts, version=6)
-        self.assertEqual(result["dns_servers"], "2001:db8::1")
-
-    def test_v6_sntp_option31(self):
-        opts = [{"code": 31, "name": "sntp-servers", "data": "2001:db8::ntp", "space": "dhcp6"}]
-        result = format_option_data(opts, version=6)
-        self.assertEqual(result["ntp_servers"], "2001:db8::ntp")
-
-    def test_unknown_code_uses_option_name(self):
-        opts = [{"code": 99, "name": "some-custom-option", "data": "foo"}]
-        result = format_option_data(opts, version=4)
-        self.assertIn("some_custom_option", result)
-        self.assertEqual(result["some_custom_option"], "foo")
-
-    def test_unknown_code_without_name_uses_code(self):
-        opts = [{"code": 99, "data": "foo"}]
-        result = format_option_data(opts, version=4)
-        self.assertIn("option_99", result)
-
-    def test_multiple_options_all_present(self):
-        opts = [
-            {"code": 3, "name": "routers", "data": "10.0.0.1"},
-            {"code": 6, "name": "domain-name-servers", "data": "8.8.8.8"},
-            {"code": 15, "name": "domain-name", "data": "example.com"},
-        ]
-        result = format_option_data(opts, version=4)
-        self.assertEqual(len(result), 3)
-        self.assertIn("gateway", result)
-        self.assertIn("dns_servers", result)
-        self.assertIn("domain_name", result)
-
-    def test_option_name_dash_to_underscore(self):
-        """Names with dashes must be converted to underscores for template access."""
-        opts = [{"code": 44, "name": "netbios-name-servers", "data": "192.168.1.1"}]
-        result = format_option_data(opts, version=4)
-        self.assertIn("netbios_name_servers", result)
-        self.assertNotIn("netbios-name-servers", result)
-
-    def test_v4_code23_not_dns_servers(self):
-        """Code 23 in v4 context (IP-TTL) should not be treated as dns_servers."""
-        opts = [{"code": 23, "name": "default-ip-ttl", "data": "64"}]
-        result = format_option_data(opts, version=4)
-        # Falls back to name-based lookup — not the v6 dns_servers mapping
-        self.assertNotIn("dns_servers", result)
-        self.assertIn("default_ip_ttl", result)
-
-    def test_v6_code23_is_dns_servers(self):
-        """Code 23 in v6 context is the standard DNS server option."""
-        opts = [{"code": 23, "data": "2001:db8::1"}]
-        result = format_option_data(opts, version=6)
-        self.assertIn("dns_servers", result)
-
-    def test_v4_code6_is_dns_servers(self):
-        """Code 6 in v4 context is DNS servers (standard DHCPv4)."""
-        opts = [{"code": 6, "data": "8.8.8.8"}]
-        result = format_option_data(opts, version=4)
-        self.assertIn("dns_servers", result)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# kea_error_hint()
-# ─────────────────────────────────────────────────────────────────────────────
-
-
 class TestKeaErrorHint(TestCase):
     """Tests for kea_error_hint() — maps KeaException result codes to user hints."""
 
@@ -387,6 +284,9 @@ class TestKeaErrorHint(TestCase):
         for code in (0, 1, 2, 3, 128, 999):
             result = kea_error_hint(self._make_exc(code))
             self.assertIsInstance(result, str)
+
+
+# ---------------------------------------------------------------------------
 
 
 # ---------------------------------------------------------------------------

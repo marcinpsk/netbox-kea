@@ -8,9 +8,11 @@ import re
 
 from django.test import SimpleTestCase
 
-from netbox_kea.constants import (
+from netbox_kea.dhcp_options import (
+    _SHOWN_OPTIONS,
     KEA_DHCP4_STD_OPTIONS,
     KEA_DHCP6_STD_OPTIONS,
+    form_managed_options,
     kea_std_options,
 )
 
@@ -45,5 +47,22 @@ class TestStdOptionLists(SimpleTestCase):
     def test_dispatch_by_version(self):
         self.assertIs(kea_std_options(4), KEA_DHCP4_STD_OPTIONS)
         self.assertIs(kea_std_options(6), KEA_DHCP6_STD_OPTIONS)
-        # Anything that is not 6 falls back to the v4 list.
-        self.assertIs(kea_std_options(0), KEA_DHCP4_STD_OPTIONS)
+        with self.assertRaises(KeyError):
+            kea_std_options(0)
+
+
+class TestStandardTableCoversManagedOptions(SimpleTestCase):
+    """Each option that a form edits or the Subnet table shows takes its code from the standard table."""
+
+    def test_each_form_managed_option_has_a_standard_definition(self):
+        for version in (4, 6):
+            for option in form_managed_options(version).values():
+                with self.subTest(version=version, name=option.name):
+                    self.assertEqual(option.code, dict(kea_std_options(version)).get(option.name))
+
+    def test_each_shown_option_has_a_standard_definition(self):
+        for version, shown in _SHOWN_OPTIONS.items():
+            self.assertLessEqual(set(form_managed_options(version).values()), set(shown))
+            for option in shown:
+                with self.subTest(version=version, name=option.name):
+                    self.assertIn(option.name, dict(kea_std_options(version)))
