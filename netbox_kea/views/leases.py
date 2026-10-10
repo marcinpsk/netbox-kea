@@ -86,6 +86,7 @@ from ..utilities import (
 )
 from ._base import ConditionalLoginRequiredMixin, _KeaChangeMixin, _safe_return_url, _strip_empty_params
 from .notices import Notice, load_snapshot, notice
+from .reservations import empty_text
 
 logger = logging.getLogger(__name__)
 
@@ -288,7 +289,9 @@ def present(
     With *visible_only*, only the rows of the shown table page get badges, because each badge reads Kea.
     """
     rows = snapshot_rows(snapshot)
-    table = table_class(rows, user=request.user)
+    # A state filter keeps the raw continuation, so a batch can hold no match while more Leases remain.
+    batch_empty_text = empty_text(snapshot.query.state is not None, snapshot.next_cursor is not None)
+    table = table_class(rows, user=request.user, empty_text=batch_empty_text)
     table.configure(request)
     if visible_only:
         rows = [row.record for row in table.paginated_rows]

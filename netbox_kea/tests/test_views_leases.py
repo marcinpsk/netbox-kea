@@ -1814,6 +1814,24 @@ class TestLeaseStateFilter(_ViewTestBase):
         self.assertNotContains(response, "expired-host")
         self.assertContains(response, "declined-host")
 
+    def test_a_state_filtered_page_without_a_match_says_that_the_batch_has_none(self):
+        active_lease = _STATE_LEASES_RESP[0]["arguments"]["leases"][0]
+        for count, continues in ((1, True), (0, False)):
+            leases = [active_lease] if count else []
+            page = {"result": 0, "arguments": {"leases": leases, "count": count}} if count else {"result": 3}
+            stub = {"subnet4-list": self._SUBNETS4, "lease4-get-page": page}
+            with self.subTest(continues=continues), _lease_stub(stub):
+                response = self._htmx_get(self._url4(), {"state": "1", "per_page": "1"})
+
+                self.assertEqual(response.status_code, 200)
+                self.assertNotContains(response, "active-host")
+                self.assertEqual(response.context["next_page"] is not None, continues)
+                if continues:
+                    self.assertContains(response, "No matches in this search batch.")
+                else:
+                    self.assertNotContains(response, "No matches in this search batch.")
+                    self.assertContains(response, "No leases found.")
+
     def test_state_filter_any_returns_all(self):
         """Empty state filter (Any) returns all leases."""
         with _lease_stub(
