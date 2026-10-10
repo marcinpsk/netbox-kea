@@ -1084,6 +1084,7 @@ def _reservation_reports(
     for reservation in snapshot.records:
         if not isinstance(reservation.scope, InSubnetReservationScope) or not reservation.addresses:
             report.skipped_reservations.append(reservation)
+        # No `continue`: a Global Reservation still links existing rows with fact-less reports (ADR 0002).
         try:
             rows = _reservation_rows(reservation, phase.catalogue)
         except CatalogueUnavailable as exc:
