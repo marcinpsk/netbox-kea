@@ -177,7 +177,7 @@ class TestLeaseAPIFormatSuffix(_APITestBase):
         cases = (
             ({"subnet_id": "\u0661\u0662"}, "subnet_id must be an integer."),
             ({"subnet_id": " 12"}, "subnet_id must be an integer."),
-            ({"subnet_id": "12", "state": "\u0661"}, "A Subnet query supports only the Active or Declined state."),
+            ({"subnet_id": "12", "state": "\u0661"}, "state must be a Kea lease state code from 0 to 4."),
         )
         for params, message in cases:
             with self.subTest(params=params), stub_kea({}) as kea:
@@ -322,6 +322,54 @@ class TestLease4API(_APITestBase):
         with stub_kea({"lease4-get": _LEASE4_RESPONSE}) as kea:
             self.api_client.get(self._url(), {"ip_address": "10.0.0.100"})
         self.assertEqual(kea.bodies("lease4-get")[0]["service"], ["dhcp4"])
+
+
+class TestLeaseAPIState(_APITestBase):
+    """``state`` keeps only the Leases in that state, whichever filter selects the query."""
+
+    def _url(self):
+        return reverse("plugins-api:netbox_kea-api:server-leases4", args=[self.server.pk])
+
+    def test_state_filters_a_hostname_search(self):
+        declined = {**_LEASE4_RESPONSE[0]["arguments"], "ip-address": "10.0.0.101", "state": 1}
+        reply = {"result": 0, "arguments": {"leases": [_LEASE4_RESPONSE[0]["arguments"], declined]}}
+        with stub_kea({"lease4-get-by-hostname": reply}) as kea:
+            response = self.api_client.get(self._url(), {"hostname": "host.example.com", "state": "1"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([lease["address"] for lease in response.json()["results"]], ["10.0.0.101"])
+        self.assertEqual(response.json()["query"]["state"], "declined")
+        self.assertEqual(kea.bodies("lease4-get-by-hostname")[0]["arguments"], {"hostname": "host.example.com"})
+
+    def test_state_filters_the_address_search_that_an_earlier_filter_selects(self):
+        with stub_kea({"lease4-get": _LEASE4_RESPONSE}) as kea:
+            response = self.api_client.get(self._url(), {"ip_address": "10.0.0.100", "subnet_id": "1", "state": "1"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["results"], [])
+        self.assertEqual(response.json()["query"]["selector"], "ip")
+        self.assertEqual(response.json()["query"]["state"], "declined")
+        self.assertEqual(kea.commands(), ["lease4-get"])
+
+    def test_a_subnet_search_refuses_a_state_that_kea_cannot_count(self):
+        with stub_kea({}) as kea:
+            response = self.api_client.get(self._url(), {"subnet_id": "1", "state": "2"})
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.json(),
+            {"detail": "Kea cannot safely measure this lease state. Use an exact IP or client identifier search."},
+        )
+        self.assertEqual(kea.commands(), [])
+
+    def test_state_must_be_a_kea_lease_state_code(self):
+        for state in ("5", "-1", "x", " 1"):
+            with self.subTest(state=state), stub_kea({}) as kea:
+                response = self.api_client.get(self._url(), {"hostname": "host.example.com", "state": state})
+
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(response.json(), {"detail": "state must be a Kea lease state code from 0 to 4."})
+                self.assertEqual(kea.commands(), [])
 
 
 # ─────────────────────────────────────────────────────────────────────────────
