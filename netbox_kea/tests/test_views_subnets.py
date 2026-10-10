@@ -287,7 +287,6 @@ class TestSubnetEnrichment(_ViewTestBase):
         self.assertEqual(first_row["_subnet_sort_key"], expected)
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestSubnetOptionsColumn(_ViewTestBase):
     """The Options column selects each field's entry with the rule of the edit form."""
 
