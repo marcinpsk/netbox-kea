@@ -37,9 +37,9 @@ def bad_combined_page_reads_without_notices(executor, servers):
 
 
 class BadLeasesView:
-    def get(self, request, client, instance):
+    def get(self, request, client, instance, search):
         # ruleid: kea-snapshot-read-without-notice
-        return self.get_leases(client, instance, "host.example.invalid", "hostname")
+        return _read_leases(client, 4, search, instance.pk)
 
 
 class GoodSubnetsView:
@@ -51,18 +51,40 @@ class GoodSubnetsView:
             return []
         return list(snapshot.subnets)
 
-    def get(self, request, client, instance, page):
+    def get(self, request, client, instance, search):
         loaded = load_snapshot(
             instance,
             "lease",
             # ok: kea-snapshot-read-without-notice
-            lambda: self.get_leases_page(client, instance, page, per_page=50),
+            lambda: _read_leases(client, 4, search, instance.pk),
         )
         return loaded
 
-    def get_leases(self, client, server, q, by):
-        # ok: kea-snapshot-read-without-notice
-        return client.lease_search(4, by, q, server_id=server.pk)
+
+def _read_leases(client, family, search, server_id):
+    # ok: kea-snapshot-read-without-notice
+    return client.lease_search(family, search.by, search.q, server_id=server_id)
+
+
+def bad_reservation_tab_reads_without_the_loader(server, query):
+    # ruleid: kea-snapshot-read-without-notice
+    snapshot = _read_reservations(server, 4, query)
+    return snapshot.records
+
+
+def fetch(server, family, query):
+    # ok: kea-snapshot-read-without-notice
+    return load_snapshot(server, "reservation", lambda: _read_reservations(server, family, query))
+
+
+def _read_reservations(server, family, query):
+    # ok: kea-snapshot-read-without-notice
+    return server.get_client(version=family).reservation_snapshot(family, None)
+
+
+def _read_reservation_observation(client, catalogue):
+    # ok: kea-snapshot-read-without-notice
+    return client.reservation_snapshot(4, catalogue)
 
 
 def good_form_carries_the_notice(server):

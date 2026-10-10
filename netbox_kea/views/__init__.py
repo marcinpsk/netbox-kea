@@ -12,6 +12,7 @@ from . import (
     combined,
     dhcp_control,
     dhcp_plugin_sync,
+    fan_out,
     leases,
     notices,
     options,

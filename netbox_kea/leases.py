@@ -380,7 +380,7 @@ class LeaseRead(_Value):
 
 
 class LeaseQuery(_Value):
-    """The scope that one Lease observation requested from Kea."""
+    """The scope of one Lease observation: the Kea query and the state of the Leases that it keeps."""
 
     family: Family
     selector: str
@@ -399,8 +399,8 @@ class LeaseQuery(_Value):
             valid = isinstance(self.value, str) and bool(self.value)
         if not valid:
             raise ValueError("The Lease query value does not fit its selector.")
-        if self.state is not None and (self.selector not in _SUBNET_SELECTORS or self.state not in LEASE_QUERY_STATES):
-            raise ValueError("Only a Subnet query can filter by state, and only by a state that Kea can count.")
+        if self.state is not None and self.selector in _SUBNET_SELECTORS and self.state not in LEASE_QUERY_STATES:
+            raise ValueError("A Subnet query can filter only by a state that Kea can count.")
         return self
 
 

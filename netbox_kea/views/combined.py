@@ -11,61 +11,37 @@ from django.http.request import HttpRequest
 from django.shortcuts import render
 from django.views import View
 
-from .. import constants, forms, server_configuration, subnet_catalogue, tables
+from .. import forms, server_configuration, subnet_catalogue, tables
 from ..constants import Family, LeaseState
 from ..decimal_text import parse_decimal
-from ..ipam_reconciliation import RESERVATION, claim_permissions
 from ..kea import LeaseQueryGuardError, lease_query_guard_message
 from ..leases import LeaseSnapshot
 from ..models import Server
 from ..reservation_transfer import export_reservation_document
-from ..reservations import ReservationCapabilities, ReservationSnapshot
-from ..sync_permissions import sync_gate
 from ..utilities import (
     export_table,
     snapshot_rows,
 )
 from ._base import ConditionalLoginRequiredMixin, _catalogue_subnet_row, _enrich_subnet_statistics, _shared_network_row
-from .leases import _enrich_leases_with_badges, lease_sync_gates
-from .notices import HEADLINES, Notice, ServerNotices, load_snapshot, notice
-from .reservations import (
-    _attach_reservation_action_urls,
-    _configured_capabilities,
-    _enrich_reservations_with_badges,
-    _fetch_reservation_page,
-    _fetch_reservation_snapshot,
-    _filter_reservations,
-    _reservation_table_record,
-)
+from .fan_out import fan_out
+from .leases import LeaseSearch, _enrich_leases_with_badges, lease_sync_gates
+from .leases import fetch as fetch_leases
+from .notices import HEADLINES, Notice, ServerNotices, notice
+from .reservations import ReservationQuery
+from .reservations import empty_text as reservation_empty_text
+from .reservations import fetch as fetch_reservations
+from .reservations import present as present_reservations
 
 logger = logging.getLogger(__name__)
 
 
-def _fetch_leases_from_server(
-    server: Server,
-    q: Any,
-    by: str,
-    version: Family,
-    *,
-    state: LeaseState | None = None,
-) -> LeaseSnapshot:
-    """Read the leases matching *q*/*by* from one server."""
-    client = server.get_client(version=version)
-    value = str(q.cidr) if by == constants.BY_SUBNET else q
-    return client.lease_search(version, by, value, state=state, server_id=server.pk)
+#: The raw Lease records that a read of every Lease takes from each Server; reaching it gives ``page`` coverage.
+_COMBINED_MAX_LEASES = 1000
 
 
-def _fetch_all_leases_from_server(server: "Server", version: Family, max_leases: int = 1000) -> LeaseSnapshot:
-    """Read every lease on *server* up to *max_leases* raw records; reaching the cap gives ``page`` coverage."""
-    client = server.get_client(version=version)
-    return client.lease_get_all(version, max_leases=max_leases, server_id=server.pk)
-
-
-def _server_lease_rows(
-    server: Server, snapshot: LeaseSnapshot, state_filter: LeaseState | None
-) -> list[dict[str, Any]]:
+def _server_lease_rows(server: Server, snapshot: LeaseSnapshot) -> list[dict[str, Any]]:
     """Return the presentation rows of one server's Snapshot, tagged with the server."""
-    rows = snapshot_rows(snapshot, state_filter)
+    rows = snapshot_rows(snapshot)
     for row in rows:
         row["server_name"] = server.name
         row["server_pk"] = server.pk
@@ -80,9 +56,9 @@ class _CombinedLeaseRead:
     notices: ServerNotices = field(default_factory=ServerNotices)
     truncated_servers: list[str] = field(default_factory=list)
 
-    def add(self, server: Server, snapshot: LeaseSnapshot, state_filter: LeaseState | None) -> None:
+    def add(self, server: Server, snapshot: LeaseSnapshot) -> None:
         """Add the valid Leases of one server and its Notice."""
-        self.rows.extend(_server_lease_rows(server, snapshot, state_filter))
+        self.rows.extend(_server_lease_rows(server, snapshot))
         self.notices.add(server, notice(snapshot))
         if snapshot.coverage != "exhaustive":
             self.truncated_servers.append(server.name)
@@ -93,20 +69,17 @@ def _read_combined_leases(
 ) -> _CombinedLeaseRead:
     """Search each server, or read each one up to its cap for a state-only filter."""
     read = _CombinedLeaseRead()
-    subnet_search = by in (constants.BY_SUBNET, constants.BY_SUBNET_ID)
+    if q and by:
+        search = LeaseSearch(by, q, state_filter)
+    else:
+        search = LeaseSearch(state=state_filter, max_leases=_COMBINED_MAX_LEASES)
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-        if q and by:
-            state_in_kea = state_filter if subnet_search else None
-            futures = {
-                executor.submit(_fetch_leases_from_server, s, q, by, version, state=state_in_kea): s for s in servers
-            }
-        else:
-            futures = {executor.submit(_fetch_all_leases_from_server, s, version): s for s in servers}
+        futures = {executor.submit(fetch_leases, s, version, search): s for s in servers}
         for future in concurrent.futures.as_completed(futures):
             server = futures[future]
             # A refused query and a ValueError are outside the notice rule; each keeps its own message.
             try:
-                loaded = load_snapshot(server, "lease", future.result)
+                loaded = future.result()
             except LeaseQueryGuardError as exc:
                 read.notices.warnings.append((server.name, lease_query_guard_message(exc, state_filter)))
             except ValueError:
@@ -116,7 +89,7 @@ def _read_combined_leases(
                 if isinstance(loaded, Notice):
                     read.notices.add(server, loaded)
                 else:
-                    read.add(server, loaded, None if subnet_search else state_filter)
+                    read.add(server, loaded)
     return read
 
 
@@ -228,15 +201,11 @@ class _CombinedSubnetsView(_CombinedViewMixin):
         servers = self._get_servers(request, self.dhcp_version)
 
         all_subnets: list[dict[str, Any]] = []
-        notices = ServerNotices()
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-            future_to_server = {executor.submit(_fetch_subnets_from_server, s, self.dhcp_version): s for s in servers}
-            # The display read never raises: an unavailable Catalogue is a Notice.
-            for future in concurrent.futures.as_completed(future_to_server):
-                subnets, found = future.result()
-                all_subnets.extend(subnets)
-                notices.add(future_to_server[future], found)
+        read = fan_out(servers, "catalogue", lambda server: _fetch_subnets_from_server(server, self.dhcp_version))
+        notices = read.notices
+        for server, (subnets, found) in read.results:
+            all_subnets.extend(subnets)
+            notices.add(server, found)
 
         # Annotate can_change per server so subnet pool/action controls render correctly.
         writable_pks = set(
@@ -304,30 +273,27 @@ class _CombinedSharedNetworksView(_CombinedViewMixin):
         servers = self._get_servers(request, self.dhcp_version)
 
         all_networks: list[dict[str, Any]] = []
-        notices = ServerNotices()
         writable_pks = set(
             Server.objects.restrict(request.user, "change")
             .filter(pk__in=[s.pk for s in servers])
             .values_list("pk", flat=True)
         )
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-            future_to_server = {executor.submit(server_configuration.display, s, self.dhcp_version): s for s in servers}
-            # The display read never raises: an unavailable Server Configuration is a Notice with no facts.
-            for future in concurrent.futures.as_completed(future_to_server):
-                server = future_to_server[future]
-                snapshot = future.result()
-                notices.add(server, notice(snapshot))
-                all_networks.extend(
-                    _shared_network_row(
-                        network,
-                        server,
-                        self.dhcp_version,
-                        can_change=server.pk in writable_pks,
-                        include_server_name=True,
-                    )
-                    for network in snapshot.shared_networks
+        # An unavailable Server Configuration is a Snapshot with no facts and an error Notice.
+        read = fan_out(servers, "configuration", lambda server: server_configuration.display(server, self.dhcp_version))
+        notices = read.notices
+        for server, snapshot in read.results:
+            notices.add(server, notice(snapshot))
+            all_networks.extend(
+                _shared_network_row(
+                    network,
+                    server,
+                    self.dhcp_version,
+                    can_change=server.pk in writable_pks,
+                    include_server_name=True,
                 )
+                for network in snapshot.shared_networks
+            )
 
         table = tables.GlobalSharedNetworkTable(all_networks, user=request.user)
         table.configure(request)
@@ -361,60 +327,6 @@ class CombinedSharedNetworks6View(_CombinedSharedNetworksView):
     active_tab = "shared_networks6"
 
 
-def _fetch_reservations_from_server(
-    server: "Server",
-    version: Family,
-    cursor: str | None = None,
-    *,
-    full_snapshot: bool = False,
-    filters: dict[str, Any] | None = None,
-) -> ReservationSnapshot:
-    """Fetch one bounded page, or a complete typed Snapshot for transfer."""
-    if full_snapshot:
-        return _fetch_reservation_snapshot(server, version)
-    return _fetch_reservation_page(server, version, cursor, **(filters or {}))
-
-
-def _reservation_mutation_server_pks(
-    request: HttpRequest,
-    server_pks: list[int],
-    *,
-    is_export: bool,
-) -> set[int]:
-    """Return selected servers where the request can expose mutation controls."""
-    if is_export:
-        return set()
-    return set(Server.objects.restrict(request.user, "change").filter(pk__in=server_pks).values_list("pk", flat=True))
-
-
-def _reservation_capability_future(
-    executor: concurrent.futures.ThreadPoolExecutor,
-    server: Server,
-    version: Family,
-    writable_pks: set[int],
-    snapshot: ReservationSnapshot,
-) -> dict[int, concurrent.futures.Future[ReservationCapabilities | None]]:
-    """Submit one capability read when this Snapshot can expose mutation controls."""
-    if server.pk not in writable_pks or not snapshot.records:
-        return {}
-    return {server.pk: executor.submit(_configured_capabilities, server, version)}
-
-
-def _reservation_capability_results(
-    capability_futures: dict[int, concurrent.futures.Future[ReservationCapabilities | None]],
-    server_map: dict[int, Server],
-) -> dict[int, ReservationCapabilities | None]:
-    """Collect capability reads without letting one server hide the others."""
-    capabilities_by_server: dict[int, ReservationCapabilities | None] = {}
-    for server_pk, capability_future in capability_futures.items():
-        try:
-            capabilities_by_server[server_pk] = capability_future.result()
-        except Exception:  # noqa: PERF203
-            logger.exception("Failed to query Reservation capabilities from %s", server_map[server_pk].name)
-            capabilities_by_server[server_pk] = None
-    return capabilities_by_server
-
-
 class _CombinedReservationsView(_CombinedViewMixin):
     """Base view: fetch reservations from all selected servers concurrently."""
 
@@ -426,9 +338,6 @@ class _CombinedReservationsView(_CombinedViewMixin):
         ctx = self._combined_context(request)
         servers = self._get_servers(request, self.dhcp_version)
 
-        all_records: list[dict[str, Any]] = []
-        notices = ServerNotices()
-        snapshots = {}
         is_export = "export" in request.GET
         search_form = forms.ReservationSearchForm(request.GET or None)
         filters = search_form.cleaned_data if search_form.is_valid() else {}
@@ -436,57 +345,38 @@ class _CombinedReservationsView(_CombinedViewMixin):
         if is_export and export_format not in ("yaml", "json"):
             return HttpResponse("Reservation export format must be YAML or JSON.", status=400)
 
-        server_map = {server.pk: server for server in servers}
-        writable_pks = _reservation_mutation_server_pks(
-            request,
-            list(server_map),
-            is_export=is_export,
-        )
-        capability_futures: dict[int, concurrent.futures.Future[ReservationCapabilities | None]] = {}
-        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-            future_to_server = {
-                executor.submit(
-                    _fetch_reservations_from_server,
-                    server,
-                    self.dhcp_version,
-                    None if is_export else request.GET.get(f"reservation_cursor_{server.pk}"),
-                    full_snapshot=is_export,
-                    filters=filters,
-                ): server
-                for server in servers
-                if is_export or request.GET.get(f"reservation_cursor_{server.pk}") != "done"
-            }
-            for future in concurrent.futures.as_completed(future_to_server):
-                server = future_to_server[future]
-                try:
-                    loaded = load_snapshot(server, "reservation", future.result)
-                except ValueError:
-                    # A configuration or argument error is outside the notice rule.
-                    logger.exception("Failed to query server %s", server.name)
-                    notices.errors.append((server.name, HEADLINES["reservation"]))
-                    continue
-                if isinstance(loaded, Notice):
-                    notices.add(server, loaded)
-                    continue
-                snapshots[server.pk] = loaded
-                notices.add(server, notice(loaded))
-                all_records.extend(_reservation_table_record(record, server) for record in loaded.records)
-                capability_futures.update(
-                    _reservation_capability_future(executor, server, self.dhcp_version, writable_pks, loaded)
+        if is_export:
+            queries = {server.pk: ReservationQuery(full=True) for server in servers}
+        else:
+            writable_pks = set(
+                Server.objects.restrict(request.user, "change")
+                .filter(pk__in=[server.pk for server in servers])
+                .values_list("pk", flat=True)
+            )
+            queries = {
+                server.pk: ReservationQuery(
+                    cursor=request.GET.get(f"reservation_cursor_{server.pk}"),
+                    mutations=server.pk in writable_pks,
+                    **filters,
                 )
-            capabilities_by_server = _reservation_capability_results(capability_futures, server_map)
+                for server in servers
+                if request.GET.get(f"reservation_cursor_{server.pk}") != "done"
+            }
+        read = fan_out(
+            [server for server in servers if server.pk in queries],
+            "reservation",
+            lambda server: fetch_reservations(server, self.dhcp_version, queries[server.pk]),
+        )
+        notices = read.notices
 
         if is_export:
-            if notices.errors or any(not snapshot.complete for snapshot in snapshots.values()):
+            loaded = [server_read.loaded for _server, server_read in read.results]
+            snapshots = [item for item in loaded if not isinstance(item, Notice)]
+            if notices.errors or len(snapshots) < len(loaded) or any(not snapshot.complete for snapshot in snapshots):
                 return HttpResponse(
                     "The combined Reservation Snapshot is incomplete and cannot be exported.", status=409
                 )
-            records = tuple(
-                record
-                for server in servers
-                if (export_snapshot := snapshots.get(server.pk)) is not None
-                for record in export_snapshot.records
-            )
+            records = tuple(record for snapshot in snapshots for record in snapshot.records)
             content = export_reservation_document(records, export_format)
             response = HttpResponse(
                 content,
@@ -497,69 +387,37 @@ class _CombinedReservationsView(_CombinedViewMixin):
             )
             return response
 
-        # Enrich in the main thread so Django ORM queries see the test transaction.
+        # Present in the main thread so Django ORM queries see the test transaction.
+        all_records: list[dict[str, Any]] = []
         mutation_unavailable_servers: list[tuple[str, str]] = []
-        sync = sync_gate(request.user, claim_permissions(RESERVATION))
-        for server_pk, server in server_map.items():
-            server_records = [r for r in all_records if r.get("server_pk") == server_pk]
-            if server_records:
-                _enrich_reservations_with_badges(server_records, server, self.dhcp_version, sync=sync)
-                can_change = server_pk in writable_pks
-                capabilities = capabilities_by_server.get(server_pk) if can_change else None
-                can_mutate = bool(can_change and capabilities and capabilities.mutation_available)
-                if can_change and not can_mutate:
-                    reason = (
-                        capabilities.explanation
-                        if capabilities is not None and capabilities.explanation
-                        else "Live Reservation mutation capabilities could not be confirmed."
-                    )
-                    mutation_unavailable_servers.append((server.name, reason))
-                for r in server_records:
-                    r["can_change"] = can_mutate
-                # Per-server so a row can never be given another server's URL.
-                _attach_reservation_action_urls(
-                    server_records,
-                    server_pk,
-                    self.dhcp_version,
-                    can_change=can_mutate,
-                    return_url=request.get_full_path(),
-                )
-
-        if search_form.is_valid():
-            all_records = _filter_reservations(
-                all_records,
-                q=search_form.cleaned_data.get("q", ""),
-                subnet_id=search_form.cleaned_data.get("subnet_id"),
-                version=self.dhcp_version,
-                scope=search_form.cleaned_data.get("scope", ""),
-            )
+        snapshots = []
+        partial = bool(notices.errors)
+        next_query = request.GET.copy()
+        next_query.pop("page", None)
+        has_next = False
+        for server, server_read in read.results:
+            presented = present_reservations(request.user, server, server_read, return_url=request.get_full_path())
+            notices.add(server, presented.notice)
+            all_records.extend(presented.rows)
+            partial = partial or presented.partial
+            if presented.rows and presented.mutation_unavailable_reason:
+                mutation_unavailable_servers.append((server.name, presented.mutation_unavailable_reason))
+            if presented.snapshot is None:
+                continue
+            snapshots.append(presented.snapshot)
+            if presented.next_cursor is None:
+                next_query[f"reservation_cursor_{server.pk}"] = "done"
+            else:
+                next_query[f"reservation_cursor_{server.pk}"] = presented.next_cursor
+                has_next = True
 
         table_cls = tables.GlobalReservationTable4 if self.dhcp_version == 4 else tables.GlobalReservationTable6
         table = table_cls(
             all_records,
             user=request.user,
-            empty_text="No matches in this search batch."
-            if any(filters.values())
-            and (
-                notices.errors or any(snapshot.next_cursor or not snapshot.complete for snapshot in snapshots.values())
-            )
-            else None,
+            empty_text=reservation_empty_text(ReservationQuery(**filters).filtered, partial),
         )
         table.configure(request)
-
-        next_query = request.GET.copy()
-        next_query.pop("page", None)
-        has_next = False
-        for server in servers:
-            page_snapshot = snapshots.get(server.pk)
-            cursor_key = f"reservation_cursor_{server.pk}"
-            if page_snapshot is None:
-                continue
-            if page_snapshot.next_cursor is None:
-                next_query[cursor_key] = "done"
-            else:
-                next_query[cursor_key] = page_snapshot.next_cursor
-                has_next = True
 
         ctx.update(
             {
@@ -568,9 +426,9 @@ class _CombinedReservationsView(_CombinedViewMixin):
                 "errors": notices.errors,
                 "mutation_unavailable_servers": mutation_unavailable_servers,
                 "reservation_diagnostics": notices.record_diagnostics,
-                "snapshot_complete": not notices.errors and all(snapshot.complete for snapshot in snapshots.values()),
+                "snapshot_complete": not notices.errors and all(snapshot.complete for snapshot in snapshots),
                 # A failed Server read is already in the error list, so only a read Snapshot can be incomplete.
-                "snapshot_incomplete": any(not snapshot.complete for snapshot in snapshots.values()),
+                "snapshot_incomplete": any(not snapshot.complete for snapshot in snapshots),
                 "next_page_url": f"{request.path}?{next_query.urlencode()}" if has_next else None,
                 "dhcp_version": self.dhcp_version,
                 "page_title": f"DHCPv{self.dhcp_version} Reservations",

@@ -165,6 +165,7 @@ URL request
       options.py        (global and per-subnet DHCP option editing)
       dhcp_control.py   (enable/disable DHCP daemons)
       combined.py       (cross-server dashboard, leases, reservations, subnets)
+      fan_out.py        (the per-Server read pool of combined Subnets, Shared Networks, Reservations)
       sync_views.py     (per-server IPAM sync UI)
       sync_jobs.py      (jobs tab, periodic sync management, SyncConfig admin)
   → config_write.py     (Configuration Changes: typed outcome, advisory lock, persist step)

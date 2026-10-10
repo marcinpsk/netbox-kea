@@ -51,6 +51,8 @@ class Notice:
     diagnostics: tuple[Diagnostic | ReservationDiagnostic | LeaseDiagnostic, ...] = ()
     #: A raised read failed because Kea does not know the command, so its hook library is not loaded.
     unsupported_command: bool = False
+    #: A raised read failed at the transport, so Kea did not answer.
+    unreachable: bool = False
 
     @property
     def unavailable(self) -> bool:
@@ -117,8 +119,11 @@ def load_snapshot(server: Server, kind: RecordKind, read: Callable[[], RecordSna
         else:
             logger.exception("Kea refused the %s read of server %s", kind, server.pk)
         return Notice(kind, messages.ERROR, unsupported_command=exc.unsupported_command)
+    except requests.RequestException:
+        logger.exception("Failed to read %s from server %s", kind, server.pk)
+        return Notice(kind, messages.ERROR, unreachable=True)
     # MalformedReply and MalformedLeaseResponse are RuntimeErrors.
-    except (requests.RequestException, RuntimeError):
+    except RuntimeError:
         logger.exception("Failed to read %s from server %s", kind, server.pk)
         return Notice(kind, messages.ERROR)
 

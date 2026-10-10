@@ -56,8 +56,6 @@ from ipam.models import IPAddress
 
 from netbox_kea import constants
 from netbox_kea.models import Server
-from netbox_kea.reservations import ReservationSnapshot
-from netbox_kea.views.combined import _fetch_reservations_from_server
 
 from .kea_stub import _res_get, _res_page, _reservation_mutation_commands, complete_lease, queued, stub_kea
 from .utils import _PLUGINS_CONFIG, User, _make_db_server
@@ -417,23 +415,14 @@ class TestCombinedReservations4View(_CombinedViewBase):
             next_from=100,
             next_source=1,
         )
-        url = reverse("plugins:netbox_kea:combined_reservations4") + f"?server={self.v4_server.pk}"
+        # A search with no match on the first page reads the next one, and that read fails.
+        url = reverse("plugins:netbox_kea:combined_reservations4") + f"?server={self.v4_server.pk}&q=needle"
 
-        def fetch_full_snapshot(server, version, cursor=None, **_kwargs):
-            return _fetch_reservations_from_server(server, version, cursor, full_snapshot=True)
-
-        with (
-            patch(
-                "netbox_kea.views.combined._fetch_reservations_from_server",
-                autospec=True,
-                side_effect=fetch_full_snapshot,
-            ),
-            _reservation_stub(
-                4,
-                {
-                    "reservation-get-page": queued(first_page, requests.ConnectionError("page failed")),
-                },
-            ),
+        with _reservation_stub(
+            4,
+            {
+                "reservation-get-page": queued(first_page, requests.ConnectionError("page failed")),
+            },
         ):
             response = self.client.get(url)
 
@@ -474,17 +463,17 @@ class TestCombinedReservations4View(_CombinedViewBase):
         self.assertEqual([record["hostname"] for record in document["reservations"]], ["host-v4"])
         self.assertEqual(document["reservations"][0]["addresses"], ["10.0.0.100"])
 
-    def test_export_rejects_an_incomplete_snapshot_without_diagnostics(self):
-        snapshot = ReservationSnapshot(family=4, records=(), diagnostics=(), complete=False, next_cursor=None)
+    def test_export_rejects_an_incomplete_snapshot(self):
+        first_page = _res_page([dict(_MOCK_RESERVATION_V4)], next_from=1, next_source=1)
         url = reverse("plugins:netbox_kea:combined_reservations4")
         url += f"?server={self.v4_server.pk}&export=yaml"
 
-        with patch(
-            "netbox_kea.views.combined._fetch_reservations_from_server",
-            autospec=True,
-            return_value=snapshot,
-        ):
+        with _reservation_stub(
+            4, {"reservation-get-page": queued(first_page, requests.ConnectionError("page failed"))}
+        ) as kea:
             response = self.client.get(url)
+
+        self.assertEqual(len(kea.bodies("reservation-get-page")), 2)
 
         self.assertEqual(response.status_code, 409)
         self.assertContains(response, "Snapshot is incomplete", status_code=409)
