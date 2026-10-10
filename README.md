@@ -638,7 +638,7 @@ Replace `<Kea Server ID>` with your server's object ID (visible in the top-right
 
 **DHCPv4 URL**: `https://netbox.example.com/plugins/kea/servers/<Kea Server ID>/leases4/?q={{ object.mac_address }}&by=hw`
 
-Kea has no DHCPv6 lease search by MAC address: a DHCPv6 lease search takes a DUID instead.
+Kea has no DHCPv6 lease search by MAC address. To find a DHCPv6 lease by client identifier, search by DUID.
 
 ### Show DHCP leases for a device/VM (by hostname)
 
