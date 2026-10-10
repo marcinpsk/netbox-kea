@@ -15,6 +15,7 @@ from django.template.base import TextNode
 from django.template.loader_tags import BlockNode, ExtendsNode
 from django.template.utils import get_app_template_dirs
 from django.test import SimpleTestCase
+from django.urls import get_resolver
 
 import netbox_kea
 from netbox_kea.models import Server
@@ -345,3 +346,65 @@ class TestCardHeaderIconGap(SimpleTestCase):
             for icon in _card_header_icons_without_gap(text)
         )
         self.assertEqual(offenders, [], "Add me-1 to these icons, or the header shows the icon against the text")
+
+
+def _htmx_tables_outside_a_container(text: str) -> int:
+    """Return how many ``inc/table_htmx.html`` renders of *text* have no ``.htmx-container`` ancestor."""
+    from bs4 import BeautifulSoup
+
+    renders = BeautifulSoup(text, "html.parser").find_all(string=re.compile(r"inc/table_htmx\.html"))
+    return sum(render.find_parent(class_="htmx-container") is None for render in renders)
+
+
+class TestHtmxTableContainer(SimpleTestCase):
+    """NetBox's ``inc/table_htmx.html`` sorts through its header, which targets the closest ``.htmx-container``."""
+
+    def test_detector_flags_a_table_beside_a_container(self):
+        bad = (
+            '<div class="htmx-container"></div>\n<div class="card">{% render_table table "inc/table_htmx.html" %}</div>'
+        )
+        self.assertEqual(_htmx_tables_outside_a_container(bad), 1)
+
+    def test_detector_accepts_a_table_inside_a_container(self):
+        good = (
+            '<div id="search" class="card htmx-container" hx-target="#search">\n'
+            '  {% if table %}<div class="table-responsive">{% render_table table "inc/table_htmx.html" %}</div>'
+            "{% endif %}\n</div>"
+        )
+        self.assertEqual(_htmx_tables_outside_a_container(good), 0)
+
+    def test_every_htmx_table_has_a_container_for_its_sortable_header(self):
+        missing = sorted(name for name, text in _plugin_templates().items() if _htmx_tables_outside_a_container(text))
+        self.assertEqual(missing, [], "Without an .htmx-container ancestor, a click on a column header swaps nothing")
+
+
+_PLUGIN_URL_TAG = re.compile(r"\{%\s*url\s+['\"]plugins:netbox_kea:([^'\"]+)['\"]")
+
+
+def _unresolved_url_names(text: str, names: set[str]) -> list[str]:
+    return [name for name in _PLUGIN_URL_TAG.findall(text) if name not in names]
+
+
+def _plugin_url_names() -> set[str]:
+    plugin = get_resolver().namespace_dict["plugins"][1].namespace_dict["netbox_kea"][1]
+    return {key for key in plugin.reverse_dict if isinstance(key, str)}
+
+
+class TestTemplateUrlNamesResolve(SimpleTestCase):
+    """A ``{% url %}`` tag with a removed route name raises NoReverseMatch when the page renders."""
+
+    def test_detector_flags_a_removed_route_name(self):
+        text = "{% url 'plugins:netbox_kea:server_list' %} {% url \"plugins:netbox_kea:gone4\" pk %}"
+        self.assertEqual(_unresolved_url_names(text, {"server_list"}), ["gone4"])
+
+    def test_the_plugin_route_names_are_read(self):
+        self.assertIn("server_list", _plugin_url_names())
+
+    def test_every_plugin_url_tag_names_a_route(self):
+        names = _plugin_url_names()
+        missing = sorted(
+            f"{template}: {name}"
+            for template, text in _plugin_templates().items()
+            for name in _unresolved_url_names(text, names)
+        )
+        self.assertEqual(missing, [])

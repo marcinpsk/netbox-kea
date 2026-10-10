@@ -28,6 +28,7 @@ from .kea import (
     CandidateConfiguration,
     KeaCommand,
     KeaException,
+    MalformedReply,
     SharedNetworkEdit,
     SubnetDefinition,
     SubnetEdit,
@@ -41,6 +42,8 @@ from .pools import Pool, parse_pool
 from .utilities import kea_error_hint
 
 logger = logging.getLogger(__name__)
+
+_DDNS_QUALIFYING_SUFFIX = "ddns-qualifying-suffix"
 
 
 @dataclass(frozen=True)
@@ -82,6 +85,8 @@ class SubnetConfiguration:
     pools: tuple[Pool, ...]
     options: tuple[DHCPOption, ...]
     settings: SubnetSettings
+    # Each Pool that sets its own DDNS qualifying suffix; Kea applies it to an address in the Pool.
+    pool_qualifying_suffixes: tuple[tuple[Pool, str], ...]
 
 
 @dataclass(frozen=True)
@@ -108,6 +113,8 @@ class SharedNetwork:
     options: tuple[DHCPOption, ...]
     member_cidrs: tuple[str, ...]
     complete: bool
+    # None: the Shared Network does not set it, so its Subnets take the global value.
+    ddns_qualifying_suffix: str | None
 
 
 @dataclass(frozen=True)
@@ -134,6 +141,8 @@ class ServerConfigurationSnapshot:
     shared_networks: tuple[SharedNetwork, ...]
     global_options: tuple[DHCPOption, ...]
     option_definitions: tuple[OptionDefinition, ...]
+    # The global DDNS qualifying suffix; Kea's default is empty. None: not known.
+    ddns_qualifying_suffix: str | None
     diagnostics: tuple[Diagnostic, ...]
     # Diagnostics from Subnet and Shared Network facts only, without global option-data and option-def.
     subnet_diagnostics: tuple[Diagnostic, ...]
@@ -185,7 +194,7 @@ def _cache_generation(server: Server, family: Family) -> str:
 
 def _cache_key(server: Server, family: Family, generation: str | None = None) -> str:
     generation = generation or _cache_generation(server, family)
-    return f"{constants.SERVER_CONFIGURATION_CACHE_PREFIX}v1:{_require_persisted_server(server)}:{family}:snapshot:{generation}"
+    return f"{constants.SERVER_CONFIGURATION_CACHE_PREFIX}v2:{_require_persisted_server(server)}:{family}:snapshot:{generation}"
 
 
 def _require_persisted_server(server: Server) -> int:
@@ -214,6 +223,7 @@ def _unavailable(server: Server, family: Family, code: str, message: str) -> Ser
         shared_networks=(),
         global_options=(),
         option_definitions=(),
+        ddns_qualifying_suffix=None,
         diagnostics=diagnostics,
         subnet_diagnostics=diagnostics,
         configuration_hash=None,
@@ -234,6 +244,14 @@ def _read_live(server: Server, family: Family) -> ServerConfigurationSnapshot:
             "configuration-unavailable",
             f"Kea configuration facts are unavailable. {kea_error_hint(exc)}",
         )
+    except MalformedReply:
+        logger.warning("Server configuration read failed for DHCPv%s", family, exc_info=True)
+        return _unavailable(
+            server,
+            family,
+            "malformed-configuration-response",
+            "Kea returned a malformed configuration response.",
+        )
     except (OSError, ValueError, RuntimeError):
         logger.warning("Server configuration read failed for DHCPv%s", family, exc_info=True)
         return _unavailable(
@@ -243,13 +261,6 @@ def _read_live(server: Server, family: Family) -> ServerConfigurationSnapshot:
             "Kea configuration facts are unavailable.",
         )
 
-    if not response or not isinstance(response[0], dict):
-        return _unavailable(
-            server,
-            family,
-            "malformed-configuration-response",
-            "Kea returned a malformed configuration response.",
-        )
     arguments = response[0].get("arguments")
     if not isinstance(arguments, dict):
         return _unavailable(
@@ -380,6 +391,9 @@ def _parse_configuration(
             interface = _optional_string(shared_network, "interface", path, diagnostics)
             relay_addresses = _relay_addresses(shared_network.get("relay"), family, path, diagnostics)
             network_options = _parse_options(shared_network.get("option-data", []), path, diagnostics)
+            network_suffix = _optional_string(
+                shared_network, _DDNS_QUALIFYING_SUFFIX, path, diagnostics, allow_empty=True
+            )
             networks.append(
                 SharedNetwork(
                     name=name,
@@ -389,9 +403,15 @@ def _parse_configuration(
                     options=network_options,
                     member_cidrs=tuple(member_cidrs),
                     complete=len(diagnostics) == network_diagnostics,
+                    ddns_qualifying_suffix=network_suffix,
                 )
             )
 
+    global_suffix = (
+        _optional_string(configuration, _DDNS_QUALIFYING_SUFFIX, f"Dhcp{family}", diagnostics, allow_empty=True)
+        if _DDNS_QUALIFYING_SUFFIX in configuration
+        else ""
+    )
     subnet_diagnostics = tuple(diagnostics)
     options = _parse_options(configuration.get("option-data", []), f"Dhcp{family}", diagnostics)
     global_options_complete = len(diagnostics) == len(subnet_diagnostics)
@@ -404,6 +424,7 @@ def _parse_configuration(
         shared_networks=tuple(networks),
         global_options=options,
         option_definitions=definitions,
+        ddns_qualifying_suffix=global_suffix,
         diagnostics=tuple(diagnostics),
         subnet_diagnostics=subnet_diagnostics,
         available=True,
@@ -476,15 +497,17 @@ def _parse_configured_fact(
             _diagnostic("invalid-subnet-cidr", "Kea returned an invalid Subnet CIDR.", "configuration", path)
         )
         return None
+    pools, pool_suffixes = _parse_pools(entry.get("pools", []), network, path, diagnostics)
     return DeclaredSubnet(
         declared_cidr=entry["subnet"],
         network=network,
         declared_subnet_id=subnet_id,
         shared_network_name=shared_network_name,
         configuration=SubnetConfiguration(
-            pools=_parse_pools(entry.get("pools", []), network, path, diagnostics),
+            pools=pools,
             options=_parse_options(entry.get("option-data", []), path, diagnostics),
             settings=_parse_settings(entry, family, path, diagnostics),
+            pool_qualifying_suffixes=pool_suffixes,
         ),
         complete=len(diagnostics) == diagnostic_count,
     )
@@ -553,12 +576,17 @@ def shown_subnet_definition(definition: SubnetDefinition) -> SubnetEdit | None:
     return None if subnet is None else shown_subnet(subnet.configuration, definition.family)
 
 
+def _shared_network(snapshot: ServerConfigurationSnapshot, name: str) -> SharedNetwork | None:
+    """Return the Shared Network *name* of *snapshot*, if it holds one."""
+    return next((network for network in snapshot.shared_networks if network.name == name), None)
+
+
 def shown_shared_network(snapshot: ServerConfigurationSnapshot, name: str) -> SharedNetworkEdit | None:
     """Return the values that the Shared Network edit form shows for the Shared Network *name* in *snapshot*.
 
     Return None when the snapshot has no Shared Network *name* with facts that the form can show.
     """
-    network = next((network for network in snapshot.shared_networks if network.name == name), None)
+    network = _shared_network(snapshot, name)
     if not snapshot.shared_networks_complete or network is None or not network.complete:
         return None
     try:
@@ -579,6 +607,24 @@ def shown_shared_network(snapshot: ServerConfigurationSnapshot, name: str) -> Sh
         return None
 
 
+def effective_qualifying_suffix(snapshot: ServerConfigurationSnapshot, subnet: DeclaredSubnet) -> str | None:
+    """Return the DDNS qualifying suffix of *subnet*: its own, its Shared Network's, then the global one.
+
+    Return None when *snapshot* does not show the value, because a fact on that path is not valid.
+    """
+    if not subnet.complete:
+        return None
+    if subnet.configuration.settings.ddns_qualifying_suffix is not None:
+        return subnet.configuration.settings.ddns_qualifying_suffix
+    if subnet.shared_network_name is not None:
+        network = _shared_network(snapshot, subnet.shared_network_name)
+        if network is None or not network.complete:
+            return None
+        if network.ddns_qualifying_suffix is not None:
+            return network.ddns_qualifying_suffix
+    return snapshot.ddns_qualifying_suffix
+
+
 def observed_snapshot(server: Server, family: Family, configuration: dict[str, Any]) -> ServerConfigurationSnapshot:
     """Validate the exact configuration read by a workflow that also consumes its import intent."""
     return _parse_configuration(server, configuration, family, None)
@@ -594,13 +640,15 @@ def _parse_pools(
     subnet: IPNetworkValue,
     path: str,
     diagnostics: list[Diagnostic],
-) -> tuple[Pool, ...]:
+) -> tuple[tuple[Pool, ...], tuple[tuple[Pool, str], ...]]:
+    """Return the Pools of a Subnet, and each Pool that sets its own DDNS qualifying suffix."""
     if not isinstance(entries, list):
         diagnostics.append(
             _diagnostic("invalid-pool-collection", "Kea returned a non-list Pool collection.", "configuration", path)
         )
-        return ()
+        return (), ()
     pools: list[Pool] = []
+    suffixes: list[tuple[Pool, str]] = []
     for index, entry in enumerate(entries):
         pool_path = f"{path}.pools[{index}]"
         raw_pool = entry.get("pool") if isinstance(entry, dict) else None
@@ -610,7 +658,10 @@ def _parse_pools(
             diagnostics.append(_diagnostic("invalid-pool", "Kea returned an invalid Pool.", "configuration", pool_path))
             continue
         pools.append(pool)
-    return tuple(pools)
+        suffix = _optional_string(entry, _DDNS_QUALIFYING_SUFFIX, pool_path, diagnostics, allow_empty=True)
+        if suffix is not None:
+            suffixes.append((pool, suffix))
+    return tuple(pools), tuple(suffixes)
 
 
 def _parse_options(entries: Any, path: str, diagnostics: list[Diagnostic]) -> tuple[DHCPOption, ...]:
@@ -653,7 +704,7 @@ def _parse_settings(
         rebind_timer=_optional_nonnegative_int(entry, "rebind-timer", path, diagnostics),
         allocator=_optional_string(entry, "allocator", path, diagnostics),
         pd_allocator=_optional_string(entry, "pd-allocator", path, diagnostics),
-        ddns_qualifying_suffix=_optional_string(entry, "ddns-qualifying-suffix", path, diagnostics, allow_empty=True),
+        ddns_qualifying_suffix=_optional_string(entry, _DDNS_QUALIFYING_SUFFIX, path, diagnostics, allow_empty=True),
         interface_id=_optional_string(entry, "interface-id", path, diagnostics),
         relay_addresses=_relay_addresses(entry.get("relay"), family, path, diagnostics),
         client_classes=_client_classes(entry, path, diagnostics),

@@ -5,7 +5,8 @@
 {% load get_key from helpers %}
 {% load render_table from django_tables2 %}
 
-<div id="lease-search" hx-target="#lease-search" hx-swap="outerHTML" hx-push-url="true">
+{# NetBox's table header sorts by swapping the closest .htmx-container: this whole block. #}
+<div id="lease-search" class="htmx-container" hx-target="#lease-search" hx-swap="outerHTML" hx-push-url="true">
   <div class="row px-3">
     <div class="col col-6 offset-3 py-3">
       <form

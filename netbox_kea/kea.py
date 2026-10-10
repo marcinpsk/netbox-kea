@@ -32,19 +32,30 @@ from .dhcp_options import (
 from .leases import (
     ALL_LEASES,
     ExactLeaseResult,
+    Lease,
     LeaseAbsent,
+    LeaseChanged,
+    LeaseChangeRefused,
+    LeaseChangeResult,
+    LeaseConflict,
     LeaseCoverage,
     LeaseDiagnostic,
+    LeaseEdit,
     LeaseFound,
     LeaseIdentity,
     LeaseLookupFailed,
     LeaseQuery,
     LeaseRead,
+    LeaseRequest,
     LeaseSnapshot,
+    ShownLease,
+    _creation_arguments,
+    _edited_arguments,
     allocation_identities,
+    lease_edit_conflicts,
     lookup_arguments,
-    read_deletion,
     read_exact_lease,
+    read_lease_change,
     read_lease_collection,
     read_lease_page,
     read_lease_page_count,
@@ -289,11 +300,8 @@ class KeaResponse(TypedDict):
     text: str | None
 
 
-def _reservation_get_arguments(response: list[KeaResponse]) -> dict[str, Any] | None:
+def _reservation_get_arguments(result: KeaResponse) -> dict[str, Any] | None:
     """Return reservation-get arguments or classify Kea's not-found responses."""
-    if not response or not isinstance(response[0], dict):
-        raise RuntimeError("reservation-get returned a malformed response.")
-    result = response[0]
     if result.get("result") == 3 or (result.get("result") == 0 and result.get("text") == "Host not found."):
         return None
     arguments = result.get("arguments")
@@ -379,6 +387,44 @@ class _SubnetLeaseCounts(NamedTuple):
     covered: int
     active: int
     declined: int
+
+
+class SubnetUtilization(NamedTuple):
+    """Address counts that ``stat_cmds`` reports for one Subnet; DHCPv6 counts non-temporary addresses."""
+
+    total: int
+    assigned: int
+
+
+def _stat_lease_counts(command: KeaCommand, reply: KeaResponse, names: Sequence[str]) -> dict[int, tuple[int, ...]]:
+    """Return the *names* counts of each Subnet row of one ``stat-lease{4,6}-get`` reply.
+
+    Raises:
+        RuntimeError: If the result set, a column, a row or a count is malformed, or two rows name one Subnet.
+
+    """
+    arguments = reply.get("arguments")
+    result_set = arguments.get("result-set") if isinstance(arguments, dict) else None
+    columns = result_set.get("columns") if isinstance(result_set, dict) else None
+    rows = result_set.get("rows") if isinstance(result_set, dict) else None
+    if not isinstance(columns, list) or not isinstance(rows, list):
+        raise RuntimeError(f"{command.value} returned malformed statistics.")
+    try:
+        indexes = [columns.index(name) for name in ("subnet-id", *names)]
+    except ValueError as exc:
+        raise RuntimeError(f"{command.value} omitted required statistics columns.") from exc
+
+    counts: dict[int, tuple[int, ...]] = {}
+    for row in rows:
+        if not isinstance(row, (list, tuple)) or len(row) <= max(indexes):
+            raise RuntimeError(f"{command.value} returned a malformed statistics row.")
+        subnet_id, *values = (row[index] for index in indexes)
+        if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in (subnet_id, *values)):
+            raise RuntimeError(f"{command.value} returned an invalid lease count.")
+        if subnet_id in counts:
+            raise RuntimeError(f"{command.value} returned two statistics rows for Subnet {subnet_id}.")
+        counts[subnet_id] = tuple(values)
+    return counts
 
 
 def _lease_cursor(version: int, cursor: str | None) -> IPAddressValue | None:
@@ -568,6 +614,10 @@ def _set_shared_network_description(network: dict[str, Any], description: str) -
         network["user-context"] = context
     else:
         network.pop("user-context", None)
+
+
+class MalformedReply(RuntimeError):
+    """Kea answered with a 2xx status, but the reply is not a list of entries that each carry a result."""
 
 
 class MalformedConfiguration(RuntimeError):
@@ -916,7 +966,7 @@ class KeaClient:
             BranchActive: If *command* is a write and the write guard refuses it, for example in a branch.
             KeaTLSFileError: If requests cannot find a TLS file of the client. It is a ``RequestException``.
             requests.HTTPError: If the HTTP response status is not 2xx.
-            RuntimeError: If the reply body is not JSON or not a list, or a reply entry is malformed.
+            MalformedReply: If the reply body is not JSON or not a list, is empty, or has a malformed entry.
             KeaException: If any response result code is not in *check*.
 
         """
@@ -944,9 +994,9 @@ class KeaClient:
         try:
             resp_json = resp.json()
         except requests.JSONDecodeError as exc:
-            raise RuntimeError("Kea returned a reply body that is not JSON.") from exc
+            raise MalformedReply("Kea returned a reply body that is not JSON.") from exc
         if not isinstance(resp_json, list):
-            raise RuntimeError(f"Kea returned a reply that is not a list: {type(resp_json).__name__}")
+            raise MalformedReply(f"Kea returned a reply that is not a list: {type(resp_json).__name__}")
         if check is not None:
             check_response(resp_json, check)
         return resp_json
@@ -1016,12 +1066,10 @@ class KeaClient:
             Set of command name strings reported by ``list-commands``.
 
         """
-        resp = self.command(KeaCommand.LIST_COMMANDS, family)
-        if not resp or not isinstance(resp[0], dict):
-            raise RuntimeError(f"list-commands returned malformed response: {resp!r}")
-        arguments = resp[0].get("arguments")
+        reply = self._one_command(KeaCommand.LIST_COMMANDS, family)
+        arguments = reply.get("arguments")
         if not isinstance(arguments, list) or any(not isinstance(command, str) for command in arguments):
-            raise RuntimeError(f"list-commands returned malformed arguments: {resp[0]!r}")
+            raise RuntimeError(f"list-commands returned malformed arguments: {reply!r}")
         return set(arguments)
 
     def reservation_capabilities(self, version: Family) -> ReservationCapabilities:
@@ -1122,17 +1170,10 @@ class KeaClient:
         arguments: dict[str, Any] = {"source-index": source_index, "from": from_index, "limit": limit}
         if subnet_id is not None:
             arguments["subnet-id"] = subnet_id
-        resp = self.command(
-            KeaCommand.RESERVATION_GET_PAGE,
-            family,
-            arguments=arguments,
-            check=(0, 3),
-        )
-        if not resp or not isinstance(resp[0], dict):
-            raise RuntimeError("reservation-get-page returned a malformed response.")
-        if resp[0].get("result") == 3:
+        reply = self._one_command(KeaCommand.RESERVATION_GET_PAGE, family, arguments, (0, 3))
+        if reply["result"] == 3:
             return [], 0, 0
-        args = resp[0].get("arguments")
+        args = reply.get("arguments")
         if not isinstance(args, dict) or not isinstance(args.get("hosts"), list):
             raise RuntimeError("reservation-get-page returned malformed arguments.")
         next_obj = args.get("next")
@@ -1237,17 +1278,13 @@ class KeaClient:
     ) -> dict[str, Any] | None:
         """Fetch one exact raw Reservation for private read-modify-write use."""
         subnet_id = _reservation_scope_subnet_id(scope)
-        response = self.command(
+        reply = self._one_command(
             KeaCommand.RESERVATION_GET,
             version,
-            arguments={
-                "subnet-id": subnet_id,
-                "identifier-type": identity.identifier_type,
-                "identifier": identity.value,
-            },
-            check=(0, 3),
+            {"subnet-id": subnet_id, "identifier-type": identity.identifier_type, "identifier": identity.value},
+            (0, 3),
         )
-        return _reservation_get_arguments(response)
+        return _reservation_get_arguments(reply)
 
     def _reservation_raw_by_address(
         self,
@@ -1256,13 +1293,10 @@ class KeaClient:
         address: str,
     ) -> dict[str, Any] | None:
         """Fetch one scoped raw Reservation by allocation address."""
-        response = self.command(
-            KeaCommand.RESERVATION_GET,
-            version,
-            arguments={"subnet-id": scope.subnet.subnet_id, "ip-address": address},
-            check=(0, 3),
+        reply = self._one_command(
+            KeaCommand.RESERVATION_GET, version, {"subnet-id": scope.subnet.subnet_id, "ip-address": address}, (0, 3)
         )
-        return _reservation_get_arguments(response)
+        return _reservation_get_arguments(reply)
 
     def reservation_by_address(
         self,
@@ -1282,14 +1316,39 @@ class KeaClient:
             raise ValueError(f"Invalid DHCPv{version} Reservation address.") from exc
         if parsed_address.version != version or parsed_address not in scope.subnet.network:
             raise ValueError("The Reservation address must belong to its In-Subnet Scope.")
-        raw = self._reservation_raw_by_address(version, scope, str(parsed_address))
+        return self._reservation_holding(version, catalogue, scope, parsed_address, parsed_address)
+
+    def reservation_by_prefix(
+        self,
+        catalogue,
+        scope: InSubnetReservationScope,
+        prefix: ipaddress.IPv6Network,
+    ) -> Reservation | None:
+        """Resolve one delegated prefix to the In-Subnet Reservation that reserves exactly that prefix.
+
+        Kea finds a host by the base address of a reserved prefix, whatever its length, and the prefix
+        can be outside the Subnet CIDR. A host that reserves another length at that base fails closed.
+        """
+        return self._reservation_holding(6, catalogue, scope, prefix.network_address, prefix)
+
+    def _reservation_holding(
+        self,
+        version: Family,
+        catalogue,
+        scope: InSubnetReservationScope,
+        address: IPAddressValue,
+        target: IPAddressValue | ipaddress.IPv6Network,
+    ) -> Reservation | None:
+        """Return the Reservation that Kea finds at *address* in *scope*, which must reserve exactly *target*."""
+        raw = self._reservation_raw_by_address(version, scope, str(address))
         if raw is None:
             return None
         reservation = _exact_reservation(raw, version, catalogue)
-        if reservation.scope != scope or parsed_address not in reservation.addresses:
+        held = reservation.delegated_prefixes if isinstance(target, ipaddress.IPv6Network) else reservation.addresses
+        if reservation.scope != scope or target not in held:
             raise MalformedReservation(
                 "target-mismatch",
-                "Kea returned a Reservation that does not match the scoped address target.",
+                f"Kea returned a Reservation that does not match the scoped target {target}.",
             )
         return reservation
 
@@ -1304,17 +1363,10 @@ class KeaClient:
             raise ValueError(f"version must be 4 or 6, got {version!r}")
         if not isinstance(hostname, str) or not hostname:
             raise ValueError("hostname must be a non-empty string.")
-        response = self.command(
-            KeaCommand.RESERVATION_GET_BY_HOSTNAME,
-            version,
-            arguments={"hostname": hostname},
-            check=(0, 3),
-        )
-        if not response or not isinstance(response[0], dict):
-            raise RuntimeError("reservation-get-by-hostname returned a malformed response.")
-        if response[0].get("result") == 3:
+        reply = self._one_command(KeaCommand.RESERVATION_GET_BY_HOSTNAME, version, {"hostname": hostname}, (0, 3))
+        if reply["result"] == 3:
             return _parse_reservation_page([], version, catalogue, None)
-        arguments = response[0].get("arguments")
+        arguments = reply.get("arguments")
         if not isinstance(arguments, dict):
             raise RuntimeError("reservation-get-by-hostname returned malformed arguments.")
         return _parse_reservation_page(
@@ -1540,10 +1592,7 @@ class KeaClient:
         if network.version != version:
             raise ValueError(f"Subnet family IPv{network.version} does not match DHCPv{version}.")
 
-        response = self.command(KeaCommand.CONFIG_GET, version)
-        if not response or not isinstance(response[0], dict):
-            raise RuntimeError("config-get returned a malformed response.")
-        arguments = response[0].get("arguments")
+        arguments = self._one_command(KeaCommand.CONFIG_GET, version).get("arguments")
         dhcp_config = arguments.get(f"Dhcp{version}") if isinstance(arguments, dict) else None
         if not isinstance(dhcp_config, dict):
             raise RuntimeError(f"config-get returned malformed Dhcp{version} configuration.")
@@ -1717,73 +1766,22 @@ class KeaClient:
             subnet_id: Kea subnet ID whose leases should be wiped.
 
         Raises:
-            KeaException: If Kea returns a non-zero result code (including result=1
+            KeaException: If Kea returns a failure result (including result=1
                 when ``lease_cmds`` is not loaded).
+            RuntimeError: If the reply is malformed.
 
         """
-        self.command(LEASE_WIPE[version], version, arguments={"subnet-id": subnet_id})
+        # Kea answers result 3 when the Subnet holds no lease to delete.
+        self._one_command(LEASE_WIPE[version], version, {"subnet-id": subnet_id}, (0, 3))
 
-    def lease_add(self, version: Family, lease: dict) -> None:
-        """Create a new lease in the Kea lease database using ``lease{v}-add``.
-
-        Args:
-            version: DHCP version (4 or 6).
-            lease: Full lease dict as expected by the Kea API. For v4, ``ip-address``
-                is required. For v6, ``ip-address``, ``duid``, and ``iaid`` are required.
+    def lease_add(self, request: LeaseRequest) -> None:
+        """Create the Lease of *request* with ``lease{v}-add``; Kea supplies each fact that the request omits.
 
         Raises:
-            KeaException: If Kea returns a non-zero result code (e.g. address already
-                in use, subnet not found).
+            KeaException: If Kea refuses the Lease, for example because the address is in use.
 
         """
-        self.command(LEASE_ADD[version], version, arguments=lease)
-
-    def lease_update(
-        self,
-        version: Family,
-        ip_address: str,
-        hostname: str | None = None,
-        hw_address: str | None = None,
-        valid_lft: int | None = None,
-        duid: str | None = None,
-    ) -> None:
-        """Modify an existing lease in-place using ``lease{v}-update``.
-
-        Fetches the current lease via ``lease{v}-get``, merges the provided
-        non-None overrides, then posts the updated lease back.  No
-        config-test/write cycle is needed because lease mutations go directly
-        to Kea's live lease database.
-
-        Args:
-            version: DHCP version (4 or 6).
-            ip_address: IP address of the lease to update.
-            hostname: Optional new hostname.
-            hw_address: Optional new hardware address (v4 only, ``xx:xx:...`` format).
-            valid_lft: Optional new valid lifetime in seconds.
-            duid: Optional new DUID (v6 only).
-
-        Raises:
-            KeaException: If the lease does not exist (result=3) or Kea returns
-                an error for the update.
-
-        """
-        resp = self.command(LEASE_GET[version], version, arguments={"ip-address": ip_address})
-        if resp[0]["result"] == 3:
-            raise KeaException(resp[0])
-        lease = resp[0]["arguments"]
-        if not isinstance(lease, dict):
-            raise ValueError(
-                f"lease{version}-get returned result=0 but arguments is {type(lease).__name__}, expected dict"
-            )
-        if hostname is not None:
-            lease["hostname"] = hostname
-        if hw_address is not None:
-            lease["hw-address"] = hw_address
-        if valid_lft is not None:
-            lease["valid-lft"] = valid_lft
-        if duid is not None:
-            lease["duid"] = duid
-        self.command(LEASE_UPDATE[version], version, arguments=lease)
+        self.command(LEASE_ADD[request.family], request.family, arguments=_creation_arguments(request))
 
     def lease_get(self, identity: LeaseIdentity) -> ExactLeaseResult:
         """Read the one Lease with *identity*: found, confirmed absent, or a failed observation.
@@ -1798,18 +1796,69 @@ class KeaClient:
         )
         return read_exact_lease(response, identity)
 
-    def lease_delete(self, identity: LeaseIdentity) -> bool:
-        """Delete the one Lease with *identity*; return ``False`` when Kea has no such Lease.
+    def _checked_lease(
+        self, shown: ShownLease, edit: LeaseEdit
+    ) -> tuple[Lease, dict[str, Any]] | LeaseConflict | LeaseAbsent | LeaseLookupFailed:
+        """Read the shown Lease again; return it with its raw body, or the reason to send no change."""
+        family = shown.identity.family
+        response = self.command(LEASE_GET[family], family, arguments=lookup_arguments(shown.identity), check=(0, 3))
+        result = read_exact_lease(response, shown.identity)
+        if not isinstance(result, LeaseFound):
+            return result
+        conflicts = lease_edit_conflicts(shown, result.lease, edit)
+        if conflicts:
+            return LeaseConflict(fields=conflicts)
+        # read_exact_lease found one record object in this reply.
+        return result.lease, cast("dict[str, Any]", response[0]["arguments"])
+
+    def lease_update(self, shown: ShownLease, edit: LeaseEdit) -> LeaseChangeResult:
+        """Write the fields of *edit* to the shown Lease, after a fresh read agrees with the shown facts.
+
+        The update sends the fresh Kea body with only the written fields changed, so renewal fields and
+        extension values stay as Kea holds them. The check is not atomic: another writer can change the
+        Lease between the read and the update. A Lease that is gone is never created again.
+
+        Raises:
+            ValueError: If *edit* writes no field.
+            KeaException: If Kea returns an unexpected result.
+            MalformedLeaseResponse: If a reply envelope is unusable.
+
+        """
+        if not edit.written:
+            raise ValueError("A Lease edit must write at least one field.")
+        checked = self._checked_lease(shown, edit)
+        if not isinstance(checked, tuple):
+            return checked
+        fresh, raw = checked
+        response = self.command(
+            LEASE_UPDATE[fresh.family], fresh.family, arguments=_edited_arguments(raw, fresh, edit), check=(0, 4)
+        )
+        if read_lease_change(response, refused=4):
+            return LeaseChanged(lease=fresh)
+        return LeaseChangeRefused(identity=fresh.identity)
+
+    def lease_delete(self, shown: ShownLease) -> LeaseChangeResult:
+        """Delete the shown Lease, after a fresh read agrees with its binding, Subnet and kind.
+
+        The check is not atomic: another writer can change the Lease between the read and the deletion.
 
         Raises:
             KeaException: If Kea returns a result other than success or not found.
-            MalformedLeaseResponse: If the reply envelope is unusable.
+            MalformedLeaseResponse: If a reply envelope is unusable.
 
         """
+        checked = self._checked_lease(shown, LeaseEdit())
+        if not isinstance(checked, tuple):
+            return checked
+        fresh, _raw = checked
         response = self.command(
-            LEASE_DEL[identity.family], identity.family, arguments=lookup_arguments(identity), check=(0, 3)
+            LEASE_DEL[fresh.family], fresh.family, arguments=lookup_arguments(fresh.identity), check=(0, 3)
         )
-        return read_deletion(response)
+        return (
+            LeaseChanged(lease=fresh)
+            if read_lease_change(response, refused=3)
+            else LeaseAbsent(identity=fresh.identity)
+        )
 
     def lease_search(
         self,
@@ -1954,50 +2003,42 @@ class KeaClient:
                 rather than treat an unmeasured Subnet as an empty one.
 
         """
-        command = STAT_LEASE_GET[version].value
-        response = self.command(STAT_LEASE_GET[version], version, arguments={"subnet-id": subnet_id}, check=(0, 3))
-        if not response or not isinstance(response[0], dict):
-            raise RuntimeError(f"{command} returned a malformed response.")
-        if response[0].get("result") == 3:
-            raise LeaseQueryPreflightUnavailable
-        arguments = response[0].get("arguments")
-        result_set = arguments.get("result-set") if isinstance(arguments, dict) else None
-        columns = result_set.get("columns") if isinstance(result_set, dict) else None
-        rows = result_set.get("rows") if isinstance(result_set, dict) else None
-        if not isinstance(columns, list) or not isinstance(rows, list):
-            raise RuntimeError(f"{command} returned malformed statistics.")
-
-        count_columns = (
-            ["assigned-addresses", "declined-addresses"]
+        command = STAT_LEASE_GET[version]
+        reply = self._one_command(command, version, {"subnet-id": subnet_id}, (0, 3))
+        names = (
+            ("assigned-addresses", "declined-addresses")
             if version == 4
-            else ["assigned-nas", "declined-addresses", "assigned-pds"]
+            else ("assigned-nas", "declined-addresses", "assigned-pds")
         )
-        try:
-            subnet_index = columns.index("subnet-id")
-            count_indexes = [columns.index(name) for name in count_columns]
-        except ValueError as exc:
-            raise RuntimeError(f"{command} omitted required statistics columns.") from exc
+        if reply["result"] == 3 or (counts := _stat_lease_counts(command, reply, names).get(subnet_id)) is None:
+            raise LeaseQueryPreflightUnavailable
+        assigned, declined, *assigned_pds = counts
+        if assigned < declined:
+            raise RuntimeError(f"{command.value} returned inconsistent lease counts.")
+        delegated = assigned_pds[0] if assigned_pds else 0
+        return _SubnetLeaseCounts(
+            covered=assigned + delegated,
+            active=assigned - declined + delegated,
+            declined=declined,
+        )
 
-        for row in rows:
-            if not isinstance(row, (list, tuple)) or len(row) <= max(subnet_index, *count_indexes):
-                raise RuntimeError(f"{command} returned a malformed statistics row.")
-            if row[subnet_index] != subnet_id:
-                continue
-            values = [row[index] for index in count_indexes]
-            if any(isinstance(count, bool) or not isinstance(count, int) or count < 0 for count in values):
-                raise RuntimeError(f"{command} returned an invalid lease count.")
-            assigned, declined, *assigned_pds = values
-            if assigned < declined:
-                raise RuntimeError(f"{command} returned inconsistent lease counts.")
-            delegated = assigned_pds[0] if assigned_pds else 0
-            return _SubnetLeaseCounts(
-                covered=assigned + delegated,
-                active=assigned - declined + delegated,
-                declined=declined,
-            )
-        # Kea knows no statistics for this Subnet, so the guard has nothing to size the
-        # query with. Report it as unavailable instead of reading it as zero leases.
-        raise LeaseQueryPreflightUnavailable
+    def subnet_utilization(self, version: Family) -> dict[int, SubnetUtilization]:
+        """Return the address counts of each Subnet of the family from ``stat_cmds``, by Subnet ID.
+
+        Raises:
+            KeaException: If Kea returns a failure result, for example when ``stat_cmds`` is not loaded.
+            RuntimeError: If the reply is malformed.
+
+        """
+        command = STAT_LEASE_GET[version]
+        reply = self._one_command(command, version, None, (0, 3))
+        if reply["result"] == 3:
+            return {}
+        names = ("total-addresses", "assigned-addresses") if version == 4 else ("total-nas", "assigned-nas")
+        return {
+            subnet_id: SubnetUtilization(*counts)
+            for subnet_id, counts in _stat_lease_counts(command, reply, names).items()
+        }
 
     def lease_get_page(
         self,
@@ -2108,21 +2149,23 @@ class KeaClient:
 
         Raises:
             KeaException: If Kea returns a non-zero result code.
+            RuntimeError: If the reply is malformed.
 
         """
         arguments: dict[str, Any] | None = None
         if max_period is not None:
             arguments = {"max-period": max_period}
-        self.command(KeaCommand.DHCP_DISABLE, family, arguments=arguments)
+        self._one_command(KeaCommand.DHCP_DISABLE, family, arguments)
 
     def dhcp_enable(self, family: Family) -> None:
         """Re-enable DHCP processing on the daemon of *family* after a :meth:`dhcp_disable` call.
 
         Raises:
             KeaException: If Kea returns a non-zero result code.
+            RuntimeError: If the reply is malformed.
 
         """
-        self.command(KeaCommand.DHCP_ENABLE, family)
+        self._one_command(KeaCommand.DHCP_ENABLE, family)
 
     def pool_change(self, version: Family, action: PoolAction, subnet_id: int, declared_cidr: str, pool: str) -> None:
         """Send one ``subnet{v}-delta-{action}`` for the Pool of the Subnet. It does not persist.
@@ -2237,10 +2280,7 @@ class KeaClient:
 
         """
         subnet_key = f"subnet{version}"
-        resp = self.command(SUBNET_GET[version], version, arguments={"id": subnet_id})
-        if not isinstance(resp, list) or not resp or not isinstance(resp[0], dict):
-            raise RuntimeError(f"subnet{version}-get returned an invalid response envelope")
-        args = resp[0].get("arguments") or {}
+        args = self._one_command(SUBNET_GET[version], version, {"id": subnet_id}).get("arguments") or {}
         if not isinstance(args, dict) or not isinstance(args.get(subnet_key, []), list):
             raise RuntimeError(f"subnet{version}-get returned an invalid subnet collection")
         subnets = args.get(subnet_key, [])
@@ -2297,7 +2337,7 @@ def _one_reply(
         or not isinstance(response[0].get("result"), int)
         or isinstance(response[0].get("result"), bool)
     ):
-        raise RuntimeError(f"{command.value} did not return one valid result for dhcp{family}.")
+        raise MalformedReply(f"{command.value} did not return one valid result for dhcp{family}.")
     check_response(response, ok_codes)
     return response[0]
 
@@ -2306,14 +2346,16 @@ def check_response(resp: list[KeaResponse], ok_codes: Sequence[int]) -> None:
     """Raise a KeaException for any non 0 responses.
 
     Raises:
-        RuntimeError: If an entry is not a dict or has no ``result``. Reading
+        MalformedReply: If the reply is empty, or an entry is not a dict or has no ``result``. Reading
             ``kr["result"]`` unguarded would raise TypeError/KeyError instead,
             which no caller catches, so a malformed payload became an HTTP 500.
         KeaException: If a result code is not in *ok_codes*.
 
     """
+    if not resp:
+        raise MalformedReply("Kea returned an empty reply.")
     for idx, kr in enumerate(resp):
         if not isinstance(kr, dict) or "result" not in kr:
-            raise RuntimeError(f"Kea returned a malformed response entry at index {idx}: {kr!r}")
+            raise MalformedReply(f"Kea returned a malformed response entry at index {idx}: {kr!r}")
         if kr["result"] not in ok_codes:
             raise KeaException(kr, index=idx)

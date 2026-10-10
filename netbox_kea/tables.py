@@ -134,7 +134,7 @@ LEASE_ACTIONS = """<span class="btn-group dropdown">
         {% endif %}
         {% if record.kind == "delegated-prefix" %}
         <li>
-            <a href="{% url "ipam:prefix_list" %}?prefix={{ record.selection }}" class="dropdown-item">
+            <a href="{% url "ipam:prefix_list" %}?prefix={{ record.label }}" class="dropdown-item">
                 <i class="mdi mdi-magnify" aria-hidden="true" title="Search prefixes"></i>
                 Search prefixes
             </a>
@@ -381,7 +381,7 @@ class BaseLeaseTable(GenericTable):
     # This column is for the select checkboxes.
     pk = ToggleColumn(verbose_name="IP Address", accessor="selection", visible=True)
     # A delegated prefix shows as address/length.
-    ip_address = tables.Column(verbose_name="IP Address", accessor="selection", order_by="_ip_sort_key")
+    ip_address = tables.Column(verbose_name="IP Address", accessor="label", order_by="_ip_sort_key")
     family = tables.Column(verbose_name="Family")
     kind = tables.Column(verbose_name="Kind")
     prefix_length = tables.Column(verbose_name="Prefix Length")
@@ -457,6 +457,14 @@ class BaseLeaseTable(GenericTable):
             ' <span class="badge text-bg-success ms-1">View</span>'
             "{% endif %}"
             "{% endif %}"
+            "{% elif record.other_kind_reservation %}"
+            "{% if record.can_change_reservation %}"
+            '<a href="{{ record.reservation_url }}" class="badge text-bg-secondary text-decoration-none"'
+            ' title="The Reservation of this client holds no allocation of this kind">Reservation</a>'
+            "{% else %}"
+            '<span class="badge text-bg-secondary"'
+            ' title="The Reservation of this client holds no allocation of this kind">Reservation</span>'
+            "{% endif %}"
             "{% elif record.create_reservation_url %}"
             '<a href="{{ record.create_reservation_url }}" class="badge text-bg-warning text-decoration-none">'
             "+ Reserve</a>"
@@ -471,15 +479,24 @@ class BaseLeaseTable(GenericTable):
             "{% if record.netbox_ip_url %}"
             '<a href="{{ record.netbox_ip_url }}" class="badge text-bg-success text-decoration-none">'
             '<i class="mdi mdi-link-variant"></i> Synced</a>'
+            "{% elif record.netbox_prefix_url %}"
+            '<a href="{{ record.netbox_prefix_url }}" class="badge text-bg-success text-decoration-none">'
+            '<i class="mdi mdi-link-variant"></i> Synced</a>'
             "{% elif record.sync_url %}"
             '<button type="button"'
             ' hx-post="{{ record.sync_url }}"'
-            ' hx-vals=\'{"ip_address":"{{ record.ip_address|escapejs }}","hostname":"{{ record.hostname|default:""|escapejs }}"}\''
+            # The label is the address, or address/length for a delegated prefix.
+            ' hx-vals=\'{"ip_address":"{{ record.label|escapejs }}","hostname":"{{ record.hostname|default:""|escapejs }}"}\''
             ' hx-target="closest td"'
             ' hx-swap="innerHTML"'
+            # The lease search container pushes its URL; a Sync POST must not replace the page URL.
+            ' hx-push-url="false"'
             ' class="badge text-bg-secondary border-0"'
             ' style="cursor:pointer">'
             '<i class="mdi mdi-sync"></i> Sync</button>'
+            "{% elif record.sync_refusal %}"
+            '{% include "netbox_kea/inc/sync_refused.html" with reason=record.sync_refusal label="Sync"'
+            ' icon="mdi-sync" button_class="badge text-bg-secondary border-0 opacity-50" %}'
             "{% endif %}"
         ),
     )
@@ -528,14 +545,17 @@ class LeaseTable6(BaseLeaseTable):
 
 
 class LeaseDeleteTable(GenericTable):
-    """Minimal table used on the bulk-delete confirmation page."""
+    """The bulk-delete confirmation: the shown facts that each delete compares with a fresh read."""
 
-    ip_address = tables.Column(verbose_name="IP Address", accessor="ip")
+    lease = tables.Column(verbose_name="Lease")
+    kind = tables.Column(verbose_name="Kind")
+    binding = tables.Column(verbose_name="Client Binding")
+    subnet_id = tables.Column(verbose_name="Subnet ID")
 
     class Meta(NetBoxTable.Meta):
         empty_text = "No leases"
-        fields = ("ip_address",)
-        default_columns = ("ip_address",)
+        fields = ("lease", "kind", "binding", "subnet_id")
+        default_columns = ("lease", "kind", "binding", "subnet_id")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

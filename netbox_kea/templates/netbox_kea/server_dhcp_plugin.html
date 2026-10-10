@@ -80,15 +80,15 @@
               </div>
             </div>
           </div>
-          {% if can_sync %}
+          {% if sync_refusal %}
+            {% include "netbox_kea/inc/sync_refused.html" with reason=sync_refusal label="Sync to DHCP plugin now" icon="mdi-database-import-outline" button_class="btn btn-sm btn-primary" %}
+          {% else %}
             <form method="post" action="{% url 'plugins:netbox_kea:server_dhcp_plugin_sync' object.pk %}">
               {% csrf_token %}
               <button type="submit" class="btn btn-sm btn-primary">
                 <i class="mdi mdi-database-import-outline" aria-hidden="true"></i> Sync to DHCP plugin now
               </button>
             </form>
-          {% else %}
-            <span class="text-muted small">You need server change + IPAM add/change permissions to run this.</span>
           {% endif %}
         </div>
       </div>

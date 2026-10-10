@@ -11,13 +11,13 @@ from django.urls import reverse
 from ipam.models import VRF
 from ipam.models import IPAddress as NbIP
 
-from netbox_kea.ipam_reconciliation import LeasePhase, ReservationPhase, reconcile
+from netbox_kea.ipam_reconciliation import ReservationPhase, reconcile
 from netbox_kea.models import IPAMOwnershipLink, next_confirmation_number
 from netbox_kea.subnet_catalogue import for_synchronization
 
 from .kea_stub import _catalogue_responses, _res_page, queued, stub_kea
 from .test_sync_views import _make_server, _SyncViewBase
-from .utils import plugins_config
+from .utils import lease_phase, plugins_config
 
 
 def _reservation(address="198.18.0.10", hostname="", *, subnet_id=1):
@@ -95,7 +95,7 @@ class TestBulkReservationOwnership(_SyncViewBase):
                     report = reconcile(
                         self.server,
                         4,
-                        [LeasePhase(None, {1: 24}), ReservationPhase(for_synchronization(self.server, 4))],
+                        [lease_phase(self.server, 4, {1: 24}), ReservationPhase(for_synchronization(self.server, 4))],
                     )
                 self.assertTrue(report.complete)
                 if mode == "remove":

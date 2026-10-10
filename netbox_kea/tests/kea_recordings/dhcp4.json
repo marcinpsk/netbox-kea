@@ -37,7 +37,7 @@
         "ddns-generated-prefix": "myhost",
         "ddns-override-client-update": false,
         "ddns-override-no-update": false,
-        "ddns-qualifying-suffix": "",
+        "ddns-qualifying-suffix": "dhcp.example.com",
         "ddns-replace-client-name": "never",
         "ddns-send-updates": true,
         "ddns-update-on-renew": false,
@@ -276,6 +276,7 @@
             "allocator": "iterative",
             "cache-threshold": 0.25,
             "calculate-tee-times": false,
+            "ddns-qualifying-suffix": "office.example.net",
             "interface": "eth0",
             "max-valid-lifetime": 4000,
             "min-valid-lifetime": 4000,
@@ -345,7 +346,13 @@
                 "max-valid-lifetime": 4000,
                 "min-valid-lifetime": 4000,
                 "option-data": [],
-                "pools": [],
+                "pools": [
+                  {
+                    "ddns-qualifying-suffix": "pool.example.org",
+                    "option-data": [],
+                    "pool": "198.51.100.200-198.51.100.220"
+                  }
+                ],
                 "rebind-timer": 2000,
                 "relay": {
                   "ip-addresses": [
@@ -438,12 +445,78 @@
         "t2-percent": 0.875,
         "valid-lifetime": 4000
       },
-      "hash": "E39A43186088BBDCDA72CE6B3BE2D0E4240F1FC798DF11E41E9C77A36C8BCCFE"
+      "hash": "DDE40219B1A96F4DC66A52D4944B1CDD9CB7989755AB6F91FB891D0C32D9C128"
     },
     "result": 0
   },
   "kea-version": "3.2.0",
   "leases": {
+    "changes": {
+      "after-update": {
+        "arguments": {
+          "cltt": 1791435410,
+          "fqdn-fwd": false,
+          "fqdn-rev": false,
+          "hostname": "renamed.example.org",
+          "hw-address": "aa:bb:cc:00:00:40",
+          "ip-address": "192.0.2.40",
+          "state": 0,
+          "subnet-id": 10,
+          "user-context": {
+            "site": {
+              "rack": "r1",
+              "slots": [
+                1,
+                2
+              ]
+            }
+          },
+          "valid-lft": 3600
+        },
+        "result": 0,
+        "text": "IPv4 lease found."
+      },
+      "before": {
+        "arguments": {
+          "cltt": 1791435410,
+          "fqdn-fwd": false,
+          "fqdn-rev": false,
+          "hostname": "host40.example.org",
+          "hw-address": "aa:bb:cc:00:00:40",
+          "ip-address": "192.0.2.40",
+          "state": 0,
+          "subnet-id": 10,
+          "user-context": {
+            "site": {
+              "rack": "r1",
+              "slots": [
+                1,
+                2
+              ]
+            }
+          },
+          "valid-lft": 3600
+        },
+        "result": 0,
+        "text": "IPv4 lease found."
+      },
+      "delete": {
+        "result": 0,
+        "text": "IPv4 lease deleted."
+      },
+      "delete-absent": {
+        "result": 3,
+        "text": "IPv4 lease not found."
+      },
+      "update": {
+        "result": 0,
+        "text": "IPv4 lease updated."
+      },
+      "update-absent": {
+        "result": 4,
+        "text": "failed to update the lease with address 192.0.2.40 either because the lease has been deleted or it has changed in the database, in both cases a retry might succeed"
+      }
+    },
     "lease4-get": {
       "absent": {
         "result": 3,
@@ -452,7 +525,7 @@
       "present": {
         "arguments": {
           "client-id": "01:aa:bb:cc:00:00:10",
-          "cltt": 1791204538,
+          "cltt": 1791435410,
           "fqdn-fwd": true,
           "fqdn-rev": true,
           "hostname": "host10.example.org",
@@ -481,7 +554,7 @@
         "leases": [
           {
             "client-id": "01:aa:bb:cc:00:00:10",
-            "cltt": 1791204538,
+            "cltt": 1791435410,
             "fqdn-fwd": true,
             "fqdn-rev": true,
             "hostname": "host10.example.org",
@@ -502,7 +575,7 @@
             "valid-lft": 3600
           },
           {
-            "cltt": 1791204538,
+            "cltt": 1791435410,
             "fqdn-fwd": false,
             "fqdn-rev": false,
             "hostname": "",
@@ -513,7 +586,7 @@
             "valid-lft": 4294967295
           },
           {
-            "cltt": 1791204538,
+            "cltt": 1791435410,
             "fqdn-fwd": false,
             "fqdn-rev": false,
             "hostname": "",
@@ -524,7 +597,7 @@
             "valid-lft": 86400
           },
           {
-            "cltt": 1791204538,
+            "cltt": 1791435410,
             "fqdn-fwd": false,
             "fqdn-rev": false,
             "hostname": "",
@@ -535,7 +608,7 @@
             "valid-lft": 3600
           },
           {
-            "cltt": 1791204538,
+            "cltt": 1791435410,
             "fqdn-fwd": false,
             "fqdn-rev": false,
             "hostname": "",
@@ -547,7 +620,7 @@
           },
           {
             "client-id": "ff:00:00:00:15:00:02",
-            "cltt": 1791204538,
+            "cltt": 1791435410,
             "fqdn-fwd": false,
             "fqdn-rev": false,
             "hostname": "",
@@ -569,7 +642,7 @@
           "leases": [
             {
               "client-id": "01:aa:bb:cc:00:00:10",
-              "cltt": 1791204538,
+              "cltt": 1791435410,
               "fqdn-fwd": true,
               "fqdn-rev": true,
               "hostname": "host10.example.org",
@@ -590,7 +663,7 @@
               "valid-lft": 3600
             },
             {
-              "cltt": 1791204538,
+              "cltt": 1791435410,
               "fqdn-fwd": false,
               "fqdn-rev": false,
               "hostname": "",
@@ -601,7 +674,7 @@
               "valid-lft": 4294967295
             },
             {
-              "cltt": 1791204538,
+              "cltt": 1791435410,
               "fqdn-fwd": false,
               "fqdn-rev": false,
               "hostname": "",
@@ -621,7 +694,7 @@
           "count": 3,
           "leases": [
             {
-              "cltt": 1791204538,
+              "cltt": 1791435410,
               "fqdn-fwd": false,
               "fqdn-rev": false,
               "hostname": "",
@@ -632,7 +705,7 @@
               "valid-lft": 3600
             },
             {
-              "cltt": 1791204538,
+              "cltt": 1791435410,
               "fqdn-fwd": false,
               "fqdn-rev": false,
               "hostname": "",
@@ -644,7 +717,7 @@
             },
             {
               "client-id": "ff:00:00:00:15:00:02",
-              "cltt": 1791204538,
+              "cltt": 1791435410,
               "fqdn-fwd": false,
               "fqdn-rev": false,
               "hostname": "",
@@ -686,7 +759,7 @@
       },
       "after-update-without-expire": {
         "arguments": {
-          "cltt": 1791204538,
+          "cltt": 1791435410,
           "fqdn-fwd": false,
           "fqdn-rev": false,
           "hostname": "",
@@ -854,6 +927,7 @@
             "allocator": "iterative",
             "cache-threshold": 0.25,
             "calculate-tee-times": false,
+            "ddns-qualifying-suffix": "office.example.net",
             "interface": "eth0",
             "max-valid-lifetime": 4000,
             "min-valid-lifetime": 4000,
@@ -922,7 +996,13 @@
                 "max-valid-lifetime": 4000,
                 "min-valid-lifetime": 4000,
                 "option-data": [],
-                "pools": [],
+                "pools": [
+                  {
+                    "ddns-qualifying-suffix": "pool.example.org",
+                    "option-data": [],
+                    "pool": "198.51.100.200-198.51.100.220"
+                  }
+                ],
                 "rebind-timer": 2000,
                 "relay": {
                   "ip-addresses": [

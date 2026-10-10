@@ -15,19 +15,21 @@ from django.views import View
 from .. import constants, forms, server_configuration, tables
 from ..constants import Family
 from ..decimal_text import parse_decimal
+from ..ipam_reconciliation import RESERVATION, claim_permissions
 from ..kea import KeaException, LeaseQueryGuardError, lease_query_guard_message
 from ..leases import LeaseSnapshot
 from ..models import Server
 from ..reservation_transfer import export_reservation_document
 from ..reservations import ReservationCapabilities, ReservationDiagnostic, ReservationSnapshot
 from ..subnet_catalogue import CatalogueSnapshot, display
+from ..sync_permissions import sync_gate
 from ..utilities import (
     diagnostic_reasons,
     export_table,
     snapshot_rows,
 )
 from ._base import ConditionalLoginRequiredMixin, _catalogue_subnet_row, _enrich_subnet_statistics, _shared_network_row
-from .leases import _enrich_leases_with_badges
+from .leases import _enrich_leases_with_badges, lease_sync_gates
 from .reservations import (
     _attach_reservation_action_urls,
     _configured_capabilities,
@@ -517,11 +519,11 @@ class _CombinedReservationsView(_CombinedViewMixin):
 
         # Enrich in the main thread so Django ORM queries see the test transaction.
         mutation_unavailable_servers: list[tuple[str, str]] = []
-        can_sync = request.user.has_perm("ipam.add_ipaddress") and request.user.has_perm("ipam.change_ipaddress")
+        sync = sync_gate(request.user, claim_permissions(RESERVATION))
         for server_pk, server in server_map.items():
             server_records = [r for r in all_records if r.get("server_pk") == server_pk]
             if server_records:
-                _enrich_reservations_with_badges(server_records, server, self.dhcp_version, can_sync=can_sync)
+                _enrich_reservations_with_badges(server_records, server, self.dhcp_version, sync=sync)
                 can_change = server_pk in writable_pks
                 capabilities = capabilities_by_server.get(server_pk) if can_change else None
                 can_mutate = bool(can_change and capabilities and capabilities.mutation_available)
@@ -659,6 +661,7 @@ class _CombinedLeasesView(_CombinedViewMixin):
 
         # Enrich in the main thread so Django ORM queries see the test transaction.
         server_map = {s.pk: s for s in servers}
+        sync = lease_sync_gates(request.user)
         for server_pk, server in server_map.items():
             server_leases = [entry for entry in all_leases if entry.get("server_pk") == server_pk]
             if server_leases:
@@ -670,6 +673,7 @@ class _CombinedLeasesView(_CombinedViewMixin):
                     self.dhcp_version,
                     can_delete=can_delete,
                     can_change=can_change,
+                    sync=sync,
                     return_url=request.get_full_path(),
                 )
 

@@ -7,7 +7,7 @@ import io
 import ipaddress
 import logging
 import re
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from datetime import datetime
 from typing import Any
 
@@ -15,11 +15,24 @@ from django.http import HttpResponse
 from django.shortcuts import redirect
 from django_tables2 import Table
 from django_tables2.export import TableExport
+from pydantic import ValidationError as PydanticValidationError
 from utilities.views import ViewTab
 
 from . import constants
 from .constants import Family
-from .leases import DHCPv4AddressLease, Lease, LeaseDiagnostic, LeaseSnapshot, lease_record_data, selection_label
+from .decimal_text import parse_decimal
+from .leases import (
+    DHCPv4AddressLease,
+    DHCPv4LeaseRequest,
+    DHCPv6LeaseRequest,
+    Lease,
+    LeaseDiagnostic,
+    LeaseRequest,
+    LeaseSnapshot,
+    lease_record_data,
+    request_errors,
+    shown_lease,
+)
 from .models import Server
 
 logger = logging.getLogger(__name__)
@@ -113,9 +126,12 @@ def _lease_row(lease: Lease, now: datetime) -> dict[str, Any]:
         expiry_class = "text-danger"
     elif expires_in is not None and expires_in < 300:
         expiry_class = "text-warning"
+    shown = shown_lease(lease)
     row: dict[str, Any] = {
         "lease": lease,
-        "selection": selection_label(lease),
+        # The shown facts that a delete of the row compares with a fresh read.
+        "selection": shown.model_dump_json(),
+        "label": shown.label,
         "ip_address": str(address),
         "_ip_sort_key": int(address),
         "family": lease.family,
@@ -267,66 +283,6 @@ def format_option_data(option_list: list[dict[str, Any]], version: Family) -> di
     return result
 
 
-def parse_subnet_stats(stat_response: list[dict[str, Any]], version: Family) -> dict[int, dict[str, Any]]:
-    """Parse a ``stat-lease{4|6}-get`` response into a per-subnet stats dict.
-
-    Args:
-        stat_response: Raw Kea API response list from ``stat-lease4-get`` /
-            ``stat-lease6-get``.
-        version: DHCP version (4 or 6) — determines which column names to look for.
-
-    Returns:
-        ``{subnet_id: {"total": N, "assigned": M, "utilization": "X%"}}`` mapping.
-        Returns an empty dict when the response is missing or malformed.
-
-    """
-    if not isinstance(stat_response, list) or not stat_response or not isinstance(stat_response[0], dict):
-        return {}
-    if stat_response[0].get("result") != 0:
-        return {}
-    arguments = stat_response[0].get("arguments")
-    if not isinstance(arguments, dict):
-        return {}
-    result_set = arguments.get("result-set")
-    if not isinstance(result_set, dict):
-        return {}
-    columns_raw = result_set.get("columns")
-    columns: list[str] = columns_raw if isinstance(columns_raw, list) else []
-    rows_raw = result_set.get("rows")
-    rows: list[list] = rows_raw if isinstance(rows_raw, list) else []
-
-    total_col = "total-addresses" if version == 4 else "total-nas"
-    assigned_col = "assigned-addresses" if version == 4 else "assigned-nas"
-
-    try:
-        id_idx = columns.index("subnet-id")
-        total_idx = columns.index(total_col)
-        assigned_idx = columns.index(assigned_col)
-    except ValueError:
-        return {}
-
-    stats: dict[int, dict[str, Any]] = {}
-    min_len = max(id_idx, total_idx, assigned_idx) + 1
-    for row in rows:
-        if not isinstance(row, (list, tuple)) or len(row) < min_len:
-            continue
-        try:
-            subnet_id = int(row[id_idx])
-        except (TypeError, ValueError):
-            continue
-        try:
-            total = int(row[total_idx])
-        except (TypeError, ValueError):
-            total = 0
-        try:
-            assigned = int(row[assigned_idx])
-        except (TypeError, ValueError):
-            assigned = 0
-        pct = round(assigned / total * 100) if total > 0 else 0
-        stats[subnet_id] = {"total": total, "assigned": assigned, "utilization": f"{pct}%", "utilization_pct": pct}
-    return stats
-
-
 def check_dhcp_enabled(instance: Server, version: Family) -> HttpResponse | None:
     """Return a redirect to the server detail page if the requested DHCP version is disabled, else ``None``."""
     if (version == 6 and instance.dhcp6) or (version == 4 and instance.dhcp4):
@@ -379,81 +335,76 @@ def kea_error_hint(exc: Any) -> str:
     return f"Kea returned an unexpected result code ({result}). Check the server logs for details."
 
 
-def _parse_int_row_field(row: dict, field: str, row_num: int) -> int:
-    """Parse ``row[field]`` as int, raising ``ValueError`` with row context on failure."""
-    try:
-        return int(row[field])
-    except (ValueError, KeyError):
-        raise ValueError(f"Row {row_num}: '{field}' must be an integer, got '{row.get(field, '')}'") from None
+class LeaseCSVError(ValueError):
+    """A lease CSV row is not a valid creation request; the message names the file line and the column, never a value."""
 
 
-def parse_lease_csv(version: Family, content: str) -> list[dict[str, Any]]:
-    """Parse a CSV string into a list of lease dicts ready for ``lease_add``.
+def parse_lease_csv(version: Family, content: str) -> list[tuple[int, LeaseRequest]]:
+    """Parse a lease CSV file into typed creation requests, each with the file line where its row starts.
 
-    Strips UTF-8 BOM, skips blank lines and lines starting with ``#``.
-    Raises ``ValueError`` on missing required fields.
+    Strips a UTF-8 BOM, and skips blank lines and lines that start with ``#``. A line number counts every line
+    of the file: the header, each skipped line and each line of a quoted field.
 
-    **v4 required columns**: ``ip-address``
-    Optional: ``hw-address``, ``subnet-id``, ``valid-lft``, ``hostname``
-
-    **v6 required columns**: ``ip-address``, ``duid``, ``iaid``
-    Optional: ``subnet-id``, ``valid-lft``, ``hostname``
-
-    Args:
-        version: DHCP version — ``4`` or ``6``.
-        content: Raw CSV text (may include BOM).
-
-    Returns:
-        List of dicts suitable for passing to :py:meth:`KeaClient.lease_add`.
+    **v4 required columns**: ``ip-address``, ``hw-address``.
+    **v6 required columns**: ``ip-address``, ``duid``, ``iaid``.
+    **Optional columns**: ``subnet-id``, ``valid-lft``, ``hostname``.
 
     Raises:
-        ValueError: If a required field is missing or empty for any row.
+        LeaseCSVError: For the first row that is not a valid request.
 
     """
-    required = {"ip-address"} if version == 4 else {"ip-address", "duid", "iaid"}
+    fields = {"ip-address": "address", "subnet-id": "subnet_id", "valid-lft": "valid_lifetime", "hostname": "hostname"}
+    if version == 4:
+        fields["hw-address"] = "hw_address"
+    else:
+        fields.update({"duid": "duid", "iaid": "iaid"})
+    integers = {"subnet-id", "valid-lft", "iaid"}
+    columns = {field: column for column, field in fields.items()}
+    model = DHCPv4LeaseRequest if version == 4 else DHCPv6LeaseRequest
 
-    content = content.lstrip("\ufeff")
-    reader = csv.DictReader(
-        line.strip() for line in io.StringIO(content) if line.strip() and not line.strip().startswith("#")
-    )
+    # The file line number of each line that the reader gets.
+    kept: list[int] = []
 
-    rows: list[dict[str, Any]] = []
-    for row_num, raw in enumerate(reader, start=2):
-        row = {k.strip(): (v or "").strip() for k, v in raw.items() if k is not None}
+    def data_lines() -> Iterator[str]:
+        for number, physical in enumerate(io.StringIO(content.lstrip("\ufeff")), start=1):
+            text = physical.strip()
+            if text and not text.startswith("#"):
+                kept.append(number)
+                yield text
 
-        for field in required:
-            if not row.get(field):
-                raise ValueError(f"Row {row_num}: missing required field '{field}'")
-
-        result: dict[str, Any] = {"ip-address": row["ip-address"]}
-
+    reader = csv.reader(data_lines())
+    header = [name.strip() for name in next(reader, [])]
+    parsed: list[tuple[int, LeaseRequest]] = []
+    consumed = reader.line_num
+    for cells in reader:
+        line, consumed = kept[consumed], reader.line_num
+        row = dict(zip(header, (cell.strip() for cell in cells), strict=False))
+        values: dict[str, Any] = {}
+        for column, field in fields.items():
+            text = row.get(column, "")
+            if not text:
+                continue
+            if column in integers:
+                try:
+                    values[field] = parse_decimal(text)
+                except ValueError:
+                    raise LeaseCSVError(f"Line {line}: '{column}' must be an integer.") from None
+            elif column == "ip-address":
+                try:
+                    values[field] = ipaddress.ip_address(text)
+                except ValueError:
+                    raise LeaseCSVError(f"Line {line}: '{column}' is not an IPv{version} address.") from None
+            else:
+                values[field] = text
         try:
-            addr = ipaddress.ip_address(row["ip-address"])
-        except ValueError as exc:
-            raise ValueError(f"Row {row_num}: invalid IP address '{row['ip-address']}'") from exc
-        if addr.version != version:
-            raise ValueError(f"Row {row_num}: '{row['ip-address']}' is not an IPv{version} address")
-
-        if version == 6:
-            if not is_hex_string(row["duid"], constants.DUID_MIN_OCTETS, constants.DUID_MAX_OCTETS):
-                raise ValueError(f"Row {row_num}: invalid DUID '{row['duid']}'")
-            result["duid"] = row["duid"]
-            result["iaid"] = _parse_int_row_field(row, "iaid", row_num)
-
-        if row.get("hw-address") and version == 4:
-            if not is_hex_string(row["hw-address"], 6, 6):
-                raise ValueError(f"Row {row_num}: invalid MAC address '{row['hw-address']}'")
-            result["hw-address"] = row["hw-address"]
-        if row.get("subnet-id"):
-            result["subnet-id"] = _parse_int_row_field(row, "subnet-id", row_num)
-        if row.get("valid-lft"):
-            result["valid-lft"] = _parse_int_row_field(row, "valid-lft", row_num)
-        if row.get("hostname"):
-            result["hostname"] = row["hostname"]
-
-        rows.append(result)
-
-    return rows
+            parsed.append((line, model.model_validate(values)))
+        except PydanticValidationError as exc:
+            refused = request_errors(exc)[0]
+            column = columns.get(refused.field or "", "row")
+            if refused.code == "missing":
+                raise LeaseCSVError(f"Line {line}: missing required field '{column}'.") from None
+            raise LeaseCSVError(f"Line {line}: '{column}' is not valid for a DHCPv{version} lease.") from None
+    return parsed
 
 
 class OptionalViewTab(ViewTab):

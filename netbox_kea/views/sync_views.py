@@ -2,12 +2,13 @@
 # SPDX-License-Identifier: Apache-2.0
 import csv
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
 import requests
 from django.contrib import messages
 from django.core.exceptions import ValidationError
-from django.db import DatabaseError, IntegrityError, OperationalError, ProgrammingError
+from django.db import DatabaseError
 from django.http import HttpResponse, HttpResponseForbidden, HttpResponseRedirect
 from django.http.request import HttpRequest
 from django.shortcuts import get_object_or_404, render
@@ -15,11 +16,25 @@ from django.urls import reverse
 from django.views import View
 from netaddr import AddrFormatError, IPAddress
 
-from .. import forms
+from .. import event_scope, forms
 from ..constants import Family
-from ..ipam_reconciliation import ReservationPhase, reconcile
+from ..ipam_reconciliation import (
+    RESERVATION,
+    ReservationPhase,
+    claim_permissions,
+    reconcile,
+    reconcile_permissions,
+)
 from ..kea import KeaException
-from ..leases import ExactLeaseResult, LeaseFound, LeaseLookupFailed, address_identity
+from ..leases import (
+    ExactLeaseResult,
+    LeaseFound,
+    LeaseIdentity,
+    LeaseLookupFailed,
+    is_current,
+    parse_selection,
+    shown_lease,
+)
 from ..models import Server
 from ..reservation_transfer import (
     ReservationTransferDiagnostic,
@@ -28,12 +43,14 @@ from ..reservation_transfer import (
     resolve_import_proposal,
 )
 from ..subnet_catalogue import CatalogueUnavailable, MutationScope, for_synchronization
+from ..sync_permissions import sync_gate
 from ..utilities import (
+    LeaseCSVError,
     kea_error_hint,
     parse_lease_csv,
 )
 from ._base import ConditionalLoginRequiredMixin, _KeaChangeMixin
-from .leases import _LEASES_TAB
+from .leases import _LEASES_TAB, _add_lease_journal, lease_sync_gates
 from .reservation_mutations import _confirmed_side_effects, _identity_from_request, _reservation_target_scope
 from .reservations import _RESERVATIONS_TAB
 
@@ -41,40 +58,52 @@ logger = logging.getLogger(__name__)
 
 
 class _BaseSyncView(ConditionalLoginRequiredMixin, View):
-    """Claim a live lease and return its per-address synchronization result."""
+    """Claim one fresh Current Lease: an address as an IP Address, a delegated prefix as a Prefix."""
 
     dhcp_version: Family
 
     def post(self, request: HttpRequest, pk: int) -> HttpResponse:
-        if not (request.user.has_perm("ipam.add_ipaddress") and request.user.has_perm("ipam.change_ipaddress")):
-            return HttpResponseForbidden("You do not have permission to sync to NetBox IPAM.")
+        selected = request.POST.get("ip_address", "").strip()
+        if not selected:
+            return HttpResponse("ip_address is required", status=400)
+        try:
+            label, identity = parse_selection(self.dhcp_version, selected)
+        except ValueError:
+            return HttpResponse("Invalid lease address or delegated prefix", status=400)
+
+        gate = lease_sync_gates(request.user)[identity.kind]
+        if not gate.allowed:
+            return HttpResponseForbidden(gate.reason)
 
         server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
 
-        ip_str = request.POST.get("ip_address", "").strip()
-        if not ip_str:
-            return HttpResponse("ip_address is required", status=400)
-
-        try:
-            IPAddress(ip_str)
-        except (AddrFormatError, ValueError):
-            return HttpResponse("Invalid IP address", status=400)
-
-        observed = self._fetch_live_data(server, ip_str)
+        observed = self._fetch_live_data(server, identity)
         if isinstance(observed, LeaseLookupFailed):
-            logger.warning("Kea returned a malformed lease%s for %s", self.dhcp_version, ip_str)
+            logger.warning("Kea returned a malformed lease%s for %s", self.dhcp_version, label)
             return HttpResponse("Sync error: see server logs for details.", status=500)
         if not isinstance(observed, LeaseFound):
             return HttpResponse("Could not fetch live data from Kea.", status=400)
+        lease = observed.lease
+        # The label holds the kind and the prefix length, so a changed allocation does not match.
+        if shown_lease(lease).label != label:
+            return HttpResponse("The lease changed in Kea. Reload the lease list.", status=409)
+        if not is_current(lease, datetime.now(tz=timezone.utc)):
+            return HttpResponse("The lease is not current in Kea, so it was not synchronized.", status=409)
         try:
             from ..ipam_reconciliation import claim
 
-            result = claim(server, self.dhcp_version, [observed.lease], force=True)
-            outcome = next(iter(result.addresses.values()))
-            if outcome.outcome == "error":
+            result = claim(server, self.dhcp_version, [lease], force=True)
+            outcome: str
+            if identity.kind == "delegated-prefix":
+                outcome = next(iter(result.prefixes.values())).outcome
+            else:
+                outcome = next(iter(result.addresses.values())).outcome
+            if outcome == "error":
                 return HttpResponse("Sync error: see server logs for details.", status=500)
-        except (RuntimeError, ValueError, IntegrityError, ValidationError, OperationalError, ProgrammingError):
-            logger.exception("Sync error for ip=%s", ip_str)
+        except event_scope.EventDispatchError:
+            raise
+        except (RuntimeError, ValueError, ValidationError, DatabaseError):
+            logger.exception("Sync error for lease %s", label)
             return HttpResponse("Sync error: see server logs for details.", status=500)
 
         return render(
@@ -83,14 +112,13 @@ class _BaseSyncView(ConditionalLoginRequiredMixin, View):
             {"claim_result": result},
         )
 
-    def _fetch_live_data(self, server: "Server", ip_str: str) -> ExactLeaseResult | None:
-        """Read the live address Lease of *ip_str* from Kea, or ``None`` when the read fails."""
+    def _fetch_live_data(self, server: "Server", identity: LeaseIdentity) -> ExactLeaseResult | None:
+        """Read the live Lease with *identity* from Kea, or ``None`` when the read fails."""
         try:
             client = server.get_client(version=self.dhcp_version)
-            identity = address_identity(self.dhcp_version, ip_str)
             return client.lease_get(identity)
         except (KeaException, requests.RequestException, RuntimeError, ValueError):
-            logger.exception("Failed to fetch live lease%s data for %s", self.dhcp_version, ip_str)
+            logger.exception("Failed to fetch live lease%s data for %s", self.dhcp_version, identity.address)
             return None
 
 
@@ -112,20 +140,21 @@ class _BaseReservationSyncView(ConditionalLoginRequiredMixin, View):
     dhcp_version: Family
 
     def post(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
-        if not (request.user.has_perm("ipam.add_ipaddress") and request.user.has_perm("ipam.change_ipaddress")):
-            return HttpResponseForbidden("You do not have permission to sync to NetBox IPAM.")
+        gate = sync_gate(request.user, claim_permissions(RESERVATION))
+        if not gate.allowed:
+            return HttpResponseForbidden(gate.reason)
         server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
         identity = _identity_from_request(request, self.dhcp_version)
         try:
             with _reservation_target_scope(server, self.dhcp_version, subnet_id, identity) as (
                 reservation,
                 _client,
-                _catalogue,
+                catalogue,
             ):
                 from ..ipam_reconciliation import claim
                 from ..sync import reservation_synchronization_state
 
-                result = claim(server, self.dhcp_version, [reservation], force=True)
+                result = claim(server, self.dhcp_version, [reservation], force=True, catalogue=catalogue)
                 state = reservation_synchronization_state(
                     reservation, synchronized_addresses=result.synchronized_addresses
                 )
@@ -167,10 +196,11 @@ class _BaseBulkReservationSyncView(ConditionalLoginRequiredMixin, View):
     dhcp_version: Family = 4  # overridden in subclasses
 
     def post(self, request: HttpRequest, pk: int) -> HttpResponse:
-        if not (request.user.has_perm("ipam.add_ipaddress") and request.user.has_perm("ipam.change_ipaddress")):
-            return HttpResponseForbidden("You do not have permission to sync to NetBox IPAM.")
-
         server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
+        gate = sync_gate(request.user, reconcile_permissions(server, ReservationPhase.source))
+        if not gate.allowed:
+            return HttpResponseForbidden(gate.reason)
+
         catalogue = None
         try:
             catalogue = for_synchronization(server, self.dhcp_version)
@@ -354,7 +384,7 @@ class _BaseBulkReservationImportView(_KeaChangeMixin, ConditionalLoginRequiredMi
                 break
             created += 1
             try:
-                _confirmed_side_effects(request, instance, "created", mutation_result)
+                _confirmed_side_effects(request, instance, "created", mutation_result, catalogue)
             except (ValidationError, ValueError, RuntimeError, requests.RequestException):
                 logger.exception("Side effects failed for created Reservation document entry %s", index)
                 failure = {
@@ -448,10 +478,11 @@ class ServerReservation6BulkImportView(_BaseBulkReservationImportView):
 
 
 class _BaseBulkLeaseImportView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
-    """Upload a CSV file and batch-insert leases into Kea via ``lease_add``.
+    """Upload a CSV file and create one Lease for each row via ``lease_add``.
 
     **GET**: render the upload form.
-    **POST**: parse CSV → loop :meth:`KeaClient.lease_add` → show summary.
+    **POST**: parse each row into a typed creation request → loop :meth:`KeaClient.lease_add` → show summary.
+    A row that is not a valid request rejects the whole file before Kea sees any row.
     """
 
     dhcp_version: Family
@@ -495,9 +526,14 @@ class _BaseBulkLeaseImportView(_KeaChangeMixin, ConditionalLoginRequiredMixin, V
 
         try:
             rows = parse_lease_csv(self.dhcp_version, content)
+        except LeaseCSVError as exc:
+            # The message names the file line and the column, never a value of the file.
+            logger.info("Refused a lease CSV import: %s", exc)
+            form.add_error("csv_file", str(exc))
+            return self._render(request, instance, form, None)
         except (ValueError, csv.Error):
             logger.exception("CSV parse error in lease bulk import")
-            form.add_error("csv_file", "CSV parsing failed — check the file format and column headers.")
+            form.add_error("csv_file", "CSV parsing failed. Check the file format and column headers.")
             return self._render(request, instance, form, None)
 
         try:
@@ -506,30 +542,33 @@ class _BaseBulkLeaseImportView(_KeaChangeMixin, ConditionalLoginRequiredMixin, V
             logger.exception("Failed to get Kea client for server %s", instance.pk)
             form.add_error(None, "Failed to connect to Kea server.")
             return self._render(request, instance, form, None)
-        created = 0
+        created: list[str] = []
         error_rows: list[dict[str, Any]] = []
 
-        for row in rows:
+        for line, creation in rows:
+            failed = {"line": line, "address": str(creation.address)}
             try:
-                client.lease_add(self.dhcp_version, row)
-                created += 1
-            except KeaException as exc:  # noqa: PERF203
-                error_rows.append({"row": row, "error": kea_error_hint(exc)})
+                client.lease_add(creation)
+                created.append(str(creation.address))
+            except KeaException as exc:
+                error_rows.append({**failed, "error": kea_error_hint(exc)})
             except requests.RequestException:
-                logger.exception("Connection error importing lease row %s", row)
-                error_rows.append({"row": row, "error": "Connection error — could not reach Kea server."})
+                logger.exception("Connection error importing lease CSV line %s", line)
+                error_rows.append({**failed, "error": "Connection error: could not reach the Kea server."})
             except (RuntimeError, ValueError):
-                logger.exception("Data error importing lease row %s", row)
-                error_rows.append({"row": row, "error": "Invalid response from Kea — could not parse server reply."})
-            except Exception:
-                logger.exception("Unexpected error importing lease row %s", row)
-                error_rows.append({"row": row, "error": "An unexpected error occurred."})
+                logger.exception("Data error importing lease CSV line %s", line)
+                error_rows.append({**failed, "error": "Invalid response from Kea: could not parse the server reply."})
 
+        if created:
+            try:
+                _add_lease_journal(instance, request.user, "added", created)
+            except DatabaseError:
+                logger.exception("Failed to record the lease import journal for server %s", instance.pk)
         result = {
-            "created": created,
+            "created": len(created),
             "errors": len(error_rows),
             "error_rows": error_rows,
-            "total": created + len(error_rows),
+            "total": len(created) + len(error_rows),
         }
         return self._render(request, instance, self.form_class(), result)
 

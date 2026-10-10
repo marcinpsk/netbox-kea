@@ -39,7 +39,7 @@ out of CI so CodeRabbit can run its own analysis on pull requests.
 | --- | --- | --- |
 | `kea-queryset-model-attribute-discriminator` | error | A `model` attribute check used to distinguish querysets from model instances. Model fields can use the same name. |
 | `kea-config-phase-without-reply-validation` | error | Direct config-test, config-set, or config-write calls that bypass `_one_command()` or `_config_mutation_command()` and their single-reply validation. |
-| `kea-sync-hostname-unvalidated` | error | Raw hostname reads in lease reconciliation and claims that bypass the shared string-or-null validator. |
+| `kea-sync-hostname-unpublished` | error | A `.hostname` of a lease, Reservation or record passed as a call argument or in a `(hardware, hostname)` pair in `ipam_reconciliation.py` or `integrations/dhcp_plugin.py`, except to `lease_published_name()`. The IPAM and MAC sync report the name that Kea publishes (`published_name.py`), so both sources agree. Limits: it matches receiver names that end in `lease`, `reservation` or `record`, and it does not follow a hostname through a local variable. |
 | `kea-get-client-missing-version` | warning | `server.get_client()` without `version=` (wrong daemon on dual-URL servers). |
 | `kea-exception-detail-in-response` | error | `str(exc)` / f-string of a caught exception leaked into `messages.*` / HTTP / DRF responses. |
 | `kea-command-result-indexed-without-guard` | error | `client.command(...)[0]` indexed directly, before validating the response shape. |

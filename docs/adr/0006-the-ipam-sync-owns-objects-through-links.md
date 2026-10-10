@@ -35,7 +35,10 @@ DHCP plugin import. Each one applies its own cleanup policy.
 
 A new link model records IPAM Ownership: `(server, family, source, object)`. The object is exactly one of three
 nullable foreign keys, `ip_address`, `prefix` or `ip_range`, each with `on_delete=CASCADE`. A check constraint
-requires exactly one. The source is `lease`, `reservation`, `subnet`, `pool` or `delegated-prefix`. The link is
+requires exactly one. The source is `lease`, `lease-prefix`, `reservation`, `subnet`, `pool` or `delegated-prefix`.
+`lease` owns the IP address of a Current address Lease, and `lease-prefix` owns the Prefix of a Current DHCPv6
+delegated-prefix Lease. The DHCP plugin import owns the delegated prefixes of Reservations through
+`delegated-prefix`, so the live and the imported delegated prefix never clean up each other. The link is
 unique per `(server, family, source, object)`. Each link also stores the facts that its owner last reported for
 the object.
 
@@ -132,7 +135,7 @@ A complete lease phase alone can then remove its last lease link. This exception
 Reservation toggle or to an unavailable `host_cmds` hook. Config-file Reservations can still exist without the
 hook, so that Reservation phase stays incomplete and the last link stays. A failed or truncated lease snapshot
 keeps every stale lease link. Otherwise the link stays and a later run decides. A Prefix is the exception: the job reports it from the
-Subnet phase and the DHCP plugin import from the `delegated-prefix` phase, in separate calls, so each of these
+Subnet and `lease-prefix` phases and the DHCP plugin import from the `delegated-prefix` phase, so each of these
 phases counts alone. A Prefix is never removed, so the worst case is an opt-in deprecation that the next Subnet
 run reverts when it links the Prefix. A bulk Reservation Sync has no complete lease phase,
 so it never removes the last link of its Server, even when that Server disables Reservation sync. A failed phase does not block the
@@ -155,6 +158,12 @@ owner links the object, unless its own owner confirmed it after the mark. A conf
 report, as after an owner disagreement, keeps the mark and does not restore the status.
 The DHCP plugin reference guard stays: an object that the DHCP plugin references is never removed or deprecated.
 
+Before issue 294, the `lease` source owned the prefix base of a delegated prefix as an IP address. A `lease` link records
+its allocation kind; a DHCPv6 link from before that change has none. A complete `lease-prefix` phase that links the
+Prefix of a delegated prefix classifies the old link at its base, and the normal `lease` cleanup then retires it.
+An address lease that a complete `lease` phase reads, current or not, classifies its link as an address link. No cleanup removes an unclassified link, including
+the removal of a stale link that another owner supersedes; a release still removes it.
+
 Deleting a Server drops its links. An object without an owner becomes an unowned marker object. The
 synchronization never cleans it, and the job summary counts it.
 
@@ -170,7 +179,7 @@ claim(server, family, records, force) -> ClaimResult  # one or more records, lin
 The job and the bulk views call `reconcile`. The per-row Sync, lease add and the DHCP plugin import call `claim`.
 The records of one `claim` call count as one phase for the fact comparison, so the DHCP plugin import passes all
 records of one snapshot in one call. The DHCP plugin import also calls `reconcile` for its `delegated-prefix`
-phase, because no other caller reports delegated prefixes.
+phase. The job reads one Lease Snapshot per family, with one cutoff, for its `lease` and `lease-prefix` phases.
 
 Before `claim` and `reconcile` look up or create an object, or change its links, they take a transaction-level
 PostgreSQL advisory lock on the object identity: the VRF and the address, Prefix or IP Range. They decide the

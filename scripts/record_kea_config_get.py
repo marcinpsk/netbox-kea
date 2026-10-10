@@ -11,7 +11,8 @@ It also reads the keyword tables that Kea's config-test and config-set check in 
 release, and writes the keys Kea accepts on a Shared Network and on a Subnet to
 accepted-keys.json.
 The same daemons record lease replies: every lease state, an infinite lifetime, IPv6
-delegated prefixes, exact lookups, pages, and the lease changes that Kea refuses.
+delegated prefixes, exact lookups, pages, the lease changes that Kea refuses, and an edit and
+deletion of a fresh lease body.
 The Kea version is the Compose harness default, so both use the same Kea.
 
 Kea 3.2 has no Control Agent, so control-agent.json comes from the last Kea release series
@@ -233,6 +234,41 @@ def _renewal(port: int, family: int) -> dict:
     return {"lease4-update": recorded}
 
 
+#: The lease that _changes edits and deletes: a DHCPv4 address, or a DHCPv6 delegated prefix.
+CHANGED_LEASE: dict[int, dict] = {
+    4: {
+        "ip-address": "192.0.2.40", "subnet-id": 10, "hw-address": "aa:bb:cc:00:00:40",
+        "hostname": "host40.example.org", "user-context": _NESTED_CONTEXT,
+    },
+    6: {
+        "ip-address": "2001:db8:100:600::", "type": "IA_PD", "prefix-len": 56, "subnet-id": 10, "duid": _DUID,
+        "iaid": 30, "hostname": "pd.example.org", "user-context": _NESTED_CONTEXT,
+    },
+}  # fmt: skip
+
+
+def _changes(port: int, family: int) -> dict:
+    """Record an edit of a fresh lease body, its deletion, and the replies for a lease that is gone."""
+    lease = CHANGED_LEASE[family]
+    lookup = {key: lease[key] for key in ("ip-address", "type") if key in lease}
+    _command(port, f"lease{family}-add", lease)
+    fresh = _command(port, f"lease{family}-get", lookup)
+    arguments = fresh["arguments"]
+    edited = {**arguments, "hostname": "renamed.example.org", "expire": arguments["cltt"] + arguments["valid-lft"]}
+    recorded = {
+        "before": fresh,
+        "update": _command(port, f"lease{family}-update", edited),
+        "after-update": _command(port, f"lease{family}-get", lookup),
+    }
+    if family == 6:
+        recorded["delete-without-type"] = _command(port, "lease6-del", {"ip-address": lease["ip-address"]}, result=3)
+    recorded["delete"] = _command(port, f"lease{family}-del", lookup)
+    recorded["delete-absent"] = _command(port, f"lease{family}-del", lookup, result=3)
+    # Without force-create, Kea refuses to update a lease that it does not hold.
+    recorded["update-absent"] = _command(port, f"lease{family}-update", edited, result=4)
+    return recorded
+
+
 def _record_leases(port: int, family: int) -> dict:
     for lease in LEASES[family]:
         _command(port, f"lease{family}-add", lease)
@@ -256,6 +292,7 @@ def _record_leases(port: int, family: int) -> dict:
         f"lease{family}-get": exact,
         "refused": refused,
         **_renewal(port, family),
+        "changes": _changes(port, family),
     }
 
 

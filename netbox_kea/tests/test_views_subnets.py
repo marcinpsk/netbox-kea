@@ -474,6 +474,15 @@ class TestServerSubnet4WipeView(_ViewTestBase):
         self.assertIn("lease4-wipe", kea.commands())
         self.assertEqual(kea.bodies("lease4-wipe")[0]["arguments"]["subnet-id"], 10)
 
+    def test_post_on_a_subnet_without_leases_reports_success(self):
+        """Kea 3.2.0 answers result 3 when there is no lease to delete; the Subnet is still empty."""
+        empty = {"result": 3, "text": "Deleted 0 IPv4 lease(s) from subnet(s) 10"}
+        with stub_kea({**_ABSENT_READ_HOOKS, "config-get": _EMPTY_CONFIG4, "lease4-wipe": empty}):
+            response = self.client.post(self._url(subnet_id=10), follow=True)
+        shown = [(message.level, str(message)) for message in response.context["messages"]]
+        self.assertIn((django_messages.SUCCESS, "All leases in subnet 10 wiped."), shown)
+        self.assertNotIn(django_messages.ERROR, [level for level, _text in shown])
+
     def test_post_on_kea_exception_shows_error_message(self):
         """POST that causes a KeaException must flash an error and redirect (no 500)."""
         with stub_kea({**_ABSENT_READ_HOOKS, "lease4-wipe": {"result": 1, "text": "hook not loaded"}}):
@@ -3788,19 +3797,37 @@ class TestSubnetViewCoverageGaps(_ViewTestBase):
         # No utilisation columns should be present
         self.assertNotIn("utilization", next(iter(table.data)))
 
-    def test_stats_type_error_still_renders_subnets(self):
-        """When stat-lease4-get raises TypeError, subnets render without utilisation."""
-        with self._list_stub(_config_with_one_subnet()[0], stat=TypeError("unexpected None in stat parsing")):
-            response = self.client.get(self._subnets4_url())
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(len(response.context["table"].data), 1)
+    def test_malformed_stats_render_subnets_without_utilization(self):
+        """A malformed stat-lease4-get reply drops the utilization and logs a warning; the Subnets still render."""
+        columns = ["subnet-id", "total-addresses", "assigned-addresses"]
+        for reply in (
+            {"result": 0, "arguments": {}},
+            {"result": 0, "arguments": {"result-set": {"columns": columns, "rows": [[1, None, None]]}}},
+        ):
+            with (
+                self.subTest(reply=reply),
+                self.assertLogs("netbox_kea.views._base", level="WARNING"),
+                self._list_stub(_config_with_one_subnet()[0], stat=reply),
+            ):
+                response = self.client.get(self._subnets4_url())
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(len(response.context["table"].data), 1)
+            self.assertNotIn("utilization", next(iter(response.context["table"].data)))
 
-    def test_stats_key_error_still_renders_subnets(self):
-        """When stat-lease4-get raises KeyError, subnets render without utilisation."""
-        with self._list_stub(_config_with_one_subnet()[0], stat=KeyError("result-set")):
-            response = self.client.get(self._subnets4_url())
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(len(response.context["table"].data), 1)
+    def test_a_statistics_error_warns_and_a_missing_hook_does_not(self):
+        """Only a missing stat_cmds hook is an expected state; another Kea error is a failed read."""
+        for stat, logs in (
+            ({"result": 1, "text": "database failure"}, self.assertLogs),
+            (_STAT_ABSENT4, self.assertNoLogs),
+        ):
+            with (
+                self.subTest(stat=stat),
+                logs("netbox_kea.views._base", level="WARNING"),
+                self._list_stub(_config_with_one_subnet()[0], stat=stat),
+            ):
+                response = self.client.get(self._subnets4_url())
+            self.assertEqual(response.status_code, 200)
+            self.assertNotIn("utilization", next(iter(response.context["table"].data)))
 
     def test_stats_request_exception_still_renders_subnets(self):
         """When stat-lease4-get raises RequestException, subnets render without utilisation."""

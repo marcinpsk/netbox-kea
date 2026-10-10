@@ -6,7 +6,7 @@ import requests
 from django.test import TestCase, override_settings
 
 from netbox_kea import server_configuration
-from netbox_kea.tests.kea_stub import stub_kea
+from netbox_kea.tests.kea_stub import _raw_http_response, stub_kea
 from netbox_kea.tests.utils import _PLUGINS_CONFIG, _make_db_server
 
 
@@ -142,7 +142,14 @@ class TestServerConfiguration(TestCase):
         self.assertFalse(snapshot.complete)
 
     def test_malformed_envelopes_have_no_facts(self):
-        for response in ([], {"result": 0}, {"result": 0, "arguments": {"Dhcp4": []}}):
+        not_json = _raw_http_response(b"<html>proxy error</html>")
+        for response in (
+            [],
+            not_json,
+            [{"text": "no result"}],
+            {"result": 0},
+            {"result": 0, "arguments": {"Dhcp4": []}},
+        ):
             with self.subTest(response=response), stub_kea({"config-get": response}):
                 snapshot = server_configuration.for_verification(self.server, 4)
                 self.assertFalse(snapshot.available)

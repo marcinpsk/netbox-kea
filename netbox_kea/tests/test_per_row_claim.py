@@ -8,6 +8,7 @@ from django.urls import reverse
 from ipam.models import IPAddress
 
 from netbox_kea.models import Server
+from netbox_kea.subnet_catalogue import for_synchronization
 from netbox_kea.tests.kea_stub import (
     _catalogue_responses,
     _catalogue_responses_for_subnets,
@@ -15,7 +16,8 @@ from netbox_kea.tests.kea_stub import (
     stub_kea,
     typed_lease,
 )
-from netbox_kea.tests.utils import plugins_config
+from netbox_kea.tests.test_integration_dhcp_plugin import _catalogue
+from netbox_kea.tests.utils import lease_phase, plugins_config
 
 _LEASE = {"ip-address": "198.18.0.10", "hostname": "host.example.com", "subnet-id": 1}
 
@@ -30,7 +32,7 @@ class PerRowLeaseCleanupTest(TestCase):
     def test_lease_sync_uses_the_same_kea_subnet_facts_as_reconciliation(self):
         from ipam.models import Prefix
 
-        from netbox_kea.ipam_reconciliation import LeasePhase, reconcile
+        from netbox_kea.ipam_reconciliation import reconcile
         from netbox_kea.models import IPAMOwnershipLink
         from netbox_kea.tests.test_jobs import _lease_page
 
@@ -41,9 +43,8 @@ class PerRowLeaseCleanupTest(TestCase):
             name="second-owner", ca_url="https://second.example.com", dhcp4=True, dhcp6=False
         )
         lease = complete_lease({"ip-address": "198.18.0.10", "hostname": "", "subnet-id": 1})
-        phase = LeasePhase(max_leases=None, subnet_prefix_lengths={1: 24})
         with stub_kea({"lease4-get-page": _lease_page([lease])}):
-            reconcile(second, 4, [phase])
+            reconcile(second, 4, [lease_phase(second, 4, {1: 24})])
         self.assertFalse(Prefix.objects.exists())
         with stub_kea({**_catalogue_responses(4, 1, "198.18.0.0/24"), "lease4-get": {"result": 0, "arguments": lease}}):
             response = self.client.post(
@@ -54,7 +55,7 @@ class PerRowLeaseCleanupTest(TestCase):
         self.assertNotContains(response, "Owner disagreement")
         self.assertContains(response, "198.18.0.10/24")
         with stub_kea({"lease4-get-page": _lease_page([{**lease, "hostname": "updated.example.com"}])}):
-            report = reconcile(second, 4, [phase])
+            report = reconcile(second, 4, [lease_phase(second, 4, {1: 24})])
         self.assertFalse(report.disagreements)
         self.assertEqual(IPAddress.objects.get(address__net_host="198.18.0.10").dns_name, "updated.example.com")
 
@@ -89,6 +90,34 @@ class ClaimOwnershipTest(TestCase):
         self.kea = transport.__enter__()
         self.addCleanup(transport.__exit__, None, None, None)
 
+    def test_an_unknown_published_name_fails_only_its_reservation_rows(self):
+        from netbox_kea.ipam_reconciliation import claim
+        from netbox_kea.tests.test_integration_dhcp_plugin import _reservation_snapshot
+
+        # An invalid Pool suffix makes the suffix of Subnet 2 unknown; Subnet 1 stays valid.
+        conf = {
+            "subnet4": [
+                {"id": 1, "subnet": "198.18.0.0/24"},
+                {
+                    "id": 2,
+                    "subnet": "198.18.1.0/24",
+                    "pools": [{"pool": "198.18.1.100-198.18.1.110", "ddns-qualifying-suffix": 7}],
+                },
+            ]
+        }
+        observation = _reservation_snapshot(
+            conf,
+            4,
+            [
+                {"subnet-id": 1, "hw-address": "02:00:00:00:00:01", "ip-address": "198.18.0.10", "hostname": "a"},
+                {"subnet-id": 2, "hw-address": "02:00:00:00:00:02", "ip-address": "198.18.1.10", "hostname": "b"},
+            ],
+        )
+        result = claim(self.server, 4, observation.snapshot.records, force=False, catalogue=observation.catalogue)
+        self.assertEqual(result.addresses["198.18.0.10"].outcome, "created")
+        self.assertEqual(result.addresses["198.18.1.10"].outcome, "error")
+        self.assertEqual(list(IPAddress.objects.values_list("dns_name", flat=True)), ["a"])
+
     def test_ambiguous_hardware_rolls_back_reservation_claim_and_keeps_other_rows(self):
         from dcim.models import MACAddress
 
@@ -110,7 +139,7 @@ class ClaimOwnershipTest(TestCase):
             ],
         )
 
-        result = claim(self.server, 4, observation.snapshot.records, force=True)
+        result = claim(self.server, 4, observation.snapshot.records, force=True, catalogue=observation.catalogue)
 
         self.assertEqual(result.addresses["198.18.0.10"].outcome, "error")
         self.assertEqual(IPAddress.objects.values().get(pk=ip.pk), before)
@@ -135,7 +164,7 @@ class ClaimOwnershipTest(TestCase):
         table = f'FROM "{MACAddress._meta.db_table}"'
 
         with CaptureQueriesContext(connection) as queries:
-            result = claim(self.server, 4, observation.snapshot.records, force=False)
+            result = claim(self.server, 4, observation.snapshot.records, force=False, catalogue=observation.catalogue)
 
         self.assertEqual(result.addresses["198.18.0.12"].outcome, "created")
         mac_reads = [q["sql"] for q in queries if table in q["sql"] and not q["sql"].startswith("INSERT")]
@@ -149,12 +178,30 @@ class ClaimOwnershipTest(TestCase):
 
         reservation = IPv4Reservation(GlobalReservationScope(), ReservationIdentity("flex-id", "addressless"), ())
         for records in ([], [reservation]):
-            result = claim(self.server, 4, records, force=True)
+            result = claim(self.server, 4, records, force=True, catalogue=_catalogue({}, 4))
             self.assertEqual(result.addresses, {})
             self.assertIsNone(result.primary)
             self.assertEqual(result.synchronized_addresses, frozenset())
         self.assertFalse(IPAddress.objects.exists())
         self.assertFalse(IPAMOwnershipLink.objects.exists())
+        self.assertEqual(self.kea.commands(), [])
+
+    def test_a_reservation_claim_without_its_catalogue_is_refused_before_writes(self):
+        from ipaddress import ip_address, ip_network
+
+        from netbox_kea.ipam_reconciliation import claim
+        from netbox_kea.reservations import InSubnetReservationScope, IPv4Reservation, ReservationIdentity
+        from netbox_kea.subnet_catalogue import SubnetIdentity
+
+        reservation = IPv4Reservation(
+            InSubnetReservationScope(SubnetIdentity(1, ip_network("198.18.0.0/24"))),
+            ReservationIdentity("flex-id", "named"),
+            (ip_address("198.18.0.10"),),
+            hostname="host",
+        )
+        with self.assertRaisesMessage(TypeError, "takes the catalogue that verified it"):
+            claim(self.server, 4, [reservation], force=True)  # type: ignore[call-overload]
+        self.assertFalse(IPAddress.objects.exists())
         self.assertEqual(self.kea.commands(), [])
 
     def test_global_reservation_only_links_existing_marker_rows_without_facts(self):
@@ -167,14 +214,14 @@ class ClaimOwnershipTest(TestCase):
         reservation = IPv4Reservation(
             GlobalReservationScope(), ReservationIdentity("flex-id", "global"), (ip_address("198.18.0.10"),)
         )
-        result = claim(self.server, 4, [reservation], force=True)
+        result = claim(self.server, 4, [reservation], force=True, catalogue=_catalogue({}, 4))
         self.assertEqual(result.addresses["198.18.0.10"].outcome, "not-applicable")
         self.assertFalse(IPAddress.objects.exists())
         for description in ("Operator row", "[kea-sync: lease]"):
             with self.subTest(description=description):
                 ip = IPAddress.objects.create(address="198.18.0.10/24", description=description)
                 before = IPAddress.objects.values().get(pk=ip.pk)
-                result = claim(self.server, 4, [reservation], force=True)
+                result = claim(self.server, 4, [reservation], force=True, catalogue=_catalogue({}, 4))
                 expected = "conflict" if description == "Operator row" else "not-applicable"
                 self.assertEqual(result.addresses["198.18.0.10"].outcome, expected)
                 self.assertEqual(result.addresses["198.18.0.10"].ip, ip)
@@ -195,7 +242,7 @@ class ClaimOwnershipTest(TestCase):
         reservation = IPv4Reservation(GlobalReservationScope(), ReservationIdentity("flex-id", "addressless"), ())
         for family in (True, 5, 6):
             with self.subTest(family=family), self.assertRaisesMessage(ValueError, "family"):
-                claim(self.server, family, [reservation], force=True)
+                claim(self.server, family, [reservation], force=True, catalogue=_catalogue({}, 4))
         self.assertFalse(IPAddress.objects.exists())
 
     def test_same_call_disagreement_never_forces_a_foreign_row(self):
@@ -360,7 +407,9 @@ class ClaimOwnershipTest(TestCase):
         self.assertFalse(IPAddress.objects.exists())
         foreign = IPAddress.objects.create(address="2001:db8::20/64", description="Operator row")
         before = IPAddress.objects.values().get(pk=foreign.pk)
-        result = claim(self.server, 6, [reservation], force=False)
+        with stub_kea(_catalogue_responses_for_subnets(6, [{"id": 30, "subnet": "2001:db8::/64"}])):
+            catalogue = for_synchronization(self.server, 6)
+        result = claim(self.server, 6, [reservation], force=False, catalogue=catalogue)
         self.assertEqual(
             {address: row.outcome for address, row in result.addresses.items()},
             {"2001:db8::20": "conflict", "2001:db8::21": "created"},

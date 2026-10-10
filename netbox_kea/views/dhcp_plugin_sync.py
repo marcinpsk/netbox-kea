@@ -25,9 +25,10 @@ from ..constants import Family
 from ..dhcp_mapping_lifecycle import MetadataBusy
 from ..integrations import dhcp_plugin
 from ..ipam_reconciliation import complete_import_observation
-from ..kea import KeaCommand, KeaException
+from ..kea import KeaCommand, KeaException, KeaResponse
 from ..mappers.kea_to_dhcp import parse_dhcp_config
 from ..models import Server
+from ..sync_permissions import sync_gate
 from ..utilities import OptionalViewTab
 
 logger = logging.getLogger(__name__)
@@ -48,23 +49,15 @@ def _enabled_versions(server: Server) -> list[Family]:
     return versions
 
 
-def _extract_dhcp_conf(resp, version: Family) -> dict | None:
-    """Pull the ``Dhcp4``/``Dhcp6`` block out of a ``config-get`` response, or ``None``.
+def _extract_dhcp_conf(resp: list[KeaResponse], version: Family) -> dict | None:
+    """Pull the ``Dhcp4``/``Dhcp6`` block out of a checked ``config-get`` reply, or ``None`` when it is absent.
 
-    Raises ``RuntimeError`` on a malformed response *shape* so a protocol/contract
-    failure is surfaced rather than silently downgraded to "no config". Returns
-    ``None`` only for the legitimate cases: a non-zero Kea ``result`` or this
-    version's block simply being absent.
+    Raises ``RuntimeError`` when ``arguments`` is not a mapping.
     """
-    dhcp_key = f"Dhcp{version}"
-    if not isinstance(resp, list) or not resp or not isinstance(resp[0], dict):
-        raise RuntimeError("Malformed Kea config-get response: expected a non-empty list of dicts")
-    if resp[0].get("result") != 0:
-        return None
     args = resp[0].get("arguments") or {}
     if not isinstance(args, dict):
         raise RuntimeError("Malformed Kea config-get response: 'arguments' must be a dict")
-    conf = args.get(dhcp_key)
+    conf = args.get(f"Dhcp{version}")
     return conf if isinstance(conf, dict) else None
 
 
@@ -101,7 +94,7 @@ def _fetch_reservation_snapshot(server: Server, version: Family):
     try:
         client = server.get_client(version=version)
         catalogue = for_synchronization(server, version)
-        return ReservationObservation(client.reservation_snapshot(version, catalogue), cutoff)
+        return ReservationObservation(client.reservation_snapshot(version, catalogue), cutoff, catalogue)
     except (KeaException, requests.RequestException, RuntimeError, ValueError):
         logger.warning(
             "DHCP-plugin sync: Reservation Snapshot failed for %s (v%s)", server.name, version, exc_info=True
@@ -257,18 +250,18 @@ class ServerDhcpPluginView(generic.ObjectView):
             "plugin_available": available,
             "mapping_unavailable": unavailable,
             "drift": drift,
-            "can_sync": _user_can_sync(request.user, instance),
+            "sync_refusal": _sync_refusal(request.user, instance),
         }
 
 
-def _user_can_sync(user, server: Server) -> bool:
-    """Sync requires server change + IPAM add/change (the DHCP-plugin rows share IPAM)."""
-    return (
-        user.has_perm("netbox_kea.change_server")
-        and user.has_perm("ipam.add_ipaddress")
-        and user.has_perm("ipam.change_ipaddress")
-        and Server.objects.restrict(user, "change").filter(pk=server.pk).exists()
-    )
+def _sync_refusal(user, server: Server) -> str:
+    """Return why *user* may not run the import on *server*, or an empty string when the user may.
+
+    The import needs change permission on the Server and the manual Sync rule for its IPAM, DCIM and DHCP plugin writes.
+    """
+    if not Server.objects.restrict(user, "change").filter(pk=server.pk).exists():
+        return "Sync to DHCP plugin needs change permission on this Server."
+    return sync_gate(user, dhcp_plugin.import_permissions(server)).reason
 
 
 class ServerDhcpPluginSyncNowView(View):
@@ -285,8 +278,8 @@ class ServerDhcpPluginSyncNowView(View):
         if not server.sync_dhcp_plugin_enabled:
             messages.error(request, "Enable 'Sync to DHCP plugin' on this server first.")
             return redirect
-        if not _user_can_sync(request.user, server):
-            return HttpResponseForbidden("You do not have permission to sync to the DHCP plugin.")
+        if refusal := _sync_refusal(request.user, server):
+            return HttpResponseForbidden(refusal)
 
         try:
             results = run_dhcp_plugin_import(server)

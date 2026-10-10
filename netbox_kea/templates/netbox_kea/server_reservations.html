@@ -109,6 +109,8 @@
         Sync All to NetBox
       </button>
     </form>
+    {% elif hook_available and bulk_sync_refusal %}
+    {% include "netbox_kea/inc/sync_refused.html" with reason=bulk_sync_refusal label="Sync All to NetBox" icon="mdi-sync" button_class="btn btn-outline-info btn-sm me-2" %}
     {% endif %}
     {% if hook_available and import_url %}
     <a href="{{ import_url }}" class="btn btn-outline-secondary btn-sm me-2">
