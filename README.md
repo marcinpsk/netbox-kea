@@ -6,6 +6,11 @@ SPDX-License-Identifier: Apache-2.0
 
 # netbox-kea-ng
 
+> [!IMPORTANT]
+> **This repository moved to [marcinpsk/netbox-kea-ng](https://github.com/marcinpsk/netbox-kea-ng).**
+> It is archived and keeps the issues and pull requests up to version 3.1.0.
+> The PyPI package `netbox-kea-ng` is unchanged; new releases come from the new repository.
+
 [![PyPI](https://img.shields.io/pypi/v/netbox-kea-ng)](https://pypi.org/project/netbox-kea-ng/)
 [![PyPI - Downloads](https://img.shields.io/pypi/dm/netbox-kea-ng)](https://pypi.org/project/netbox-kea-ng/)
 [![CI](https://img.shields.io/github/actions/workflow/status/marcinpsk/netbox-kea/ci.yml?branch=main&label=tests)](https://github.com/marcinpsk/netbox-kea/actions/workflows/ci.yml)
