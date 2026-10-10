@@ -1294,6 +1294,7 @@ class TestStaleMacBadgeEnrichment(_ViewTestBase):
         (button,) = re.findall(rf'<button[^>]*hx-post="{re.escape(delete_url)}"[^>]*>', response.content.decode())
         # The lease search container swaps itself and pushes its URL; the row button must do neither.
         self.assertIn('hx-target="closest td"', button)
+        self.assertIn('hx-swap="innerHTML"', button)
         self.assertIn('hx-push-url="false"', button)
 
     def test_a_refused_one_click_delete_reloads_the_search_to_show_why(self):
